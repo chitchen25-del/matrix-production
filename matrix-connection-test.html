@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<title>Matrix — Supabase Connection Test</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; color: #242529; }
+  h1 { color: #2A377B; font-size: 20px; }
+  .step { border: 1px solid #DCDCDD; border-radius: 8px; padding: 16px; margin-bottom: 14px; }
+  .pass { border-left: 4px solid #3F7D5C; }
+  .fail { border-left: 4px solid #C23B22; }
+  .pending { border-left: 4px solid #98989A; }
+  button { background: #EA4E33; color: white; border: none; padding: 10px 18px; border-radius: 4px; font-size: 14px; cursor: pointer; }
+  input { width: 100%; padding: 8px; margin: 8px 0; border: 1px solid #DCDCDD; border-radius: 4px; box-sizing: border-box; }
+  label { font-size: 13px; color: #6B6D72; }
+</style>
+</head>
+<body>
+<h1>Matrix Engineering — Supabase Connection Test (v3)</h1>
+<p>This tries to <strong>add</strong> a test row rather than just read one — a write gets refused explicitly when blocked, rather than possibly just returning nothing, so this gives a clearer answer than the last version. It cleans up after itself either way.</p>
+
+<label>Email</label>
+<input id="email" type="text" value="dave@creasingmatrix.com" />
+<label>Password</label>
+<input id="password" type="password" placeholder="Enter the password you set for this user" />
+<button onclick="runTest()">Run Test</button>
+
+<div id="results" style="margin-top:20px;"></div>
+
+<script>
+const SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
+const SUPABASE_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
+const TEST_ID = "connection-test-row-delete-me";
+
+function addResult(status, title, detail) {
+  const div = document.createElement('div');
+  div.className = 'step ' + status;
+  div.innerHTML = '<strong>' + (status === 'pass' ? '✓' : status === 'fail' ? '✕' : '…') + ' ' + title + '</strong><br>' +
+    '<span style="font-size:13px;color:#6B6D72">' + detail + '</span>';
+  document.getElementById('results').appendChild(div);
+  return div;
+}
+
+async function runTest() {
+  document.getElementById('results').innerHTML = '';
+  const email = document.getElementById('email').value;
+  const password = document.getElementById('password').value;
+  const client = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+  // Step 1: try to WRITE a row while signed out — this should be explicitly refused
+  const { error: writeError } = await client.from('ncrs').insert({ id: TEST_ID, reason: 'connection test' });
+  if (writeError) {
+    addResult('pass', 'Step 1: Database correctly refuses writes when not signed in', 'Got the expected error: ' + writeError.message);
+  } else {
+    addResult('fail', 'Step 1: A write succeeded with NO sign-in', 'This means access is not locked down. Cleaning up the test row now — do not proceed until this is fixed.');
+    await client.from('ncrs').delete().eq('id', TEST_ID);
+    return;
+  }
+
+  // Step 2: sign in
+  if (!password) {
+    addResult('pending', 'Step 2 and 3: Skipped', 'Enter the password for ' + email + ' above and run again.');
+    return;
+  }
+  const { error: signInError } = await client.auth.signInWithPassword({ email, password });
+  if (signInError) {
+    addResult('fail', 'Step 2: Sign-in failed', signInError.message + ' — double check the password, and that the user shows as confirmed in Supabase.');
+    return;
+  }
+  addResult('pass', 'Step 2: Signed in successfully', 'Signed in as ' + email);
+
+  // Step 3: same write, now signed in — should succeed
+  const { error: writeError2 } = await client.from('ncrs').insert({ id: TEST_ID, reason: 'connection test' });
+  if (writeError2) {
+    addResult('fail', 'Step 3: Write after sign-in failed', writeError2.message + ' — the policy SQL may not have run correctly.');
+    return;
+  }
+  addResult('pass', 'Step 3: Write after sign-in works', 'The whole chain is working correctly.');
+
+  // Clean up the test row so it doesn't clutter the real NCR Log
+  await client.from('ncrs').delete().eq('id', TEST_ID);
+  addResult('pass', 'Cleanup', 'Test row removed — nothing left behind.');
+}
+</script>
+</body>
+</html>
