@@ -653,7 +653,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-08-31.14";
+  var APP_VERSION = "2026-08-31.16";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -2767,9 +2767,65 @@ Here's the order:`;
     if (name) return name.charAt(0).toUpperCase() + name.slice(1);
     return isAdminDevice() ? "Admin" : "Team";
   }
+  function currentDevice() {
+    const ua = navigator.userAgent || "";
+    if (/iPad/.test(ua) || /Macintosh/.test(ua) && navigator.maxTouchPoints > 1) return "iPad";
+    if (/iPhone/.test(ua)) return "iPhone";
+    if (/Android/.test(ua)) return "Android";
+    if (/Macintosh|Mac OS/.test(ua)) return "Mac";
+    if (/Windows/.test(ua)) return "Work PC";
+    return "Device";
+  }
   function appendLog(data, entry) {
-    const full = { id: uid("log"), at: (/* @__PURE__ */ new Date()).toISOString(), actor: currentActor(), ...entry };
+    const full = { id: uid("log"), at: (/* @__PURE__ */ new Date()).toISOString(), actor: currentActor(), device: currentDevice(), ...entry };
     return { changeLog: [...data.changeLog || [], full] };
+  }
+  var EDIT_LOG_IGNORE = /* @__PURE__ */ new Set(["id", "updatedAt", "updatedBy", "deleted", "deletedAt"]);
+  function diffRowFields(before, after) {
+    const changed = {};
+    const keys = /* @__PURE__ */ new Set([...Object.keys(before || {}), ...Object.keys(after || {})]);
+    for (const k of keys) {
+      if (EDIT_LOG_IGNORE.has(k)) continue;
+      const a = before?.[k], b = after?.[k];
+      const norm = (v) => v == null || v === "" ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+      if (norm(a) !== norm(b)) changed[k] = { before: a ?? null, after: b ?? null };
+    }
+    return changed;
+  }
+  function logRowEdits(data, key, prevRows, nextRows, entity, labelOf) {
+    const prevById = new Map((prevRows || []).map((r) => [r.id, r]));
+    let out = data;
+    for (const row of nextRows || []) {
+      const before = prevById.get(row.id);
+      if (!before || before === row) continue;
+      if (before.deleted !== row.deleted) continue;
+      const changed = diffRowFields(before, row);
+      const fields = Object.keys(changed);
+      if (fields.length === 0) continue;
+      const label = labelOf && labelOf(row) || row.id;
+      const shown = fields.slice(0, 3).map((f) => `${changeFieldLabel(f)}: ${fmtLogValue(changed[f].before)} \u2192 ${fmtLogValue(changed[f].after)}`).join(", ");
+      out = { ...out, ...appendLog(out, {
+        action: "edit",
+        entity,
+        entityId: row.id,
+        summary: `Edited ${label} \u2014 ${shown}${fields.length > 3 ? ` (+${fields.length - 3} more)` : ""}`,
+        before: Object.fromEntries(fields.map((f) => [f, changed[f].before])),
+        after: Object.fromEntries(fields.map((f) => [f, changed[f].after])),
+        fields
+      }) };
+    }
+    return out;
+  }
+  function fmtLogValue(v) {
+    if (v == null || v === "") return "blank";
+    const s = typeof v === "object" ? JSON.stringify(v) : String(v);
+    return s.length > 40 ? s.slice(0, 37) + "\u2026" : s;
+  }
+  function applyRowsWithLog(prevData, key, updater, entity, labelOf) {
+    const prevRows = prevData[key] || [];
+    const nextRows = typeof updater === "function" ? updater(prevRows) : updater;
+    const withRows = { ...prevData, [key]: nextRows };
+    return logRowEdits(withRows, key, prevRows, nextRows, entity, labelOf);
   }
   function recordMaterialMovement(data, materialId, qty, sourceType, sourceId, note) {
     const materials = data.materials || DEFAULT_MATERIALS;
@@ -4677,10 +4733,7 @@ Here's the order:`;
       if (f.pt && !spec.includes(f.pt)) spec += ` ${f.pt}`;
       return spec;
     };
-    const setStock = (updater) => setData((prevData) => ({
-      ...prevData,
-      otherStock: typeof updater === "function" ? updater(prevData.otherStock) : updater
-    }));
+    const setStock = (updater) => setData((prevData) => applyRowsWithLog(prevData, "otherStock", updater, "otherStock", (r) => `other stock ${r.boxNumber || r.productSpec || r.id}`));
     const [addError, setAddError] = useState("");
     const addRow = () => {
       if (!form.size.trim() || !form.qty) return;
@@ -5023,6 +5076,29 @@ Here's the order:`;
     const { entity, action, entityId, before, after } = entry;
     setData((prevData) => {
       let patch = {};
+      if (action === "edit" && before && typeof before === "object") {
+        const key = EDIT_ENTITY_KEYS[entity];
+        if (key === "extrusion") {
+          const inOne = (prevData.extrusion1 || []).some((r) => r.id === entityId);
+          const inTwo = (prevData.extrusion2 || []).some((r) => r.id === entityId);
+          const { extruder: extBefore, ...fieldsBack } = before;
+          const restore = (rows) => rows.map((r) => r.id === entityId ? { ...r, ...fieldsBack } : r);
+          if (extBefore && (extBefore === 1 && inTwo || extBefore === 2 && inOne)) {
+            const fromKey = inOne ? "extrusion1" : "extrusion2", toKey = extBefore === 1 ? "extrusion1" : "extrusion2";
+            const row = (prevData[fromKey] || []).find((r) => r.id === entityId);
+            patch = { [fromKey]: (prevData[fromKey] || []).filter((r) => r.id !== entityId), [toKey]: [...prevData[toKey] || [], { ...row, ...fieldsBack }] };
+          } else {
+            patch = { extrusion1: restore(prevData.extrusion1 || []), extrusion2: restore(prevData.extrusion2 || []) };
+          }
+        } else if (key) {
+          patch = { [key]: (prevData[key] || []).map((r) => r.id === entityId ? { ...r, ...before } : r) };
+        }
+        return {
+          ...prevData,
+          ...patch,
+          changeLog: (prevData.changeLog || []).map((e) => e.id === entry.id ? { ...e, undoneAt: (/* @__PURE__ */ new Date()).toISOString() } : e)
+        };
+      }
       switch (entity) {
         case "order":
           if (action === "delete" && before) {
@@ -5087,8 +5163,93 @@ Here's the order:`;
       };
     });
   }
-  var ACTION_LABELS = { delete: "Deleted", stage_change: "Stage change", stock_adjustment: "Stock adjustment" };
-  var ACTION_COLORS = { delete: RED, stage_change: NAVY, stock_adjustment: ORANGE };
+  var EDIT_ENTITY_KEYS = {
+    bondingRun: "bondingRuns",
+    glueLineBatch: "glueLineBatches",
+    evaRun: "evaRuns",
+    ncr: "ncrs",
+    otherStock: "otherStock",
+    extrusionBatch: "extrusion"
+  };
+  var CHANGE_FIELD_LABELS = {
+    amountMade: "Amount made",
+    reelsMade: "Reels made",
+    productSize: "Product",
+    boxNumber: "Box code",
+    evaCode: "EVA code",
+    evaCleared: "EVA ran out",
+    baselineBatchCode: "Reel used",
+    batchNumber: "Batch",
+    plCode: "PL code",
+    meterage: "Metres",
+    checked: "Checked",
+    cleared: "Cleared",
+    toStock: "To stock",
+    onOrderQty: "On order",
+    metersPerBox: "Metres/box",
+    customerName: "Customer",
+    workNumber: "Order",
+    screwSpeed: "Screw speed",
+    lineSpeed: "Line speed",
+    width: "Width",
+    die: "Die",
+    evaBatch: "EVA batch",
+    stage: "Stage",
+    gapWidth: "Gap",
+    glueDie: "Glue die",
+    petType: "PET",
+    glueBatch: "Glue batch",
+    runtimeHrs: "Runtime",
+    timeOfDay: "Time",
+    comments: "Comments",
+    qty: "Qty",
+    productSpec: "Product",
+    dateAdded: "Date added",
+    notes: "Notes",
+    date: "Date"
+  };
+  var changeFieldLabel = (f) => CHANGE_FIELD_LABELS[f] || f;
+  var changeFieldValue = (v) => {
+    if (v == null || v === "") return "blank";
+    if (v === true) return "Yes";
+    if (v === false) return "No";
+    const s = typeof v === "object" ? JSON.stringify(v) : String(v);
+    return s.length > 44 ? s.slice(0, 41) + "\u2026" : s;
+  };
+  var dayStartMs = (d) => {
+    const c = new Date(d);
+    c.setHours(0, 0, 0, 0);
+    return c.getTime();
+  };
+  function changeDayLabel(at, now) {
+    const days = Math.round((dayStartMs(now) - dayStartMs(at)) / 864e5);
+    if (days === 0) return "Today";
+    if (days === 1) return "Yesterday";
+    return new Date(at).toLocaleDateString(void 0, { weekday: "long", day: "numeric", month: "short" });
+  }
+  function changeAgo(at, now) {
+    const mins = Math.max(0, Math.round((now - new Date(at).getTime()) / 6e4));
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.round(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    return `${Math.round(hrs / 24)}d ago`;
+  }
+  function changeCodes(entry) {
+    const out = [];
+    const push = (v) => {
+      const s = String(v || "").trim();
+      if (s) out.push(s.toUpperCase());
+    };
+    push(entry.entityId);
+    for (const side of [entry.before, entry.after]) {
+      if (!side || typeof side !== "object") continue;
+      for (const k of ["boxNumber", "batchNumber", "evaCode", "baselineBatchCode", "plCode"]) push(side[k]);
+    }
+    push(entry.summary);
+    return out;
+  }
+  var ACTION_LABELS = { delete: "Deleted", stage_change: "Stage change", stock_adjustment: "Stock adjustment", edit: "Edited" };
+  var ACTION_COLORS = { delete: RED, stage_change: NAVY, stock_adjustment: ORANGE, edit: "#6B5BA8" };
   function WipeStockPanel({ data, setData }) {
     const [open, setOpen] = useState(false);
     const [confirmText, setConfirmText] = useState("");
@@ -5629,22 +5790,108 @@ Here's the order:`;
     const { requirePassword, modal } = useAdminPasswordGate();
     const [unlocked, setUnlocked] = useState(() => localStorage.getItem("matrixSyncUserRole") === "admin");
     const [filter, setFilter] = useState("all");
+    const [logQuery, setLogQuery] = useState("");
+    const [logDays, setLogDays] = useState(1);
+    const [logActor, setLogActor] = useState("all");
     if (!unlocked) {
       return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Admin", subtitle: "Change log and undo \u2014 protected separately from everyday editing." }), modal, /* @__PURE__ */ React.createElement(Panel, { className: "p-6 text-center" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm mb-3", style: { color: INK_MUTED } }, "Enter the admin password to view the change log."), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => requirePassword(() => setUnlocked(true)) }, "Unlock Admin")));
     }
-    const log = [...data.changeLog || []].sort((a, b) => new Date(b.at) - new Date(a.at));
-    const filtered = filter === "all" ? log : log.filter((e) => e.action === filter);
-    const since24h = log.filter((e) => Date.now() - new Date(e.at).getTime() < 24 * 60 * 60 * 1e3);
-    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Admin", subtitle: "Every deletion, stage change, and stock adjustment \u2014 undo puts the exact prior state back." }), modal, /* @__PURE__ */ React.createElement(LabelPrintingPanel, null), /* @__PURE__ */ React.createElement(DataHealthPanel, { data }), /* @__PURE__ */ React.createElement(WipeStockPanel, { data, setData }), /* @__PURE__ */ React.createElement(RecoveryPanel, { data, setData }), /* @__PURE__ */ React.createElement(CustomSizesPanel, { data, setData }), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 mb-4 flex-wrap" }, /* @__PURE__ */ React.createElement(Badge, { color: NAVY }, since24h.length, " in the last 24 hours"), /* @__PURE__ */ React.createElement(Badge, { color: INK_MUTED }, log.length, " total"), /* @__PURE__ */ React.createElement("div", { className: "flex gap-1 ml-auto" }, ["all", "delete", "stage_change", "stock_adjustment"].map((f) => /* @__PURE__ */ React.createElement(
+    const nowMs = Date.now();
+    const allLog = [...data.changeLog || []].sort((a, b) => new Date(b.at) - new Date(a.at));
+    const actors = [...new Set(allLog.map((e) => e.actor).filter(Boolean))];
+    const codeQuery = logQuery.trim().toUpperCase();
+    const withinDays = (e) => logDays >= 999 || nowMs - new Date(e.at).getTime() <= logDays * 864e5;
+    const shown = allLog.filter((e) => withinDays(e) && (logActor === "all" || e.actor === logActor) && (filter === "all" || e.action === filter) && (!codeQuery || changeCodes(e).some((c) => c.includes(codeQuery))));
+    const chip = (active, label, onClick, key) => /* @__PURE__ */ React.createElement(
       "button",
       {
-        key: f,
-        onClick: () => setFilter(f),
-        className: "text-xs px-2.5 py-1 rounded",
-        style: { background: filter === f ? NAVY : "#F2F2F0", color: filter === f ? "#fff" : INK_MUTED }
+        key,
+        onClick,
+        className: "shrink-0",
+        style: {
+          height: 30,
+          padding: "0 12px",
+          borderRadius: 999,
+          fontSize: 12.5,
+          whiteSpace: "nowrap",
+          border: `1px solid ${active ? NAVY : BORDER}`,
+          background: active ? NAVY : "#fff",
+          color: active ? "#fff" : INK_MUTED,
+          fontWeight: active ? 600 : 400,
+          cursor: "pointer"
+        }
       },
-      f === "all" ? "All" : ACTION_LABELS[f]
-    )))), filtered.length === 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-6 text-center text-sm", style: { color: INK_MUTED } }, "No changes logged yet."), /* @__PURE__ */ React.createElement("div", { className: "space-y-2" }, filtered.map((entry) => /* @__PURE__ */ React.createElement(Panel, { key: entry.id, className: "p-3", style: { opacity: entry.undoneAt ? 0.5 : 1 } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-start justify-between gap-3" }, /* @__PURE__ */ React.createElement("div", { className: "min-w-0" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 flex-wrap" }, /* @__PURE__ */ React.createElement(Badge, { color: ACTION_COLORS[entry.action] || INK_MUTED }, ACTION_LABELS[entry.action] || entry.action), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, entry.actor), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, new Date(entry.at).toLocaleString())), /* @__PURE__ */ React.createElement("div", { className: "text-sm mt-1" }, entry.summary), entry.undoneAt && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: GREEN } }, "Undone ", new Date(entry.undoneAt).toLocaleString())), !entry.undoneAt && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => undoLogEntry(data, setData, entry) }, "Undo"))))));
+      label
+    );
+    const chipRow = (children) => /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 5, marginBottom: 8, overflowX: "auto", paddingBottom: 2 } }, children);
+    const openTrail = (code) => {
+      setLogQuery(code);
+      setLogDays(999);
+    };
+    let lastDay = null;
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(
+      SectionHeader,
+      {
+        title: "Change log",
+        subtitle: "Everything that changed, who changed it, and what it was before. Revert puts one change back without touching anything else."
+      }
+    ), modal, /* @__PURE__ */ React.createElement(LabelPrintingPanel, null), /* @__PURE__ */ React.createElement(DataHealthPanel, { data }), /* @__PURE__ */ React.createElement(WipeStockPanel, { data, setData }), /* @__PURE__ */ React.createElement(RecoveryPanel, { data, setData }), /* @__PURE__ */ React.createElement(CustomSizesPanel, { data, setData }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 10 } }, /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        value: logQuery,
+        onChange: (e) => setLogQuery(e.target.value),
+        placeholder: "Box, batch or reel code\u2026",
+        autoCorrect: "off",
+        autoCapitalize: "characters",
+        spellCheck: "false",
+        className: "flex-1 px-2.5",
+        style: { height: 34, border: `1px solid ${BORDER}`, borderRadius: 5, fontSize: 14, minWidth: 0, background: "#fff" }
+      }
+    ), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => setLogQuery(""),
+        className: "shrink-0 px-3",
+        style: { height: 34, border: `1px solid ${BORDER}`, borderRadius: 6, background: "#fff", color: INK_MUTED, fontSize: 13, cursor: "pointer" }
+      },
+      "Clear"
+    )), chipRow([
+      chip(logDays === 1, "Today", () => setLogDays(1), "d1"),
+      chip(logDays === 2, "2 days", () => setLogDays(2), "d2"),
+      chip(logDays === 7, "7 days", () => setLogDays(7), "d7"),
+      chip(logDays >= 999, "All", () => setLogDays(999), "dall")
+    ]), actors.length > 1 && chipRow([
+      chip(logActor === "all", "Everyone", () => setLogActor("all"), "aall"),
+      ...actors.map((a) => chip(logActor === a, a, () => setLogActor(a), "a" + a))
+    ]), chipRow(["all", "edit", "delete", "stock_adjustment", "stage_change"].map((f) => chip(filter === f, f === "all" ? "All types" : ACTION_LABELS[f], () => setFilter(f), f))), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 600 } }, shown.length), " change", shown.length === 1 ? "" : "s", codeQuery && /* @__PURE__ */ React.createElement(React.Fragment, null, " touching ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 11.5, color: INK } }, codeQuery))), shown.length === 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-6 text-center text-sm", style: { color: INK_MUTED } }, "Nothing matches those filters."), shown.map((entry) => {
+      const day = changeDayLabel(entry.at, nowMs);
+      const showDay = day !== lastDay;
+      lastDay = day;
+      const colour = ACTION_COLORS[entry.action] || INK_MUTED;
+      const fields = entry.fields && Array.isArray(entry.fields) ? entry.fields : entry.before && typeof entry.before === "object" && !Array.isArray(entry.before) && entry.after && typeof entry.after === "object" ? Object.keys(entry.after) : [];
+      const codes = changeCodes(entry).filter((c) => /^[A-Z]{2,4}[0-9]/.test(c) || /^WO-/.test(c));
+      const code = codes[0] || null;
+      return /* @__PURE__ */ React.createElement("div", { key: entry.id }, showDay && /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mt-3 mb-1.5", style: { color: INK_MUTED } }, day), /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-1.5", style: {
+        opacity: entry.undoneAt ? 0.5 : 1,
+        borderLeft: codeQuery && code && code.includes(codeQuery) ? `3px solid ${colour}` : void 0
+      } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap", marginBottom: 5 } }, /* @__PURE__ */ React.createElement(Badge, { color: colour, solid: true }, ACTION_LABELS[entry.action] || entry.action), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 11.5 } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 600 } }, entry.actor), " \xB7 ", changeAgo(entry.at, nowMs)), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 10.5, marginLeft: "auto" } }, entry.device || "\u2014")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, lineHeight: 1.4 } }, entry.summary), fields.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 7, paddingTop: 7, borderTop: `1px solid ${BORDER}` } }, fields.map((f) => /* @__PURE__ */ React.createElement("div", { key: f, style: { display: "flex", alignItems: "baseline", gap: 6, fontSize: 12.5, padding: "2px 0" } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, minWidth: 88, flex: "0 0 auto" } }, changeFieldLabel(f)), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, textDecoration: "line-through" } }, changeFieldValue(entry.before && entry.before[f])), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2192"), /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 600 } }, changeFieldValue(entry.after && entry.after[f]))))), entry.undoneAt ? /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1.5", style: { color: GREEN } }, "\u2713 Reverted ", changeAgo(entry.undoneAt, nowMs)) : /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, marginTop: 9 } }, /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          onClick: () => undoLogEntry(data, setData, entry),
+          className: "px-3 shrink-0",
+          style: { height: 34, borderRadius: 6, border: `1px solid ${NAVY}`, background: "#fff", color: NAVY, fontSize: 13, fontWeight: 600, cursor: "pointer" }
+        },
+        "Revert this"
+      ), code && /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          onClick: () => openTrail(code),
+          className: "px-3 shrink-0",
+          style: { height: 34, borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", color: INK_MUTED, fontSize: 13, cursor: "pointer" }
+        },
+        "See trail"
+      ))));
+    }));
   }
   function EfficiencyCard({ name, line, rate, e, onRateChange }) {
     const [editing, setEditing] = useState(false);
@@ -5893,10 +6140,7 @@ Here's the order:`;
     const blank = { batchNumber: "", date: todayISO(), reason: "" };
     const [form, setForm, draftRestored, discardDraft] = useDraftForm("ncr", blank);
     const [editingId, setEditingId, editForm, setEditForm, editRestored, discardEdit] = useDraftEdit("edit-ncr");
-    const setNcrs = (updater) => setData((prevData) => ({
-      ...prevData,
-      ncrs: typeof updater === "function" ? updater(prevData.ncrs) : updater
-    }));
+    const setNcrs = (updater) => setData((prevData) => applyRowsWithLog(prevData, "ncrs", updater, "ncr", (r) => `NCR ${r.batchNumber || r.id}`));
     const addRow = () => {
       if (!form.batchNumber || !form.reason.trim()) return;
       setNcrs((prevNcrs) => [...prevNcrs, { id: uid("ncr"), ...form }]);
@@ -6085,7 +6329,7 @@ Here's the order:`;
     };
     const [form, setForm, formRestored, discardForm] = useDraftForm("eva-line-add", blank);
     const [editingId, setEditingId, editForm, setEditForm, editRestored, discardEdit] = useDraftEdit("eva-line-edit");
-    const setRuns = (updater) => setData((prev) => ({ ...prev, evaRuns: updater(prev.evaRuns || []) }));
+    const setRuns = (updater) => setData((prev) => applyRowsWithLog(prev, "evaRuns", updater, "evaRun", (r) => `EVA run ${r.batchNumber || r.id}`));
     const canAdd = String(form.batchNumber || "").trim() && form.die;
     const addRun = () => {
       if (!canAdd) return;
@@ -6559,10 +6803,7 @@ Here's the order:`;
       reelCapacityWarning(form.baselineBatchCode, form.amountMade, form.metersPerBox, data.glueLineBatches, bondingRuns, null),
       metersPerBoxWarning(buildSpec(form), form.metersPerBox, bondingRuns, data.lineItems, null)
     ].filter(Boolean), [form.baselineBatchCode, form.amountMade, form.metersPerBox, form.range, form.size, form.pt, data.glueLineBatches, bondingRuns]);
-    const setRuns = (updater) => setData((prevData) => ({
-      ...prevData,
-      bondingRuns: typeof updater === "function" ? updater(prevData.bondingRuns) : updater
-    }));
+    const setRuns = (updater) => setData((prevData) => applyRowsWithLog(prevData, "bondingRuns", updater, "bondingRun", (r) => `box ${r.boxNumber || r.id}`));
     const toggleRowChecked = (id) => setRuns((prevRuns) => prevRuns.map((r) => r.id === id ? { ...r, checked: r.checked === "Yes" ? "No" : "Yes" } : r));
     const updateRowQty = (row, field, newValue) => {
       const oldValue = Number(row[field] || 0);
@@ -6794,11 +7035,25 @@ Here's the order:`;
       setEditError("");
       const batchCode = (editForm.baselineBatchCode || "").trim();
       const reelCleared = editForm.reelCleared === "Yes";
-      setData((prevData) => ({
-        ...prevData,
-        bondingRuns: prevData.bondingRuns.map((r) => r.id === editingId ? { ...r, ...toRun(editForm, editingId) } : r),
-        glueLineBatches: batchCode ? prevData.glueLineBatches.map((b) => b.batchNumber === batchCode ? { ...b, cleared: reelCleared ? "Yes" : "No" } : b) : prevData.glueLineBatches
-      }));
+      setData((prevData) => {
+        let next = applyRowsWithLog(
+          prevData,
+          "bondingRuns",
+          (rows) => rows.map((r) => r.id === editingId ? { ...r, ...toRun(editForm, editingId) } : r),
+          "bondingRun",
+          (r) => `box ${r.boxNumber || r.id}`
+        );
+        if (batchCode) {
+          next = applyRowsWithLog(
+            next,
+            "glueLineBatches",
+            (rows) => rows.map((b) => b.batchNumber === batchCode ? { ...b, cleared: reelCleared ? "Yes" : "No" } : b),
+            "glueLineBatch",
+            (r) => `reel ${r.batchNumber || r.id}`
+          );
+        }
+        return next;
+      });
       setEditingId(null);
       setEditForm(null);
     };
@@ -7547,10 +7802,7 @@ Here's the order:`;
     const [editingId, setEditingId, editForm, setEditForm, editRestored, discardEdit] = useDraftEdit("edit-glueLine");
     const [addOpen, setAddOpen] = useState(false);
     const buildSpec = (f) => f.range === "Custom" ? f.size.trim() : `${f.range} ${f.size.trim()}`;
-    const setRows = (updater) => setData((prevData) => ({
-      ...prevData,
-      glueLineBatches: typeof updater === "function" ? updater(prevData.glueLineBatches) : updater
-    }));
+    const setRows = (updater) => setData((prevData) => applyRowsWithLog(prevData, "glueLineBatches", updater, "glueLineBatch", (r) => `reel ${r.batchNumber || r.id}`));
     const toggleRowChecked = (id) => setRows((prevRows) => prevRows.map((r) => r.id === id ? { ...r, checked: r.checked === "Yes" ? "No" : "Yes" } : r));
     const setRowOrder = (id, orderId) => setRows((prevRows) => prevRows.map((r) => r.id === id ? { ...r, assignedOrderId: orderId || null } : r));
     const [labelJob, setLabelJob] = useState(null);
@@ -7926,10 +8178,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const { sorted: sortedExtrusionRows, sortBy: exSortBy, sortDir: exSortDir, toggleSort: exToggleSort } = useSortableRows(rows, "productSize", "asc");
     const listId = "size-catalog-extrusion";
     const arrayKeyFor = (extruder) => extruder === 1 ? "extrusion1" : "extrusion2";
-    const setExtruderRows = (extruder, updater) => setData((prevData) => {
-      const key = arrayKeyFor(extruder);
-      return { ...prevData, [key]: typeof updater === "function" ? updater(prevData[key] || []) : updater };
-    });
+    const setExtruderRows = (extruder, updater) => setData((prevData) => applyRowsWithLog(prevData, arrayKeyFor(extruder), updater, "extrusionBatch", (r) => `extrusion ${r.batchNumber || r.id}`));
     const blank = { extruder: 1, range: "PX Plus", size: "", batchNumber: "", pvcCode: "", pinSize: "", widthCategory: "", screwSpeed: "", lineSpeed: "", height: "", width: "", meterage: "", checked: "No", comments: "" };
     const [form, setForm, draftRestored, discardDraft] = useDraftForm("extrusion", blank);
     const [editingId, setEditingId, editForm, setEditForm, editRestored, discardEdit] = useDraftEdit("edit-extrusion");
@@ -8043,10 +8292,22 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         setData((prevData) => {
           const fromKey = arrayKeyFor(originalExtruder);
           const toKey = arrayKeyFor(editForm.extruder);
+          const before = (prevData[fromKey] || []).find((r) => r.id === editingId);
+          const changed = diffRowFields({ ...before, extruder: originalExtruder }, { ...updated, extruder: editForm.extruder });
+          const fields = Object.keys(changed);
           return {
             ...prevData,
             [fromKey]: (prevData[fromKey] || []).filter((r) => r.id !== editingId),
-            [toKey]: [...prevData[toKey] || [], updated]
+            [toKey]: [...prevData[toKey] || [], updated],
+            ...appendLog(prevData, {
+              action: "edit",
+              entity: "extrusionBatch",
+              entityId: editingId,
+              summary: `Edited extrusion ${updated.batchNumber || editingId} \u2014 moved to extruder ${editForm.extruder}${fields.length > 1 ? ` (+${fields.length - 1} field${fields.length === 2 ? "" : "s"})` : ""}`,
+              before: Object.fromEntries(fields.map((f) => [f, changed[f].before])),
+              after: Object.fromEntries(fields.map((f) => [f, changed[f].after])),
+              fields
+            })
           };
         });
       }
