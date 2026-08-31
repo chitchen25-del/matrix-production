@@ -681,7 +681,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-08-31.31";
+  var APP_VERSION = "2026-08-31.32";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1822,6 +1822,48 @@
     return breakdown.map((b) => `${b.orderId} (${b.customer})`).join(", ");
   }
   var METERS_PER_BOX_DEFAULT = 24;
+  var GLUE_METRES_PER_MINUTE = 11;
+  var GLUE_SHIFT_MINUTES = { 0: 0, 1: 495, 2: 495, 3: 495, 4: 495, 5: 315, 6: 0 };
+  var GLUE_DIE_CHANGE_MINUTES = 30;
+  function glueShiftMinutes(d) {
+    return GLUE_SHIFT_MINUTES[d.getDay()] ?? 0;
+  }
+  function glueCapacityForDate(d) {
+    return glueShiftMinutes(d) * GLUE_METRES_PER_MINUTE;
+  }
+  function scheduleAcrossShifts(jobMinutes, fromDate) {
+    const out = [];
+    let cur = /* @__PURE__ */ new Date((fromDate || todayISO()) + "T00:00:00");
+    let dayIndex = 0;
+    let left = glueShiftMinutes(cur);
+    let guard = 0;
+    while (left <= 0 && guard++ < 14) {
+      cur.setDate(cur.getDate() + 1);
+      dayIndex++;
+      left = glueShiftMinutes(cur);
+    }
+    for (const mins of jobMinutes) {
+      let remaining = mins;
+      const startDay = dayIndex;
+      const startDate = cur.toISOString().slice(0, 10);
+      while (remaining > left && guard++ < 400) {
+        remaining -= left;
+        cur.setDate(cur.getDate() + 1);
+        dayIndex++;
+        left = glueShiftMinutes(cur);
+      }
+      left -= remaining;
+      out.push({ startDay, startDate, endDay: dayIndex, endDate: cur.toISOString().slice(0, 10) });
+    }
+    return out;
+  }
+  var REEL_METRES_TYPICAL = 500;
+  function learnedReelMetres(glueLineBatches) {
+    const sizes = (glueLineBatches || []).filter((g) => !g.deleted && Number(g.meterage) > 100).map((g) => Number(g.meterage));
+    if (sizes.length < 5) return REEL_METRES_TYPICAL;
+    sizes.sort((a, b) => a - b);
+    return Math.round(sizes[Math.floor(sizes.length / 2)]);
+  }
   var BONDING_BOXES_PER_DAY_MIN = 200;
   var BONDING_BOXES_PER_DAY_MAX = 250;
   function extractMeterageSuffix(spec) {
@@ -1975,6 +2017,13 @@
         glueLinedMeters,
         stillToGlueLine,
         uncheckedMeters,
+        /* Indirect sizes cannot be glued until a PL reel exists.
+           A 7mm size on the make list looks as runnable as anything else, but
+           it is extruded FIRST on a different machine and a different day. Left
+           unmarked, an operator picks it up, walks to the rack and finds
+           nothing. `needsExtrusion` says so on the row instead. Direct (PBL)
+           sizes are extruded on the glue line itself, so they never wait. */
+        needsExtrusion: classifySize(d.spec) === "7mm" && glueLinedMeters <= 0,
         reelCount: availableReels.length,
         dies: glueDiesForSpec(d.spec)
       };
@@ -4077,18 +4126,77 @@ Here's the order:`;
       /* @__PURE__ */ React.createElement("span", { className: "block", style: { fontSize: 10, opacity: 0.6 } }, d.min.toFixed(2), "\u2013", d.max.toFixed(2), " gap")
     )))), !selectedEva ? /* @__PURE__ */ React.createElement("div", { className: "text-sm py-8 no-print", style: { color: INK_MUTED } }, "Choose the EVA die currently mounted \u2014 or the one you're about to run \u2014 to see what's ready to bond.") : /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto no-print", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, { w: 130 }, "Batch #"), /* @__PURE__ */ React.createElement(Th, null, "Product spec"), /* @__PURE__ */ React.createElement(Th, { w: 200 }, "Order / Customer"), /* @__PURE__ */ React.createElement(ThR, { w: 70 }, "Gap"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Available"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Needed"), /* @__PURE__ */ React.createElement(Th, { w: 80 }, "Priority"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Due"), /* @__PURE__ */ React.createElement(Th, { w: 170 }, "Match"))), /* @__PURE__ */ React.createElement("tbody", null, scheduled.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.batchNumber)), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 no-wrap" }, r.productSize), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-xs" }, formatOrderBreakdown(r.orderBreakdown)), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.derivedGap != null ? r.derivedGap.toFixed(2) : "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.boxesInBatch), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.qtyNeeded), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.priority != null ? /* @__PURE__ */ React.createElement(Badge, { color: r.priority <= 2 ? RED : INK_MUTED, solid: r.priority <= 2 }, "P", r.priority) : /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.earliestDueDate || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.matchStatus === "Covers full need" && /* @__PURE__ */ React.createElement(Badge, { color: GREEN }, r.matchStatus), r.matchStatus.startsWith("Short") && /* @__PURE__ */ React.createElement(Badge, { color: AMBER }, r.matchStatus)))), scheduled.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 9 }, "No available, needed batches currently match ", evaLabel, ".")))), selectedEva && /* @__PURE__ */ React.createElement("div", { className: "print-only" }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Georgia, serif", fontWeight: 700, fontSize: 22, color: NAVY } }, "Ordered by Eva Size \u2014 ", evaLabel), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 2 } }, (/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", year: "numeric", month: "long", day: "numeric" }), " \xB7 Most urgent first, by priority then due date"), /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { marginTop: 16 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, { w: 130 }, "Batch #"), /* @__PURE__ */ React.createElement(Th, null, "Product spec"), /* @__PURE__ */ React.createElement(Th, { w: 200 }, "Order / Customer"), /* @__PURE__ */ React.createElement(ThR, { w: 70 }, "Gap"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Available"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Needed"), /* @__PURE__ */ React.createElement(Th, { w: 80 }, "Priority"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Due"))), /* @__PURE__ */ React.createElement("tbody", null, scheduled.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.id, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.batchNumber)), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.productSize), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-xs" }, formatOrderBreakdown(r.orderBreakdown)), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.derivedGap != null ? r.derivedGap.toFixed(2) : "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.boxesInBatch), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.qtyNeeded), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.priority != null ? `P${r.priority}` : "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.earliestDueDate || "\u2014")))))));
   }
-  function glueMakeList(needRows, dieCounts) {
+  function workingDaysUntil(dateStr) {
+    if (!dateStr) return null;
+    const end = /* @__PURE__ */ new Date(dateStr + "T00:00:00");
+    const start = /* @__PURE__ */ new Date(todayISO() + "T00:00:00");
+    if (isNaN(end.getTime())) return null;
+    let days = 0;
+    const cur = new Date(start);
+    const dir = end >= start ? 1 : -1;
+    while (dir > 0 ? cur < end : cur > end) {
+      cur.setDate(cur.getDate() + dir);
+      const dow = cur.getDay();
+      if (dow !== 0 && dow !== 6) days += dir;
+    }
+    return days;
+  }
+  function glueMakeList(needRows, dieCounts, opts = {}) {
+    const reelSize = opts.reelMetres || REEL_METRES_TYPICAL;
     const dies = dieCounts.filter((d) => d.metres > 0).map((d) => {
-      const rows = needRows.filter((r) => r.dies.some((e) => e.key === d.key)).sort((a, z) => (a.priority ?? 99) - (z.priority ?? 99) || z.stillToGlueLine - a.stillToGlueLine);
+      const rows = needRows.filter((r) => r.dies.some((e) => e.key === d.key)).sort((a, z) => (a.priority ?? 99) - (z.priority ?? 99) || z.stillToGlueLine - a.stillToGlueLine).map((r) => {
+        const reels = Math.max(1, Math.ceil(r.stillToGlueLine / reelSize));
+        const reelMetres = reels * reelSize;
+        return { ...r, reels, reelMetres, toRack: Math.max(0, reelMetres - r.stillToGlueLine) };
+      });
       const best = rows.reduce((m, r) => r.priority != null && (m == null || r.priority < m) ? r.priority : m, null);
-      return { ...d, rows, topPriority: best };
+      const due = rows.reduce((m, r) => r.earliestDueDate && (m == null || r.earliestDueDate < m) ? r.earliestDueDate : m, null);
+      return {
+        ...d,
+        rows,
+        topPriority: best,
+        earliestDue: due,
+        blocked: rows.filter((r) => r.needsExtrusion).length
+      };
     }).sort((a, z) => z.metres - a.metres);
+    const jobMinutes = dies.map((d) => GLUE_DIE_CHANGE_MINUTES + d.metres / GLUE_METRES_PER_MINUTE);
+    const placed = scheduleAcrossShifts(jobMinutes, todayISO());
+    dies.forEach((d, i) => {
+      const p = placed[i];
+      d.runMinutes = Math.round(d.metres / GLUE_METRES_PER_MINUTE);
+      d.totalMinutes = Math.round(jobMinutes[i]);
+      d.startDay = p.startDay;
+      d.startDate = p.startDate;
+      d.finishDate = p.endDate;
+      d.shifts = p.endDay - p.startDay + 1;
+      d.withinToday = p.startDay === 0;
+      d.daysAway = p.startDay;
+      const slack = workingDaysUntil(d.earliestDue);
+      d.daysUntilDue = slack;
+      const finishDay = p.endDay;
+      d.atRisk = slack != null && finishDay + 1 > slack;
+      d.missBy = d.atRisk ? finishDay + 1 - slack : 0;
+    });
     return dies;
+  }
+  function unrankableOrders(orders, lineItems, bondingRuns, stockPicks) {
+    const outstanding = new Set(
+      productionOutstandingRows(orders, lineItems, bondingRuns, stockPicks || []).flatMap((r) => [...r.orderIds])
+    );
+    return (orders || []).filter((o) => o.stage !== "Shipped" && o.stage !== "Packing" && o.priority == null && !o.dueDate && outstanding.has(o.id));
   }
   function GlueLineScheduleView({ data }) {
     const [selectedDie, setSelectedDie] = useState(null);
     const [showMakeList, setShowMakeList] = useState(false);
-    const needRows = glueLineScheduleRows(data.orders, data.lineItems, data.glueLineBatches, data.bondingRuns, data.stockPicks, data.ncrs || []);
+    const [whatIf, setWhatIf] = useState(null);
+    const effectiveOrders = useMemo(() => {
+      if (!whatIf) return data.orders;
+      return data.orders.map((o) => Object.prototype.hasOwnProperty.call(whatIf, o.id) ? { ...o, priority: whatIf[o.id] } : { ...o, priority: null });
+    }, [data.orders, whatIf]);
+    const needRows = glueLineScheduleRows(effectiveOrders, data.lineItems, data.glueLineBatches, data.bondingRuns, data.stockPicks, data.ncrs || []);
+    const reelMetres = learnedReelMetres(data.glueLineBatches);
+    const todayCapacity = glueCapacityForDate(/* @__PURE__ */ new Date(todayISO() + "T00:00:00"));
+    const unrankable = unrankableOrders(effectiveOrders, data.lineItems, data.bondingRuns, data.stockPicks);
     const dieCounts = ALL_GLUE_DIES.map((d) => {
       const forDie = needRows.filter((r) => r.dies.some((e) => e.key === d.key));
       return {
@@ -4126,7 +4234,33 @@ Here's the order:`;
         } }, withCount.metres, "m"),
         d.min != null && /* @__PURE__ */ React.createElement("span", { className: "block", style: { fontSize: 10, opacity: 0.6 } }, d.min.toFixed(2), "\u2013", d.max.toFixed(2))
       );
-    }))))), bestDie && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-4 px-4 py-2.5", style: { background: "#EEF1FA", border: `1px solid ${NAVY}`, borderRadius: 5, color: INK, fontSize: 14 } }, /* @__PURE__ */ React.createElement("b", null, "Most work behind one die: ", bestDie.label), " \u2014 ", bestDie.metres, "m across ", bestDie.count, " size", bestDie.count === 1 ? "" : "s", ".", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " Fewest changeovers for the metres, unless something's urgent."), /* @__PURE__ */ React.createElement(
+    }))))), unrankable.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-3 px-4 py-2.5", style: { background: "#FFF7E6", border: `1px solid ${AMBER}`, borderRadius: 5, fontSize: 13 } }, /* @__PURE__ */ React.createElement("b", null, unrankable.length, " order", unrankable.length === 1 ? " has" : "s have", " outstanding work, no priority and no due date."), " ", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Nothing ranks them, so they sit below everything for ever \u2014 forgotten rather than deprioritised. ", unrankable.map((o) => o.id).join(", "), ".")), /* @__PURE__ */ React.createElement("div", { className: "no-print mb-3" }, !whatIf ? /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => setWhatIf({}),
+        className: "px-3",
+        style: { height: 34, borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", color: INK, fontSize: 13, cursor: "pointer" }
+      },
+      "\u{1F500} Try different priorities"
+    ) : /* @__PURE__ */ React.createElement(Panel, { className: "p-3", style: { borderLeft: `4px solid #6B5BA8` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between mb-2 flex-wrap gap-2" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 14 } }, "Trying different priorities"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Nothing here is saved, synced or logged \u2014 it changes this screen only. Set them for real on the order itself.")), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setWhatIf(null) }, "Discard and go back")), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-2" }, data.orders.filter((o) => o.stage !== "Shipped" && o.stage !== "Packing").map((o) => /* @__PURE__ */ React.createElement(
+      "div",
+      {
+        key: o.id,
+        className: "flex items-center gap-1.5 px-2 py-1",
+        style: { border: `1px solid ${BORDER}`, borderRadius: 5, background: "#fff" }
+      },
+      /* @__PURE__ */ React.createElement("span", { className: "text-xs font-semibold" }, o.id),
+      /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, o.customer),
+      /* @__PURE__ */ React.createElement("select", { value: whatIf[o.id] ?? "", onChange: (e) => {
+        const v = e.target.value;
+        setWhatIf((w) => {
+          const n = { ...w };
+          if (v === "") delete n[o.id];
+          else n[o.id] = Number(v);
+          return n;
+        });
+      }, style: { fontSize: 12, border: `1px solid ${BORDER}`, borderRadius: 4, padding: "1px 3px" } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014"), [1, 2, 3, 4, 5].map((n) => /* @__PURE__ */ React.createElement("option", { key: n, value: n }, "P", n)))
+    ))))), bestDie && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-4 px-4 py-2.5", style: { background: "#EEF1FA", border: `1px solid ${NAVY}`, borderRadius: 5, color: INK, fontSize: 14 } }, /* @__PURE__ */ React.createElement("b", null, "Most work behind one die: ", bestDie.label), " \u2014 ", bestDie.metres, "m across ", bestDie.count, " size", bestDie.count === 1 ? "" : "s", ".", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " Fewest changeovers for the metres, unless something's urgent."), /* @__PURE__ */ React.createElement(
       "button",
       {
         onClick: () => setShowMakeList((v) => !v),
@@ -4144,9 +4278,14 @@ Here's the order:`;
       },
       showMakeList ? "Hide make list" : "\u{1F4CB} Full make list"
     )), showMakeList && (() => {
-      const list = glueMakeList(needRows, dieCounts);
+      const list = glueMakeList(needRows, dieCounts, { reelMetres });
       const totalM = list.reduce((s2, d) => s2 + d.metres, 0);
-      return /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5 print-only-block", style: { borderLeft: `4px solid ${NAVY}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between mb-1 flex-wrap gap-2 no-print" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "text-base font-semibold", style: { color: NAVY } }, "Glue line make list"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, list.length, " die", list.length === 1 ? "" : "s", " with work \xB7 ", totalM.toLocaleString(), "m total \xB7 in run order, most metres first")), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => window.print() }, "\u{1F5A8} Print make list")), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED, lineHeight: 1.5, maxWidth: 760 } }, "Ordered by how much work sits behind each die, because a die change costs output \u2014 once it's mounted, everything else it can run is nearly free. Metres already on the rack are taken off before anything is asked for, so nothing here is something you already have. Priority shows on every row: run an urgent die out of turn if you need to."), list.map((d, i) => /* @__PURE__ */ React.createElement("div", { key: d.key, className: "mb-4", style: { pageBreakInside: "avoid" } }, /* @__PURE__ */ React.createElement("div", { style: {
+      return /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5 print-only-block", style: { borderLeft: `4px solid ${NAVY}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between mb-1 flex-wrap gap-2 no-print" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "text-base font-semibold", style: { color: NAVY } }, "Glue line make list"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, list.length, " die", list.length === 1 ? "" : "s", " with work \xB7 ", totalM.toLocaleString(), "m total \xB7 finishes ", list.length ? list[list.length - 1].finishDate : "\u2014"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "At 11 m/min: ", todayCapacity.toLocaleString(), "m today (", (/* @__PURE__ */ new Date(todayISO() + "T00:00:00")).getDay() === 5 ? "Friday, 08:30\u201313:45" : "08:30\u201316:45", ") \xB7 each die change costs ", GLUE_DIE_CHANGE_MINUTES, " min \u2248 ", GLUE_DIE_CHANGE_MINUTES * GLUE_METRES_PER_MINUTE, "m of output")), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => window.print() }, "\u{1F5A8} Print make list")), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED, lineHeight: 1.5, maxWidth: 760 } }, "Ordered by how much work sits behind each die, because a die change costs output \u2014 once it's mounted, everything else it can run is nearly free. Metres already on the rack are taken off before anything is asked for, so nothing here is something you already have. Priority shows on every row: run an urgent die out of turn if you need to."), list.map((d, i) => /* @__PURE__ */ React.createElement(React.Fragment, { key: d.key }, i > 0 && list[i - 1].startDay !== d.startDay && /* @__PURE__ */ React.createElement("div", { className: "my-3", style: { display: "flex", alignItems: "center", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1, borderTop: `2px dashed ${d.startDay === 1 ? GREEN : BORDER}` } }), /* @__PURE__ */ React.createElement("span", { style: {
+        fontSize: 12,
+        fontWeight: 700,
+        whiteSpace: "nowrap",
+        color: d.startDay === 1 ? GREEN : INK_MUTED
+      } }, "\u2500\u2500 ", d.startDay === 1 ? "everything above is today" : `from ${d.startDate}`, " \u2500\u2500"), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, borderTop: `2px dashed ${d.startDay === 1 ? GREEN : BORDER}` } })), /* @__PURE__ */ React.createElement("div", { className: "mb-4", style: { pageBreakInside: "avoid" } }, /* @__PURE__ */ React.createElement("div", { style: {
         display: "flex",
         alignItems: "baseline",
         flexWrap: "wrap",
@@ -4155,7 +4294,7 @@ Here's the order:`;
         borderBottom: `2px solid ${NAVY}`,
         paddingBottom: 4,
         marginBottom: 6
-      } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15, fontWeight: 700, color: NAVY } }, i + 1, ". ", d.label), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 14, fontWeight: 700, color: GREEN } }, d.metres.toLocaleString(), "m"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, color: INK_MUTED } }, d.rows.length, " size", d.rows.length === 1 ? "" : "s", d.min != null ? ` \xB7 gap ${d.min.toFixed(2)}\u2013${d.max.toFixed(2)}` : ""), d.topPriority != null && /* @__PURE__ */ React.createElement(Badge, { color: d.topPriority === 1 ? RED : AMBER }, "carries P", d.topPriority, " work")), /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("tbody", null, d.rows.map((r) => /* @__PURE__ */ React.createElement("tr", { key: r.spec, style: { borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-1", style: { width: "48%" } }, r.spec), /* @__PURE__ */ React.createElement("td", { className: "py-1 text-right", style: { width: 70 } }, r.qtyNeeded, " bx"), /* @__PURE__ */ React.createElement("td", { className: "py-1 text-right font-semibold", style: { width: 90 } }, r.stillToGlueLine, "m"), /* @__PURE__ */ React.createElement("td", { className: "py-1 px-3 text-xs", style: { color: INK_MUTED } }, r.glueLinedMeters > 0 ? `${r.glueLinedMeters}m already on the rack \u2014 only the shortfall asked for` : "nothing on the rack for this size", r.uncheckedMeters > 0 ? ` \xB7 ${r.uncheckedMeters}m of it not checked yet` : ""), /* @__PURE__ */ React.createElement("td", { className: "py-1 text-xs", style: { width: 54 } }, r.priority != null ? /* @__PURE__ */ React.createElement(Badge, { color: r.priority === 1 ? RED : AMBER }, "P", r.priority) : /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "py-1 text-xs", style: { width: 92, color: INK_MUTED } }, r.earliestDueDate || "\u2014"))))), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1.5", style: { color: INK, lineHeight: 1.45 } }, i === 0 && /* @__PURE__ */ React.createElement("b", null, "Run this first. "), d.topPriority === 1 ? `Holds priority 1 work and ${d.metres.toLocaleString()}m in one setup.` : d.topPriority != null ? `Holds P${d.topPriority} work \u2014 ${d.metres.toLocaleString()}m off one changeover.` : `No priority order needs this die, but ${d.metres.toLocaleString()}m is waiting on it.`, d.rows.length > 1 && ` ${d.rows.length} sizes share it, so they cost one changeover between them.`))));
+      } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15, fontWeight: 700, color: NAVY } }, i + 1, ". ", d.label), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 14, fontWeight: 700, color: GREEN } }, d.metres.toLocaleString(), "m"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, color: INK_MUTED } }, d.rows.length, " size", d.rows.length === 1 ? "" : "s", d.min != null ? ` \xB7 gap ${d.min.toFixed(2)}\u2013${d.max.toFixed(2)}` : "", " \xB7 ", Math.floor(d.runMinutes / 60), "h ", d.runMinutes % 60, "m run", " + ", GLUE_DIE_CHANGE_MINUTES, "m change"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, fontWeight: 600, color: d.withinToday ? GREEN : INK_MUTED } }, d.startDate === d.finishDate ? d.withinToday ? "today" : d.startDate : `${d.withinToday ? "today" : d.startDate} \u2192 ${d.finishDate}`, d.shifts > 1 && /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 400 } }, " (", d.shifts, " shifts)")), d.topPriority != null && /* @__PURE__ */ React.createElement(Badge, { color: d.topPriority === 1 ? RED : AMBER }, "carries P", d.topPriority, " work"), d.atRisk && /* @__PURE__ */ React.createElement(Badge, { color: RED }, "misses its date by ~", d.missBy, " day", d.missBy === 1 ? "" : "s"), d.blocked > 0 && /* @__PURE__ */ React.createElement(Badge, { color: ORANGE }, d.blocked, " needs extrusion first")), /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("tbody", null, d.rows.map((r) => /* @__PURE__ */ React.createElement("tr", { key: r.spec, style: { borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-1", style: { width: "48%" } }, r.spec), /* @__PURE__ */ React.createElement("td", { className: "py-1 text-right", style: { width: 70 } }, r.qtyNeeded, " bx"), /* @__PURE__ */ React.createElement("td", { className: "py-1 text-right font-semibold", style: { width: 90 } }, r.stillToGlueLine, "m"), /* @__PURE__ */ React.createElement("td", { className: "py-1 text-right text-xs", style: { width: 108, color: NAVY, fontWeight: 600 } }, r.reels, " reel", r.reels === 1 ? "" : "s", r.toRack > 0 && /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontWeight: 400, color: INK_MUTED } }, "~", r.toRack, "m to rack")), /* @__PURE__ */ React.createElement("td", { className: "py-1 px-3 text-xs", style: { color: INK_MUTED } }, r.needsExtrusion && /* @__PURE__ */ React.createElement("span", { style: { color: ORANGE, fontWeight: 600 } }, "Needs extruding first \u2014 no PL reel yet. "), r.glueLinedMeters > 0 ? `${r.glueLinedMeters}m already on the rack \u2014 only the shortfall asked for` : "nothing on the rack for this size", r.uncheckedMeters > 0 ? ` \xB7 ${r.uncheckedMeters}m of it not checked yet` : ""), /* @__PURE__ */ React.createElement("td", { className: "py-1 text-xs", style: { width: 54 } }, r.priority != null ? /* @__PURE__ */ React.createElement(Badge, { color: r.priority === 1 ? RED : AMBER }, "P", r.priority) : /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "py-1 text-xs", style: { width: 92, color: INK_MUTED } }, r.earliestDueDate || "\u2014"))))), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1.5", style: { color: INK, lineHeight: 1.45 } }, i === 0 && /* @__PURE__ */ React.createElement("b", null, "Run this first. "), d.shifts > 1 && /* @__PURE__ */ React.createElement("b", null, d.shifts, " full shifts of work on this one die \u2014 ", d.startDate, " to ", d.finishDate, ". "), d.topPriority === 1 ? `Holds priority 1 work and ${d.metres.toLocaleString()}m in one setup.` : d.topPriority != null ? `Holds P${d.topPriority} work \u2014 ${d.metres.toLocaleString()}m off one changeover.` : `No priority order needs this die, but ${d.metres.toLocaleString()}m is waiting on it.`, d.rows.length > 1 && ` ${d.rows.length} sizes share it, so they cost one changeover between them.`, d.atRisk && /* @__PURE__ */ React.createElement("span", { style: { color: RED, fontWeight: 600 } }, " ", "At this position it finishes ", d.finishDate, " and bonds the working day after, so ", d.earliestDue, " is missed by about ", d.missBy, " working day", d.missBy === 1 ? "" : "s", ". Move it up the list if that date has to hold."), d.blocked > 0 && /* @__PURE__ */ React.createElement("span", { style: { color: ORANGE } }, " ", d.blocked, " size", d.blocked === 1 ? " is" : "s are", " Indirect with no reel extruded \u2014 that has to happen first."))))));
     })(), !selectedDie ? /* @__PURE__ */ React.createElement("div", { className: "text-sm py-8 no-print", style: { color: INK_MUTED } }, "Choose the glue die currently mounted \u2014 or the one you're about to run \u2014 to see what's ready to glue-line.") : /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto no-print", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product spec"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Qty needed"), /* @__PURE__ */ React.createElement(ThR, { w: 120 }, "Glue-lined m"), /* @__PURE__ */ React.createElement(ThR, { w: 150 }, "Still to glue-line m"), /* @__PURE__ */ React.createElement(Th, { w: 80 }, "Priority"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Due"))), /* @__PURE__ */ React.createElement("tbody", null, scheduled.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.spec, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 no-wrap" }, r.spec), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.qtyNeeded), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.glueLinedMeters, r.uncheckedMeters > 0 && /* @__PURE__ */ React.createElement("span", { className: "block", style: { fontSize: 11, color: AMBER, fontWeight: 600 } }, r.uncheckedMeters, "m not checked yet")), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.stillToGlueLine), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.priority != null ? /* @__PURE__ */ React.createElement(Badge, { color: r.priority <= 2 ? RED : INK_MUTED, solid: r.priority <= 2 }, "P", r.priority) : /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.earliestDueDate || "\u2014"))), scheduled.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 6 }, "No outstanding orders currently need ", dieLabel, ".")))), selectedDie && /* @__PURE__ */ React.createElement("div", { className: "print-only" }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Georgia, serif", fontWeight: 700, fontSize: 22, color: NAVY } }, "Glue Line Schedule \u2014 ", dieLabel), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 2 } }, (/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", year: "numeric", month: "long", day: "numeric" }), " \xB7 Most urgent first, by priority then due date"), /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { marginTop: 16 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product spec"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Qty needed"), /* @__PURE__ */ React.createElement(ThR, { w: 120 }, "Glue-lined m"), /* @__PURE__ */ React.createElement(ThR, { w: 150 }, "Still to glue-line m"), /* @__PURE__ */ React.createElement(Th, { w: 80 }, "Priority"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Due"))), /* @__PURE__ */ React.createElement("tbody", null, scheduled.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.spec, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.spec), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.qtyNeeded), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.glueLinedMeters), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.stillToGlueLine), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.priority != null ? `P${r.priority}` : "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.earliestDueDate || "\u2014")))))));
   }
   function BatchesAvailableView({ data, setData }) {
