@@ -363,6 +363,15 @@
     /* Eyebrow labels. Uppercase suits a works-sheet app, but at 12px semibold
        they were louder than the figures underneath. Smaller and tracked wider
        reads as a label rather than a heading. */
+    /* The case a just-made box goes in, lit for a few seconds after arriving
+       from Bonding. A pulse rather than a flat colour so it reads as "look
+       here" and then gets out of the way. */
+    @keyframes mx-case-pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(37,50,107,.0); }
+      50%      { box-shadow: 0 0 0 8px rgba(37,50,107,.45); }
+    }
+    .mx-case-lit { animation: mx-case-pulse 1.1s ease-in-out infinite; outline: 3px solid #25326B; outline-offset: 1px; }
+
     .mx-eyebrow {
       font-size: 10.5px; font-weight: 700; letter-spacing: .085em;
       text-transform: uppercase; line-height: 1.4;
@@ -682,7 +691,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-08-31.35";
+  var APP_VERSION = "2026-08-31.36";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -4544,7 +4553,17 @@ Here's the order:`;
         "\u2190 Back to Orders"
       ), /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: INK_MUTED } }, "Order not found."));
     }
-    return /* @__PURE__ */ React.createElement(OrderPackingSection, { order, data, setData, onBack });
+    return /* @__PURE__ */ React.createElement(
+      OrderPackingSection,
+      {
+        order,
+        data,
+        setData,
+        onBack,
+        highlightBoxes: packJump?.highlightBoxes || null,
+        highlightKey: packJump?.at
+      }
+    );
   }
   function caseState(c) {
     if (c.packedOutside) return { key: "packedOutside", label: "Packed outside the app" };
@@ -4561,14 +4580,16 @@ Here's the order:`;
     // hatched, not a flat colour — see below
     packedOutside: "#D8D8D3"
   };
-  function CaseTile({ c, selected, onSelect }) {
+  function CaseTile({ c, selected, onSelect, lit = false }) {
     const st = caseState(c);
     const edge = CASE_STATE_COLOURS[st.key];
     return /* @__PURE__ */ React.createElement(
       "button",
       {
         onClick: () => onSelect(c.caseNum),
+        id: `case-tile-${c.caseNum}`,
         title: `Case ${c.caseNum} \u2014 ${st.label}`,
+        className: lit ? "mx-case-lit" : "",
         style: {
           position: "relative",
           aspectRatio: "1",
@@ -4607,9 +4628,26 @@ Here's the order:`;
       c.pallet && /* @__PURE__ */ React.createElement("span", { style: { position: "absolute", bottom: 4, right: 5, fontSize: 9, fontWeight: 800, color: INK_MUTED } }, c.pallet)
     );
   }
-  function CaseGrid({ cases, caseWeights, setCaseWeights, palletAssignments, setPalletAssignments }) {
+  function CaseGrid({ cases, caseWeights, setCaseWeights, palletAssignments, setPalletAssignments, highlightBoxes = null, highlightKey = null }) {
     const [sel, setSel] = useState(cases.length ? cases[0].caseNum : null);
     const chosen = cases.find((c) => c.caseNum === sel) || cases[0];
+    const litCases = useMemo(() => {
+      if (!highlightBoxes || !highlightBoxes.length) return [];
+      const want = new Set(highlightBoxes.map((b) => String(b).trim().toUpperCase()));
+      return cases.filter((c) => (c.contributions || []).some((x) => x.boxNumber && want.has(String(x.boxNumber).trim().toUpperCase()))).map((c) => c.caseNum);
+    }, [cases, highlightBoxes]);
+    const [announce, setAnnounce] = useState(null);
+    const [pulse, setPulse] = useState(false);
+    useEffect(() => {
+      if (!highlightKey || litCases.length === 0) return;
+      setSel(litCases[0]);
+      setAnnounce({ cases: litCases, boxes: highlightBoxes });
+      setPulse(true);
+      const el = document.getElementById(`case-tile-${litCases[0]}`);
+      if (el && el.scrollIntoView) el.scrollIntoView({ block: "center", behavior: "smooth" });
+      const t = setTimeout(() => setPulse(false), 6e3);
+      return () => clearTimeout(t);
+    }, [highlightKey, litCases.join(",")]);
     const legend = [
       ["done", "Weighed and on a pallet"],
       ["noPallet", "Weighed, no pallet yet"],
@@ -4626,7 +4664,68 @@ Here's the order:`;
       verticalAlign: -1,
       background: k === "notMade" ? "repeating-linear-gradient(45deg,#B9BBC2 0 3px,#EDEDEA 3px 6px)" : CASE_STATE_COLOURS[k],
       border: k === "packedOutside" ? "1px dashed #C9C9C4" : "none"
-    } }), label))), /* @__PURE__ */ React.createElement("div", { className: "grid gap-2", style: { gridTemplateColumns: "repeat(auto-fill, minmax(72px, 1fr))" } }, cases.map((c) => /* @__PURE__ */ React.createElement(CaseTile, { key: c.caseNum, c, selected: c.caseNum === sel, onSelect: setSel }))), chosen && /* @__PURE__ */ React.createElement(Panel, { className: "mt-4", style: { padding: 0, overflow: "hidden" } }, /* @__PURE__ */ React.createElement(
+    } }), label))), /* @__PURE__ */ React.createElement("div", { className: "grid gap-2", style: { gridTemplateColumns: "repeat(auto-fill, minmax(72px, 1fr))" } }, cases.map((c) => /* @__PURE__ */ React.createElement(
+      CaseTile,
+      {
+        key: c.caseNum,
+        c,
+        selected: c.caseNum === sel,
+        onSelect: setSel,
+        lit: pulse && litCases.includes(c.caseNum)
+      }
+    ))), announce && /* @__PURE__ */ React.createElement(
+      "div",
+      {
+        onClick: () => setAnnounce(null),
+        style: {
+          position: "fixed",
+          inset: 0,
+          background: "rgba(20,26,50,0.55)",
+          zIndex: 1e3,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: "pointer"
+        }
+      },
+      /* @__PURE__ */ React.createElement(
+        "div",
+        {
+          onClick: (e) => e.stopPropagation(),
+          style: {
+            background: "#fff",
+            borderRadius: 12,
+            padding: "28px 36px",
+            minWidth: 320,
+            maxWidth: 520,
+            textAlign: "center",
+            boxShadow: "0 18px 60px rgba(0,0,0,.35)",
+            cursor: "default"
+          }
+        },
+        /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginBottom: 6 } }, announce.boxes.length === 1 ? "Box " : "Boxes ", /* @__PURE__ */ React.createElement(Mono, { className: "font-semibold", style: { color: INK } }, announce.boxes.join(", ")), announce.boxes.length === 1 ? " goes in" : " go in"),
+        /* @__PURE__ */ React.createElement("div", { style: { fontSize: 64, fontWeight: 800, lineHeight: 1, color: NAVY, letterSpacing: "-.01em" } }, announce.cases.length === 1 ? /* @__PURE__ */ React.createElement(React.Fragment, null, "Case ", announce.cases[0]) : /* @__PURE__ */ React.createElement(React.Fragment, null, "Cases ", announce.cases.join(" & "))),
+        /* @__PURE__ */ React.createElement(
+          "button",
+          {
+            onClick: () => setAnnounce(null),
+            className: "mt-6 px-6",
+            style: {
+              height: 48,
+              borderRadius: 8,
+              border: "none",
+              background: NAVY,
+              color: "#fff",
+              fontSize: 16,
+              fontWeight: 700,
+              cursor: "pointer",
+              minWidth: 160
+            }
+          },
+          "Got it"
+        )
+      )
+    ), chosen && /* @__PURE__ */ React.createElement(Panel, { className: "mt-4", style: { padding: 0, overflow: "hidden" } }, /* @__PURE__ */ React.createElement(
       "div",
       {
         className: "flex items-center justify-between px-4 py-2.5",
@@ -4665,7 +4764,7 @@ Here's the order:`;
       )
     )));
   }
-  function OrderPackingSection({ order, data, setData, onBack }) {
+  function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = null, highlightKey = null }) {
     const { lineItems, bondingRuns } = data;
     const orderId = order.id;
     const [sizeFilter, setSizeFilter] = useState("all");
@@ -4893,7 +4992,9 @@ Here's the order:`;
           caseWeights,
           setCaseWeights,
           palletAssignments,
-          setPalletAssignments
+          setPalletAssignments,
+          highlightBoxes,
+          highlightKey
         }
       ));
     })(), /* @__PURE__ */ React.createElement("div", { className: "mobile-only mb-5 no-print", style: gridActive ? { display: "none" } : void 0 }, caseRows.length === 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 text-sm", style: { color: INK_MUTED } }, "No standard-size items on this order."), caseRows.map((c) => /* @__PURE__ */ React.createElement(Panel, { key: c.caseNum, className: "mb-3", style: { padding: 0, overflow: "hidden" } }, /* @__PURE__ */ React.createElement(
@@ -7180,7 +7281,7 @@ Here's the order:`;
     }
     return { days: all, solid, coverage: all.length ? solid.length / all.length : 0 };
   }
-  function BondingLineView({ data, setData }) {
+  function BondingLineView({ data, setData, jumpToPacking }) {
     const { bondingRuns, orders } = data;
     const orderOptions = orders.map((o) => ({ value: o.id, label: `${o.id} \u2014 ${o.customer}`, customer: o.customer, boxType: o.boxType || "" }));
     const allBatchRows = batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || [], data.stockPicks || []);
@@ -7475,6 +7576,7 @@ Here's the order:`;
       }
       setAddError("");
       const newRun = { id: uid("br"), createdAt: (/* @__PURE__ */ new Date()).toISOString(), ...toRun(form) };
+      const goesToOrder = !!(newRun.workNumber && Number(newRun.onOrderQty) > 0 && newRun.boxNumber);
       const batchCode = (form.baselineBatchCode || "").trim();
       const reelCleared = form.reelCleared === "Yes";
       const previousBatchCleared = batchCode ? batchByCode.get(batchCode)?.cleared || "No" : null;
@@ -7525,6 +7627,9 @@ Here's the order:`;
       if (justAdded?.timerId) clearTimeout(justAdded.timerId);
       const timerId = setTimeout(() => setJustAdded(null), 8e3);
       setJustAdded({ id: newRun.id, label: newRun.boxNumber || newRun.productSize, batchCode, previousBatchCleared, boxTypeId: isBox ? form.boxTypeId : null, timerId });
+      if (goesToOrder && typeof jumpToPacking === "function") {
+        jumpToPacking(newRun.workNumber, [newRun.boxNumber]);
+      }
     };
     const undoJustAdded = () => {
       if (!justAdded) return;
@@ -9251,8 +9356,8 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       setOpenGroup("Orders");
       navigateTo(targetView);
     };
-    const jumpToPacking = (orderId) => {
-      setPackJump({ orderId });
+    const jumpToPacking = (orderId, highlightBoxes = null) => {
+      setPackJump({ orderId, highlightBoxes, at: Date.now() });
       navigateTo("packing");
     };
     const jumpToSearchResult = (result) => {
@@ -9897,7 +10002,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       batches: /* @__PURE__ */ React.createElement(BatchesAvailableView, { data, setData }),
       schedule: /* @__PURE__ */ React.createElement(ProductionScheduleView, { data }),
       gluelineschedule: /* @__PURE__ */ React.createElement(GlueLineScheduleView, { data }),
-      bonding: /* @__PURE__ */ React.createElement(BondingLineView, { data, setData }),
+      bonding: /* @__PURE__ */ React.createElement(BondingLineView, { data, setData, jumpToPacking }),
       eva: /* @__PURE__ */ React.createElement(EvaLineView, { data, setData }),
       stock: /* @__PURE__ */ React.createElement(LiveStockView, { data, setData }),
       stocktaker: /* @__PURE__ */ React.createElement(StockTakerView, { data, setData }),
