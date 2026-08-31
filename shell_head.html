@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5" />
+<title>Matrix Engineering — Production Control</title>
+
+<!-- Home screen / installed app identity. All paths are relative so this
+     works at /matrix-production/ on GitHub Pages without hard-coding the
+     repo name — an absolute /icon-192.png would 404 there.
+
+     Two separate systems, both needed:
+       - manifest.webmanifest is what Android and Windows (Edge/Chrome
+         "Install app") read.
+       - iOS ignores the manifest for the home screen icon and reads
+         apple-touch-icon, so that link is not a duplicate of the manifest.
+
+     Note that iOS caches the icon at the moment the icon is added to the
+     home screen. An existing saved icon will not change when this ships —
+     it has to be removed and re-added once. -->
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="Matrix" />
+<!-- default = dark text on the light status bar, which is right for an app
+     whose background is #F4F4F2. black-translucent would put the clock over
+     the top of the drawer. -->
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="theme-color" content="#161D42" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<style>
+  /* No overflow-x: hidden here — that was tried as a safety net against
+     stray width bugs, but it's too blunt an instrument: it also blocks
+     genuinely intentional horizontal scrolling that other screens rely
+     on (wide tables wider than a phone viewport by design, meant to be
+     scrolled sideways to see every column). Blocking that to catch a
+     bug is a worse trade than just fixing the bug — which is what
+     actually happened since (flex-shrink math, panel width constraints,
+     the pick-by-phone stepper redesign). Real overflow bugs get fixed
+     at their source now, not hidden after the fact. */
+  html, body { margin: 0; padding: 0; background: #F4F4F2; }
+  * { box-sizing: border-box; }
+
+  /* Native number-input spin arrows reserve a different amount of width
+     in Safari than in Chrome — exactly the kind of few-pixels-per-input
+     difference that adds up across a row of inputs and can push a layout
+     that fits perfectly in Chrome just barely over the edge in Safari.
+     Every number input in this app already has its own explicit +/−
+     stepper buttons where that matters, so the native spinner is pure
+     redundant risk with no upside — removed everywhere. */
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type="number"] { -moz-appearance: textfield; }
+
+  /* Sidebar nav buttons — compact by default (desktop/mouse). Bigger
+     touch targets are handled below, gated on being an actual touch
+     device (pointer: coarse) rather than just a narrow window — a
+     tablet held in landscape is plenty wide, but still being tapped
+     with a finger, not clicked with a mouse, and needs the same
+     forgiving hit-target sizing a phone does. */
+  .nav-item-btn { padding: 8px 12px; font-size: 13px; border-radius: 8px; margin-bottom: 4px; }
+  .nav-icon-chip { width: 26px; height: 26px; border-radius: 6px; }
+
+  /* Mobile header (hamburger + logo) — hidden by default, shown below
+     700px. This is the "true phone" cutoff — narrower than the 960px
+     used elsewhere, specifically so a tablet (iPad Mini portrait is
+     768px) keeps the real sidebar and multi-column layouts instead of
+     collapsing to the single-column phone treatment it never actually
+     needed the extra simplification for. */
+  .mobile-header { display: none; }
+
+  /* Generic show/hide pair for anything that needs a genuinely different
+     rendering on phone vs everything else, not just a resized version
+     of the same one. Line items on an order: desktop and tablet both
+     keep the full priced table always; only a true phone gets a plain
+     product-and-quantity list while just viewing (nobody picking boxes
+     on the shop floor needs unit prices in front of them), and even
+     then only until they've actually tapped into editing it, where
+     every field genuinely is needed. */
+  .mobile-only { display: none; }
+  .desktop-only { display: block; }
+  @media (max-width: 700px) {
+    .mobile-only { display: block; }
+    .desktop-only { display: none; }
+  }
+
+  /* Order detail page's two-column layout — order info + line items on
+     the left, "On the shelf now" / "What's left to make" cards on the
+     right. A fixed two-column grid has no way to know it's run out of
+     room on a phone; it just keeps trying to lay both columns out side
+     by side, which on a narrow screen makes the right column overlap
+     the left one instead of properly stacking underneath it. Collapsing
+     to a single column below 700px — a tablet has the width to keep
+     both columns side by side even in portrait, and forcing it down to
+     one long scrolling column wasted the extra space it actually has. */
+  .order-detail-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(260px, 1fr); gap: 16px; }
+  @media (max-width: 700px) {
+    .order-detail-grid { grid-template-columns: 1fr; }
+  }
+  /* A tablet in portrait keeps the fixed sidebar (it clears the 700px phone
+     cutoff), so an iPad's 768px becomes roughly 470px of usable content —
+     and this grid then splits THAT into two columns. Photographed on a real
+     device: the priced line-item table was reduced to a column so narrow
+     that "PX Plus 0.70 x 2.30mm 2-3pt (36m) REEL" wrapped over six lines and
+     every column header wrapped with it. Stacking instead gives the table
+     the full width. Gated on pointer:coarse so a laptop window merely
+     dragged narrow keeps the side-by-side layout it has the precision for. */
+  @media (max-width: 950px) and (pointer: coarse) {
+    .order-detail-grid { grid-template-columns: 1fr; }
+  }
+
+  /* Entry forms on a phone. The add-row forms carry twenty-odd fields; on
+     a phone those stack one per row, so opening Glue Line or Bonding Line
+     meant scrolling through a screen and a half of empty form before
+     reaching a single record. Looking things up is far commoner than
+     adding on a handset — adding happens at the machine, on the tablet —
+     so on phones the form folds behind a button and the records lead.
+     Desktop and tablet are untouched: the form stays open as it is now. */
+  .phone-collapsible-toggle { display: none; }
+  @media (max-width: 700px) {
+    .phone-collapsible-toggle { display: block; }
+    .phone-collapsible { display: none; }
+    .phone-collapsible.open { display: block; }
+  }
+
+  /* Sidebar nav scroll region. On desktop the nav is capped so the sync
+     panel and More Options stay visible below it without the sidebar
+     itself ever scrolling. On a phone that cap is actively harmful: the
+     drawer is already a full-height scrolling panel, so capping the nav
+     inside it creates a scroll area within a scroll area, and the last
+     group or two end up stranded below an invisible internal fold with
+     no indication they're there. Confirmed on a handset — ADMIN was
+     unreachable without noticing the inner scroll. Below 700px the nav
+     just grows and the drawer scrolls as one. */
+  .sidebar-nav { max-height: 56vh; overflow-y: auto; }
+  @media (max-width: 700px) {
+    .sidebar-nav { max-height: none; overflow-y: visible; }
+  }
+
+  /* Sidebar backdrop overlay — hidden unless the mobile drawer is open */
+  .sidebar-backdrop { display: none; }
+
+  /* Touch-friendly sizing — bigger nav rows, buttons, and inputs for
+     anything that's actually being tapped with a finger, regardless of
+     how wide the screen is. Confirmed as a real gap: an iPad Mini in
+     landscape (1024px) previously cleared the old single 960px cutoff
+     entirely and got the full desktop treatment — sidebar, tables,
+     buttons all sized for mouse-precision clicking, on a screen nobody
+     was using a mouse on. pointer: coarse is what actually distinguishes
+     this from a laptop window that merely happens to be sized narrow —
+     a real mouse-and-trackpad device never matches this rule, no matter
+     how small its window gets, so desktop users keep the compact,
+     information-dense layout they're used to. 1100px comfortably covers
+     an iPad Mini/Air/Pro in either orientation. */
+  @media (max-width: 1100px) and (pointer: coarse) {
+    .nav-item-btn { padding: 13px 15px; font-size: 14px; border-radius: 10px; margin-bottom: 6px; }
+    .nav-icon-chip { width: 29px; height: 29px; border-radius: 8px; }
+    /* Buttons generally aren't part of a tight table grid the way
+       inputs often are (weight fields, case overrides, pallet labels —
+       all deliberately compact for dense tables), so bumping their
+       minimum tap height is safe without risking layout breakage
+       elsewhere. Left inputs alone here rather than risk it sight
+       unseen; worth a further, more targeted pass once this is
+       confirmed working on a real device. */
+    button { min-height: 40px; }
+  }
+
+  @media (max-width: 700px) {
+    .mobile-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #fff;
+      border-bottom: 1px solid #DCDCDD;
+      position: sticky;
+      top: 0;
+      z-index: 110;
+    }
+
+    /* On mobile the sidebar is an off-canvas drawer, not a static flex
+       column next to the content — without this rule it sits inline at
+       its full desktop width (240px) and squeezes/overflows the main
+       content sideways on a narrow phone screen, which is the exact bug
+       this fixes. */
+    .app-sidebar {
+      position: fixed !important;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      height: 100vh;
+      z-index: 130;
+      transform: translateX(-100%);
+      transition: transform 0.25s ease;
+      overflow-y: auto;
+    }
+    .app-sidebar.mobile-open {
+      transform: translateX(0);
+    }
+
+    .sidebar-backdrop {
+      display: block;
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 20, 35, 0.5);
+      z-index: 120;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+    }
+    .sidebar-backdrop.show {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    /* With the sidebar taken out of normal flow above, main is the only
+       in-flow flex item left and takes full width naturally — this just
+       trims its padding down from the desktop p-8 so content isn't
+       pushed too far in on a small screen. */
+    .app-main {
+      padding: 1.25rem !important;
+    }
+  }
+
+  /* The main content column is a flex child, and a flex child defaults to
+     min-width:auto — it will not shrink below the intrinsic width of its
+     widest content. The widest content on Bonding and Glue Line is a
+     twenty-column table, so instead of that table scrolling inside its own
+     overflow-x-auto panel as intended, it stretched this column, which
+     stretched the page, and the browser grew a document-level horizontal
+     scrollbar. Measured on an iPad: 296px of overflow in landscape, 608px
+     in portrait.
+     Two visible faults came from this, both confirmed in photos from a real
+     device: the entry form's flex-wrap never fired, because it had hundreds
+     of phantom pixels of room and nothing ever needed to wrap; and scrolling
+     right to reach the cut-off fields dragged the whole page sideways,
+     leaving those fields floating in blank space with the header gone.
+     Declared here rather than relying on a min-w-0 utility class, so it
+     holds regardless of what the stylesheet does or doesn't ship. */
+  .app-main { min-width: 0; }
+
+  /* Entry forms on a wide monitor. The fields wrap at their natural widths,
+     so on a 1900px column they occupy roughly the left half and leave a large
+     dead area to the right — which also makes the form taller than it needs
+     to be, because rows break earlier than the space allows. Capping the
+     field area keeps the form compact and stops it reading as unfinished.
+     The panel itself still spans the full width, so the section headings and
+     the Add button stay where they are. */
+  .form-fields { max-width: 1180px; }
+
+  @media print {
+    .no-print { display: none !important; }
+    .print-only { display: block !important; }
+
+    /* html defaults to filling the full browser viewport height (matched
+       directly against a real print — confirmed this exact behaviour is
+       what caused the label to spill onto extra blank/overflow labels
+       even with the page correctly sized to 65mm x 25mm above). Print
+       pagination is driven by the WHOLE document's height, not just the
+       visible content, so that leftover viewport-sized height was
+       enough on its own to force a second (and with the browser's own
+       header/footer added on top, a third) near-empty label to print.
+       Collapsing html/body down to their actual content height for
+       print fixes it at the source, regardless of what else is (or was
+       supposed to be) hidden via .no-print. */
+    html, body { height: auto !important; min-height: 0 !important; margin: 0 !important; padding: 0 !important; }
+
+    /* The app's own outermost wrapper carries an INLINE minHeight:100vh
+       (so the layout never looks broken-short on a tall empty screen) —
+       inline styles ignore media queries entirely, so this stayed
+       100vh even while printing, which was the actual remaining cause
+       of a trailing blank second label after the real one: the total
+       printed document was still viewport-height tall even though the
+       label itself only used a fraction of that. A stylesheet rule is
+       the one thing that can override a plain inline style, provided
+       it's !important, which is exactly what this is for. */
+    .app-root { min-height: 0 !important; }
+  }
+  .print-only { display: none; }
+</style>
+<!-- Populated at print-time only for the reel label job (65mm x 25mm
+     continuous label stock) — see printLabel() in app_source_v7.jsx.
+     Left empty the rest of the time so every other print job (Packing
+     List, schedules, etc.) uses the normal full page size untouched. A
+     plain @page { size } rule with no scoping — a page size can't be
+     tied to one element via CSS alone in this browser, so this element
+     is emptied again immediately after printing rather than staying set. -->
+<style id="print-page-size">
+    /* ---- Polish pass: craft details that apply everywhere ---------------
+       None of this changes what's on screen, only how carefully it's set. */
+
+    /* Figures line up in columns only if the numerals are the same width.
+       Without this, 111 is visibly narrower than 000 and every quantity
+       column in the app wobbles. */
+    body { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1, "cv05" 1; }
+    /* Prose keeps proportional numerals — tabular figures read stiffly mid-sentence. */
+    p, .prose { font-variant-numeric: normal; }
+
+    /* Buttons had hover but no press. A real pressed state is what makes a
+       control feel physical rather than painted on. */
+    .mx-btn { transition: background-color .13s ease, box-shadow .13s ease, transform .06s ease; }
+    .mx-btn:hover:not(:disabled) { filter: brightness(1.06); }
+    .mx-btn:active:not(:disabled) { transform: translateY(1px); filter: brightness(.96); }
+
+    /* Keyboard focus was invisible, which makes the app unusable without a
+       mouse and reads as unfinished. Only shows for keyboard users. */
+    :focus-visible { outline: 2px solid #2A377B; outline-offset: 2px; border-radius: 4px; }
+    button:focus:not(:focus-visible) { outline: none; }
+
+    /* Inputs: a quiet resting state that lifts on focus, instead of a flat box. */
+    input, select, textarea { transition: border-color .13s ease, box-shadow .13s ease; }
+    input:focus, select:focus, textarea:focus {
+      outline: none; border-color: #2A377B;
+      box-shadow: 0 0 0 3px rgba(42,55,123,.12);
+    }
+
+    /* Table rows: a hairline between rows rather than a hard rule, and a
+       whisper of highlight on hover so the eye can track across a wide row. */
+    tbody tr { transition: background-color .1s ease; }
+    tbody tr:hover { background-color: rgba(42,55,123,.028); }
+
+    /* Headings sit tighter than body text at display sizes. */
+    h1, h2, h3 { letter-spacing: -0.018em; }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+    }
+
+    /* Eyebrow labels. Uppercase suits a works-sheet app, but at 12px semibold
+       they were louder than the figures underneath. Smaller and tracked wider
+       reads as a label rather than a heading. */
+    .mx-eyebrow {
+      font-size: 10.5px; font-weight: 700; letter-spacing: .085em;
+      text-transform: uppercase; line-height: 1.4;
+    }
+
+    /* Text-link buttons — "Show all", "More options", the collapsible toggles.
+       They had no hover and no focus at all, so they read as static text
+       until you happened to click one. */
+    button[style*="background: none"], button[style*="background:none"] {
+      border-radius: 5px; transition: color .12s ease, background-color .12s ease;
+    }
+    button[style*="background: none"]:hover, button[style*="background:none"]:hover {
+      background-color: rgba(42,55,123,.05);
+    }
+
+    /* Panels sit on the page rather than floating: a touch more lift on the
+       ones you can interact with, none on the ones that are just paper. */
+    table { border-collapse: separate; border-spacing: 0; }
+    thead th:first-child { border-top-left-radius: 7px; }
+    thead th:last-child { border-top-right-radius: 7px; }
+
+    /* Numeric cells right-align and stay monospaced-width so a column of
+       quantities forms a straight edge. */
+    td.num, th.num { font-variant-numeric: tabular-nums; }
+
+    /* Selection uses the brand navy rather than the browser default blue. */
+    ::selection { background: rgba(42,55,123,.16); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
