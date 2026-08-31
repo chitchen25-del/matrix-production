@@ -617,6 +617,7 @@
     productionRates: DEFAULT_PRODUCTION_RATES,
     materials: DEFAULT_MATERIALS,
     materialMovements: [],
+    evaRuns: [],
     workCentres: DEFAULT_WORK_CENTRES
   };
   function normalizeTooling(t) {
@@ -652,7 +653,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-08-31.13";
+  var APP_VERSION = "2026-08-31.14";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -763,6 +764,11 @@
     productionRates: { table: "production_rates", cols: { metersPerMin: "meters_per_min" } },
     materials: { table: "materials", cols: { currentStock: "current_stock", lastStockTakeDate: "last_stock_take_date" } },
     materialMovements: { table: "material_movements", cols: { materialId: "material_id", sourceType: "source_type", sourceId: "source_id" } },
+    // reelsMade is the only numeric here. Screw speed, line speed and width are
+    // text on purpose, exactly as the glue line's ext_* settings are: operators
+    // write things like "42" but also "42-45" and "approx 40", and coercing that
+    // to a number silently turns a real recorded setting into null.
+    evaRuns: { table: "eva_runs", cols: { batchNumber: "batch_number", screwSpeed: "screw_speed", lineSpeed: "line_speed", evaBatch: "eva_batch", reelsMade: "reels_made" } },
     workCentres: { table: "work_centres", cols: { hoursPerDay: "hours_per_day" } }
   };
   function syncCamelToSnake(s) {
@@ -1811,7 +1817,7 @@
       };
     });
   }
-  function evaRackRows(materials, bondingRuns, materialMovements, yieldByDie) {
+  function evaRackRows(materials, bondingRuns, materialMovements, yieldByDie, evaRuns) {
     const runs = (bondingRuns || []).filter((r) => !r.deleted);
     const yieldByKey = new Map((yieldByDie || []).map((y) => [y.key, y]));
     return EVA_DIES.map((die) => {
@@ -1823,7 +1829,7 @@
       const y = yieldByKey.get(die.key) || null;
       const boxesPerReel = y && y.enough ? y.meanBoxes : null;
       const bondedSince = runs.filter((r) => after(r.date) && evaDieForRow(r)?.key === die.key).reduce((s, r) => s + (Number(r.amountMade) || 0), 0);
-      const reelsMade = (materialMovements || []).filter((m) => m.sourceType === "eva-made" && m.materialId === `mat-evareel-${die.key}` && after(m.date)).reduce((s, m) => s + (Number(m.qty) || 0), 0);
+      const reelsMade = (materialMovements || []).filter((m) => m.sourceType === "eva-made" && m.materialId === `mat-evareel-${die.key}` && after(m.date)).reduce((s, m) => s + (Number(m.qty) || 0), 0) + (evaRuns || []).filter((r) => !r.deleted && r.die === die.key && after(r.date)).reduce((s, r) => s + (Number(r.reelsMade) || 0), 0);
       const countedBoxes = boxesPerReel != null ? (reels + reelsMade) * boxesPerReel : null;
       const projectedBoxes = countedBoxes != null ? Math.max(0, Math.round(countedBoxes - bondedSince)) : null;
       const ageDays = countedAt ? Math.max(0, Math.round((Date.parse(todayISO()) - Date.parse(countedAt)) / 864e5)) : null;
@@ -2352,7 +2358,7 @@
     const packingReady = packingReadyRows(data.orders, data.lineItems, data.bondingRuns);
     const extrusion = extrusionScheduleRows(data.extrusion1, data.extrusion2, data.glueLineBatches, glueLineNeeds);
     const evaYield = evaYieldByDie(data.bondingRuns);
-    const evaRack = evaRackRows(data.materials, data.bondingRuns, data.materialMovements, evaYield);
+    const evaRack = evaRackRows(data.materials, data.bondingRuns, data.materialMovements, evaYield, data.evaRuns);
     const evaByKey = new Map(evaRack.map((e) => [e.key, e]));
     const evaLeft = new Map(evaRack.map((e) => [e.key, e.projectedBoxes ?? 0]));
     const bondingWithEva = bondingReady.map((r) => {
@@ -6059,6 +6065,155 @@ Here's the order:`;
       })())));
     }), sortedRows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 5 }, q ? `Nothing matches "${search}".` : "No stock activity yet.")))), /* @__PURE__ */ React.createElement(PickLogSection, { data, setData }), /* @__PURE__ */ React.createElement("div", { className: "h-8" }), /* @__PURE__ */ React.createElement(SectionHeader, { title: "Other Stock", subtitle: "Stock that isn't tracked through a bonding run \u2014 counted stock, bought-in items, odds and ends. Allocate it to an order from the line item's own row on the Orders tab." }), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto mb-6", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(SortTh, { col: "spec", sortBy: otherSortBy, sortDir: otherSortDir, onSort: otherToggleSort, className: "text-left px-3 py-2" }, "Product spec"), /* @__PURE__ */ React.createElement(SortTh, { col: "added", sortBy: otherSortBy, sortDir: otherSortDir, onSort: otherToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 100 } }, "Added"), /* @__PURE__ */ React.createElement(SortTh, { col: "used", sortBy: otherSortBy, sortDir: otherSortDir, onSort: otherToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 100 } }, "Allocated"), /* @__PURE__ */ React.createElement(SortTh, { col: "balance", sortBy: otherSortBy, sortDir: otherSortDir, onSort: otherToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 100 } }, "Balance"))), /* @__PURE__ */ React.createElement("tbody", null, sortedOtherRows.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.spec, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 no-wrap" }, r.spec), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.added), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.used), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-semibold", style: { color: r.balance < 0 ? RED : INK } }, r.balance))), otherRows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 4 }, "No other stock logged yet.")))), /* @__PURE__ */ React.createElement(OtherStockSection, { data, setData }));
   }
+  function EvaLineView({ data, setData }) {
+    const evaRack = useMemo(
+      () => evaRackRows(data.materials, data.bondingRuns, data.materialMovements, evaYieldByDie(data.bondingRuns), data.evaRuns),
+      [data.materials, data.bondingRuns, data.materialMovements, data.evaRuns]
+    );
+    const runs = (data.evaRuns || []).filter((r) => !r.deleted);
+    const blank = {
+      batchNumber: "",
+      die: "",
+      screwSpeed: "",
+      lineSpeed: "",
+      evaBatch: "",
+      width: "",
+      checked: "No",
+      reelsMade: "",
+      date: todayISO(),
+      comments: ""
+    };
+    const [form, setForm, formRestored, discardForm] = useDraftForm("eva-line-add", blank);
+    const [editingId, setEditingId, editForm, setEditForm, editRestored, discardEdit] = useDraftEdit("eva-line-edit");
+    const setRuns = (updater) => setData((prev) => ({ ...prev, evaRuns: updater(prev.evaRuns || []) }));
+    const canAdd = String(form.batchNumber || "").trim() && form.die;
+    const addRun = () => {
+      if (!canAdd) return;
+      setRuns((rows) => [...rows, {
+        id: uid("evr"),
+        ...form,
+        batchNumber: String(form.batchNumber).trim().toUpperCase(),
+        evaBatch: String(form.evaBatch || "").trim().toUpperCase(),
+        reelsMade: form.reelsMade === "" ? 0 : Number(form.reelsMade)
+      }]);
+      setForm(blank);
+    };
+    const removeRun = (id) => {
+      if (!window.confirm("Delete this EVA run? Its reels come back off the rack for that die.")) return;
+      setRuns((rows) => rows.filter((r) => r.id !== id));
+    };
+    const startEdit = (r) => {
+      setEditingId(r.id);
+      setEditForm({ ...blank, ...r });
+    };
+    const saveEdit = () => {
+      if (!String(editForm.batchNumber || "").trim() || !editForm.die) return;
+      setRuns((rows) => rows.map((r) => r.id === editingId ? {
+        ...r,
+        ...editForm,
+        batchNumber: String(editForm.batchNumber).trim().toUpperCase(),
+        evaBatch: String(editForm.evaBatch || "").trim().toUpperCase(),
+        reelsMade: editForm.reelsMade === "" ? 0 : Number(editForm.reelsMade)
+      } : r));
+      setEditingId(null);
+      setEditForm(null);
+    };
+    const setReels = (id, n) => setRuns((rows) => rows.map((r) => r.id === id ? { ...r, reelsMade: n } : r));
+    const bondedCodes = /* @__PURE__ */ new Map();
+    for (const b of data.bondingRuns || []) {
+      if (b.deleted) continue;
+      const code = String(b.evaCode || "").trim().toUpperCase();
+      if (!code) continue;
+      bondedCodes.set(code, (bondedCodes.get(code) || 0) + 1);
+    }
+    const sorted = [...runs].sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")) || String(b.batchNumber || "").localeCompare(String(a.batchNumber || "")));
+    const dieLabel = (key) => EVA_DIES.find((d) => d.key === key)?.label || key || "\u2014";
+    const rackFor = (key) => (evaRack || []).find((r) => r.key === key);
+    const renderFields = (values, setValues) => /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Batch number"), /* @__PURE__ */ React.createElement(
+      TextInput,
+      {
+        value: values.batchNumber,
+        placeholder: "This run's code",
+        style: { textTransform: "uppercase" },
+        onChange: (e) => setValues({ ...values, batchNumber: e.target.value.toUpperCase() })
+      }
+    )), /* @__PURE__ */ React.createElement("div", { style: { width: 110 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Die"), /* @__PURE__ */ React.createElement(Select, { value: values.die, onChange: (e) => setValues({ ...values, die: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014"), EVA_DIES.map((d) => /* @__PURE__ */ React.createElement("option", { key: d.key, value: d.key }, d.label)))), /* @__PURE__ */ React.createElement("div", { style: { width: 110 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Screw speed"), /* @__PURE__ */ React.createElement(
+      TextInput,
+      {
+        value: values.screwSpeed,
+        onChange: (e) => setValues({ ...values, screwSpeed: e.target.value })
+      }
+    )), /* @__PURE__ */ React.createElement("div", { style: { width: 110 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Line speed"), /* @__PURE__ */ React.createElement(
+      TextInput,
+      {
+        value: values.lineSpeed,
+        onChange: (e) => setValues({ ...values, lineSpeed: e.target.value })
+      }
+    )), /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "EVA batch number"), /* @__PURE__ */ React.createElement(
+      TextInput,
+      {
+        value: values.evaBatch,
+        placeholder: "Material batch",
+        style: { textTransform: "uppercase" },
+        onChange: (e) => setValues({ ...values, evaBatch: e.target.value.toUpperCase() })
+      }
+    )), /* @__PURE__ */ React.createElement("div", { style: { width: 100 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Width"), /* @__PURE__ */ React.createElement(
+      TextInput,
+      {
+        value: values.width,
+        onChange: (e) => setValues({ ...values, width: e.target.value })
+      }
+    )), /* @__PURE__ */ React.createElement("div", { style: { width: 100 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Checked"), /* @__PURE__ */ React.createElement(Select, { value: values.checked, onChange: (e) => setValues({ ...values, checked: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "No" }, "No"), /* @__PURE__ */ React.createElement("option", { value: "Yes" }, "Yes"))), /* @__PURE__ */ React.createElement("div", { style: { width: 110 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Reels made"), /* @__PURE__ */ React.createElement(
+      TextInput,
+      {
+        type: "number",
+        value: values.reelsMade,
+        onChange: (e) => setValues({ ...values, reelsMade: e.target.value })
+      }
+    )), /* @__PURE__ */ React.createElement("div", { style: { width: 140 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Date"), /* @__PURE__ */ React.createElement(
+      TextInput,
+      {
+        type: "date",
+        value: values.date,
+        onChange: (e) => setValues({ ...values, date: e.target.value })
+      }
+    )));
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(
+      SectionHeader,
+      {
+        title: "EVA Line",
+        subtitle: "What EVA was made, and how much of it. Reels logged here go onto the rack for that die and feed the Daily Plan."
+      }
+    ), (formRestored || editRestored) && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-4", style: { background: "#FFF8EF", border: `1px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: NAVY } }, "Unfinished entry restored from this device.", /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: formRestored ? discardForm : discardEdit,
+        className: "ml-2 underline",
+        style: { background: "none", border: "none", color: NAVY, cursor: "pointer" }
+      },
+      "Discard it"
+    ))), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-3", style: { color: INK_MUTED } }, "LOG AN EVA RUN"), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-2 items-end" }, renderFields(form, setForm), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: addRun, disabled: !canAdd }, "+ Add")), !canAdd && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: INK_MUTED } }, "A batch number and a die are needed. Everything else can be filled in later \u2014 including reels made, which is editable straight from the table below while the run is still going.")), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto mb-5", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: "#6B5BA8", color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Batch"), /* @__PURE__ */ React.createElement(Th, null, "Die"), /* @__PURE__ */ React.createElement(ThR, null, "Screw"), /* @__PURE__ */ React.createElement(ThR, null, "Line"), /* @__PURE__ */ React.createElement(Th, null, "EVA batch"), /* @__PURE__ */ React.createElement(ThR, null, "Width"), /* @__PURE__ */ React.createElement(Th, null, "Checked"), /* @__PURE__ */ React.createElement(ThR, null, "Reels made"), /* @__PURE__ */ React.createElement(Th, null, "Date"), /* @__PURE__ */ React.createElement(Th, null, "Bonded"), /* @__PURE__ */ React.createElement("th", { style: { width: 70 } }))), /* @__PURE__ */ React.createElement("tbody", null, sorted.map((r, i) => {
+      const isEditing = editingId === r.id;
+      const usedBy = bondedCodes.get(String(r.batchNumber || "").trim().toUpperCase()) || 0;
+      if (isEditing) {
+        return /* @__PURE__ */ React.createElement("tr", { key: r.id, style: { borderTop: `1px solid ${BORDER}`, background: "#FFF8EF" } }, /* @__PURE__ */ React.createElement("td", { colSpan: 10, className: "px-3 py-2" }, /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-2 items-end" }, renderFields(editForm, setEditForm))), /* @__PURE__ */ React.createElement("td", { className: "px-2 whitespace-nowrap" }, /* @__PURE__ */ React.createElement("button", { onClick: saveEdit, title: "Save", className: "opacity-60 hover:opacity-100 px-1", style: { color: GREEN } }, "\u2713"), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+          setEditingId(null);
+          setEditForm(null);
+        }, title: "Cancel", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715")));
+      }
+      return /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.batchNumber || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, dieLabel(r.die)), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, r.screwSpeed || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, r.lineSpeed || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.evaBatch || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, r.width || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Badge, { color: r.checked === "Yes" ? GREEN : AMBER }, r.checked === "Yes" ? "Yes" : "No")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, /* @__PURE__ */ React.createElement(EditableQty, { value: r.reelsMade, onCommit: (n) => setReels(r.id, n) })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.date || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-xs", style: { color: usedBy ? NAVY : INK_MUTED } }, usedBy ? `${usedBy} box${usedBy === 1 ? "" : "es"}` : "not yet"), /* @__PURE__ */ React.createElement("td", { className: "px-2 whitespace-nowrap" }, /* @__PURE__ */ React.createElement("button", { onClick: () => startEdit(r), title: "Edit", className: "opacity-40 hover:opacity-100 px-1" }, "\u270E"), /* @__PURE__ */ React.createElement("button", { onClick: () => removeRun(r.id), title: "Delete", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715")));
+    }), sorted.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 11 }, "No EVA runs logged yet.")))), /* @__PURE__ */ React.createElement(
+      SectionHeader,
+      {
+        title: "The rack, as it stands",
+        subtitle: "Reels logged above are added to the count. A die still needs one physical count before it reports a usable figure."
+      }
+    ), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto" }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Die"), /* @__PURE__ */ React.createElement(Th, null, "Gap range"), /* @__PURE__ */ React.createElement(ThR, null, "Counted"), /* @__PURE__ */ React.createElement(ThR, null, "Made since"), /* @__PURE__ */ React.createElement(ThR, null, "On rack"), /* @__PURE__ */ React.createElement(Th, null, "Status"))), /* @__PURE__ */ React.createElement("tbody", null, EVA_DIES.map((d, i) => {
+      const row = rackFor(d.key);
+      const made = row ? row.reelsMade : 0;
+      return /* @__PURE__ */ React.createElement("tr", { key: d.key, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 font-medium" }, d.label), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-xs", style: { color: INK_MUTED } }, d.min.toFixed(2), "\u2013", d.max.toFixed(2), "mm"), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, row?.everCounted ? row.reels : "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, made || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right font-medium" }, row?.everCounted ? row.reels + made : "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-xs" }, !row ? "\u2014" : row.needsCount ? /* @__PURE__ */ React.createElement("span", { style: { color: AMBER } }, "never counted \u2014 count the rack on the Daily Plan") : row.needsYield ? /* @__PURE__ */ React.createElement("span", { style: { color: AMBER } }, "counted ", row.ageDays === 0 ? "today" : `${row.ageDays}d ago`, " \xB7 no yield yet, needs 3 reels ticked as run out") : /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "counted ", row.ageDays === 0 ? "today" : `${row.ageDays}d ago`, " \xB7 about ", row.projectedBoxes, " boxes left")));
+    })))));
+  }
   function FieldGroup({ label, children }) {
     return /* @__PURE__ */ React.createElement("div", { style: { width: "100%" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1.5", style: { color: INK_MUTED, opacity: 0.75 } }, label), /* @__PURE__ */ React.createElement("div", { className: "form-fields flex flex-wrap gap-2 items-end mb-3" }, children));
   }
@@ -6080,7 +6235,8 @@ Here's the order:`;
       }
     )), /* @__PURE__ */ React.createElement("div", { style: { width: 100 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Pt"), /* @__PURE__ */ React.createElement(Select, { value: values.pt, onChange: (e) => setValues({ ...values, pt: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014"), /* @__PURE__ */ React.createElement("option", { value: "2-3pt" }, "2-3pt"), /* @__PURE__ */ React.createElement("option", { value: "3-4pt" }, "3-4pt"), /* @__PURE__ */ React.createElement("option", { value: "6pt" }, "6pt"))));
   }
-  function BondingRestFields({ values, setValues, orderOptions, availableBatches = [], existingBoxCodes = [], allBondingRuns = [], knownBatchCodes = [], onUnknownBatch, materials = [], lineItems = [] }) {
+  function BondingRestFields({ values, setValues, orderOptions, availableBatches = [], existingBoxCodes = [], allBondingRuns = [], knownBatchCodes = [], onUnknownBatch, materials = [], lineItems = [], evaRuns = [] }) {
+    const evaCodeOptions = [...new Set((evaRuns || []).filter((r) => !r.deleted && String(r.batchNumber || "").trim()).sort((a, b) => String(b.date || "").localeCompare(String(a.date || ""))).map((r) => String(r.batchNumber).trim().toUpperCase()))].slice(0, 40);
     const currentSpec = values.range === "Custom" ? values.size.trim() : `${values.range} ${values.size.trim()}`;
     const prevSpecKeyRef = useRef(currentSpec + "|" + values.pt);
     useEffect(() => {
@@ -6128,11 +6284,12 @@ Here's the order:`;
         value: values.evaCode,
         onChange: (e) => setValues({ ...values, evaCode: e.target.value.toUpperCase() }),
         style: { textTransform: "uppercase" },
+        list: "eva-code-suggestions",
         autoCorrect: "off",
         autoCapitalize: "off",
         spellCheck: "false"
       }
-    )), /* @__PURE__ */ React.createElement("div", { style: { width: 110 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "EVA ran out"), /* @__PURE__ */ React.createElement(
+    ), /* @__PURE__ */ React.createElement("datalist", { id: "eva-code-suggestions" }, evaCodeOptions.map((c) => /* @__PURE__ */ React.createElement("option", { key: c, value: c })))), /* @__PURE__ */ React.createElement("div", { style: { width: 110 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "EVA ran out"), /* @__PURE__ */ React.createElement(
       Select,
       {
         value: values.evaCleared || "No",
@@ -6674,7 +6831,7 @@ Here's the order:`;
         style: { background: addOpen ? "none" : ORANGE, color: addOpen ? INK_MUTED : "#fff", border: addOpen ? `1px solid ${BORDER}` : "none", borderRadius: 5, padding: "10px 12px", fontSize: 13, fontWeight: 600, cursor: "pointer" }
       },
       addOpen ? "\u25BE Hide entry form" : "+ Log a new box"
-    ), /* @__PURE__ */ React.createElement("div", { className: "phone-collapsible" + (addOpen ? " open" : "") }, /* @__PURE__ */ React.createElement(BondingSpecFields, { values: form, setValues: setForm, listId: "size-catalog-bonding" }), /* @__PURE__ */ React.createElement(BondingRestFields, { values: form, setValues: setForm, orderOptions, availableBatches, existingBoxCodes: bondingRuns.map((r) => r.boxNumber).filter(Boolean), allBondingRuns: bondingRuns, knownBatchCodes, onUnknownBatch: handleUnknownBatch, materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, lineItems: data.lineItems }), entryWarnings.map((w, wi) => /* @__PURE__ */ React.createElement("div", { key: wi, className: "text-xs mb-2 px-3 py-2", style: { background: "#FFF4E0", border: `1px solid ${AMBER}`, borderRadius: 5, color: INK } }, "\u26A0 ", w)), /* @__PURE__ */ React.createElement(DraftRestoredBanner, { show: draftRestored, onDiscard: discardDraft }), /* @__PURE__ */ React.createElement(
+    ), /* @__PURE__ */ React.createElement("div", { className: "phone-collapsible" + (addOpen ? " open" : "") }, /* @__PURE__ */ React.createElement(BondingSpecFields, { values: form, setValues: setForm, listId: "size-catalog-bonding" }), /* @__PURE__ */ React.createElement(BondingRestFields, { values: form, setValues: setForm, orderOptions, availableBatches, existingBoxCodes: bondingRuns.map((r) => r.boxNumber).filter(Boolean), allBondingRuns: bondingRuns, knownBatchCodes, onUnknownBatch: handleUnknownBatch, materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, lineItems: data.lineItems, evaRuns: data.evaRuns }), entryWarnings.map((w, wi) => /* @__PURE__ */ React.createElement("div", { key: wi, className: "text-xs mb-2 px-3 py-2", style: { background: "#FFF4E0", border: `1px solid ${AMBER}`, borderRadius: 5, color: INK } }, "\u26A0 ", w)), /* @__PURE__ */ React.createElement(DraftRestoredBanner, { show: draftRestored, onDiscard: discardDraft }), /* @__PURE__ */ React.createElement(
       DraftRestoredBanner,
       {
         show: editRestored,
@@ -6698,7 +6855,7 @@ Here's the order:`;
       }
     )), /* @__PURE__ */ React.createElement(SortTh, { col: "productSize", sortBy: bondSortBy, sortDir: bondSortDir, onSort: bondToggleSort, className: "text-left px-3 py-2" }, "Product size"), /* @__PURE__ */ React.createElement(Th, { w: 160 }, "Baseline batch"), /* @__PURE__ */ React.createElement(SortTh, { col: "boxNumber", sortBy: bondSortBy, sortDir: bondSortDir, onSort: bondToggleSort, className: "text-left px-3 py-2", style: { width: 150 } }, "Batch code"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Manufactured"), /* @__PURE__ */ React.createElement(SortTh, { col: "amountMade", sortBy: bondSortBy, sortDir: bondSortDir, onSort: bondToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 100 } }, "Amount made"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "On order"), /* @__PURE__ */ React.createElement(Th, { w: 130 }, "EVA code"), /* @__PURE__ */ React.createElement(Th, { w: 130 }, "Tape code"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "To stock"), /* @__PURE__ */ React.createElement(Th, { w: 140 }, "Customer"), /* @__PURE__ */ React.createElement(Th, { w: 130 }, "Work number"), /* @__PURE__ */ React.createElement(ThR, { w: 100 }, "Meters/box"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Location"), /* @__PURE__ */ React.createElement(Th, { w: 90 }, "Checked"), /* @__PURE__ */ React.createElement(ThR, { w: 110 }, "Time of day"), /* @__PURE__ */ React.createElement(SortTh, { col: "date", sortBy: bondSortBy, sortDir: bondSortDir, onSort: bondToggleSort, startDir: "desc", className: "text-left px-3 py-2", style: { width: 140 } }, "Date"), /* @__PURE__ */ React.createElement(SortTh, { col: "meterageUsed", sortBy: bondSortBy, sortDir: bondSortDir, onSort: bondToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 110 } }, "Meterage used"), /* @__PURE__ */ React.createElement(Th, null, "Comments"), /* @__PURE__ */ React.createElement("th", { style: { width: 70 } }))), /* @__PURE__ */ React.createElement("tbody", null, visibleBondingRuns.map((r, i) => {
       const isEditing = editingId === r.id;
-      return /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}`, background: isEditing ? "#FFF8EF" : void 0 } }, isEditing ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-2" }), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-2", colSpan: 19 }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(BondingSpecFields, { values: editForm, setValues: setEditForm, listId: "size-catalog-bonding" }), /* @__PURE__ */ React.createElement(BondingRestFields, { values: editForm, setValues: setEditForm, orderOptions, availableBatches, existingBoxCodes: bondingRuns.map((r2) => r2.boxNumber).filter(Boolean), allBondingRuns: bondingRuns, knownBatchCodes, onUnknownBatch: handleUnknownBatch, materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, lineItems: data.lineItems }), editError && /* @__PURE__ */ React.createElement("div", { className: "text-sm mb-2", style: { color: RED } }, "\u26A0 ", editError)))) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-center" }, Number(r.toStock) > 0 && /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: selectedForRemoval.has(r.id), onChange: () => toggleSelectedForRemoval(r.id) })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 no-wrap" }, r.productSize), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.baselineBatchCode ? (() => {
+      return /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}`, background: isEditing ? "#FFF8EF" : void 0 } }, isEditing ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-2" }), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-2", colSpan: 19 }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(BondingSpecFields, { values: editForm, setValues: setEditForm, listId: "size-catalog-bonding" }), /* @__PURE__ */ React.createElement(BondingRestFields, { values: editForm, setValues: setEditForm, orderOptions, availableBatches, existingBoxCodes: bondingRuns.map((r2) => r2.boxNumber).filter(Boolean), allBondingRuns: bondingRuns, knownBatchCodes, onUnknownBatch: handleUnknownBatch, materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, lineItems: data.lineItems, evaRuns: data.evaRuns }), editError && /* @__PURE__ */ React.createElement("div", { className: "text-sm mb-2", style: { color: RED } }, "\u26A0 ", editError)))) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-center" }, Number(r.toStock) > 0 && /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: selectedForRemoval.has(r.id), onChange: () => toggleSelectedForRemoval(r.id) })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 no-wrap" }, r.productSize), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.baselineBatchCode ? (() => {
         const batch = batchByCode.get(r.baselineBatchCode);
         const cleared = batch?.cleared === "Yes";
         return /* @__PURE__ */ React.createElement(Badge, { color: cleared ? RED : GREEN }, r.baselineBatchCode);
@@ -7941,6 +8098,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     { key: "schedule", label: "Ordered by Eva Size", icon: IconLink },
     { key: "gluelineschedule", label: "Glue Line Schedule", icon: IconLink },
     { key: "bonding", label: "Bonding", icon: IconLink },
+    { key: "eva", label: "EVA Line", icon: IconLayers },
     { key: "stock", label: "Live Stock", icon: IconArchive },
     { key: "stocktaker", label: "Stock Taker", icon: IconCheckBox },
     { key: "boxhistory", label: "Box History", icon: IconSearch },
@@ -7955,7 +8113,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     { label: "Orders", keys: ["neworders", "completed", "customers"] },
     { label: "Planning", keys: ["production"] },
     { label: "Baseline", keys: ["extrusion", "tooling", "glueline", "gluelineschedule"] },
-    { label: "Bonding", keys: ["bonding", "batches", "schedule"] },
+    { label: "Bonding", keys: ["bonding", "eva", "batches", "schedule"] },
     { label: "Stock & Traceability", keys: ["stock", "stocktaker", "boxhistory"] },
     { label: "Materials", keys: ["materials"] },
     { label: "Quality & Reports", keys: ["ncr", "metrics"] },
@@ -7972,7 +8130,8 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     boxhistory: ["find a box", "trace box", "where is this box"],
     production: ["what needs making", "left to make", "remaining", "outstanding", "top 2", "priority sizes", "combined priority"],
     gluelineschedule: ["glue schedule", "what to glue"],
-    schedule: ["eva die", "what to bond", "production schedule", "ordered by eva"]
+    schedule: ["eva die", "what to bond", "production schedule", "ordered by eva"],
+    eva: ["eva made", "make eva", "eva production", "eva run", "log eva", "eva reels", "screw speed", "line speed", "eva rack"]
   };
   function GlobalSearch({ data, onJump }) {
     const [query, setQuery] = useState("");
@@ -8827,6 +8986,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       schedule: /* @__PURE__ */ React.createElement(ProductionScheduleView, { data }),
       gluelineschedule: /* @__PURE__ */ React.createElement(GlueLineScheduleView, { data }),
       bonding: /* @__PURE__ */ React.createElement(BondingLineView, { data, setData }),
+      eva: /* @__PURE__ */ React.createElement(EvaLineView, { data, setData }),
       stock: /* @__PURE__ */ React.createElement(LiveStockView, { data, setData }),
       stocktaker: /* @__PURE__ */ React.createElement(StockTakerView, { data, setData }),
       boxhistory: /* @__PURE__ */ React.createElement(BoxHistoryView, { data, initialQuery: searchJump?.view === "boxhistory" ? searchJump.query : null }),
