@@ -678,7 +678,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-08-31.24";
+  var APP_VERSION = "2026-08-31.26";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1223,7 +1223,7 @@
   function computeMakeLists(order, data) {
     const items = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description));
     const { byLineItem } = groupAssignedRunsByLineItem(data.bondingRuns, order.id, items);
-    const availableBatches = batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || []);
+    const availableBatches = batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || [], data.stockPicks || []);
     const bondingItems = [];
     const glueItems = [];
     for (const { li, runs } of byLineItem) {
@@ -1527,25 +1527,6 @@
     { key: "rubber", label: "Rubber" },
     { key: "boughtin", label: "Profitape" }
   ];
-  function productionListRows(orders, lineItems) {
-    const activeIds = new Set(orders.filter((o) => o.stage !== "Packing" && o.stage !== "Shipped").map((o) => o.id));
-    const map = /* @__PURE__ */ new Map();
-    for (const li of lineItems) {
-      if (!activeIds.has(li.orderId) || isDelivery(li.description)) continue;
-      const order = orders.find((o) => o.id === li.orderId);
-      const row = map.get(li.description) || { spec: li.description, qty: 0, orderIds: /* @__PURE__ */ new Set(), priority: null, earliestDueDate: null, breakdown: [] };
-      row.qty += Number(li.qty || 0);
-      row.orderIds.add(li.orderId);
-      if (order && order.priority != null) row.priority = row.priority == null ? order.priority : Math.min(row.priority, order.priority);
-      if (order && order.dueDate) row.earliestDueDate = row.earliestDueDate == null || order.dueDate < row.earliestDueDate ? order.dueDate : row.earliestDueDate;
-      row.breakdown.push({ orderId: li.orderId, customer: order ? order.customer : li.orderId, qty: Number(li.qty || 0) });
-      map.set(li.description, row);
-    }
-    return [...map.values()].sort((a, b) => {
-      const pa = a.priority ?? 99, pb = b.priority ?? 99;
-      return pa !== pb ? pa - pb : b.qty - a.qty;
-    });
-  }
   function productionOutstandingRows(orders, lineItems, bondingRuns, stockPicks) {
     const activeOrders = orders.filter((o) => o.stage !== "Packing" && o.stage !== "Shipped");
     const map = /* @__PURE__ */ new Map();
@@ -1741,16 +1722,16 @@
     if (colourMatch) return parseFloat(colourMatch[1]);
     return null;
   }
-  function batchesAvailableRows(glueLineBatches, bondingRuns, orders, lineItems, ncrs = []) {
+  function batchesAvailableRows(glueLineBatches, bondingRuns, orders, lineItems, ncrs = [], stockPicks = []) {
     const scrappedBatches = new Set(ncrs.map((n) => n.batchNumber));
-    const prodRows = productionListRows(orders, lineItems);
+    const prodRows = productionOutstandingRows(orders, lineItems, bondingRuns, stockPicks || []);
     const rows = glueLineBatches.map((b) => {
       const used = batchMeterageUsed(bondingRuns, b.batchNumber);
       const remaining = Number(b.meterage || 0) - used;
       const scrapped = scrappedBatches.has(b.batchNumber);
       const available = !b.deleted && b.checked === "Yes" && remaining > 0 && !scrapped && b.cleared !== "Yes";
       const need = prodRows.find((r) => looseSpecMatch(b.productSize, r.spec));
-      const qtyNeeded = need ? need.qty : 0;
+      const qtyNeeded = need ? need.toMake ?? need.qty : 0;
       const metersPerBox = knownMeterageForSpec(b.productSize, null, bondingRuns, lineItems) || METERS_PER_BOX_DEFAULT;
       const boxesInBatch = Math.round(remaining / metersPerBox * 10) / 10;
       const specGap = gapFromSpec(b.productSize);
@@ -1806,7 +1787,8 @@
   }
   function knownMeterageForSpec(spec, pt, allBondingRuns, lineItems) {
     const fullSpec = pt ? `${spec} ${pt}` : spec;
-    const fromHistory = (allBondingRuns || []).filter((r) => Number(r.metersPerBox) > 0 && looseSpecMatch(r.productSize, fullSpec)).map((r) => Number(r.metersPerBox));
+    const wantsReel = specIsReel(fullSpec);
+    const fromHistory = (allBondingRuns || []).filter((r) => Number(r.metersPerBox) > 0 && looseSpecMatch(r.productSize, fullSpec) && specIsReel(r.productSize) === wantsReel).map((r) => Number(r.metersPerBox));
     if (fromHistory.length > 0) {
       const counts = {};
       fromHistory.forEach((v) => {
@@ -1934,7 +1916,7 @@
     const scrappedBatches = new Set((ncrs || []).map((n) => n.batchNumber));
     return demand.map((d) => {
       const metersPerBox = knownMeterageForSpec(d.spec, null, bondingRuns, lineItems) || METERS_PER_BOX_DEFAULT;
-      const neededMeters = Math.ceil(d.qty * metersPerBox);
+      const neededMeters = Math.ceil((d.toMake ?? d.qty) * metersPerBox);
       const availableReels = (glueLineBatches || []).filter((g) => !g.deleted && g.cleared !== "Yes" && !scrappedBatches.has(g.batchNumber) && looseSpecMatch(g.productSize, d.spec));
       const glueLinedMeters = availableReels.reduce((s, g) => s + Math.max(0, Number(g.meterage || 0) - batchMeterageUsed(bondingRuns, g.batchNumber)), 0);
       const stillToGlueLine = Math.max(0, neededMeters - glueLinedMeters);
@@ -1942,7 +1924,7 @@
         spec: d.spec,
         priority: d.priority,
         earliestDueDate: d.earliestDueDate,
-        qtyNeeded: d.qty,
+        qtyNeeded: d.toMake ?? d.qty,
         metersPerBox,
         neededMeters,
         glueLinedMeters,
@@ -2281,7 +2263,7 @@
       spec: null,
       reasons: [`${pct}% of what's outstanding is on the shelf now`]
     }));
-    const bond = batchesAvailableRows(glueLineBatches, bondingRuns, orders, lineItems, data.ncrs || []).filter((r) => r.available && r.qtyNeeded > 0).map((r) => {
+    const bond = batchesAvailableRows(glueLineBatches, bondingRuns, orders, lineItems, data.ncrs || [], data.stockPicks || []).filter((r) => r.available && r.qtyNeeded > 0).map((r) => {
       const consumers = (r.orderBreakdown || []).slice().sort((a, b) => (b.qty || 0) - (a.qty || 0));
       const main = consumers[0] || {};
       const daysUntil = planDaysUntil(r.earliestDueDate, todayStr);
@@ -2399,7 +2381,7 @@
       return { ...c, rows, totalQty, urgent };
     }).filter((c) => c.rows.length > 0);
     const glueLineNeeds = glueLineScheduleRows(data.orders, data.lineItems, data.glueLineBatches, data.bondingRuns, data.stockPicks, data.ncrs || []).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99) || b.stillToGlueLine - a.stillToGlueLine);
-    const bondingReady = batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || []).filter((r) => r.available && r.qtyNeeded > 0).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99) || b.qtyNeeded - a.qtyNeeded);
+    const bondingReady = batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || [], data.stockPicks || []).filter((r) => r.available && r.qtyNeeded > 0).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99) || b.qtyNeeded - a.qtyNeeded);
     const packingReady = packingReadyRows(data.orders, data.lineItems, data.bondingRuns);
     const extrusion = extrusionScheduleRows(data.extrusion1, data.extrusion2, data.glueLineBatches, glueLineNeeds);
     const evaYield = evaYieldByDie(data.bondingRuns);
@@ -4012,7 +3994,7 @@ Here's the order:`;
   }
   function ProductionScheduleView({ data }) {
     const [selectedEva, setSelectedEva] = useState(null);
-    const allRows = batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || []);
+    const allRows = batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || [], data.stockPicks || []);
     const availableRows = allRows.filter((r) => r.available && r.qtyNeeded > 0);
     const evaCounts = EVA_DIES.map((d) => ({ ...d, count: availableRows.filter((r) => r.evaDies.some((e) => e.key === d.key)).length }));
     const evaRows = selectedEva ? availableRows.filter((r) => r.evaDies.some((e) => e.key === selectedEva)) : [];
@@ -4067,7 +4049,7 @@ Here's the order:`;
     }))))), !selectedDie ? /* @__PURE__ */ React.createElement("div", { className: "text-sm py-8 no-print", style: { color: INK_MUTED } }, "Choose the glue die currently mounted \u2014 or the one you're about to run \u2014 to see what's ready to glue-line.") : /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto no-print", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product spec"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Qty needed"), /* @__PURE__ */ React.createElement(ThR, { w: 120 }, "Glue-lined m"), /* @__PURE__ */ React.createElement(ThR, { w: 150 }, "Still to glue-line m"), /* @__PURE__ */ React.createElement(Th, { w: 80 }, "Priority"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Due"))), /* @__PURE__ */ React.createElement("tbody", null, scheduled.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.spec, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 no-wrap" }, r.spec), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.qtyNeeded), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.glueLinedMeters), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.stillToGlueLine), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.priority != null ? /* @__PURE__ */ React.createElement(Badge, { color: r.priority <= 2 ? RED : INK_MUTED, solid: r.priority <= 2 }, "P", r.priority) : /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.earliestDueDate || "\u2014"))), scheduled.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 6 }, "No outstanding orders currently need ", dieLabel, ".")))), selectedDie && /* @__PURE__ */ React.createElement("div", { className: "print-only" }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Georgia, serif", fontWeight: 700, fontSize: 22, color: NAVY } }, "Glue Line Schedule \u2014 ", dieLabel), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 2 } }, (/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", year: "numeric", month: "long", day: "numeric" }), " \xB7 Most urgent first, by priority then due date"), /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { marginTop: 16 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product spec"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Qty needed"), /* @__PURE__ */ React.createElement(ThR, { w: 120 }, "Glue-lined m"), /* @__PURE__ */ React.createElement(ThR, { w: 150 }, "Still to glue-line m"), /* @__PURE__ */ React.createElement(Th, { w: 80 }, "Priority"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Due"))), /* @__PURE__ */ React.createElement("tbody", null, scheduled.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.spec, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.spec), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.qtyNeeded), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.glueLinedMeters), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.stillToGlueLine), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.priority != null ? `P${r.priority}` : "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.earliestDueDate || "\u2014")))))));
   }
   function BatchesAvailableView({ data, setData }) {
-    const allRows = batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || []);
+    const allRows = batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || [], data.stockPicks || []);
     const [cat, setCat] = useState("7mm");
     const [showCleared, setShowCleared] = useState(false);
     const [clearedSearch, setClearedSearch] = useState("");
@@ -6486,7 +6468,7 @@ Here's the order:`;
     const rows = liveStockRows(data.bondingRuns, data.stockPicks);
     const boxes = boxedStockAvailable(data.bondingRuns, data.stockPicks);
     const reelRows = useMemo(
-      () => batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || []),
+      () => batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || [], data.stockPicks || []),
       [data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs]
     );
     const otherRows = otherStockRows(data.otherStock || [], data.lineItems);
@@ -6858,7 +6840,7 @@ Here's the order:`;
   function BondingLineView({ data, setData }) {
     const { bondingRuns, orders } = data;
     const orderOptions = orders.map((o) => ({ value: o.id, label: `${o.id} \u2014 ${o.customer}`, customer: o.customer, boxType: o.boxType || "" }));
-    const allBatchRows = batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || []);
+    const allBatchRows = batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || [], data.stockPicks || []);
     const availableBatches = allBatchRows.filter((r) => r.available);
     const batchByCode = new Map(allBatchRows.map((b) => [b.batchNumber, b]));
     const knownBatchCodes = data.glueLineBatches.map((b) => b.batchNumber).filter(Boolean);
