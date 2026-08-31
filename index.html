@@ -678,7 +678,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-08-31.26";
+  var APP_VERSION = "2026-08-31.28";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1480,17 +1480,52 @@
     const outstanding = orderOutstanding(lineItems, bondingRuns, orderId);
     return Math.round((total - outstanding) / total * 100);
   }
-  function orderPickablePercent(order, lineItems, bondingRuns, stockPicks) {
+  function shelfReservations(orders, lineItems, bondingRuns, stockPicks) {
+    const shelf = boxedStockAvailable(bondingRuns, stockPicks || []).map((b) => ({ ...b, left: Number(b.available || 0) }));
+    const claimants = (orders || []).filter((o) => o.stage !== "Shipped" && o.stage !== "Packing").sort((a, z) => {
+      const pa = a.priority ?? 999, pz = z.priority ?? 999;
+      if (pa !== pz) return pa - pz;
+      const da = a.dueDate || "9999-12-31", dz = z.dueDate || "9999-12-31";
+      if (da !== dz) return da < dz ? -1 : 1;
+      return String(a.id) < String(z.id) ? -1 : 1;
+    });
+    const out = /* @__PURE__ */ new Map();
+    for (const order of claimants) {
+      const items = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description) && !isSmallItem(li.description));
+      const { byLineItem } = groupAssignedRunsByLineItem(bondingRuns, order.id, items);
+      const forOrder = /* @__PURE__ */ new Map();
+      for (const { li, runs } of byLineItem) {
+        const assigned = runs.reduce((s, r) => s + Number(r.onOrderQty || 0), 0);
+        let outstanding = Math.max(0, Number(li.qty) - assigned);
+        let taken = 0;
+        for (const box of shelf) {
+          if (outstanding <= 0) break;
+          if (box.left <= 0) continue;
+          if (!looseSpecMatch(box.productSize, li.description)) continue;
+          if (!stockFormMatchesLine(box, li.description)) continue;
+          const take = Math.min(box.left, outstanding);
+          box.left -= take;
+          outstanding -= take;
+          taken += take;
+        }
+        forOrder.set(li.id, taken);
+      }
+      out.set(order.id, forOrder);
+    }
+    return out;
+  }
+  function orderPickablePercent(order, lineItems, bondingRuns, stockPicks, reservations) {
     const items = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description) && !isSmallItem(li.description));
     const { byLineItem } = groupAssignedRunsByLineItem(bondingRuns, order.id, items);
-    const boxed = boxedStockAvailable(bondingRuns, stockPicks || []);
+    const mine = reservations ? reservations.get(order.id) : null;
+    const boxed = mine ? null : boxedStockAvailable(bondingRuns, stockPicks || []);
     let totalOutstanding = 0;
     let totalCoverable = 0;
     for (const { li, runs } of byLineItem) {
       const assignedQty = runs.reduce((s, r) => s + Number(r.onOrderQty || 0), 0);
       const outstanding = Math.max(0, Number(li.qty) - assignedQty);
       if (outstanding <= 0) continue;
-      const available = boxed.filter((b) => looseSpecMatch(b.productSize, li.description) && stockFormMatchesLine(b, li.description)).reduce((s, b) => s + Number(b.available || 0), 0);
+      const available = mine ? mine.get(li.id) || 0 : boxed.filter((b) => looseSpecMatch(b.productSize, li.description) && stockFormMatchesLine(b, li.description)).reduce((s, b) => s + Number(b.available || 0), 0);
       totalOutstanding += outstanding;
       totalCoverable += Math.min(outstanding, available);
     }
@@ -1918,7 +1953,9 @@
       const metersPerBox = knownMeterageForSpec(d.spec, null, bondingRuns, lineItems) || METERS_PER_BOX_DEFAULT;
       const neededMeters = Math.ceil((d.toMake ?? d.qty) * metersPerBox);
       const availableReels = (glueLineBatches || []).filter((g) => !g.deleted && g.cleared !== "Yes" && !scrappedBatches.has(g.batchNumber) && looseSpecMatch(g.productSize, d.spec));
-      const glueLinedMeters = availableReels.reduce((s, g) => s + Math.max(0, Number(g.meterage || 0) - batchMeterageUsed(bondingRuns, g.batchNumber)), 0);
+      const reelMetres = (g) => Math.max(0, Number(g.meterage || 0) - batchMeterageUsed(bondingRuns, g.batchNumber));
+      const glueLinedMeters = availableReels.reduce((s, g) => s + reelMetres(g), 0);
+      const uncheckedMeters = availableReels.filter((g) => g.checked !== "Yes").reduce((s, g) => s + reelMetres(g), 0);
       const stillToGlueLine = Math.max(0, neededMeters - glueLinedMeters);
       return {
         spec: d.spec,
@@ -1929,6 +1966,7 @@
         neededMeters,
         glueLinedMeters,
         stillToGlueLine,
+        uncheckedMeters,
         reelCount: availableReels.length,
         dies: glueDiesForSpec(d.spec)
       };
@@ -2255,7 +2293,8 @@
       spec: null,
       reasons: ["fully made or allocated \u2014 nothing outstanding"]
     }));
-    const pick = orders.filter((o) => o.stage !== "Shipped").map((o) => ({ o, pct: orderPickablePercent(o, lineItems, bondingRuns, data.stockPicks) })).filter((x) => x.pct > 0 && x.pct < 101 && orderPctComplete(lineItems, bondingRuns, x.o.id) < 100).map(({ o, pct }) => finish({
+    const reservations = shelfReservations(orders, lineItems, bondingRuns, data.stockPicks);
+    const pick = orders.filter((o) => o.stage !== "Shipped").map((o) => ({ o, pct: orderPickablePercent(o, lineItems, bondingRuns, data.stockPicks, reservations) })).filter((x) => x.pct > 0 && x.pct < 101 && orderPctComplete(lineItems, bondingRuns, x.o.id) < 100).map(({ o, pct }) => finish({
       lane: "pick",
       orderId: o.id,
       ...decorate(o.id),
@@ -2461,12 +2500,13 @@
   function Dashboard({ data, jumpToOrder }) {
     const { lineItems, bondingRuns } = data;
     const orders = data.orders.filter((o) => o.stage !== "Shipped");
+    const reservations = shelfReservations(data.orders, lineItems, bondingRuns, data.stockPicks);
     const rows = orders.map((o) => ({
       ...o,
       totalItems: orderTotalItems(lineItems, o.id),
       outstanding: orderOutstanding(lineItems, bondingRuns, o.id),
       pct: orderPctComplete(lineItems, bondingRuns, o.id),
-      pickablePct: orderPickablePercent(o, lineItems, bondingRuns, data.stockPicks),
+      pickablePct: orderPickablePercent(o, lineItems, bondingRuns, data.stockPicks, reservations),
       caseCount: orderCaseCount(o, lineItems, bondingRuns)
     }));
     rows.sort((a, b) => {
@@ -4022,7 +4062,15 @@ Here's the order:`;
   function GlueLineScheduleView({ data }) {
     const [selectedDie, setSelectedDie] = useState(null);
     const needRows = glueLineScheduleRows(data.orders, data.lineItems, data.glueLineBatches, data.bondingRuns, data.stockPicks, data.ncrs || []);
-    const dieCounts = ALL_GLUE_DIES.map((d) => ({ ...d, count: needRows.filter((r) => r.dies.some((e) => e.key === d.key)).length }));
+    const dieCounts = ALL_GLUE_DIES.map((d) => {
+      const forDie = needRows.filter((r) => r.dies.some((e) => e.key === d.key));
+      return {
+        ...d,
+        count: forDie.length,
+        metres: Math.round(forDie.reduce((s, r) => s + (Number(r.stillToGlueLine) || 0), 0))
+      };
+    });
+    const bestDie = [...dieCounts].filter((d) => d.metres > 0).sort((a, b) => b.metres - a.metres)[0] || null;
     const dieRows = selectedDie ? needRows.filter((r) => r.dies.some((e) => e.key === selectedDie)) : [];
     const scheduled = [...dieRows].sort((a, b) => {
       const pa = a.priority ?? 99, pb = b.priority ?? 99;
@@ -4044,9 +4092,14 @@ Here's the order:`;
         d.label,
         " ",
         /* @__PURE__ */ React.createElement("span", { style: { opacity: 0.7 } }, "(", withCount.count, ")"),
+        withCount.metres > 0 && /* @__PURE__ */ React.createElement("span", { className: "block", style: {
+          fontSize: 11,
+          fontWeight: 700,
+          color: selectedDie === d.key ? "#fff" : GREEN
+        } }, withCount.metres, "m"),
         d.min != null && /* @__PURE__ */ React.createElement("span", { className: "block", style: { fontSize: 10, opacity: 0.6 } }, d.min.toFixed(2), "\u2013", d.max.toFixed(2))
       );
-    }))))), !selectedDie ? /* @__PURE__ */ React.createElement("div", { className: "text-sm py-8 no-print", style: { color: INK_MUTED } }, "Choose the glue die currently mounted \u2014 or the one you're about to run \u2014 to see what's ready to glue-line.") : /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto no-print", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product spec"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Qty needed"), /* @__PURE__ */ React.createElement(ThR, { w: 120 }, "Glue-lined m"), /* @__PURE__ */ React.createElement(ThR, { w: 150 }, "Still to glue-line m"), /* @__PURE__ */ React.createElement(Th, { w: 80 }, "Priority"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Due"))), /* @__PURE__ */ React.createElement("tbody", null, scheduled.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.spec, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 no-wrap" }, r.spec), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.qtyNeeded), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.glueLinedMeters), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.stillToGlueLine), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.priority != null ? /* @__PURE__ */ React.createElement(Badge, { color: r.priority <= 2 ? RED : INK_MUTED, solid: r.priority <= 2 }, "P", r.priority) : /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.earliestDueDate || "\u2014"))), scheduled.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 6 }, "No outstanding orders currently need ", dieLabel, ".")))), selectedDie && /* @__PURE__ */ React.createElement("div", { className: "print-only" }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Georgia, serif", fontWeight: 700, fontSize: 22, color: NAVY } }, "Glue Line Schedule \u2014 ", dieLabel), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 2 } }, (/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", year: "numeric", month: "long", day: "numeric" }), " \xB7 Most urgent first, by priority then due date"), /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { marginTop: 16 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product spec"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Qty needed"), /* @__PURE__ */ React.createElement(ThR, { w: 120 }, "Glue-lined m"), /* @__PURE__ */ React.createElement(ThR, { w: 150 }, "Still to glue-line m"), /* @__PURE__ */ React.createElement(Th, { w: 80 }, "Priority"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Due"))), /* @__PURE__ */ React.createElement("tbody", null, scheduled.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.spec, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.spec), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.qtyNeeded), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.glueLinedMeters), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.stillToGlueLine), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.priority != null ? `P${r.priority}` : "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.earliestDueDate || "\u2014")))))));
+    }))))), bestDie && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-4 px-4 py-2.5", style: { background: "#EEF1FA", border: `1px solid ${NAVY}`, borderRadius: 5, color: INK, fontSize: 14 } }, /* @__PURE__ */ React.createElement("b", null, "Most work behind one die: ", bestDie.label), " \u2014 ", bestDie.metres, "m across ", bestDie.count, " size", bestDie.count === 1 ? "" : "s", ".", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " Fewest changeovers for the metres, unless something's urgent.")), !selectedDie ? /* @__PURE__ */ React.createElement("div", { className: "text-sm py-8 no-print", style: { color: INK_MUTED } }, "Choose the glue die currently mounted \u2014 or the one you're about to run \u2014 to see what's ready to glue-line.") : /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto no-print", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product spec"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Qty needed"), /* @__PURE__ */ React.createElement(ThR, { w: 120 }, "Glue-lined m"), /* @__PURE__ */ React.createElement(ThR, { w: 150 }, "Still to glue-line m"), /* @__PURE__ */ React.createElement(Th, { w: 80 }, "Priority"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Due"))), /* @__PURE__ */ React.createElement("tbody", null, scheduled.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.spec, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 no-wrap" }, r.spec), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.qtyNeeded), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.glueLinedMeters, r.uncheckedMeters > 0 && /* @__PURE__ */ React.createElement("span", { className: "block", style: { fontSize: 11, color: AMBER, fontWeight: 600 } }, r.uncheckedMeters, "m not checked yet")), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.stillToGlueLine), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.priority != null ? /* @__PURE__ */ React.createElement(Badge, { color: r.priority <= 2 ? RED : INK_MUTED, solid: r.priority <= 2 }, "P", r.priority) : /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.earliestDueDate || "\u2014"))), scheduled.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 6 }, "No outstanding orders currently need ", dieLabel, ".")))), selectedDie && /* @__PURE__ */ React.createElement("div", { className: "print-only" }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Georgia, serif", fontWeight: 700, fontSize: 22, color: NAVY } }, "Glue Line Schedule \u2014 ", dieLabel), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 2 } }, (/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", year: "numeric", month: "long", day: "numeric" }), " \xB7 Most urgent first, by priority then due date"), /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { marginTop: 16 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product spec"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Qty needed"), /* @__PURE__ */ React.createElement(ThR, { w: 120 }, "Glue-lined m"), /* @__PURE__ */ React.createElement(ThR, { w: 150 }, "Still to glue-line m"), /* @__PURE__ */ React.createElement(Th, { w: 80 }, "Priority"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Due"))), /* @__PURE__ */ React.createElement("tbody", null, scheduled.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.spec, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.spec), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.qtyNeeded), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.glueLinedMeters), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.stillToGlueLine), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.priority != null ? `P${r.priority}` : "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.earliestDueDate || "\u2014")))))));
   }
   function BatchesAvailableView({ data, setData }) {
     const allRows = batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || [], data.stockPicks || []);
