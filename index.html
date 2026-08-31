@@ -253,6 +253,31 @@
      the Add button stay where they are. */
   .form-fields { max-width: 1180px; }
 
+  /* FLOOR MODE — sizes, not just a shorter menu.
+     Floor Mode used only to hide nav items, which does nothing for the actual
+     problem on the shop floor: reading glasses, dusty hands, poor light and a
+     tablet held at arm's length. Everything below gets bigger, and touch
+     targets go to 44px, which is the smallest thing a fingertip hits reliably
+     first time. Applied by a class on <body> so it reaches every screen at
+     once rather than needing each component to opt in.
+     Deliberately does NOT change the print styles — paper is already legible
+     and the sheet has to keep its layout. */
+  body.floor-mode { font-size: 17px; }
+  body.floor-mode .text-xs { font-size: 13.5px !important; }
+  body.floor-mode .text-sm { font-size: 16px !important; }
+  body.floor-mode .mx-eyebrow { font-size: 12px !important; }
+  body.floor-mode input:not([type="checkbox"]):not([type="radio"]),
+  body.floor-mode select,
+  body.floor-mode button { min-height: 44px; font-size: 16px; }
+  /* Table cells get real vertical room — rows that touch are the ones where a
+     weight ends up on the line above. */
+  body.floor-mode td, body.floor-mode th { padding-top: 10px !important; padding-bottom: 10px !important; }
+  /* The nav is thumbed, not clicked. */
+  body.floor-mode aside button { min-height: 48px; }
+  /* Exempt the small in-cell steppers and icon buttons, which are already
+     paired with a larger control and would blow the row apart at 44px. */
+  body.floor-mode button.mx-icon-btn { min-height: 0; }
+
   @media print {
     .no-print { display: none !important; }
     .print-only { display: block !important; }
@@ -653,7 +678,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-08-31.21";
+  var APP_VERSION = "2026-08-31.22";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -4079,7 +4104,69 @@ Here's the order:`;
       "Clear reel"
     )))), rows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: showCleared ? 6 : 8 }, showCleared ? clearedSearch ? `No cleared reels match "${clearedSearch}".` : "No reels cleared yet." : "No batches logged yet.")))), modal);
   }
-  function WeightInput({ value, onCommit }) {
+  function printWeightsSheet(order, caseNums, caseWeights, palletAssignments) {
+    const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+    const rows = caseNums.map((n) => {
+      const w = Number(caseWeights[n]) || 0;
+      return `<tr>
+      <td class="num">${esc(n)}</td>
+      <td class="w">${w > 0 ? esc(w.toFixed(2)) : ""}</td>
+      <td class="p">${esc(palletAssignments[n] || "")}</td>
+      <td class="sig"></td>
+    </tr>`;
+    }).join("");
+    const done = caseNums.filter((n) => Number(caseWeights[n]) > 0).length;
+    const total = caseNums.reduce((s, n) => s + (Number(caseWeights[n]) || 0), 0);
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Weights ${esc(order.id)}</title>
+  <style>
+    @page { margin: 14mm; }
+    body { font-family: -apple-system, Arial, sans-serif; color: #000; margin: 0; }
+    h1 { font-size: 17pt; margin: 0 0 2px; }
+    .sub { font-size: 10pt; color: #333; margin-bottom: 3px; }
+    .count { font-size: 10pt; margin-bottom: 10px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #000; padding: 5px 7px; font-size: 11pt; }
+    th { background: #eee; text-align: left; font-size: 9.5pt; text-transform: uppercase; letter-spacing: .05em; }
+    .num { width: 60px; font-weight: 700; text-align: center; }
+    .w { width: 110px; text-align: right; }
+    .p { width: 90px; text-align: center; }
+    .sig { }
+    tfoot td { font-weight: 700; background: #f4f4f4; }
+    .foot { margin-top: 14px; font-size: 10pt; }
+    .line { display: inline-block; border-bottom: 1px solid #000; width: 190px; margin-left: 6px; }
+  </style></head><body>
+    <h1>Case weights \u2014 ${esc(order.id)}</h1>
+    <div class="sub">${esc(order.customer || "")}${order.dueDate ? ` \xB7 due ${esc(order.dueDate)}` : ""}</div>
+    <div class="count">${done} of ${caseNums.length} weighed \xB7 printed ${esc((/* @__PURE__ */ new Date()).toLocaleString())}</div>
+    <table>
+      <thead><tr><th>Case</th><th>Weight (kg)</th><th>Pallet</th><th>Checked by</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr><td class="num">Total</td><td class="w">${esc(total.toFixed(2))}</td><td colspan="2"></td></tr></tfoot>
+    </table>
+    <div class="foot">Signed<span class="line"></span> &nbsp; Date<span class="line" style="width:120px"></span></div>
+  </body></html>`;
+    let iframe = document.getElementById("weights-print-frame");
+    if (!iframe) {
+      iframe = document.createElement("iframe");
+      iframe.id = "weights-print-frame";
+      iframe.style.position = "fixed";
+      iframe.style.right = "0";
+      iframe.style.bottom = "0";
+      iframe.style.width = "0";
+      iframe.style.height = "0";
+      iframe.style.border = "0";
+      document.body.appendChild(iframe);
+    }
+    const doc = iframe.contentWindow.document;
+    doc.open();
+    doc.write(html);
+    doc.close();
+    setTimeout(() => {
+      iframe.contentWindow.focus();
+      iframe.contentWindow.print();
+    }, 150);
+  }
+  function WeightInput({ value, onCommit, big = false }) {
     const [justSaved, setJustSaved] = useState(false);
     const debounceRef = useRef(null);
     const fadeRef = useRef(null);
@@ -4097,7 +4184,8 @@ Here's the order:`;
         fadeRef.current = setTimeout(() => setJustSaved(false), 1200);
       }, 400);
     };
-    return /* @__PURE__ */ React.createElement(
+    const saved = Number(value) > 0;
+    return /* @__PURE__ */ React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: 5 } }, /* @__PURE__ */ React.createElement(
       "input",
       {
         type: "number",
@@ -4105,10 +4193,18 @@ Here's the order:`;
         value: value || "",
         placeholder: "\u2014",
         onChange: handleChange,
-        className: "w-20 text-right px-1.5 py-0.5 rounded text-sm",
-        style: { border: `1px solid ${justSaved ? GREEN : BORDER}`, background: justSaved ? "#EAF7EE" : "#fff", transition: "background 0.3s, border-color 0.3s" }
+        className: "text-right rounded",
+        style: {
+          width: big ? 96 : 80,
+          height: big ? 44 : 30,
+          fontSize: big ? 17 : 14,
+          padding: big ? "0 10px" : "0 6px",
+          border: `1px solid ${justSaved || saved ? GREEN : BORDER}`,
+          background: justSaved ? "#EAF7EE" : "#fff",
+          transition: "background 0.3s, border-color 0.3s"
+        }
       }
-    );
+    ), /* @__PURE__ */ React.createElement("span", { style: { width: 14, fontSize: big ? 17 : 14, fontWeight: 700, color: GREEN, lineHeight: 1 } }, saved ? "\u2713" : ""));
   }
   function PackingListScreen({ data, setData, packJump, onBack }) {
     const order = data.orders.find((o) => o.id === packJump?.orderId);
@@ -4334,7 +4430,38 @@ Here's the order:`;
       },
       "\u2190 Back to ",
       order.id
-    ), /* @__PURE__ */ React.createElement(SectionHeader, { title: "\u{1F4E6} Packing List", subtitle: `${order.customer} \u2014 Generated the instant you pick this order. Profile/shim tape get their own case-size row.`, right: /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => window.print() }, "Print") }), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 mb-4 flex-wrap" }, /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, totalItems, " items \xB7 ", caseRows.length, " cases \xB7 ", totalWeight.toFixed(2), "kg")), String(order.notes || "").trim() && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-4", style: { borderLeft: `4px solid ${NAVY}`, background: "#FAFAF8" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1.5", style: { color: INK_MUTED } }, "NOTES ON THIS ORDER"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK, lineHeight: 1.5, whiteSpace: "pre-wrap" } }, order.notes)), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-4 flex-wrap text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("label", { htmlFor: "starting-case-num" }, "Already picked and packed outside the app up to case #"), /* @__PURE__ */ React.createElement(
+    ), /* @__PURE__ */ React.createElement(SectionHeader, { title: "\u{1F4E6} Packing List", subtitle: `${order.customer} \u2014 Generated the instant you pick this order. Profile/shim tape get their own case-size row.`, right: /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => window.print() }, "Print") }), (() => {
+      const nums = allCaseNums || [];
+      if (nums.length === 0) return null;
+      const done = nums.filter((n) => Number(caseWeights[n]) > 0).length;
+      const left = nums.length - done;
+      const allDone = left === 0;
+      return /* @__PURE__ */ React.createElement("div", { className: "no-print mb-4 px-4 py-2.5", style: {
+        background: allDone ? "rgba(63,125,92,0.10)" : "#F4F4F2",
+        border: `1px solid ${allDone ? GREEN : BORDER}`,
+        borderRadius: 5,
+        color: INK,
+        fontSize: 15,
+        fontWeight: 600
+      } }, allDone ? /* @__PURE__ */ React.createElement(React.Fragment, null, "\u2713 All ", nums.length, " case", nums.length === 1 ? "" : "s", " weighed \u2014 nothing left to do here.") : /* @__PURE__ */ React.createElement(React.Fragment, null, done, " of ", nums.length, " cases weighed", done > 0 && " and saved", " \xB7 ", /* @__PURE__ */ React.createElement("span", { style: { color: AMBER } }, left, " to go")), /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          onClick: () => printWeightsSheet(order, nums, caseWeights, palletAssignments),
+          className: "ml-3 px-3",
+          style: {
+            height: 34,
+            borderRadius: 6,
+            border: `1px solid ${NAVY}`,
+            background: "#fff",
+            color: NAVY,
+            fontSize: 13,
+            fontWeight: 600,
+            cursor: "pointer"
+          }
+        },
+        "\u{1F5A8} Print weights sheet"
+      ));
+    })(), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 mb-4 flex-wrap" }, /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, totalItems, " items \xB7 ", caseRows.length, " cases \xB7 ", totalWeight.toFixed(2), "kg")), String(order.notes || "").trim() && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-4", style: { borderLeft: `4px solid ${NAVY}`, background: "#FAFAF8" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1.5", style: { color: INK_MUTED } }, "NOTES ON THIS ORDER"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK, lineHeight: 1.5, whiteSpace: "pre-wrap" } }, order.notes)), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-4 flex-wrap text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("label", { htmlFor: "starting-case-num" }, "Already picked and packed outside the app up to case #"), /* @__PURE__ */ React.createElement(
       "input",
       {
         id: "starting-case-num",
@@ -4642,7 +4769,7 @@ Here's the order:`;
     };
     const removePick = (id) => {
       const target = stockPicks.find((x) => x.id === id);
-      if (!window.confirm(`Delete this pick (${target?.qtyPicked ?? "?"} \xD7 ${target?.productSpec || "?"} from box ${target?.boxNumber || "?"})? This can be undone from Admin's change log if needed.`)) return;
+      if (!window.confirm(`Delete this pick (${target?.qtyPicked ?? "?"} \xD7 ${target?.productSpec || "?"} from box ${target?.boxNumber || "?"})? Nothing is lost \u2014 if it's a mistake, Chris can put it straight back.`)) return;
       setData((prevData) => {
         const p = prevData.stockPicks.find((x) => x.id === id);
         return {
@@ -4758,7 +4885,7 @@ Here's the order:`;
     };
     const removeRow = (id) => {
       const target = otherStock.find((x) => x.id === id);
-      if (!window.confirm(`Delete this stock entry (${target?.qty ?? "?"} \xD7 ${target?.productSpec || "?"})? This can be undone from Admin's change log if needed.`)) return;
+      if (!window.confirm(`Delete this stock entry (${target?.qty ?? "?"} \xD7 ${target?.productSpec || "?"})? Nothing is lost \u2014 if it's a mistake, Chris can put it straight back.`)) return;
       setData((prevData) => {
         const r = prevData.otherStock.find((x) => x.id === id);
         return {
@@ -5043,7 +5170,7 @@ Here's the order:`;
     };
     const removeRow = (id) => {
       const target = rows.find((r) => r.id === id);
-      if (!window.confirm(`Delete this tooling entry (${target?.size || "?"})? This can be undone from Admin's change log if needed.`)) return;
+      if (!window.confirm(`Delete this tooling entry (${target?.size || "?"})? Nothing is lost \u2014 if it's a mistake, Chris can put it straight back.`)) return;
       setRows((prevRows) => prevRows.filter((r) => r.id !== id));
     };
     const startEdit = (r) => {
@@ -6155,7 +6282,7 @@ Here's the order:`;
     };
     const removeRow = (id) => {
       const target = ncrs.find((x) => x.id === id);
-      if (!window.confirm(`Delete this NCR (batch ${target?.batchNumber || "?"})? This can be undone from Admin's change log if needed.`)) return;
+      if (!window.confirm(`Delete this NCR (batch ${target?.batchNumber || "?"})? Nothing is lost \u2014 if it's a mistake, Chris can put it straight back.`)) return;
       setData((prevData) => {
         const r = prevData.ncrs.find((x) => x.id === id);
         return {
@@ -6350,7 +6477,7 @@ Here's the order:`;
       setForm(blank);
     };
     const removeRun = (id) => {
-      if (!window.confirm("Delete this EVA run? Its reels come back off the rack for that die.")) return;
+      if (!window.confirm("Delete this EVA run? Its reels come back off the rack for that die. Nothing is lost \u2014 if it's a mistake, Chris can put it straight back.")) return;
       setRuns((rows) => rows.filter((r) => r.id !== id));
     };
     const startEdit = (r) => {
@@ -6982,7 +7109,7 @@ Here's the order:`;
     };
     const removeRow = (id) => {
       const target = bondingRuns.find((x) => x.id === id);
-      if (!window.confirm(`Delete box ${target?.boxNumber || "?"} (${target?.amountMade ?? "?"} \xD7 ${target?.productSize || "?"})? This can be undone from Admin's change log if needed.`)) return;
+      if (!window.confirm(`Delete box ${target?.boxNumber || "?"} (${target?.amountMade ?? "?"} \xD7 ${target?.productSize || "?"})? Nothing is lost \u2014 if it's a mistake, Chris can put it straight back.`)) return;
       setData((prevData) => {
         const r = prevData.bondingRuns.find((x) => x.id === id);
         return {
@@ -7521,7 +7648,7 @@ Here's the order:`;
       setCustomInput({ size: "", boxCode: "", qty: "", location: "", pt });
     };
     const removeBoxAdd = (add) => {
-      if (!window.confirm(`Delete box ${add.boxCode} (${add.qty})? This can be undone from Admin's change log if needed.`)) return;
+      if (!window.confirm(`Delete box ${add.boxCode} (${add.qty})? Nothing is lost \u2014 if it's a mistake, Chris can put it straight back.`)) return;
       setData((prevData) => ({ ...prevData, bondingRuns: prevData.bondingRuns.filter((r) => r.id !== add.id) }));
       setBoxSessionAdds(boxSessionAdds.filter((a) => a.id !== add.id));
     };
@@ -7598,7 +7725,7 @@ Here's the order:`;
       setCustomReel({ size: "", reelCode: "", meterage: "" });
     };
     const removeReelAdd = (add) => {
-      if (!window.confirm(`Delete reel ${add.reelCode} (${add.meterage}m)? This can be undone from Admin's change log if needed.`)) return;
+      if (!window.confirm(`Delete reel ${add.reelCode} (${add.meterage}m)? Nothing is lost \u2014 if it's a mistake, Chris can put it straight back.`)) return;
       setData((prevData) => ({ ...prevData, glueLineBatches: prevData.glueLineBatches.filter((r) => r.id !== add.id) }));
       setReelSessionAdds(reelSessionAdds.filter((a) => a.id !== add.id));
     };
@@ -8007,7 +8134,7 @@ Here's the order:`;
       const dependents = batchDeleteWarning(target?.batchNumber, data.bondingRuns);
       const msg = dependents ? `${dependents}
 
-Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.meterage ?? "?"}m)? This can be undone from Admin's change log if needed.`;
+Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.meterage ?? "?"}m)? Nothing is lost \u2014 if it's a mistake, Chris can put it straight back.`;
       if (!window.confirm(msg)) return;
       setData((prevData) => {
         const r = prevData.glueLineBatches.find((x) => x.id === id);
@@ -8248,7 +8375,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       setForm({ ...blank, extruder: form.extruder, range: form.range });
     };
     const removeRow = (r) => {
-      if (!window.confirm(`Delete Extruder ${r.extruder} batch ${r.batchNumber || "?"} (${r.productSize || ""})? This can be undone from Admin's change log if needed.`)) return;
+      if (!window.confirm(`Delete Extruder ${r.extruder} batch ${r.batchNumber || "?"} (${r.productSize || ""})? Nothing is lost \u2014 if it's a mistake, Chris can put it straight back.`)) return;
       setData((prevData) => {
         const key = arrayKeyFor(r.extruder);
         return {
@@ -8469,7 +8596,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
   }
   function SyncStatusPill({ syncStatus, sidebarSyncRef, testMode, lastSyncedAt }) {
     const info = testMode ? { dot: ORANGE, text: "Test Mode" } : {
-      connected: { dot: "#8FD9A8", text: "Synced" },
+      connected: { dot: "#8FD9A8", text: "All work saved" },
       saving: { dot: "#8FD9A8", text: "Saving\u2026" },
       refreshing: { dot: "#8FD9A8", text: "Refreshing\u2026" },
       offline: { dot: "#F3A6A6", text: "Offline" },
@@ -8511,13 +8638,18 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     }, [syncStatus]);
     if (["connected", "saving", "refreshing", "offline"].includes(syncStatus)) {
       const statusText = {
-        connected: justRefreshed ? "\u2713 Up to date" : "Cloud sync connected",
-        saving: "Saving\u2026",
-        refreshing: "Refreshing\u2026",
-        offline: "Offline \u2014 changes saved on this device, will sync once back online"
+        // Plain English. "Cloud sync connected" describes a technical
+        // arrangement that might stop working; "All your work is saved" answers
+        // the question the floor is actually asking. Same for the offline state
+        // — the reassurance comes first, because the fear is always that
+        // something has been lost.
+        connected: justRefreshed ? "\u2713 All your work is saved" : "All your work is saved",
+        saving: "Saving your work\u2026",
+        refreshing: "Checking for updates\u2026",
+        offline: "No internet \u2014 your work is saved on this device and will go up when you're back online"
       }[syncStatus];
       const dotColor = syncStatus === "offline" ? "#F3A6A6" : "#8FD9A8";
-      return /* @__PURE__ */ React.createElement("div", { className: "pt-3 mt-1", style: { borderTop: `1px solid #3D4676` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-1.5 text-xs mb-1", style: { color: dotColor } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 9 } }, "\u25CF"), " ", statusText), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: "#8D95C4" } }, syncEmail, " \xB7 checks automatically every 10s"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: "#8D95C4" } }, "App version ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 11 } }, APP_VERSION)), updateLatest && /* @__PURE__ */ React.createElement(
+      return /* @__PURE__ */ React.createElement("div", { className: "pt-3 mt-1", style: { borderTop: `1px solid #3D4676` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-1.5 text-xs mb-1", style: { color: dotColor } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 9 } }, "\u25CF"), " ", statusText), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: "#8D95C4" } }, syncEmail, syncEmail ? " \xB7 " : "", "saved on this device and backed up automatically"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: "#8D95C4" } }, "App version ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 11 } }, APP_VERSION)), updateLatest && /* @__PURE__ */ React.createElement(
         "button",
         {
           onClick: applyUpdate,
@@ -8585,6 +8717,9 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       localStorage.setItem("matrixFloorMode", String(next));
       if (next) navigateTo("dashboard");
     };
+    useEffect(() => {
+      document.body.classList.toggle("floor-mode", floorMode);
+    }, [floorMode]);
     const groupForView = (v) => (NAV_GROUPS.find((g) => g.keys.includes(v)) || {}).label;
     const [openGroup, setOpenGroup] = useState(() => groupForView("dashboard"));
     const [allScreensOpen, setAllScreensOpen] = useState(false);
@@ -9034,7 +9169,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           return;
         }
         await finishConnecting(client, email);
-        flash("Cloud sync connected");
+        flash("Connected \u2014 your work is saved and backed up");
       } catch (e) {
         setSyncError(e.message || "Could not connect.");
         setSyncStatus("error");
