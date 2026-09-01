@@ -606,16 +606,16 @@
     { key: "cases", label: "Cases", unit: "cases", actionType: "auto", actionLabel: "Auto \u2014 confirmed at shipping", icon: IconArchive, color: RED }
   ];
   var DEFAULT_MATERIALS = [
-    { id: "mat-pvc-natural", category: "pvc", name: "Natural", unit: "bags", currentStock: 0, lastStockTakeDate: null },
-    { id: "mat-pvc-blue", category: "pvc", name: "Blue", unit: "bags", currentStock: 0, lastStockTakeDate: null },
-    { id: "mat-pvc-red", category: "pvc", name: "Red", unit: "bags", currentStock: 0, lastStockTakeDate: null },
-    { id: "mat-pvc-yellow", category: "pvc", name: "Yellow", unit: "bags", currentStock: 0, lastStockTakeDate: null },
-    { id: "mat-pvc-green", category: "pvc", name: "Green", unit: "bags", currentStock: 0, lastStockTakeDate: null },
+    { id: "mat-pvc-natural", category: "pvc", name: "Natural", unit: "bags", currentStock: 0, lastStockTakeDate: null, batchCode: "258675" },
+    { id: "mat-pvc-blue", category: "pvc", name: "Blue", unit: "bags", currentStock: 0, lastStockTakeDate: null, batchCode: "259956" },
+    { id: "mat-pvc-red", category: "pvc", name: "Red", unit: "bags", currentStock: 0, lastStockTakeDate: null, batchCode: "260394" },
+    { id: "mat-pvc-yellow", category: "pvc", name: "Yellow", unit: "bags", currentStock: 0, lastStockTakeDate: null, batchCode: "260395" },
+    { id: "mat-pvc-green", category: "pvc", name: "Green", unit: "bags", currentStock: 0, lastStockTakeDate: null, batchCode: "260396" },
     { id: "mat-mylar-7-75", category: "mylar", name: "7mm 75 micron", unit: "rolls", currentStock: 0, lastStockTakeDate: null },
     { id: "mat-mylar-7-100", category: "mylar", name: "7mm 100 micron", unit: "rolls", currentStock: 0, lastStockTakeDate: null },
     { id: "mat-mylar-10-75", category: "mylar", name: "10mm 75 micron", unit: "rolls", currentStock: 0, lastStockTakeDate: null },
     { id: "mat-mylar-12-75", category: "mylar", name: "12mm 75 micron", unit: "rolls", currentStock: 0, lastStockTakeDate: null },
-    { id: "mat-glue", category: "glue", name: "Glue", unit: "blocks", currentStock: 0, lastStockTakeDate: null },
+    { id: "mat-glue", category: "glue", name: "Glue", unit: "blocks", currentStock: 0, lastStockTakeDate: null, batchCode: "" },
     { id: "mat-eva", category: "eva", name: "EVA", unit: "bags", currentStock: 0, lastStockTakeDate: null },
     ...EVA_DIES.map((d) => ({
       id: `mat-evareel-${d.key}`,
@@ -696,7 +696,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-01.19";
+  var APP_VERSION = "2026-09-01.21";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -806,7 +806,7 @@
     changeLog: { table: "change_log", cols: { entityId: "entity_id", undoneAt: "undone_at" } },
     customSizes: { table: "custom_sizes", cols: {} },
     productionRates: { table: "production_rates", cols: { metersPerMin: "meters_per_min" } },
-    materials: { table: "materials", cols: { currentStock: "current_stock", lastStockTakeDate: "last_stock_take_date" } },
+    materials: { table: "materials", cols: { currentStock: "current_stock", lastStockTakeDate: "last_stock_take_date", batchCode: "batch_code" } },
     materialMovements: { table: "material_movements", cols: { materialId: "material_id", sourceType: "source_type", sourceId: "source_id" } },
     // reelsMade is the only numeric here. Screw speed, line speed and width are
     // text on purpose, exactly as the glue line's ext_* settings are: operators
@@ -1136,6 +1136,21 @@
   }
   function orderLineItems(lineItems, orderId) {
     return lineItems.filter((li) => li.orderId === orderId);
+  }
+  var CODED_MATERIAL_CATEGORIES = ["pvc", "glue"];
+  var PVC_COLOUR_BY_HEIGHT = { "0.40": "Blue", "0.50": "Red", "0.60": "Yellow", "0.80": "Green" };
+  var PVC_DEFAULT_COLOUR = "Natural";
+  function pvcColourForSpec(spec) {
+    const m = String(spec || "").match(/(\d\.\d{1,2})\s*x/);
+    const height = m ? Number(m[1]).toFixed(2) : null;
+    return height && PVC_COLOUR_BY_HEIGHT[height] || PVC_DEFAULT_COLOUR;
+  }
+  function materialBatchCode(materials, category, name) {
+    const m = (materials || []).find((x) => x.category === category && (!name || x.name === name));
+    return m && m.batchCode ? String(m.batchCode) : "";
+  }
+  function pvcCodeForSpec(spec, materials) {
+    return materialBatchCode(materials, "pvc", pvcColourForSpec(spec));
   }
   function normalizeSpec(s) {
     return (s || "").replace(/\(\s*\d+(\.\d+)?\s*m\s*\)/gi, "").replace(/\breel\b/gi, "").replace(/\s+/g, " ").trim().toLowerCase();
@@ -7245,6 +7260,7 @@ Here's the order:`;
   }
   function MaterialsStockTakeView({ data, setData, materials, isInitial, onDone }) {
     const [quantities, setQuantities, stockTakeRestored, discardStockTake, clearStockTakeDraft] = useDraftState("stockTake", () => Object.fromEntries(materials.map((m) => [m.id, String(m.currentStock ?? 0)])));
+    const [codes, setCodes, , , clearCodesDraft] = useDraftState("stockTakeCodes", () => Object.fromEntries(materials.filter((m) => CODED_MATERIAL_CATEGORIES.includes(m.category)).map((m) => [m.id, String(m.batchCode ?? "")])));
     const byCat = materialsGroupedByCategory(materials);
     const save = () => {
       setData((prevData) => {
@@ -7255,11 +7271,13 @@ Here's the order:`;
           const newQty = Number(quantities[m.id] ?? m.currentStock ?? 0) || 0;
           const delta = newQty - Number(m.currentStock || 0);
           if (delta !== 0) newMovements.push({ id: uid("mm"), materialId: m.id, qty: delta, sourceType: "stocktake", sourceId: null, note: "Stock take", date: today });
-          return { ...m, currentStock: newQty, lastStockTakeDate: today };
+          const typedCode = CODED_MATERIAL_CATEGORIES.includes(m.category) ? String(codes[m.id] ?? "").trim() : "";
+          return { ...m, currentStock: newQty, lastStockTakeDate: today, batchCode: typedCode || m.batchCode || "" };
         });
         return { materials: nextMaterials, materialMovements: [...prevData.materialMovements || [], ...newMovements] };
       });
       clearStockTakeDraft();
+      clearCodesDraft();
       onDone();
     };
     return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "mb-5", style: { borderLeft: `4px solid ${ORANGE}`, paddingLeft: 16 } }, /* @__PURE__ */ React.createElement("h2", { className: "text-xl font-semibold font-display", style: { color: INK } }, isInitial ? "Let's get your starting stock levels" : "Stock Take"), /* @__PURE__ */ React.createElement("p", { className: "text-sm mt-1", style: { color: INK_MUTED } }, isInitial ? "Before Materials shows anything, walk the shelf and enter what's actually there for each item below. This becomes your starting point \u2014 everything after this is tracked automatically or checked off as it's used." : "Update any quantity that's changed since the last count. Anything left as-is stays untouched.")), /* @__PURE__ */ React.createElement(
@@ -7273,7 +7291,18 @@ Here's the order:`;
     ), MATERIAL_CATEGORIES.map((cat) => {
       const rows = byCat[cat.key] || [];
       const Icon = cat.icon;
-      return /* @__PURE__ */ React.createElement(Panel, { key: cat.key, className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-3" }, /* @__PURE__ */ React.createElement("span", { className: "flex items-center justify-center rounded", style: { width: 30, height: 30, background: cat.color + "18", color: cat.color } }, /* @__PURE__ */ React.createElement(Icon, { size: 17 })), /* @__PURE__ */ React.createElement("span", { className: "text-sm font-semibold font-display", style: { color: INK } }, cat.label)), /* @__PURE__ */ React.createElement("div", { className: "grid gap-3", style: { gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))" } }, rows.map((m) => /* @__PURE__ */ React.createElement("div", { key: m.id }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, m.name), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-1.5" }, /* @__PURE__ */ React.createElement(TextInput, { type: "number", value: quantities[m.id] ?? "", onChange: (e) => setQuantities({ ...quantities, [m.id]: e.target.value }) }), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, minWidth: 40 } }, m.unit))))));
+      return /* @__PURE__ */ React.createElement(Panel, { key: cat.key, className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-3" }, /* @__PURE__ */ React.createElement("span", { className: "flex items-center justify-center rounded", style: { width: 30, height: 30, background: cat.color + "18", color: cat.color } }, /* @__PURE__ */ React.createElement(Icon, { size: 17 })), /* @__PURE__ */ React.createElement("span", { className: "text-sm font-semibold font-display", style: { color: INK } }, cat.label)), /* @__PURE__ */ React.createElement("div", { className: "grid gap-3", style: { gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))" } }, rows.map((m) => /* @__PURE__ */ React.createElement("div", { key: m.id }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, m.name), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-1.5" }, /* @__PURE__ */ React.createElement(TextInput, { type: "number", value: quantities[m.id] ?? "", onChange: (e) => setQuantities({ ...quantities, [m.id]: e.target.value }) }), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, minWidth: 40 } }, m.unit)), CODED_MATERIAL_CATEGORIES.includes(m.category) && /* @__PURE__ */ React.createElement(
+        TextInput,
+        {
+          className: "mt-1",
+          placeholder: "code on the bag",
+          value: codes[m.id] ?? "",
+          onChange: (e) => setCodes({ ...codes, [m.id]: e.target.value }),
+          autoCorrect: "off",
+          autoCapitalize: "off",
+          spellCheck: "false"
+        }
+      )))));
     }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 items-center" }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: save }, isInitial ? "Save & unlock Materials" : "Save stock take"), !isInitial && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: onDone }, "Cancel")));
   }
   function MaterialVariantRow({ material, category, data, setData }) {
@@ -7290,7 +7319,7 @@ Here's the order:`;
       setAdjusting(false);
       setAdjustQty("");
     };
-    return /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between py-2.5", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "min-w-0" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-medium", style: { color: INK } }, material.name), material.lastStockTakeDate && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Last counted ", material.lastStockTakeDate)), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 shrink-0" }, adjusting ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(TextInput, { type: "number", value: adjustQty, onChange: (e) => setAdjustQty(e.target.value), style: { width: 70 }, autoFocus: true }), /* @__PURE__ */ React.createElement(Button, { variant: "primary", onClick: saveAdjust }, "Save"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setAdjusting(false) }, "Cancel")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "text-right" }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: low ? RED : INK, lineHeight: 1 } }, stock), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, material.unit)), category.actionType === "button" && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => applyDelta(-1, "bag_opened") }, category.actionLabel), category.actionType === "checkbox" && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, maxWidth: 90, textAlign: "right" } }, "Checked off on ", category.key === "glue" || category.key === "mylar" ? "Glue Line" : "Glue Line"), category.actionType === "auto" && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, maxWidth: 100, textAlign: "right" } }, category.actionLabel), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+    return /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between py-2.5", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "min-w-0" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-medium", style: { color: INK } }, material.name), material.batchCode && /* @__PURE__ */ React.createElement("div", { className: "text-xs font-mono", style: { color: INK_MUTED } }, "Code ", material.batchCode), material.lastStockTakeDate && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Last counted ", material.lastStockTakeDate)), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 shrink-0" }, adjusting ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(TextInput, { type: "number", value: adjustQty, onChange: (e) => setAdjustQty(e.target.value), style: { width: 70 }, autoFocus: true }), /* @__PURE__ */ React.createElement(Button, { variant: "primary", onClick: saveAdjust }, "Save"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setAdjusting(false) }, "Cancel")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "text-right" }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: low ? RED : INK, lineHeight: 1 } }, stock), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, material.unit)), category.actionType === "button" && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => applyDelta(-1, "bag_opened") }, category.actionLabel), category.actionType === "checkbox" && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, maxWidth: 90, textAlign: "right" } }, "Checked off on ", category.key === "glue" || category.key === "mylar" ? "Glue Line" : "Glue Line"), category.actionType === "auto" && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, maxWidth: 100, textAlign: "right" } }, category.actionLabel), /* @__PURE__ */ React.createElement("button", { onClick: () => {
       setAdjusting(true);
       setAdjustQty(String(stock));
     }, className: "opacity-40 hover:opacity-100 px-1", title: "Manually correct this count" }, "\u270E"))));
@@ -8444,7 +8473,8 @@ Here's the order:`;
         }
         if (isBox) {
           for (const r of newRuns) {
-            if (r.boxTypeId) working = { ...working, ...recordMaterialMovement(working, r.boxTypeId, -1, "auto_box", r.id, r.boxNumber || r.id) };
+            const made = Number(r.amountMade) || 0;
+            if (r.boxTypeId && made > 0) working = { ...working, ...recordMaterialMovement(working, r.boxTypeId, -made, "auto_box", r.id, r.boxNumber || r.id) };
           }
         }
         if (newRuns.length > 1) {
@@ -8479,7 +8509,7 @@ Here's the order:`;
         previousBatchCleared,
         // Every carton the entry consumed, so undo gives back exactly what was
         // taken — one entry can now be several rows with different cartons.
-        boxTypes: isBox ? newRuns.map((r) => r.boxTypeId).filter(Boolean) : [],
+        boxTypes: isBox ? newRuns.filter((r) => r.boxTypeId && Number(r.amountMade) > 0).map((r) => ({ id: r.boxTypeId, qty: Number(r.amountMade) })) : [],
         timerId
       });
       if (goesToOrder && typeof jumpToPacking === "function") {
@@ -8495,8 +8525,8 @@ Here's the order:`;
           bondingRuns: prevData.bondingRuns.filter((r) => !(justAdded.ids || [justAdded.id]).includes(r.id)),
           glueLineBatches: justAdded.batchCode ? prevData.glueLineBatches.map((b) => b.batchNumber === justAdded.batchCode ? { ...b, cleared: justAdded.previousBatchCleared } : b) : prevData.glueLineBatches
         };
-        for (const bt of justAdded.boxTypes || (justAdded.boxTypeId ? [justAdded.boxTypeId] : [])) {
-          working = { ...working, ...recordMaterialMovement(working, bt, 1, "manual", justAdded.id, "Undo \u2014 box entry removed") };
+        for (const bt of justAdded.boxTypes || []) {
+          working = { ...working, ...recordMaterialMovement(working, bt.id, bt.qty, "manual", justAdded.id, "Undo \u2014 box entry removed") };
         }
         return working;
       });
@@ -8911,6 +8941,19 @@ Here's the order:`;
   }
   function GlueLineRestFields({ values, setValues, orderOptions = [], existingBatchNumbers = [], materials = [], hideMaterialsSection = false }) {
     const codeWarnings = analyzeCodeStructure(values.batchNumber, values.date, existingBatchNumbers, ["PBL", "PPL"]);
+    const gluePrefix = values.direct === true ? "PBL" : "PPL";
+    const suggestedBatchNumber = nextBatchCode(values.date, existingBatchNumbers, { prefix: gluePrefix });
+    const spec = `${values.range === "Custom" ? "" : values.range || ""} ${values.size || ""}`.trim();
+    const pvcColour = pvcColourForSpec(spec);
+    const suggestedPvc = pvcCodeForSpec(spec, materials);
+    const suggestedGlue = materialBatchCode(materials, "glue");
+    useEffect(() => {
+      if (hideMaterialsSection) return;
+      const patch = {};
+      if (!String(values.glueBatch || "").trim() && suggestedGlue) patch.glueBatch = suggestedGlue;
+      if (values.direct === true && !String(values.extPvcCode || "").trim() && suggestedPvc) patch.extPvcCode = suggestedPvc;
+      if (Object.keys(patch).length) setValues({ ...values, ...patch });
+    }, [suggestedGlue, suggestedPvc, values.direct, values.size, values.range, values.glueBatch, values.extPvcCode, hideMaterialsSection]);
     const trimmedCode = (values.batchNumber || "").trim().toUpperCase();
     const prefixNote = values.prefixCorrected ? `Prefix set to ${values.direct === true ? "PBL \u2014 Direct" : "PPL \u2014 Indirect, from a reel"} to match the toggle above.` : null;
     return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(FieldGroup, { label: "BATCH" }, /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Batch number"), /* @__PURE__ */ React.createElement(
@@ -8928,7 +8971,17 @@ Here's the order:`;
         autoCapitalize: "off",
         spellCheck: "false"
       }
-    ), prefixNote && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: NAVY, maxWidth: 240 } }, prefixNote), codeWarnings.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: AMBER, maxWidth: 240 } }, codeWarnings.map((w, i) => /* @__PURE__ */ React.createElement("div", { key: i }, "\u26A0 ", w)))), /* @__PURE__ */ React.createElement("div", { style: { width: 120 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Glue batch"), /* @__PURE__ */ React.createElement(
+    ), prefixNote && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: NAVY, maxWidth: 240 } }, prefixNote), !hideMaterialsSection && suggestedBatchNumber && trimmedCode !== suggestedBatchNumber && /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        type: "button",
+        onClick: () => setValues({ ...values, batchNumber: suggestedBatchNumber, prefixCorrected: false }),
+        className: "text-xs mt-1 font-mono",
+        style: { background: "none", border: "none", color: NAVY, cursor: "pointer", padding: 0 }
+      },
+      "Use ",
+      suggestedBatchNumber
+    ), codeWarnings.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: AMBER, maxWidth: 240 } }, codeWarnings.map((w, i) => /* @__PURE__ */ React.createElement("div", { key: i }, "\u26A0 ", w)))), /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Glue batch"), /* @__PURE__ */ React.createElement(
       TextInput,
       {
         value: values.glueBatch,
@@ -8938,7 +8991,27 @@ Here's the order:`;
         autoCapitalize: "off",
         spellCheck: "false"
       }
-    ))), values.direct === true && /* @__PURE__ */ React.createElement(FieldGroup, { label: "EXTRUSION \u2014 SAME RUN" }, /* @__PURE__ */ React.createElement("div", { style: { width: 100 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Pin size"), /* @__PURE__ */ React.createElement(TextInput, { value: values.extPinSize, onChange: (e) => setValues({ ...values, extPinSize: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 110 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Width class"), /* @__PURE__ */ React.createElement(Select, { value: values.extWidthCategory, onChange: (e) => setValues({ ...values, extWidthCategory: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose\u2026"), WIDTH_CATEGORIES.map((w) => /* @__PURE__ */ React.createElement("option", { key: w, value: w }, w)))), /* @__PURE__ */ React.createElement("div", { style: { width: 110 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Screw speed"), /* @__PURE__ */ React.createElement(TextInput, { value: values.extScrewSpeed, onChange: (e) => setValues({ ...values, extScrewSpeed: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 110 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Line speed"), /* @__PURE__ */ React.createElement(TextInput, { value: values.extLineSpeed, onChange: (e) => setValues({ ...values, extLineSpeed: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 90 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Ex. height"), /* @__PURE__ */ React.createElement(TextInput, { value: values.extHeight, onChange: (e) => setValues({ ...values, extHeight: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 90 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Ex. width"), /* @__PURE__ */ React.createElement(TextInput, { value: values.extWidth, onChange: (e) => setValues({ ...values, extWidth: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 120 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "PVC code"), /* @__PURE__ */ React.createElement(TextInput, { value: values.extPvcCode, onChange: (e) => setValues({ ...values, extPvcCode: e.target.value }) }))), /* @__PURE__ */ React.createElement(FieldGroup, { label: "SPECIFICATIONS" }, /* @__PURE__ */ React.createElement("div", { style: { width: 90 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Gap"), /* @__PURE__ */ React.createElement(TextInput, { value: values.gapWidth, onChange: (e) => setValues({ ...values, gapWidth: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 90 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Height 1"), /* @__PURE__ */ React.createElement(TextInput, { value: values.internalHeight, onChange: (e) => setValues({ ...values, internalHeight: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 90 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Height 2"), /* @__PURE__ */ React.createElement(TextInput, { value: values.overallHeight, onChange: (e) => setValues({ ...values, overallHeight: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 130 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Die size"), (() => {
+    ), !hideMaterialsSection && suggestedGlue && String(values.glueBatch || "").trim().toUpperCase() !== suggestedGlue.toUpperCase() && /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        type: "button",
+        onClick: () => setValues({ ...values, glueBatch: suggestedGlue.toUpperCase() }),
+        className: "text-xs mt-1 font-mono",
+        style: { background: "none", border: "none", color: NAVY, cursor: "pointer", padding: 0 }
+      },
+      "Use ",
+      suggestedGlue
+    ), !hideMaterialsSection && !suggestedGlue && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: AMBER, maxWidth: 200 } }, "No glue code recorded \u2014 set it on Materials once and it fills itself from then on."))), values.direct === true && /* @__PURE__ */ React.createElement(FieldGroup, { label: "EXTRUSION \u2014 SAME RUN" }, /* @__PURE__ */ React.createElement("div", { style: { width: 100 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Pin size"), /* @__PURE__ */ React.createElement(TextInput, { value: values.extPinSize, onChange: (e) => setValues({ ...values, extPinSize: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 110 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Width class"), /* @__PURE__ */ React.createElement(Select, { value: values.extWidthCategory, onChange: (e) => setValues({ ...values, extWidthCategory: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose\u2026"), WIDTH_CATEGORIES.map((w) => /* @__PURE__ */ React.createElement("option", { key: w, value: w }, w)))), /* @__PURE__ */ React.createElement("div", { style: { width: 110 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Screw speed"), /* @__PURE__ */ React.createElement(TextInput, { value: values.extScrewSpeed, onChange: (e) => setValues({ ...values, extScrewSpeed: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 110 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Line speed"), /* @__PURE__ */ React.createElement(TextInput, { value: values.extLineSpeed, onChange: (e) => setValues({ ...values, extLineSpeed: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 90 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Ex. height"), /* @__PURE__ */ React.createElement(TextInput, { value: values.extHeight, onChange: (e) => setValues({ ...values, extHeight: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 90 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Ex. width"), /* @__PURE__ */ React.createElement(TextInput, { value: values.extWidth, onChange: (e) => setValues({ ...values, extWidth: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "PVC code", pvcColour ? ` \u2014 ${pvcColour}` : ""), /* @__PURE__ */ React.createElement(TextInput, { value: values.extPvcCode, onChange: (e) => setValues({ ...values, extPvcCode: e.target.value }) }), suggestedPvc && String(values.extPvcCode || "").trim() !== suggestedPvc && /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        type: "button",
+        onClick: () => setValues({ ...values, extPvcCode: suggestedPvc }),
+        className: "text-xs mt-1 font-mono",
+        style: { background: "none", border: "none", color: NAVY, cursor: "pointer", padding: 0 }
+      },
+      "Use ",
+      suggestedPvc
+    ))), /* @__PURE__ */ React.createElement(FieldGroup, { label: "SPECIFICATIONS" }, /* @__PURE__ */ React.createElement("div", { style: { width: 90 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Gap"), /* @__PURE__ */ React.createElement(TextInput, { value: values.gapWidth, onChange: (e) => setValues({ ...values, gapWidth: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 90 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Height 1"), /* @__PURE__ */ React.createElement(TextInput, { value: values.internalHeight, onChange: (e) => setValues({ ...values, internalHeight: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 90 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Height 2"), /* @__PURE__ */ React.createElement(TextInput, { value: values.overallHeight, onChange: (e) => setValues({ ...values, overallHeight: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 130 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Die size"), (() => {
       const currentSpec = values.range === "Custom" ? (values.size || "").trim() : `${values.range} ${(values.size || "").trim()}`;
       const matchingDies = glueDiesForSpec(currentSpec);
       const dieOptions = matchingDies.length > 0 ? matchingDies : ALL_GLUE_DIES;
@@ -9721,7 +9794,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       }
     ), addError && /* @__PURE__ */ React.createElement("div", { className: "text-sm mb-2", style: { color: RED } }, "\u26A0 ", addError), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: addRow }, "+ Add")))), /* @__PURE__ */ React.createElement("div", { className: "desktop-only" }, /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(SortTh, { col: "batchNumber", sortBy: glueSortBy, sortDir: glueSortDir, onSort: glueToggleSort, className: "text-left px-3 py-2", style: { width: 150 } }, "Batch number"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Manufactured"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Direct"), /* @__PURE__ */ React.createElement(SortTh, { col: "productSize", sortBy: glueSortBy, sortDir: glueSortDir, onSort: glueToggleSort, className: "text-left px-3 py-2" }, "Product size"), /* @__PURE__ */ React.createElement(Th, { w: 90 }, "Gap"), /* @__PURE__ */ React.createElement(Th, { w: 90 }, "Height 1"), /* @__PURE__ */ React.createElement(Th, { w: 90 }, "Height 2"), /* @__PURE__ */ React.createElement(Th, { w: 100 }, "Die size"), /* @__PURE__ */ React.createElement(Th, { w: 100 }, "PET type"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Glue batch"), /* @__PURE__ */ React.createElement(ThR, { w: 120 }, "Weight (g/5m)"), /* @__PURE__ */ React.createElement(SortTh, { col: "meterage", sortBy: glueSortBy, sortDir: glueSortDir, onSort: glueToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 110 } }, "Meterage (m)"), /* @__PURE__ */ React.createElement(SortTh, { col: "checked", sortBy: glueSortBy, sortDir: glueSortDir, onSort: glueToggleSort, className: "text-left px-3 py-2", style: { width: 100 } }, "Checked"), /* @__PURE__ */ React.createElement(ThR, { w: 110 }, "Time of day"), /* @__PURE__ */ React.createElement(SortTh, { col: "date", sortBy: glueSortBy, sortDir: glueSortDir, onSort: glueToggleSort, startDir: "desc", className: "text-left px-3 py-2", style: { width: 110 } }, "Date"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Assigned order"), /* @__PURE__ */ React.createElement(Th, null, "Comments"), /* @__PURE__ */ React.createElement("th", { style: { width: 70 } }))), /* @__PURE__ */ React.createElement("tbody", null, visibleGlueRows.map((r, i) => {
       const isEditing = editingId === r.id;
-      return /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}`, background: isEditing ? "#FFF8EF" : void 0 } }, isEditing ? /* @__PURE__ */ React.createElement("td", { className: "px-3 py-2", colSpan: 17 }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(GlueLineDirectField, { values: editForm, setValues: setEditForm }), /* @__PURE__ */ React.createElement(GlueLineSpecFields, { values: editForm, setValues: setEditForm, listId }), /* @__PURE__ */ React.createElement(GlueLineRestFields, { values: editForm, setValues: setEditForm, orderOptions, existingBatchNumbers: rows.map((r2) => r2.batchNumber).filter(Boolean), hideMaterialsSection: true }), editError && /* @__PURE__ */ React.createElement("div", { className: "text-sm mb-2", style: { color: RED } }, "\u26A0 ", editError))) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.batchNumber || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement("span", { style: { color: manufactureDateLabel(r.batchNumber, ["PBL", "PPL"]) ? INK : INK_MUTED } }, manufactureDateLabel(r.batchNumber, ["PBL", "PPL"]) || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, isDirectRow(r) ? "Yes" : "No", !isDirectRow(r) && plCodeOf(r) && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, plCodeOf(r))), isDirectRow(r) && r.extPinSize && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "pin ", r.extPinSize)), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 no-wrap" }, r.productSize), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.gapWidth || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.internalHeight || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.overallHeight || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.glueDie || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.petType || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.glueBatch || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, r.weightPer5m || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, r.meterage), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(ToggleSwitch, { on: r.checked === "Yes", onChange: () => toggleRowChecked(r.id) })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, r.timeOfDay ? /* @__PURE__ */ React.createElement(React.Fragment, null, r.timeOfDay, r.runtimeHrs != null && /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " (", r.runtimeHrs, "h)")) : ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.date || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(
+      return /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}`, background: isEditing ? "#FFF8EF" : void 0 } }, isEditing ? /* @__PURE__ */ React.createElement("td", { className: "px-3 py-2", colSpan: 17 }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(GlueLineDirectField, { values: editForm, setValues: setEditForm }), /* @__PURE__ */ React.createElement(GlueLineSpecFields, { values: editForm, setValues: setEditForm, listId }), /* @__PURE__ */ React.createElement(GlueLineRestFields, { values: editForm, setValues: setEditForm, orderOptions, existingBatchNumbers: rows.map((r2) => r2.batchNumber).filter(Boolean), materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, hideMaterialsSection: true }), editError && /* @__PURE__ */ React.createElement("div", { className: "text-sm mb-2", style: { color: RED } }, "\u26A0 ", editError))) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.batchNumber || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement("span", { style: { color: manufactureDateLabel(r.batchNumber, ["PBL", "PPL"]) ? INK : INK_MUTED } }, manufactureDateLabel(r.batchNumber, ["PBL", "PPL"]) || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, isDirectRow(r) ? "Yes" : "No", !isDirectRow(r) && plCodeOf(r) && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, plCodeOf(r))), isDirectRow(r) && r.extPinSize && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "pin ", r.extPinSize)), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 no-wrap" }, r.productSize), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.gapWidth || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.internalHeight || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.overallHeight || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.glueDie || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.petType || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.glueBatch || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, r.weightPer5m || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, r.meterage), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(ToggleSwitch, { on: r.checked === "Yes", onChange: () => toggleRowChecked(r.id) })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, r.timeOfDay ? /* @__PURE__ */ React.createElement(React.Fragment, null, r.timeOfDay, r.runtimeHrs != null && /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " (", r.runtimeHrs, "h)")) : ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.date || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(
         "select",
         {
           value: r.assignedOrderId || "",
