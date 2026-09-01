@@ -693,7 +693,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-01.15";
+  var APP_VERSION = "2026-09-01.16";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -909,16 +909,58 @@
     } catch {
     }
   }
-  function computeAllDeletedIds(prevData, nextData) {
+  function computeDeletedIdsByTable(prevData, nextData) {
     const prevTables = dataToTables(prevData);
     const nextTables = dataToTables(nextData);
-    const ids = [];
+    const out = {};
     for (const table of Object.keys(nextTables)) {
       const prevRows = prevTables[table] || [];
-      const nextRows = nextTables[table] || [];
-      for (const p of prevRows) if (!nextRows.some((r) => r.id === p.id)) ids.push(p.id);
+      const nextIds = new Set((nextTables[table] || []).map((r) => r.id));
+      const ids = prevRows.filter((p) => !nextIds.has(p.id)).map((p) => p.id);
+      if (ids.length) out[table] = ids;
     }
-    return ids;
+    return out;
+  }
+  function advancePrevForTables(prevData, nextData, okTables) {
+    const ok = new Set(okTables || []);
+    const out = { ...nextData };
+    for (const [key, { table }] of Object.entries(SYNC_TABLES)) {
+      if (!ok.has(table)) out[key] = prevData[key];
+    }
+    if (!ok.has("extrusion_runs")) {
+      out.extrusion1 = prevData.extrusion1;
+      out.extrusion2 = prevData.extrusion2;
+    }
+    if (!ok.has("tooling")) out.tooling = prevData.tooling;
+    return out;
+  }
+  function isNetworkFailure(f) {
+    const msg = String(f?.message || f || "").toLowerCase();
+    return msg.includes("failed to fetch") || msg.includes("fetch failed") || msg.includes("load failed") || msg.includes("networkerror") || msg.includes("network error") || msg.includes("network request failed") || msg.includes("timed out") || msg.includes("timeout") || msg.includes("err_internet_disconnected");
+  }
+  function isUpdateRequiredFailure(f) {
+    return String(f?.hint || "") === "app_update_required" || /out of date/i.test(String(f?.message || ""));
+  }
+  var MISSING_COLUMN_RE = /Could not find the '([^']+)' column/i;
+  async function upsertHealingMissingColumns(client, table, rows, warnings) {
+    let outgoing = rows;
+    const dropped = [];
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const { error } = await client.from(table).upsert(outgoing);
+      if (!error) {
+        if (dropped.length) warnings.push({ table, dropped, message: `saved without ${dropped.join(", ")} \u2014 the database doesn't have ${dropped.length === 1 ? "that column" : "those columns"} yet` });
+        return;
+      }
+      const m = MISSING_COLUMN_RE.exec(String(error.message || ""));
+      if (!m || dropped.includes(m[1])) throw error;
+      dropped.push(m[1]);
+      const col = m[1];
+      outgoing = outgoing.map((r) => {
+        const { [col]: _omit, ...rest } = r;
+        return rest;
+      });
+    }
+    throw new Error(`gave up after dropping ${dropped.join(", ")}`);
   }
   function mergeById(localRows, remoteRows, pendingDeletedIds, mapMergeFields) {
     const map = /* @__PURE__ */ new Map();
@@ -988,7 +1030,10 @@
   function currentSyncActor() {
     return (localStorage.getItem("matrixSyncEmail") || "").trim().toLowerCase() || null;
   }
-  async function pushSyncChanges(client, prevData, nextData) {
+  async function pushSyncChanges(client, prevData, nextData, opts = {}) {
+    const skip = new Set(opts.skipTables || []);
+    const okTables = [];
+    const warnings = [];
     const prevTables = dataToTables(prevData);
     const nextTables = dataToTables(nextData);
     const actor = currentSyncActor();
@@ -998,34 +1043,43 @@
       return rest;
     };
     for (const table of Object.keys(nextTables)) {
+      if (skip.has(table)) {
+        console.warn(`Push skipped for table "${table}": its fetch failed, so there is nothing safe to diff against.`);
+        continue;
+      }
       try {
         const prevRows = prevTables[table] || [];
         const nextRows = nextTables[table] || [];
+        const prevById = new Map(prevRows.map((p) => [p.id, p]));
         const changed = nextRows.filter((r) => {
-          const before = prevRows.find((p) => p.id === r.id);
+          const before = prevById.get(r.id);
           return !before || JSON.stringify(stripMeta(before)) !== JSON.stringify(stripMeta(r));
         });
         const deletedIds = prevRows.filter((p) => !p.deleted && !nextRows.some((r) => r.id === p.id)).map((p) => p.id);
         if (changed.length) {
           const outgoing = actor ? changed.map((r) => ({ ...r, updated_by: actor })) : changed;
-          const { error } = await client.from(table).upsert(outgoing);
-          if (error) throw error;
+          await upsertHealingMissingColumns(client, table, outgoing, warnings);
         }
         if (deletedIds.length) {
           const { error } = await client.from(table).update(actor ? { deleted: true, updated_by: actor } : { deleted: true }).in("id", deletedIds);
           if (error) throw error;
         }
+        okTables.push(table);
       } catch (e) {
         const detail = e?.message || e?.details || e?.hint || String(e);
         console.error(`Push failed for table "${table}":`, detail);
-        failures.push({ table, message: detail });
+        failures.push({ table, message: detail, code: e?.code || null, hint: e?.hint || null, status: e?.status || null });
+        if (isUpdateRequiredFailure(e)) break;
       }
     }
     if (failures.length) {
       const err = new Error(`Sync failed for: ${failures.map((f) => f.table).join(", ")} \u2014 everything else pushed successfully.`);
       err.failures = failures;
+      err.okTables = okTables;
+      err.warnings = warnings;
       throw err;
     }
+    return { okTables, warnings };
   }
   function countPendingChanges(prevData, nextData) {
     const prevTables = dataToTables(prevData);
@@ -9928,7 +9982,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       ago && /* @__PURE__ */ React.createElement("span", { style: { color: stale ? "#F5D48A" : "#8990B8" } }, "\xB7 ", stale ? `stuck \u2014 last real contact ${ago}` : ago)
     );
   }
-  function SyncPanel({ syncStatus, syncEmail, syncError, connectSync, disconnectSync, refreshFromCloud, syncFailureDetail, updateLatest, applyUpdate }) {
+  function SyncPanel({ syncStatus, syncEmail, syncError, connectSync, disconnectSync, refreshFromCloud, syncFailureDetail, syncWarnings, updateLatest, applyUpdate }) {
     const [email, setEmail] = useState(syncEmail);
     useEffect(() => {
       if (syncEmail) setEmail(syncEmail);
@@ -9946,7 +10000,9 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       prevStatusRef.current = syncStatus;
     }, [syncStatus]);
     if (["connected", "saving", "refreshing", "offline"].includes(syncStatus)) {
-      const statusText = {
+      const rejected = syncFailureDetail && syncFailureDetail.length > 0;
+      const updateRequired = rejected && syncFailureDetail.some(isUpdateRequiredFailure);
+      let statusText = {
         // Plain English. "Cloud sync connected" describes a technical
         // arrangement that might stop working; "All your work is saved" answers
         // the question the floor is actually asking. Same for the offline state
@@ -9957,7 +10013,8 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         refreshing: "Checking for updates\u2026",
         offline: "No internet \u2014 your work is saved on this device and will go up when you're back online"
       }[syncStatus];
-      const dotColor = syncStatus === "offline" ? "#F3A6A6" : "#8FD9A8";
+      if (rejected && syncStatus !== "offline") statusText = updateRequired ? "This app is out of date \u2014 your changes are saved on this device but NOT going to the cloud until you update" : "Saved on this device \u2014 but the cloud is refusing some of it (details below)";
+      const dotColor = syncStatus === "offline" || rejected ? "#F3A6A6" : "#8FD9A8";
       return /* @__PURE__ */ React.createElement("div", { className: "pt-3 mt-1", style: { borderTop: `1px solid #3D4676` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-1.5 text-xs mb-1", style: { color: dotColor } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 9 } }, "\u25CF"), " ", statusText), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: "#8D95C4" } }, syncEmail, syncEmail ? " \xB7 " : "", "saved on this device and backed up automatically"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: "#8D95C4" } }, "App version ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 11 } }, APP_VERSION)), updateLatest && /* @__PURE__ */ React.createElement(
         "button",
         {
@@ -9968,7 +10025,20 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         /* @__PURE__ */ React.createElement("span", { className: "font-semibold" }, "Version ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 11 } }, updateLatest), " is available"),
         /* @__PURE__ */ React.createElement("br", null),
         "Tap to load it. The page reloads, so finish anything you're typing first."
-      ), syncStatus === "offline" && syncFailureDetail && syncFailureDetail.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2 p-2", style: { background: "rgba(243,166,166,0.12)", border: "1px solid rgba(243,166,166,0.4)", borderRadius: 5, color: "#FBD9D9" } }, /* @__PURE__ */ React.createElement("div", { className: "font-semibold mb-1" }, "This isn't a dropped connection \u2014 Supabase is rejecting specific data:"), syncFailureDetail.map((f, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "mb-1" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, f.table), ": ", f.message)), /* @__PURE__ */ React.createElement("div", { style: { color: "#D9C7C7" } }, "Everything else is still syncing normally \u2014 only the item(s) above are stuck. Send this to Claude to fix.")), /* @__PURE__ */ React.createElement(
+      ), updateRequired && /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          onClick: applyUpdate,
+          className: "w-full text-left text-xs px-3 py-2.5 mb-2",
+          style: { background: "rgba(243,166,166,0.14)", border: "1px solid rgba(243,166,166,0.5)", borderRadius: 5, color: "#FBD9D9", cursor: "pointer" }
+        },
+        /* @__PURE__ */ React.createElement("span", { className: "font-semibold" }, "Update needed \u2014 the database is refusing writes from build ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 11 } }, APP_VERSION)),
+        /* @__PURE__ */ React.createElement("br", null),
+        syncFailureDetail.find(isUpdateRequiredFailure).message,
+        /* @__PURE__ */ React.createElement("br", null),
+        /* @__PURE__ */ React.createElement("span", { className: "font-semibold" }, "Tap here to update."),
+        " Nothing typed on this device is lost \u2014 it goes up once the new build loads."
+      ), rejected && !updateRequired && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2 p-2", style: { background: "rgba(243,166,166,0.12)", border: "1px solid rgba(243,166,166,0.4)", borderRadius: 5, color: "#FBD9D9" } }, /* @__PURE__ */ React.createElement("div", { className: "font-semibold mb-1" }, syncStatus === "offline" ? "The connection dropped while saving:" : "This isn't a dropped connection \u2014 Supabase is rejecting specific data:"), syncFailureDetail.map((f, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "mb-1" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, f.table), ": ", f.message)), /* @__PURE__ */ React.createElement("div", { style: { color: "#D9C7C7" } }, "Everything else is still syncing normally \u2014 only the item(s) above are stuck. Send this to Claude to fix.")), syncWarnings && syncWarnings.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2 p-2", style: { background: "rgba(245,212,138,0.10)", border: "1px solid rgba(245,212,138,0.4)", borderRadius: 5, color: "#F7E3B4" } }, /* @__PURE__ */ React.createElement("div", { className: "font-semibold mb-1" }, "Saved, but the database is missing a column:"), syncWarnings.map((w, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "mb-1" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, w.table), ": ", w.message)), /* @__PURE__ */ React.createElement("div", { style: { color: "#D9CBA8" } }, "Send this to Claude \u2014 it's a one-line migration.")), /* @__PURE__ */ React.createElement(
         "button",
         {
           onClick: refreshFromCloud,
@@ -10087,6 +10157,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const [showMoreOptions, setShowMoreOptions] = useState(false);
     const [syncStatus, setSyncStatus] = useState("off");
     const [syncFailureDetail, setSyncFailureDetail] = useState(null);
+    const [syncWarnings, setSyncWarnings] = useState(null);
     const [pendingCount, setPendingCount] = useState(0);
     const [lastSyncedAt, setLastSyncedAt] = useState(() => {
       const stored = localStorage.getItem(LAST_SYNCED_KEY);
@@ -10212,31 +10283,45 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         return;
       }
       const prev = prevDataRef.current;
-      const newlyDeleted = computeAllDeletedIds(prev, data);
+      const deletedByTable = computeDeletedIdsByTable(prev, data);
+      const newlyDeleted = Object.values(deletedByTable).flat();
       if (newlyDeleted.length) {
         for (const id of newlyDeleted) pendingDeletionsRef.current.add(id);
         savePendingDeletions(pendingDeletionsRef.current);
       }
+      const releasePendingDeletions = (tables) => {
+        let changed = false;
+        for (const table of tables) for (const id of deletedByTable[table] || []) {
+          pendingDeletionsRef.current.delete(id);
+          changed = true;
+        }
+        if (changed) savePendingDeletions(pendingDeletionsRef.current);
+      };
       setPendingCount(countPendingChanges(prev, data));
       setSyncStatus("saving");
-      pushSyncChanges(syncClientRef.current, prev, data).then(() => {
+      pushSyncChanges(syncClientRef.current, prev, data).then((res) => {
         prevDataRef.current = data;
         setSyncStatus("connected");
         setPendingCount(0);
         setSyncFailureDetail(null);
         markSynced();
-        if (newlyDeleted.length) {
-          for (const id of newlyDeleted) pendingDeletionsRef.current.delete(id);
-          savePendingDeletions(pendingDeletionsRef.current);
-        }
+        setSyncWarnings(res && res.warnings && res.warnings.length ? res.warnings : null);
+        releasePendingDeletions(Object.keys(deletedByTable));
       }).catch((err) => {
         console.error("Sync push failed:", err);
         if (isAuthError(err) || (err.failures || []).some(isAuthError)) {
           handleAuthLossRef.current && handleAuthLossRef.current();
           return;
         }
-        setSyncStatus("offline");
-        if (err.failures) setSyncFailureDetail(err.failures);
+        const failures = err.failures || [];
+        const okTables = err.okTables || [];
+        prevDataRef.current = advancePrevForTables(prev, data, okTables);
+        releasePendingDeletions(okTables);
+        setPendingCount(countPendingChanges(prevDataRef.current, data));
+        if (err.warnings && err.warnings.length) setSyncWarnings(err.warnings);
+        const offline = failures.length === 0 || failures.some(isNetworkFailure);
+        setSyncStatus(offline ? "offline" : "connected");
+        setSyncFailureDetail(failures.length ? failures : null);
       });
     }, [data]);
     const isAuthError = (e) => {
@@ -10351,14 +10436,18 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       setSyncStatus("connected");
       markSynced();
       try {
-        await pushSyncChanges(client, remote, merged);
+        const res = await pushSyncChanges(client, remote, merged, { skipTables: connectRes.failed });
         prevDataRef.current = merged;
         setPendingCount(0);
         setSyncFailureDetail(null);
+        setSyncWarnings(res.warnings && res.warnings.length ? res.warnings : null);
         markSynced();
       } catch (e) {
         console.error("Catch-up push failed:", e);
+        prevDataRef.current = advancePrevForTables(remote, merged, e.okTables || []);
+        setPendingCount(countPendingChanges(prevDataRef.current, merged));
         if (e.failures) setSyncFailureDetail(e.failures);
+        if (e.warnings && e.warnings.length) setSyncWarnings(e.warnings);
       }
       const pullAndMerge = async () => {
         try {
@@ -10372,15 +10461,21 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           markSynced();
           if (syncStatusRef.current === "offline") {
             try {
-              await pushSyncChanges(client, remote2, merged2);
+              const pushRes = await pushSyncChanges(client, remote2, merged2, { skipTables: res.failed });
               prevDataRef.current = merged2;
               setSyncStatus("connected");
               setPendingCount(0);
               setSyncFailureDetail(null);
+              setSyncWarnings(pushRes.warnings && pushRes.warnings.length ? pushRes.warnings : null);
               markSynced();
             } catch (e) {
               console.error("Offline-recovery push failed:", e);
+              prevDataRef.current = advancePrevForTables(remote2, merged2, e.okTables || []);
+              setPendingCount(countPendingChanges(prevDataRef.current, merged2));
               if (e.failures) setSyncFailureDetail(e.failures);
+              if (e.warnings && e.warnings.length) setSyncWarnings(e.warnings);
+              const failures = e.failures || [];
+              if (failures.length && !failures.some(isNetworkFailure)) setSyncStatus("connected");
             }
           }
         } catch (e) {
@@ -10745,7 +10840,22 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         style: { background: "none", border: "none", padding: 6, width: 36, display: "flex", alignItems: "center", justifyContent: "center", color: NAVY }
       },
       /* @__PURE__ */ React.createElement("svg", { width: "22", height: "22", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" }, /* @__PURE__ */ React.createElement("path", { d: "M15 18l-6-6 6-6" }))
-    ) : /* @__PURE__ */ React.createElement("div", { style: { width: 36 } })), syncEnabled && (pendingCount > 0 || syncStatus === "offline") && /* @__PURE__ */ React.createElement("div", { className: "no-print", style: {
+    ) : /* @__PURE__ */ React.createElement("div", { style: { width: 36 } })), syncEnabled && syncStatus !== "offline" && syncFailureDetail && syncFailureDetail.length > 0 && (syncFailureDetail.some(isUpdateRequiredFailure) ? /* @__PURE__ */ React.createElement("div", { className: "no-print", onClick: applyUpdate, role: "button", style: {
+      background: RED,
+      color: "#fff",
+      cursor: "pointer",
+      fontSize: 13,
+      fontWeight: 600,
+      textAlign: "center",
+      padding: "6px 10px"
+    } }, "\u26A0 This app is out of date and its changes are NOT reaching the cloud \u2014 tap here to update. Nothing you've typed is lost.") : /* @__PURE__ */ React.createElement("div", { className: "no-print", style: {
+      background: RED,
+      color: "#fff",
+      fontSize: 13,
+      fontWeight: 600,
+      textAlign: "center",
+      padding: "6px 10px"
+    } }, "\u26A0 The cloud is refusing ", pendingCount > 0 ? `${pendingCount} change${pendingCount === 1 ? "" : "s"}` : "some changes", " from this device \u2014 saved here, not there. Open Cloud Sync in the menu for what to send to Claude.")), syncEnabled && (pendingCount > 0 || syncStatus === "offline") && !(syncStatus !== "offline" && syncFailureDetail && syncFailureDetail.length > 0) && /* @__PURE__ */ React.createElement("div", { className: "no-print", style: {
       background: syncStatus === "offline" ? RED : AMBER,
       color: "#fff",
       fontSize: 13,
@@ -10851,7 +10961,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           /* @__PURE__ */ React.createElement("span", null, n.label)
         );
       }));
-    }))), /* @__PURE__ */ React.createElement("div", { className: "pt-4 space-y-2.5", style: { borderTop: `1px solid #3D4676` } }, /* @__PURE__ */ React.createElement("input", { ref: fileInputRef, type: "file", accept: "application/json", onChange: handleRestoreFile, style: { display: "none" } }), /* @__PURE__ */ React.createElement("div", { ref: sidebarSyncRef }, /* @__PURE__ */ React.createElement(SyncPanel, { syncStatus, syncEmail, syncError, connectSync, disconnectSync, refreshFromCloud, syncFailureDetail, updateLatest, applyUpdate })), modePasswordModal, /* @__PURE__ */ React.createElement("button", { onClick: () => setShowMoreOptions(!showMoreOptions), className: "text-xs pt-2", style: { background: "none", border: "none", color: "#8D95C4", cursor: "pointer", padding: "8px 0 0 0" } }, "More options"), showMoreOptions && /* @__PURE__ */ React.createElement("div", { className: "pt-1 space-y-2" }, /* @__PURE__ */ React.createElement("button", { onClick: handleBackup, className: "w-full text-left text-xs px-3 py-2", style: { background: "#2E3868", color: "#fff", borderRadius: 5 } }, "\u2B73 Download backup (.json)"), /* @__PURE__ */ React.createElement("div", { className: "text-xs px-3", style: { color: backupAge.stale ? "#FFC46B" : "#8D95C4", marginTop: -4 } }, backupAge.stale && "\u26A0 ", backupAge.label), /* @__PURE__ */ React.createElement("button", { onClick: handleRestoreClick, className: "w-full text-left text-xs px-3 py-2", style: { background: "#2E3868", color: "#fff", borderRadius: 5 } }, "\u2B71 Restore from backup"), !testMode && /* @__PURE__ */ React.createElement("button", { onClick: loadTestData, className: "w-full text-left text-xs px-3 py-2", style: { background: "#2E3868", color: "#fff", borderRadius: 5 } }, "\u{1F9EA} Load test data"), testMode && /* @__PURE__ */ React.createElement("button", { onClick: goLive, className: "w-full text-left text-xs px-3 py-2", style: { background: ORANGE, color: "#fff", borderRadius: 5, fontWeight: 600 } }, "\u{1F680} Go live (clears test data)"))), /* @__PURE__ */ React.createElement("div", { style: { position: "relative", minHeight: 190, marginLeft: -16, marginRight: -16, marginTop: 24, marginBottom: -16, overflow: "hidden" } }, /* @__PURE__ */ React.createElement("div", { style: {
+    }))), /* @__PURE__ */ React.createElement("div", { className: "pt-4 space-y-2.5", style: { borderTop: `1px solid #3D4676` } }, /* @__PURE__ */ React.createElement("input", { ref: fileInputRef, type: "file", accept: "application/json", onChange: handleRestoreFile, style: { display: "none" } }), /* @__PURE__ */ React.createElement("div", { ref: sidebarSyncRef }, /* @__PURE__ */ React.createElement(SyncPanel, { syncStatus, syncEmail, syncError, connectSync, disconnectSync, refreshFromCloud, syncFailureDetail, syncWarnings, updateLatest, applyUpdate })), modePasswordModal, /* @__PURE__ */ React.createElement("button", { onClick: () => setShowMoreOptions(!showMoreOptions), className: "text-xs pt-2", style: { background: "none", border: "none", color: "#8D95C4", cursor: "pointer", padding: "8px 0 0 0" } }, "More options"), showMoreOptions && /* @__PURE__ */ React.createElement("div", { className: "pt-1 space-y-2" }, /* @__PURE__ */ React.createElement("button", { onClick: handleBackup, className: "w-full text-left text-xs px-3 py-2", style: { background: "#2E3868", color: "#fff", borderRadius: 5 } }, "\u2B73 Download backup (.json)"), /* @__PURE__ */ React.createElement("div", { className: "text-xs px-3", style: { color: backupAge.stale ? "#FFC46B" : "#8D95C4", marginTop: -4 } }, backupAge.stale && "\u26A0 ", backupAge.label), /* @__PURE__ */ React.createElement("button", { onClick: handleRestoreClick, className: "w-full text-left text-xs px-3 py-2", style: { background: "#2E3868", color: "#fff", borderRadius: 5 } }, "\u2B71 Restore from backup"), !testMode && /* @__PURE__ */ React.createElement("button", { onClick: loadTestData, className: "w-full text-left text-xs px-3 py-2", style: { background: "#2E3868", color: "#fff", borderRadius: 5 } }, "\u{1F9EA} Load test data"), testMode && /* @__PURE__ */ React.createElement("button", { onClick: goLive, className: "w-full text-left text-xs px-3 py-2", style: { background: ORANGE, color: "#fff", borderRadius: 5, fontWeight: 600 } }, "\u{1F680} Go live (clears test data)"))), /* @__PURE__ */ React.createElement("div", { style: { position: "relative", minHeight: 190, marginLeft: -16, marginRight: -16, marginTop: 24, marginBottom: -16, overflow: "hidden" } }, /* @__PURE__ */ React.createElement("div", { style: {
       position: "absolute",
       inset: 0,
       backgroundImage: `url(data:image/jpeg;base64,${SIDEBAR_PHOTO_B64})`,
