@@ -510,9 +510,11 @@
   function fmtMoney(n) {
     return "\xA3" + (Number(n) || 0).toFixed(2);
   }
-  function todayISO() {
-    const d = /* @__PURE__ */ new Date();
+  function localISO(d) {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  function todayISO() {
+    return localISO(/* @__PURE__ */ new Date());
   }
   function daysAgoLocal(n) {
     const d = /* @__PURE__ */ new Date();
@@ -691,7 +693,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-08-31.36";
+  var APP_VERSION = "2026-09-01.3";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1756,12 +1758,19 @@
     }
     return false;
   }
+  function reelIsIndirect(g) {
+    if (g.plBaseCode === "From Reel") return true;
+    if (g.plBaseCode === "Direct" || g.direct === true) return false;
+    if (String(g.batchNumber || "").toUpperCase().startsWith("PPL")) return true;
+    return null;
+  }
   function runsIndirect(spec, glueLineBatches) {
     const recent = (glueLineBatches || []).filter((g) => !g.deleted && looseSpecMatch(g.productSize, spec)).sort((a, z) => String(z.date || z.batchNumber || "").localeCompare(String(a.date || a.batchNumber || ""))).slice(0, INDIRECT_HISTORY_SAMPLE);
-    if (recent.length === 0) return runsIndirectByRule(spec);
-    const indirectCount = recent.filter((g) => !(g.direct === true || g.plBaseCode === "Direct")).length;
-    if (indirectCount * 2 === recent.length) return runsIndirectByRule(spec);
-    return indirectCount * 2 > recent.length;
+    const votes = recent.map(reelIsIndirect).filter((v) => v !== null);
+    if (votes.length === 0) return runsIndirectByRule(spec);
+    const indirectCount = votes.filter(Boolean).length;
+    if (indirectCount * 2 === votes.length) return runsIndirectByRule(spec);
+    return indirectCount * 2 > votes.length;
   }
   function gapFromSpec(spec) {
     const s = spec || "";
@@ -1856,7 +1865,7 @@
     for (const mins of jobMinutes) {
       let remaining = mins;
       const startDay = dayIndex;
-      const startDate = cur.toISOString().slice(0, 10);
+      const startDate = localISO(cur);
       while (remaining > left && guard++ < 400) {
         remaining -= left;
         cur.setDate(cur.getDate() + 1);
@@ -1864,7 +1873,7 @@
         left = glueShiftMinutes(cur);
       }
       left -= remaining;
-      out.push({ startDay, startDate, endDay: dayIndex, endDate: cur.toISOString().slice(0, 10) });
+      out.push({ startDay, startDate, endDay: dayIndex, endDate: localISO(cur) });
     }
     return out;
   }
@@ -2060,6 +2069,21 @@
       const picked = stockPicks.filter((p) => p.productSpec === spec).reduce((s, p) => s + Number(p.qtyPicked || 0), 0);
       return { spec, made, picked, inStock: made - picked };
     }).filter((r) => r.made > 0 || r.picked > 0);
+  }
+  function unknownReelWarning(batchCode, glueLineBatches) {
+    const code = (batchCode || "").trim();
+    if (!code) return null;
+    const known = (glueLineBatches || []).some((b) => !b.deleted && b.batchNumber === code);
+    if (known) return null;
+    return `Reel ${code} isn't logged on Glue Line. Check the code \u2014 or if it's real, log it there too, or the app can't see what's left on it.`;
+  }
+  function splitWarning(amountMade, onOrderQty, toStock) {
+    const made = Number(amountMade) || 0;
+    if (made <= 0) return null;
+    const placed = (Number(onOrderQty) || 0) + (Number(toStock) || 0);
+    if (placed === made) return null;
+    const gap = made - placed;
+    return gap > 0 ? `${made} made but only ${placed} placed \u2014 ${gap} box${gap === 1 ? "" : "es"} ${gap === 1 ? "isn't" : "aren't"} going anywhere. Put the rest to order or to stock, or they vanish from every screen.` : `${placed} placed but only ${made} made \u2014 ${-gap} more than exist.`;
   }
   function reelCapacityWarning(batchCode, amountMade, metersPerBox, glueLineBatches, bondingRuns, excludeId) {
     const code = (batchCode || "").trim();
@@ -2526,6 +2550,8 @@
     return /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5", style: { borderLeft: "4px solid #6B5BA8" } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1", style: { color: NAVY } }, "EVA rack \u2014 count the reels"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED } }, "Full reels, to the nearest half. Part-used reels count as a half."), /* @__PURE__ */ React.createElement("div", { className: "grid", style: { gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: "8px 14px" } }, rack.map((d) => /* @__PURE__ */ React.createElement("div", { key: d.key, className: "flex items-center justify-between", style: { borderTop: `1px solid ${BORDER}`, paddingTop: 6 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "text-xs font-medium", style: { color: INK } }, d.label), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, d.boxesPerReel != null ? `~${d.boxesPerReel} boxes/reel` : d.yieldSample > 0 ? `${d.yieldSample} finished so far` : "yield not learned")), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-1 shrink-0" }, /* @__PURE__ */ React.createElement("button", { onClick: () => bump(d.key, -0.5), className: "text-xs", style: { width: 26, height: 26, borderRadius: 4, border: `1px solid ${BORDER}`, background: "#fff" } }, "\u2212"), /* @__PURE__ */ React.createElement("span", { className: "text-sm font-medium", style: { minWidth: 28, textAlign: "center" } }, draft[d.key]), /* @__PURE__ */ React.createElement("button", { onClick: () => bump(d.key, 0.5), className: "text-xs", style: { width: 26, height: 26, borderRadius: 4, border: `1px solid ${BORDER}`, background: "#fff" } }, "+"))))), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mt-4" }, /* @__PURE__ */ React.createElement("button", { onClick: save, className: "text-xs px-3 py-2", style: { background: GREEN, color: "#fff", borderRadius: 5, fontWeight: 600 } }, "Save count"), /* @__PURE__ */ React.createElement("button", { onClick: () => setOpen(false), className: "text-xs", style: { background: "none", border: "none", color: INK_MUTED, textDecoration: "underline", cursor: "pointer" } }, "Cancel")));
   }
   function TodayView({ data, setData, jumpToProduction, jumpToOrder }) {
+    const [showAllExtrude, setShowAllExtrude] = useState(false);
+    const [showAllWaiting, setShowAllWaiting] = useState(false);
     const allRows = productionOutstandingRows(data.orders, data.lineItems, data.bondingRuns, data.stockPicks);
     const dueRows = dueDateRows(data.orders, data.lineItems, data.bondingRuns);
     const byCategory = SIZE_CATEGORIES.map((c) => {
@@ -2590,7 +2616,23 @@
     })(), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5", style: { borderLeft: `4px solid ${NAVY}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1", style: { color: NAVY } }, "How this schedule is worked out"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, lineHeight: 1.6 } }, "Three things, every time: ", /* @__PURE__ */ React.createElement("strong", { style: { color: INK } }, "the reels actually in the rack"), " (checked, not cleared, not scrapped, with metres still left on them),", /* @__PURE__ */ React.createElement("strong", { style: { color: INK } }, " what's still left to make"), " on live orders after everything already bonded is taken off, and ", /* @__PURE__ */ React.createElement("strong", { style: { color: INK } }, "which orders are urgent"), " \u2014 priority first, then due date. Nothing here is a target or an estimate. Every line is a real reel or a real shortfall, and each one says why it's on the list.")), /* @__PURE__ */ React.createElement(EvaRackPanel, { rack: evaRack, setData }), /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold font-display mb-2", style: { color: INK } }, "Today's plan"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED } }, "Ranked by due date and priority \u2014 each line says why it's there. If a line looks wrong, the fix is usually a due date, a priority, or an unchecked reel."), /* @__PURE__ */ React.createElement("div", { className: "grid gap-4 mb-6", style: { gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))" } }, /* @__PURE__ */ React.createElement(PlanLane, { title: "Ship", colour: GREEN, verb: "ready to ship", tasks: plan.ship, jumpToOrder }), /* @__PURE__ */ React.createElement(PlanLane, { title: "Pick", colour: "#2E8B57", verb: "pickable", tasks: plan.pick, jumpToOrder }), /* @__PURE__ */ React.createElement(PlanLane, { title: "Bond", colour: NAVY, verb: "ready to bond", tasks: plan.bond, jumpToOrder }), /* @__PURE__ */ React.createElement(PlanLane, { title: "Glue line", colour: ORANGE, verb: "waiting on glue line", tasks: plan.glue, jumpToOrder })), dueRows.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-6", style: { borderLeft: `4px solid ${RED}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1", style: { color: RED } }, "Due soon or overdue"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED } }, "Based on due date alone, regardless of whether Priority was set \u2014 orders due within 3 days, or already overdue."), /* @__PURE__ */ React.createElement("table", { className: "text-sm", style: { width: "100%", maxWidth: 880 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { className: "text-xs uppercase tracking-wide", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement(Th, null, "Order"), /* @__PURE__ */ React.createElement(Th, null, "Customer"), /* @__PURE__ */ React.createElement(Th, { w: 140 }, "Due"), /* @__PURE__ */ React.createElement(ThR, { w: 100 }, "% complete"))), /* @__PURE__ */ React.createElement("tbody", null, dueRows.map((o) => {
       const urgent = o.daysUntil <= 0;
       return /* @__PURE__ */ React.createElement("tr", { key: o.id, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs font-semibold" }, o.id)), /* @__PURE__ */ React.createElement("td", null, o.customer), /* @__PURE__ */ React.createElement("td", { style: { color: urgent ? RED : AMBER, fontWeight: 600 } }, dueDateLabel(o.daysUntil)), /* @__PURE__ */ React.createElement("td", { className: "text-right font-medium", style: { color: o.pct >= 100 ? GREEN : INK } }, o.pct, "%"));
-    })))), /* @__PURE__ */ React.createElement("div", { className: "grid gap-4 mb-6", style: { gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))" } }, /* @__PURE__ */ React.createElement(Panel, { className: "p-4", style: { borderLeft: "4px solid #6B5BA8" } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between mb-1" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold", style: { color: NAVY } }, "Extrusion \u2014 reels"), extrusion.waiting.length > 0 && /* @__PURE__ */ React.createElement(Badge, { color: GREEN }, extrusion.waiting.length, " waiting")), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED } }, "Direct runs are extruded on the glue line and don't appear here \u2014 only PL reels, which are extruded first and glue-lined later."), extrusion.waiting.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mb-3" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: GREEN } }, "EXTRUDED \u2014 READY FOR GLUE LINE"), extrusion.waiting.slice(0, 5).map((e) => /* @__PURE__ */ React.createElement("div", { key: e.id, className: "flex items-center justify-between text-xs py-1.5", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("span", { className: "no-wrap", style: { maxWidth: 210, overflow: "hidden", textOverflow: "ellipsis" } }, /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 11 } }, e.batchNumber), " \xB7 ", e.productSize), /* @__PURE__ */ React.createElement("span", { className: "font-medium" }, e.remaining, "m left"))), extrusion.waiting.length > 5 && /* @__PURE__ */ React.createElement("div", { className: "text-xs pt-1.5", style: { color: INK_MUTED } }, "+", extrusion.waiting.length - 5, " more")), /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: NAVY } }, "STILL TO EXTRUDE"), extrusion.toExtrude.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: INK_MUTED } }, extrusion.waiting.length > 0 ? "Nothing \u2014 the reels above cover what the glue line needs." : "Nothing outstanding.") : /* @__PURE__ */ React.createElement("div", null, extrusion.toExtrude.slice(0, 5).map((r) => /* @__PURE__ */ React.createElement("div", { key: r.spec, className: "py-1.5", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between text-xs" }, /* @__PURE__ */ React.createElement("span", { className: "no-wrap", style: { maxWidth: 210, overflow: "hidden", textOverflow: "ellipsis" } }, r.spec), /* @__PURE__ */ React.createElement("span", { className: "font-medium" }, r.stillToExtrude, "m")), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 1 } }, "glue line needs ", r.neededMeters, "m", r.reelMetersWaiting > 0 ? ` \xB7 ${r.reelMetersWaiting}m already extruded` : " \xB7 no reel extruded"))), extrusion.toExtrude.length > 5 && /* @__PURE__ */ React.createElement("div", { className: "text-xs pt-1.5", style: { color: INK_MUTED } }, "+", extrusion.toExtrude.length - 5, " more"))), /* @__PURE__ */ React.createElement(Panel, { className: "p-4", style: { borderLeft: `4px solid ${NAVY}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1", style: { color: NAVY } }, "Glue line \u2014 still to make"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED } }, "Metres still outstanding after the reels already on the rack are counted. Uses the real metres-per-box for each size, not a flat 24."), glueLineNeeds.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: INK_MUTED } }, "Nothing outstanding \u2014 the rack covers every live order.") : /* @__PURE__ */ React.createElement("div", null, glueLineNeeds.slice(0, 6).map((r) => /* @__PURE__ */ React.createElement("div", { key: r.spec, className: "py-1.5", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between text-xs" }, /* @__PURE__ */ React.createElement("span", { className: "no-wrap", style: { maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis" } }, r.spec), /* @__PURE__ */ React.createElement("span", { className: "font-medium" }, r.stillToGlueLine, "m")), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 1 } }, r.qtyNeeded, " box", r.qtyNeeded === 1 ? "" : "es", " left at ", r.metersPerBox, "m", r.reelCount > 0 ? ` \xB7 ${r.glueLinedMeters}m on ${r.reelCount} reel${r.reelCount === 1 ? "" : "s"} already` : " \xB7 no reel on the rack"))), glueLineNeeds.length > 6 && /* @__PURE__ */ React.createElement("div", { className: "text-xs pt-1.5", style: { color: INK_MUTED } }, "+", glueLineNeeds.length - 6, " more"))), /* @__PURE__ */ React.createElement(Panel, { className: "p-4", style: { borderLeft: `4px solid ${GREEN}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between mb-1" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold", style: { color: GREEN } }, "Bonding \u2014 boxes to make"), /* @__PURE__ */ React.createElement(Badge, { color: bondingBoxesToday > BONDING_BOXES_PER_DAY_MAX ? ORANGE : GREEN }, bondingBoxesToday, " box", bondingBoxesToday === 1 ? "" : "es")), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED } }, "Only reels that are checked, in the rack, and needed by a live order \u2014 most urgent first.", bondingBoxesToday > 0 && ` That's about ${bondingDaysOfWork}, at ${BONDING_BOXES_PER_DAY_MIN}\u2013${BONDING_BOXES_PER_DAY_MAX} boxes a day.`), bondingReady.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: INK_MUTED } }, "No available reel currently matches an outstanding order.") : /* @__PURE__ */ React.createElement("div", null, canRunNow.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mb-3" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: GREEN } }, canRunNow.every((r) => r.evaUnknown) ? "CAN RUN \u2014 EVA NOT CHECKED" : "CAN RUN NOW \u2014 EVA ON THE RACK"), canRunNow.slice(0, 5).map((r) => /* @__PURE__ */ React.createElement("div", { key: r.id, className: "py-1.5", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between text-xs" }, /* @__PURE__ */ React.createElement("span", { className: "no-wrap", style: { maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis" } }, /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 11 } }, r.batchNumber), " \xB7 ", r.productSize), /* @__PURE__ */ React.createElement("span", { className: "font-medium" }, r.matchStatus)), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 1 } }, r.evaUnknown ? `${r.evaDie ? r.evaDie.label : "EVA"} \xB7 ${r.evaBlocker === "yield" ? "no reel yield learned yet" : r.evaBlocker === "nodie" ? "no EVA die matches this gap" : "rack not counted"} \u2014 check before running` : r.shortBoxes > 0 ? `${r.evaDie.label} \xB7 run ${r.runnableBoxes} now, EVA needed for ${r.shortBoxes} more` : `${r.evaDie.label} \xB7 about ${r.evaBoxesOnRack} boxes' worth on the rack`))), canRunNow.length > 5 && /* @__PURE__ */ React.createElement("div", { className: "text-xs pt-1.5", style: { color: INK_MUTED } }, "+", canRunNow.length - 5, " more")), needsEva.length > 0 && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: ORANGE } }, "NEEDS EVA MAKING FIRST"), needsEva.slice(0, 5).map((r) => /* @__PURE__ */ React.createElement("div", { key: r.id, className: "py-1.5", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between text-xs" }, /* @__PURE__ */ React.createElement("span", { className: "no-wrap", style: { maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis" } }, /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 11 } }, r.batchNumber), " \xB7 ", r.productSize), /* @__PURE__ */ React.createElement("span", { className: "font-medium" }, r.matchStatus)), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: ORANGE, marginTop: 1 } }, r.evaDie ? `${r.evaDie.label} \xB7 about ${r.evaBoxesOnRack} boxes' worth on the rack` : "no EVA die matches this gap \u2014 check the spec"))), needsEva.length > 5 && /* @__PURE__ */ React.createElement("div", { className: "text-xs pt-1.5", style: { color: INK_MUTED } }, "+", needsEva.length - 5, " more")), /* @__PURE__ */ React.createElement("div", { className: "text-xs pt-2 mt-2", style: { color: INK_MUTED, borderTop: `1px solid ${BORDER}` } }, (() => {
+    })))), /* @__PURE__ */ React.createElement("div", { className: "grid gap-4 mb-6", style: { gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))" } }, /* @__PURE__ */ React.createElement(Panel, { className: "p-4", style: { borderLeft: "4px solid #6B5BA8" } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between mb-1" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold", style: { color: NAVY } }, "Extrusion \u2014 reels"), extrusion.waiting.length > 0 && /* @__PURE__ */ React.createElement(Badge, { color: GREEN }, extrusion.waiting.length, " waiting")), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED } }, "Direct runs are extruded on the glue line and don't appear here \u2014 only PL reels, which are extruded first and glue-lined later."), extrusion.waiting.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mb-3" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: GREEN } }, "EXTRUDED \u2014 READY FOR GLUE LINE"), (showAllWaiting ? extrusion.waiting : extrusion.waiting.slice(0, 5)).map((e) => /* @__PURE__ */ React.createElement("div", { key: e.id, className: "flex items-center justify-between text-xs py-1.5", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("span", { className: "no-wrap", style: { maxWidth: 210, overflow: "hidden", textOverflow: "ellipsis" } }, /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 11 } }, e.batchNumber), " \xB7 ", e.productSize), /* @__PURE__ */ React.createElement("span", { className: "font-medium" }, e.remaining, "m left"))), extrusion.waiting.length > 5 && /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => setShowAllWaiting((v) => !v),
+        className: "text-xs pt-1.5",
+        style: { background: "none", border: "none", padding: 0, cursor: "pointer", color: NAVY, fontWeight: 600, minHeight: 32 }
+      },
+      showAllWaiting ? "Show fewer" : `+${extrusion.waiting.length - 5} more \u2014 show all`
+    )), /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: NAVY } }, "STILL TO EXTRUDE"), extrusion.toExtrude.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: INK_MUTED } }, extrusion.waiting.length > 0 ? "Nothing \u2014 the reels above cover what the glue line needs." : "Nothing outstanding.") : /* @__PURE__ */ React.createElement("div", null, (showAllExtrude ? extrusion.toExtrude : extrusion.toExtrude.slice(0, 5)).map((r) => /* @__PURE__ */ React.createElement("div", { key: r.spec, className: "py-1.5", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between text-xs" }, /* @__PURE__ */ React.createElement("span", { className: "no-wrap", style: { maxWidth: 210, overflow: "hidden", textOverflow: "ellipsis" } }, r.spec), /* @__PURE__ */ React.createElement("span", { className: "font-medium" }, r.stillToExtrude, "m")), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 1 } }, "glue line needs ", r.neededMeters, "m", r.reelMetersWaiting > 0 ? ` \xB7 ${r.reelMetersWaiting}m already extruded` : " \xB7 no reel extruded"))), extrusion.toExtrude.length > 5 && /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => setShowAllExtrude((v) => !v),
+        className: "text-xs pt-1.5",
+        style: { background: "none", border: "none", padding: 0, cursor: "pointer", color: NAVY, fontWeight: 600, minHeight: 32 }
+      },
+      showAllExtrude ? "Show fewer" : `+${extrusion.toExtrude.length - 5} more \u2014 show all`
+    ))), /* @__PURE__ */ React.createElement(Panel, { className: "p-4", style: { borderLeft: `4px solid ${NAVY}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1", style: { color: NAVY } }, "Glue line \u2014 still to make"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED } }, "Metres still outstanding after the reels already on the rack are counted. Uses the real metres-per-box for each size, not a flat 24."), glueLineNeeds.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: INK_MUTED } }, "Nothing outstanding \u2014 the rack covers every live order.") : /* @__PURE__ */ React.createElement("div", null, glueLineNeeds.slice(0, 6).map((r) => /* @__PURE__ */ React.createElement("div", { key: r.spec, className: "py-1.5", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between text-xs" }, /* @__PURE__ */ React.createElement("span", { className: "no-wrap", style: { maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis" } }, r.spec), /* @__PURE__ */ React.createElement("span", { className: "font-medium" }, r.stillToGlueLine, "m")), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 1 } }, r.qtyNeeded, " box", r.qtyNeeded === 1 ? "" : "es", " left at ", r.metersPerBox, "m", r.reelCount > 0 ? ` \xB7 ${r.glueLinedMeters}m on ${r.reelCount} reel${r.reelCount === 1 ? "" : "s"} already` : " \xB7 no reel on the rack"))), glueLineNeeds.length > 6 && /* @__PURE__ */ React.createElement("div", { className: "text-xs pt-1.5", style: { color: INK_MUTED } }, "+", glueLineNeeds.length - 6, " more"))), /* @__PURE__ */ React.createElement(Panel, { className: "p-4", style: { borderLeft: `4px solid ${GREEN}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between mb-1" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold", style: { color: GREEN } }, "Bonding \u2014 boxes to make"), /* @__PURE__ */ React.createElement(Badge, { color: bondingBoxesToday > BONDING_BOXES_PER_DAY_MAX ? ORANGE : GREEN }, bondingBoxesToday, " box", bondingBoxesToday === 1 ? "" : "es")), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED } }, "Only reels that are checked, in the rack, and needed by a live order \u2014 most urgent first.", bondingBoxesToday > 0 && ` That's about ${bondingDaysOfWork}, at ${BONDING_BOXES_PER_DAY_MIN}\u2013${BONDING_BOXES_PER_DAY_MAX} boxes a day.`), bondingReady.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: INK_MUTED } }, "No available reel currently matches an outstanding order.") : /* @__PURE__ */ React.createElement("div", null, canRunNow.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mb-3" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: GREEN } }, canRunNow.every((r) => r.evaUnknown) ? "CAN RUN \u2014 EVA NOT CHECKED" : "CAN RUN NOW \u2014 EVA ON THE RACK"), canRunNow.slice(0, 5).map((r) => /* @__PURE__ */ React.createElement("div", { key: r.id, className: "py-1.5", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between text-xs" }, /* @__PURE__ */ React.createElement("span", { className: "no-wrap", style: { maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis" } }, /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 11 } }, r.batchNumber), " \xB7 ", r.productSize), /* @__PURE__ */ React.createElement("span", { className: "font-medium" }, r.matchStatus)), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 1 } }, r.evaUnknown ? `${r.evaDie ? r.evaDie.label : "EVA"} \xB7 ${r.evaBlocker === "yield" ? "no reel yield learned yet" : r.evaBlocker === "nodie" ? "no EVA die matches this gap" : "rack not counted"} \u2014 check before running` : r.shortBoxes > 0 ? `${r.evaDie.label} \xB7 run ${r.runnableBoxes} now, EVA needed for ${r.shortBoxes} more` : `${r.evaDie.label} \xB7 about ${r.evaBoxesOnRack} boxes' worth on the rack`))), canRunNow.length > 5 && /* @__PURE__ */ React.createElement("div", { className: "text-xs pt-1.5", style: { color: INK_MUTED } }, "+", canRunNow.length - 5, " more")), needsEva.length > 0 && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: ORANGE } }, "NEEDS EVA MAKING FIRST"), needsEva.slice(0, 5).map((r) => /* @__PURE__ */ React.createElement("div", { key: r.id, className: "py-1.5", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between text-xs" }, /* @__PURE__ */ React.createElement("span", { className: "no-wrap", style: { maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis" } }, /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 11 } }, r.batchNumber), " \xB7 ", r.productSize), /* @__PURE__ */ React.createElement("span", { className: "font-medium" }, r.matchStatus)), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: ORANGE, marginTop: 1 } }, r.evaDie ? `${r.evaDie.label} \xB7 about ${r.evaBoxesOnRack} boxes' worth on the rack` : "no EVA die matches this gap \u2014 check the spec"))), needsEva.length > 5 && /* @__PURE__ */ React.createElement("div", { className: "text-xs pt-1.5", style: { color: INK_MUTED } }, "+", needsEva.length - 5, " more")), /* @__PURE__ */ React.createElement("div", { className: "text-xs pt-2 mt-2", style: { color: INK_MUTED, borderTop: `1px solid ${BORDER}` } }, (() => {
       const counted = evaRack.filter((e) => e.everCounted);
       const learned = evaYield.filter((y) => y.enough);
       const learning = evaYield.filter((y) => y.sample > 0 && !y.enough);
@@ -7112,7 +7154,7 @@ Here's the order:`;
       prevSpecKeyRef.current = key;
       const known = knownMeterageForSpec(currentSpec, values.pt, allBondingRuns, lineItems);
       if (known != null) setValues((v) => ({ ...v, metersPerBox: known }));
-    }, [currentSpec, values.pt]);
+    }, [currentSpec, values.pt, allBondingRuns, lineItems]);
     const batchOptions = availableBatches.filter((b) => looseSpecMatch(b.productSize, currentSpec)).map((b) => b.batchNumber);
     const codeWarnings = analyzeCodeStructure(values.boxNumber, values.date, existingBoxCodes, "");
     const recentSuffix = (() => {
@@ -7480,9 +7522,11 @@ Here's the order:`;
       return spec;
     };
     const entryWarnings = useMemo(() => [
+      unknownReelWarning(form.baselineBatchCode, data.glueLineBatches),
       reelCapacityWarning(form.baselineBatchCode, form.amountMade, form.metersPerBox, data.glueLineBatches, bondingRuns, null),
-      metersPerBoxWarning(buildSpec(form), form.metersPerBox, bondingRuns, data.lineItems, null)
-    ].filter(Boolean), [form.baselineBatchCode, form.amountMade, form.metersPerBox, form.range, form.size, form.pt, data.glueLineBatches, bondingRuns]);
+      metersPerBoxWarning(buildSpec(form), form.metersPerBox, bondingRuns, data.lineItems, null),
+      splitWarning(form.amountMade, form.onOrderQty, form.toStock)
+    ].filter(Boolean), [form.baselineBatchCode, form.amountMade, form.onOrderQty, form.toStock, form.metersPerBox, form.range, form.size, form.pt, data.glueLineBatches, bondingRuns]);
     const setRuns = (updater) => setData((prevData) => applyRowsWithLog(prevData, "bondingRuns", updater, "bondingRun", (r) => `box ${r.boxNumber || r.id}`));
     const toggleRowChecked = (id) => setRuns((prevRuns) => prevRuns.map((r) => r.id === id ? { ...r, checked: r.checked === "Yes" ? "No" : "Yes" } : r));
     const updateRowQty = (row, field, newValue) => {
@@ -8022,8 +8066,27 @@ Here's the order:`;
     return dieList.filter((d) => width >= d.min && width <= d.max);
   }
   var PET_OPTIONS = ["7 x 75", "7 x 100", "10 x 75", "12 x 75"];
+  function withPrefixFor(code, direct) {
+    const c = String(code || "").trim().toUpperCase();
+    const want = direct ? "PBL" : "PPL";
+    if (c.startsWith("PBL") || c.startsWith("PPL")) return want + c.slice(3);
+    return c;
+  }
   function GlueLineDirectField({ values, setValues }) {
-    return /* @__PURE__ */ React.createElement(FieldGroup, { label: "DIRECT" }, /* @__PURE__ */ React.createElement("div", { style: { width: 90 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Direct"), /* @__PURE__ */ React.createElement(ToggleSwitch, { on: values.direct === true, onChange: (v) => setValues({ ...values, direct: v }), labelOn: "Yes", labelOff: "No" })), values.direct !== true && /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "PL code"), /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement(FieldGroup, { label: "DIRECT" }, /* @__PURE__ */ React.createElement("div", { style: { width: 90 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Direct"), /* @__PURE__ */ React.createElement(
+      ToggleSwitch,
+      {
+        on: values.direct === true,
+        onChange: (v) => setValues({
+          ...values,
+          direct: v,
+          directTouched: true,
+          batchNumber: withPrefixFor(values.batchNumber, v)
+        }),
+        labelOn: "Yes",
+        labelOff: "No"
+      }
+    ), values.directDefaulted && !values.directTouched && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED, width: 200 } }, "Set from the size \u2014 change it if this run was different.")), values.direct !== true && /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "PL code"), /* @__PURE__ */ React.createElement(
       TextInput,
       {
         value: values.plCode,
@@ -8038,23 +8101,23 @@ Here's the order:`;
   function GlueLineRestFields({ values, setValues, orderOptions = [], existingBatchNumbers = [], materials = [], hideMaterialsSection = false }) {
     const codeWarnings = analyzeCodeStructure(values.batchNumber, values.date, existingBatchNumbers, ["PBL", "PPL"]);
     const trimmedCode = (values.batchNumber || "").trim().toUpperCase();
-    if (trimmedCode.startsWith("PPL") && values.direct === true) {
-      codeWarnings.push(`Code starts with PPL, which normally means Indirect (extruded onto a reel first) \u2014 but Direct is set to Yes here. Worth double-checking.`);
-    } else if (trimmedCode.startsWith("PBL") && values.direct !== true) {
-      codeWarnings.push(`Code starts with PBL, which normally means Direct \u2014 but Direct is set to No here. Worth double-checking.`);
-    }
+    const prefixNote = values.prefixCorrected ? `Prefix set to ${values.direct === true ? "PBL \u2014 Direct" : "PPL \u2014 Indirect, from a reel"} to match the toggle above.` : null;
     return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(FieldGroup, { label: "BATCH" }, /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Batch number"), /* @__PURE__ */ React.createElement(
       TextInput,
       {
-        placeholder: "PBLH60801",
+        placeholder: values.direct === true ? "PBLH60801" : "PPLH60801",
         value: values.batchNumber,
-        onChange: (e) => setValues({ ...values, batchNumber: e.target.value.toUpperCase() }),
+        onChange: (e) => {
+          const typed = e.target.value.toUpperCase();
+          const fixed = withPrefixFor(typed, values.direct === true);
+          setValues({ ...values, batchNumber: fixed, prefixCorrected: fixed !== typed.trim().toUpperCase() });
+        },
         style: { textTransform: "uppercase" },
         autoCorrect: "off",
         autoCapitalize: "off",
         spellCheck: "false"
       }
-    ), codeWarnings.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: AMBER, maxWidth: 240 } }, codeWarnings.map((w, i) => /* @__PURE__ */ React.createElement("div", { key: i }, "\u26A0 ", w)))), /* @__PURE__ */ React.createElement("div", { style: { width: 120 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Glue batch"), /* @__PURE__ */ React.createElement(
+    ), prefixNote && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: NAVY, maxWidth: 240 } }, prefixNote), codeWarnings.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: AMBER, maxWidth: 240 } }, codeWarnings.map((w, i) => /* @__PURE__ */ React.createElement("div", { key: i }, "\u26A0 ", w)))), /* @__PURE__ */ React.createElement("div", { style: { width: 120 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Glue batch"), /* @__PURE__ */ React.createElement(
       TextInput,
       {
         value: values.glueBatch,
@@ -8494,7 +8557,7 @@ Here's the order:`;
     const visibleGlueRows = showTodayOnly ? sortedGlueRows.filter((r) => r.date === todayStr) : sortedGlueRows;
     const listId = "size-catalog-glueline";
     const orderOptions = data.orders.map((o) => ({ value: o.id, label: `${o.id} \u2014 ${o.customer}` }));
-    const isDirectRow = (r) => r.direct === true || r.plBaseCode === "Direct";
+    const isDirectRow = (r) => reelIsIndirect(r) !== true;
     const plCodeOf = (r) => r.plCode || r.sourceReelBatch || "";
     const blank = {
       range: "PX Plus",
@@ -8532,6 +8595,18 @@ Here's the order:`;
     const [editingId, setEditingId, editForm, setEditForm, editRestored, discardEdit] = useDraftEdit("edit-glueLine");
     const [addOpen, setAddOpen] = useState(false);
     const buildSpec = (f) => f.range === "Custom" ? f.size.trim() : `${f.range} ${f.size.trim()}`;
+    useEffect(() => {
+      if (form.directTouched || !form.size.trim()) return;
+      const spec = buildSpec(form);
+      const shouldBeDirect = !runsIndirectByRule(spec);
+      if (form.direct === shouldBeDirect && form.directDefaulted) return;
+      setForm((f) => ({
+        ...f,
+        direct: shouldBeDirect,
+        directDefaulted: true,
+        batchNumber: withPrefixFor(f.batchNumber, shouldBeDirect)
+      }));
+    }, [form.range, form.size, form.directTouched]);
     const setRows = (updater) => setData((prevData) => applyRowsWithLog(prevData, "glueLineBatches", updater, "glueLineBatch", (r) => `reel ${r.batchNumber || r.id}`));
     const toggleRowChecked = (id) => setRows((prevRows) => prevRows.map((r) => r.id === id ? { ...r, checked: r.checked === "Yes" ? "No" : "Yes" } : r));
     const setRowOrder = (id, orderId) => setRows((prevRows) => prevRows.map((r) => r.id === id ? { ...r, assignedOrderId: orderId || null } : r));
@@ -8590,7 +8665,7 @@ Here's the order:`;
     };
     const toRow = (f, excludeId) => ({
       productSize: buildSpec(f),
-      batchNumber: f.batchNumber,
+      batchNumber: withPrefixFor(f.batchNumber, !!f.direct),
       direct: !!f.direct,
       plCode: f.direct ? "" : f.plCode || "",
       gapWidth: f.gapWidth,
