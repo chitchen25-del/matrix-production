@@ -693,7 +693,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-01.11";
+  var APP_VERSION = "2026-09-01.12";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -3317,6 +3317,130 @@ Here's the order:`;
       totalCases: allNums.length
     };
   }
+  function PalletWalk({ walk, setWalk, order, data, onApply }) {
+    const cases = walk.cases;
+    const idx = Math.min(walk.idx, cases.length - 1);
+    const cur = cases[idx];
+    const [addCode, setAddCode] = useState("");
+    const [addQty, setAddQty] = useState("");
+    const orderLines = orderLineItems(data.lineItems, order.id);
+    const shelf = boxedStockAvailable(data.bondingRuns, data.stockPicks || []).filter((b) => orderLines.some((li) => looseSpecMatch(b.productSize, li.description) && stockFormMatchesLine(b, li.description)));
+    const alreadyInWalk = new Set(cases.flatMap((c) => c.boxes.map((b) => b.boxNumber)));
+    const shelfByCode = new Map(shelf.map((b) => [String(b.boxNumber).toUpperCase(), b]));
+    const candidate = shelfByCode.get(addCode.trim().toUpperCase()) || null;
+    const ownRuns = (data.bondingRuns || []).filter((r) => !r.deleted && r.workNumber === order.id && r.boxNumber);
+    const ownByCode = new Map(ownRuns.map((r) => [String(r.boxNumber).toUpperCase(), r]));
+    const ownCandidate = ownByCode.get(addCode.trim().toUpperCase()) || null;
+    const update = (fn) => setWalk((w) => ({ ...w, cases: w.cases.map((c, i) => i === idx ? fn(c) : c) }));
+    const setBox = (n, patch) => update((c) => ({ ...c, boxes: c.boxes.map((b) => b.boxNumber === n ? { ...b, ...typeof patch === "function" ? patch(b) : patch } : b) }));
+    const dropBox = (n) => update((c) => ({ ...c, boxes: c.boxes.filter((b) => b.boxNumber !== n) }));
+    const addBox = () => {
+      const src = candidate || ownCandidate;
+      if (!src) return;
+      const qty = Math.max(1, Number(addQty) || Number(src.available ?? src.onOrderQty ?? src.amountMade) || 1);
+      update((c) => ({ ...c, boxes: [...c.boxes, {
+        boxNumber: src.boxNumber,
+        productSize: src.productSize,
+        qty,
+        done: true,
+        allocated: !!ownCandidate && !candidate,
+        runId: src.id,
+        baselineBatchCode: src.baselineBatchCode || ""
+      }] }));
+      setAddCode("");
+      setAddQty("");
+    };
+    const go = (n) => setWalk((w) => ({ ...w, idx: Math.max(0, Math.min(w.cases.length - 1, n)) }));
+    const addCase = () => setWalk((w) => {
+      const next = Math.max(...w.cases.map((c) => c.caseNum)) + 1;
+      return { ...w, cases: [...w.cases, { caseNum: next, boxes: [] }], idx: w.cases.length };
+    });
+    const totals = {};
+    for (const c of cases) for (const b of c.boxes) if (b.done) {
+      const li = orderLines.find((l) => looseSpecMatch(b.productSize, l.description));
+      const k = li ? li.description : b.productSize;
+      totals[k] = (totals[k] || 0) + Number(b.qty || 0);
+    }
+    const pending = cases.reduce((n, c) => n + c.boxes.filter((b) => !b.done).length, 0);
+    const apply = () => {
+      const items = [];
+      const overrides = {};
+      for (const c of cases) for (const b of c.boxes) {
+        if (!b.done) continue;
+        if (b.allocated) {
+          overrides[b.boxNumber] = c.caseNum;
+          continue;
+        }
+        const src = shelfByCode.get(String(b.boxNumber).toUpperCase());
+        items.push({
+          id: b.runId || src && src.id,
+          boxNumber: b.boxNumber,
+          productSize: b.productSize,
+          location: "",
+          proposedQty: b.qty,
+          confirmedQty: b.qty,
+          damaged: false,
+          caseOverride: c.caseNum,
+          baselineBatchCode: b.baselineBatchCode || src && src.baselineBatchCode || ""
+        });
+      }
+      onApply(items, overrides);
+    };
+    const big = { height: 48, minWidth: 48, borderRadius: 8, border: `1px solid ${BORDER}`, background: "#fff", fontSize: 20, fontWeight: 700, cursor: "pointer" };
+    return /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mt-4", style: { borderLeft: `4px solid ${NAVY}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2 mb-3" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED } }, "Walking the pallet \xB7 ", order.id, " \xB7 ", order.customer), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 34, fontWeight: 800, color: NAVY, lineHeight: 1.1 } }, "Case ", cur.caseNum), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: INK_MUTED } }, idx + 1, " of ", cases.length, " \xB7 ", pending, " box", pending === 1 ? "" : "es", " still to confirm")), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2" }, /* @__PURE__ */ React.createElement("button", { onClick: () => go(idx - 1), disabled: idx === 0, style: { ...big, opacity: idx === 0 ? 0.35 : 1 } }, "\u2039"), /* @__PURE__ */ React.createElement("button", { onClick: () => go(idx + 1), disabled: idx >= cases.length - 1, style: { ...big, opacity: idx >= cases.length - 1 ? 0.35 : 1 } }, "\u203A"), /* @__PURE__ */ React.createElement("button", { onClick: addCase, style: { ...big, fontSize: 14, padding: "0 12px" } }, "+ Case"))), cur.boxes.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-sm py-3", style: { color: INK_MUTED } }, "Nothing recorded in this case yet. Type or scan a box code below."), cur.boxes.map((b) => /* @__PURE__ */ React.createElement("div", { key: b.boxNumber, className: "py-2.5", style: { borderTop: `1px solid ${BORDER}`, opacity: b.done ? 1 : 0.85 } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-start justify-between gap-2 flex-wrap" }, /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0, flex: "1 1 200px" } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, fontSize: 15 } }, b.productSize), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement(Mono, null, b.boxNumber), b.allocated ? " \xB7 bonded to this order" : " \xB7 from the shelf")), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2" }, /* @__PURE__ */ React.createElement("button", { onClick: () => setBox(b.boxNumber, (x) => ({ qty: Math.max(0, Number(x.qty) - 1), done: true })), style: { ...big, minWidth: 44, height: 44 } }, "\u2212"), /* @__PURE__ */ React.createElement("span", { style: { minWidth: 44, textAlign: "center", fontSize: 24, fontWeight: 800, color: b.done ? GREEN : INK } }, b.qty), /* @__PURE__ */ React.createElement("button", { onClick: () => setBox(b.boxNumber, (x) => ({ qty: Number(x.qty) + 1, done: true })), style: { ...big, minWidth: 44, height: 44 } }, "+"), !b.done ? /* @__PURE__ */ React.createElement("button", { onClick: () => setBox(b.boxNumber, { done: true }), style: { ...big, minWidth: 64, height: 44, background: GREEN, color: "#fff", border: "none", fontSize: 16 } }, "\u2713") : /* @__PURE__ */ React.createElement("span", { style: { minWidth: 64, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 13 } }, "confirmed"), /* @__PURE__ */ React.createElement("button", { onClick: () => dropBox(b.boxNumber), title: "Not in this case", style: { ...big, minWidth: 44, height: 44, color: RED, fontSize: 16 } }, "\u2717"))))), /* @__PURE__ */ React.createElement("div", { className: "mt-3 pt-3", style: { borderTop: `2px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-1", style: { color: INK_MUTED } }, "A box that's in this case but not listed above"), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 flex-wrap items-center" }, /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        list: "pallet-walk-codes",
+        value: addCode,
+        onChange: (e) => setAddCode(e.target.value.toUpperCase()),
+        placeholder: "Box code \u2014 type or scan",
+        autoCapitalize: "characters",
+        autoCorrect: "off",
+        spellCheck: "false",
+        style: { height: 48, fontSize: 18, padding: "0 12px", border: `1px solid ${BORDER}`, borderRadius: 8, minWidth: 220, textTransform: "uppercase" }
+      }
+    ), /* @__PURE__ */ React.createElement("datalist", { id: "pallet-walk-codes" }, shelf.filter((b) => !alreadyInWalk.has(b.boxNumber)).map((b) => /* @__PURE__ */ React.createElement("option", { key: b.id, value: b.boxNumber }, b.productSize, " \xB7 ", b.available, " left"))), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        type: "number",
+        min: "1",
+        value: addQty,
+        onChange: (e) => setAddQty(e.target.value),
+        placeholder: candidate ? String(candidate.available) : ownCandidate ? String(ownCandidate.onOrderQty) : "qty",
+        style: { height: 48, fontSize: 18, width: 90, padding: "0 10px", border: `1px solid ${BORDER}`, borderRadius: 8 }
+      }
+    ), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: addBox,
+        disabled: !candidate && !ownCandidate,
+        style: { ...big, padding: "0 16px", fontSize: 15, background: candidate || ownCandidate ? NAVY : "#fff", color: candidate || ownCandidate ? "#fff" : INK_MUTED, border: "none" }
+      },
+      "Add to case ",
+      cur.caseNum
+    )), addCode && !candidate && !ownCandidate && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: AMBER } }, alreadyInWalk.has(addCode.trim()) ? "That box is already in this walk." : "No box with that code is on the shelf for this order \u2014 check the code, or it may never have been logged."), (candidate || ownCandidate) && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, (candidate || ownCandidate).productSize, " \xB7 ", candidate ? `${candidate.available} on the shelf` : "already bonded to this order")), /* @__PURE__ */ React.createElement("div", { className: "mt-4 pt-3", style: { borderTop: `2px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-1", style: { color: INK_MUTED, fontWeight: 600 } }, "Running total across all cases"), orderLines.filter((li) => !isDelivery(li.description) && !isSmallItem(li.description)).map((li) => {
+      const got = totals[li.description] || 0, need = Number(li.qty) || 0;
+      const col = got === need ? GREEN : got > need ? RED : INK;
+      return /* @__PURE__ */ React.createElement("div", { key: li.id, className: "flex justify-between text-sm py-0.5" }, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, li.description), /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 700, color: col } }, got, " / ", need, got > need ? " \u2014 over" : got < need ? ` \u2014 ${need - got} short` : " \u2713"));
+    }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mt-3 flex-wrap" }, /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: apply,
+        disabled: pending > 0,
+        style: { ...big, padding: "0 18px", fontSize: 15, background: pending > 0 ? "#B9BBC2" : GREEN, color: "#fff", border: "none" }
+      },
+      pending > 0 ? `Confirm ${pending} more first` : "Apply \u2014 allocate what's in the cases"
+    ), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => {
+          if (confirm("Throw away this walk? Nothing has been allocated.")) setWalk(null);
+        },
+        style: { ...big, padding: "0 14px", fontSize: 14 }
+      },
+      "Discard"
+    )), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: INK_MUTED } }, "Shortfalls are fine \u2014 apply what's there. The order shows what's still to make.")));
+  }
   function OrdersView({ data, setData, mode = "active", initialExpandedId = null, jumpToPacking }) {
     const { lineItems } = data;
     const allOrders = data.orders;
@@ -3327,6 +3451,23 @@ Here's the order:`;
     }, [initialExpandedId]);
     const [lineEditMode, setLineEditMode] = useState(false);
     const [checkStockFor, setCheckStockFor] = useState(null);
+    const [walk, setWalk] = useDraftState("palletWalk", null, null);
+    const startWalk = (order) => {
+      const byLi = groupAssignedRunsByLineItem(data.bondingRuns, order.id, orderLineItems(lineItems, order.id)).byLineItem;
+      const cases = buildCombinedCases(byLi, (Number(order.startingCaseNum) || 0) + 1, order.packedOutside || {});
+      const seeded = cases.map((c) => ({
+        caseNum: c.caseNum,
+        boxes: (c.contributions || []).filter((x) => x.boxNumber).map((x) => ({
+          boxNumber: x.boxNumber,
+          productSize: x.spec,
+          qty: x.qty,
+          done: false,
+          allocated: true
+        }))
+      }));
+      const real = seeded.filter((c) => c.boxes.length > 0);
+      return { orderId: order.id, cases: real.length ? real : [{ caseNum: (Number(order.startingCaseNum) || 0) + 1, boxes: [] }], idx: 0 };
+    };
     const [pendingPick, setPendingPick, pickDraftRestored, discardPickDraft] = useDraftState("pendingPick", { orderId: null, items: [] }, { orderId: null, items: [] });
     const pendingPickFor = pendingPick.orderId;
     const pendingPickItems = pendingPick.items;
@@ -3666,9 +3807,9 @@ Here's the order:`;
       }
       return boxToCases;
     }, [pendingPickFor, pendingPickItems, data.bondingRuns, data.lineItems, data.orders]);
-    const confirmPickAndAllocate = (order) => {
-      const damagedItems = pendingPickItems.filter((it) => it.damaged);
-      const toApply = pendingPickItems.filter((it) => !it.damaged && Number(it.confirmedQty) > 0);
+    const confirmPickAndAllocate = (order, items = pendingPickItems) => {
+      const damagedItems = items.filter((it) => it.damaged);
+      const toApply = items.filter((it) => !it.damaged && Number(it.confirmedQty) > 0);
       if (toApply.length === 0 && damagedItems.length === 0) {
         cancelPendingPick();
         return;
@@ -3726,7 +3867,7 @@ Here's the order:`;
           updatedBy: "Pick by phone \u2014 found on shelf, not previously logged"
         }));
         const runsAfterNewAdditions = [...updatedRuns, ...newlyAddedRuns];
-        const existingOverrides = order.caseOverrides || {};
+        const existingOverrides = ((prevData.orders || []).find((x) => x.id === order.id) || order).caseOverrides || {};
         const newOverrides = { ...existingOverrides };
         toApply.forEach((it) => {
           if (it.caseOverride != null) {
@@ -3942,10 +4083,25 @@ Here's the order:`;
           return { spec: li.description, available };
         }).filter((r) => r.available > 0);
         return /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-3" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-2" }, "On the shelf now"), shelfBySpec.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Nothing matching this order in general stock right now.") : shelfBySpec.map((r, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "flex items-center justify-between text-sm py-1", style: { borderTop: i ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("span", null, r.spec), /* @__PURE__ */ React.createElement("span", { className: "font-semibold" }, r.available))));
-      })(), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, "Have stock on the shelf already? One tap works out the boxes and gets you a walk list."), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => pickOrderInstantly(o) }, "\u{1F4CB} Pick this order"), " ", /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => {
+      })(), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, "Have stock on the shelf already? One tap works out the boxes and gets you a walk list."), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => pickOrderInstantly(o) }, "\u{1F4CB} Pick this order"), " ", /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setWalk(walk && walk.orderId === o.id ? null : startWalk(o)) }, walk && walk.orderId === o.id ? "Close pallet walk" : "\u{1F6B6} Walk the pallet"), " ", /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => {
         if (pendingPickFor !== o.id && checkStockFor !== o.id) pickOrderInstantly(o);
         else setCheckStockFor(checkStockFor === o.id ? null : o.id);
-      } }, checkStockFor === o.id ? "Hide pick list" : "\u270E Confirm/change pick list"), " ", /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => jumpToPacking(o.id) }, "\u{1F4E6} Packing List"), (() => {
+      } }, checkStockFor === o.id ? "Hide pick list" : "\u270E Confirm/change pick list"), " ", /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => jumpToPacking(o.id) }, "\u{1F4E6} Packing List"), walk && walk.orderId === o.id && /* @__PURE__ */ React.createElement(
+        PalletWalk,
+        {
+          walk,
+          setWalk,
+          order: o,
+          data,
+          onApply: (items2, overridesForAllocated) => {
+            if (Object.keys(overridesForAllocated).length) {
+              setData((prev) => ({ ...prev, orders: prev.orders.map((x) => x.id === o.id ? { ...x, caseOverrides: { ...x.caseOverrides || {}, ...overridesForAllocated }, updatedAt: (/* @__PURE__ */ new Date()).toISOString() } : x) }));
+            }
+            if (items2.length) confirmPickAndAllocate(o, items2);
+            setWalk(null);
+          }
+        }
+      ), (() => {
         const w = orderShipmentWeight(o, lineItems, data.bondingRuns);
         if (!w || w.total <= 0) return null;
         return /* @__PURE__ */ React.createElement("div", { className: "mt-3 p-2.5 rounded", style: { background: "#F4F4F2", border: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline justify-between" }, /* @__PURE__ */ React.createElement("span", { className: "text-xs font-semibold", style: { color: INK_MUTED } }, "SHIPMENT WEIGHT"), /* @__PURE__ */ React.createElement("span", { className: "font-mono font-bold", style: { color: INK } }, w.total, " kg")), w.palletCount > 1 && w.pallets.map((p) => /* @__PURE__ */ React.createElement(
