@@ -693,7 +693,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-01.14";
+  var APP_VERSION = "2026-09-01.15";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -5042,7 +5042,199 @@ Here's the order:`;
       )
     );
   }
-  function CaseGrid({ cases, caseWeights, setCaseWeights, palletAssignments, setPalletAssignments, highlightBoxes = null, highlightKey = null, litCases = [], caseOverrides = {}, setCaseOverrides = null }) {
+  function PackingDiscrepancies({ order, data, setData }) {
+    const [open, setOpen] = useState(false);
+    const lines = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description) && !isSmallItem(li.description));
+    const caseFlags = order.caseFlags || {};
+    const flagged = Object.entries(caseFlags).filter(([, v]) => v && v.length);
+    const perLine = lines.map((li) => {
+      const got = (data.bondingRuns || []).filter((r) => !r.deleted && r.workNumber === order.id && looseSpecMatch(r.productSize, li.description)).reduce((t, r) => t + (Number(r.onOrderQty) || 0), 0);
+      return { spec: li.description, ordered: Number(li.qty) || 0, got };
+    }).filter((x) => x.got !== x.ordered);
+    if (!flagged.length && !perLine.length) {
+      return /* @__PURE__ */ React.createElement("div", { className: "no-print mb-3 px-3 py-2.5", style: { background: "#E9F7EF", border: `1px solid ${GREEN}`, borderRadius: 6, fontSize: 13 } }, /* @__PURE__ */ React.createElement("b", null, "Nothing to investigate."), " ", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Every product on this order matches what's in the cases."));
+    }
+    const short = perLine.filter((x) => x.got < x.ordered).length;
+    const over = perLine.filter((x) => x.got > x.ordered).length;
+    const bits = [];
+    if (short) bits.push(`${short} product${short === 1 ? "" : "s"} short`);
+    if (over) bits.push(`${over} over`);
+    if (flagged.length) bits.push(`${flagged.length} case${flagged.length === 1 ? "" : "s"} flagged`);
+    if (!open) {
+      return /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          onClick: () => setOpen(true),
+          className: "no-print mb-3 w-full text-left px-3 py-2.5",
+          style: { background: "#FFF7E6", border: `1px solid ${AMBER}`, borderRadius: 6, fontSize: 13, cursor: "pointer" }
+        },
+        /* @__PURE__ */ React.createElement("b", null, "Discrepancy list \u2014 ", bits.join(" \xB7 ")),
+        /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " \xB7 tap to open")
+      );
+    }
+    return /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-3", style: { borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2 mb-2" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold", style: { color: INK } }, "Discrepancy list \u2014 ", order.id), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 no-print" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => window.print() }, "\u{1F5A8} Print"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setOpen(false) }, "Collapse"))), perLine.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-1", style: { color: INK_MUTED, fontWeight: 700 } }, "Ordered vs in the cases"), /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm mb-3" }, /* @__PURE__ */ React.createElement("tbody", null, perLine.map((x) => /* @__PURE__ */ React.createElement("tr", { key: x.spec, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5" }, x.spec), /* @__PURE__ */ React.createElement("td", { className: "py-1.5 text-right", style: { width: 80, color: INK_MUTED } }, x.ordered, " ordered"), /* @__PURE__ */ React.createElement("td", { className: "py-1.5 text-right", style: { width: 80, fontWeight: 700 } }, x.got, " found"), /* @__PURE__ */ React.createElement("td", { className: "py-1.5 text-right", style: { width: 110, fontWeight: 700, color: x.got > x.ordered ? RED : AMBER } }, x.got > x.ordered ? `${x.got - x.ordered} over` : `${x.ordered - x.got} short`)))))), flagged.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-1", style: { color: INK_MUTED, fontWeight: 700 } }, "Flagged while confirming cases"), flagged.map(([caseNum, msgs]) => /* @__PURE__ */ React.createElement("div", { key: caseNum, className: "py-1.5", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { fontWeight: 700 } }, "Case ", caseNum), msgs.map((m, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "text-xs", style: { color: INK_MUTED } }, m)))), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => {
+          if (!confirm("Clear the flags raised while confirming cases? The ordered-vs-found comparison above stays.")) return;
+          setData((prev) => ({ ...prev, orders: prev.orders.map((o) => o.id === order.id ? { ...o, caseFlags: {}, updatedAt: (/* @__PURE__ */ new Date()).toISOString() } : o) }));
+        },
+        className: "mt-2 px-3 no-print",
+        style: { height: 34, borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }
+      },
+      "Investigated \u2014 clear these flags"
+    )));
+  }
+  function CaseContentsEditor({ order, caseNum, rows, data, onSave, onCancel }) {
+    const lines = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description) && !isSmallItem(li.description));
+    const [draft, setDraft] = useState(() => rows.map((r) => ({
+      key: r.boxNumber || `plan-${r.spec}`,
+      spec: r.spec,
+      boxNumber: r.boxNumber || "",
+      qty: Number(r.qty) || 0
+    })));
+    const [spec, setSpec] = useState("");
+    const [box, setBox] = useState("");
+    const [qty, setQty] = useState("");
+    const [manual, setManual] = useState(false);
+    const [manualCode, setManualCode] = useState("");
+    const boxesFor = (forSpec) => {
+      if (!forSpec) return [];
+      const shelf = boxedStockAvailable(data.bondingRuns, data.stockPicks || []).filter((b) => looseSpecMatch(b.productSize, forSpec) && stockFormMatchesLine(b, forSpec)).map((b) => ({ code: b.boxNumber, left: Number(b.available), where: "on the shelf", batch: b.baselineBatchCode || "" }));
+      const mine = (data.bondingRuns || []).filter((r) => !r.deleted && r.workNumber === order.id && r.boxNumber && looseSpecMatch(r.productSize, forSpec)).map((r) => ({ code: r.boxNumber, left: Number(r.onOrderQty) || 0, where: "on this order", batch: r.baselineBatchCode || "" }));
+      const seen = /* @__PURE__ */ new Set();
+      const out = [];
+      for (const b of [...mine, ...shelf]) {
+        if (b.code && !seen.has(b.code)) {
+          seen.add(b.code);
+          out.push(b);
+        }
+      }
+      return out;
+    };
+    const options = boxesFor(spec);
+    const picked = options.find((o) => o.code === box) || null;
+    const chosenCode = manual ? manualCode.trim() : box;
+    const isUnknown = manual && !!chosenCode && !options.some((o) => o.code === chosenCode);
+    const add = () => {
+      if (!spec || !chosenCode || !(Number(qty) > 0)) return;
+      setDraft((d) => [...d, { key: chosenCode + "-" + d.length, spec, boxNumber: chosenCode, qty: Number(qty), unknown: isUnknown }]);
+      setSpec("");
+      setBox("");
+      setQty("");
+      setManual(false);
+      setManualCode("");
+    };
+    const setQtyOn = (key, v) => setDraft((d) => d.map((x) => x.key === key ? { ...x, qty: Math.max(0, Number(v) || 0) } : x));
+    const remove = (key) => setDraft((d) => d.filter((x) => x.key !== key));
+    const flags = [];
+    for (const li of lines) {
+      const inCase = draft.filter((x) => looseSpecMatch(x.spec, li.description)).reduce((t, x) => t + x.qty, 0);
+      if (inCase > Number(li.qty)) flags.push(`${inCase} of ${li.description} in this case \u2014 the whole order is only ${li.qty}.`);
+    }
+    for (const x of draft) {
+      if (!x.boxNumber) continue;
+      const o = boxesFor(x.spec).find((b) => b.code === x.boxNumber);
+      if (!o) flags.push(`${x.boxNumber} isn't in the system \u2014 ${x.qty} of ${x.spec} recorded against a box nobody logged.`);
+      else if (x.qty > o.left) flags.push(`${x.qty} taken from ${x.boxNumber}, but only ${o.left} ${o.left === 1 ? "is" : "are"} left on it.`);
+    }
+    const fld = { height: 52, fontSize: 16, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "0 12px", background: "#fff", maxWidth: "100%", boxSizing: "border-box" };
+    const lbl = { display: "block", fontSize: 12, fontWeight: 700, color: INK_MUTED, margin: "12px 0 4px" };
+    return /* @__PURE__ */ React.createElement("div", { className: "px-4 py-3", style: { background: "#FBFBF9" } }, draft.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-sm mb-2", style: { color: INK_MUTED } }, "Nothing in this case yet."), draft.map((x) => /* @__PURE__ */ React.createElement("div", { key: x.key, className: "flex items-center justify-between gap-2 py-2", style: { borderBottom: `1px solid #F0F0EC` } }, /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0, flex: 1 } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { fontWeight: 600 } }, x.spec), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, x.boxNumber ? /* @__PURE__ */ React.createElement(Mono, null, x.boxNumber) : "no box recorded", x.unknown && /* @__PURE__ */ React.createElement("span", { style: { color: AMBER, fontWeight: 700 } }, " \xB7 not in the system"))), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        type: "number",
+        min: "0",
+        value: x.qty,
+        onChange: (e) => setQtyOn(x.key, e.target.value),
+        style: { ...fld, width: 84, textAlign: "right", fontWeight: 700 }
+      }
+    ), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => remove(x.key),
+        title: "Not in this case",
+        style: { ...fld, width: 48, color: RED, fontWeight: 700, cursor: "pointer" }
+      },
+      "\u2715"
+    ))), /* @__PURE__ */ React.createElement("div", { className: "mt-3" }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-1", style: { color: INK_MUTED, fontWeight: 600 } }, "Add what's in the case"), /* @__PURE__ */ React.createElement("label", { style: lbl }, "1 \xB7 Product"), /* @__PURE__ */ React.createElement("select", { value: spec, onChange: (e) => {
+      setSpec(e.target.value);
+      setBox("");
+      setQty("");
+    }, style: { ...fld, width: "100%" } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose from this order\u2026"), lines.map((li) => /* @__PURE__ */ React.createElement("option", { key: li.id, value: li.description }, li.description))), /* @__PURE__ */ React.createElement("label", { style: lbl }, "2 \xB7 Box / batch code"), /* @__PURE__ */ React.createElement(
+      "select",
+      {
+        value: box,
+        onChange: (e) => {
+          setBox(e.target.value);
+          const o = options.find((x) => x.code === e.target.value);
+          if (o) setQty(String(o.left));
+        },
+        disabled: !spec,
+        style: { ...fld, width: "100%", opacity: spec ? 1 : 0.5 }
+      },
+      /* @__PURE__ */ React.createElement("option", { value: "" }, spec ? options.length ? `Choose one of ${options.length}\u2026` : "No boxes exist for this size" : "Choose a product first"),
+      options.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.code, value: o.code }, o.code, " \u2014 ", o.left, " available", o.batch ? ` \xB7 reel ${o.batch}` : ""))
+    ), /* @__PURE__ */ React.createElement("div", { className: "mt-1" }, /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => {
+          setManual((m) => !m);
+          setBox("");
+        },
+        style: { background: "none", border: "none", padding: 0, cursor: "pointer", color: NAVY, fontSize: 12.5, fontWeight: 700 }
+      },
+      manual ? "\u2190 back to the list" : "Not in the list? Type the batch number"
+    )), manual && /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        value: manualCode,
+        onChange: (e) => setManualCode(e.target.value.toUpperCase()),
+        placeholder: "Batch / box code as written on the box",
+        autoCapitalize: "characters",
+        autoCorrect: "off",
+        spellCheck: "false",
+        style: { ...fld, width: "100%", marginTop: 6, textTransform: "uppercase" }
+      }
+    ), spec && !manual && options.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: AMBER } }, "Nothing on the shelf for this size \u2014 type the batch number above if the box is in front of you."), /* @__PURE__ */ React.createElement("label", { style: lbl }, "3 \xB7 How many of that box are in this case"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        type: "number",
+        min: "1",
+        value: qty,
+        onChange: (e) => setQty(e.target.value),
+        placeholder: "Amount",
+        disabled: !chosenCode,
+        style: { ...fld, flex: 1, opacity: chosenCode ? 1 : 0.5, fontWeight: 700 }
+      }
+    ), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: add,
+        disabled: !spec || !chosenCode || !(Number(qty) > 0),
+        style: {
+          ...fld,
+          padding: "0 28px",
+          fontWeight: 700,
+          cursor: "pointer",
+          background: spec && chosenCode && Number(qty) > 0 ? NAVY : "#fff",
+          color: spec && chosenCode && Number(qty) > 0 ? "#fff" : "#B9BBC2",
+          border: spec && chosenCode && Number(qty) > 0 ? "none" : `1px solid ${BORDER}`
+        }
+      },
+      "Add"
+    )), picked && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, picked.code, " holds ", picked.left, ", ", picked.where, ".")), flags.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-3 px-3 py-2", style: { background: "#FFF7E6", border: `1px solid ${AMBER}`, borderRadius: 6 } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { fontWeight: 700, color: INK } }, "Doesn't add up \u2014 saved anyway, and listed at the end"), flags.map((f, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "text-xs mt-0.5", style: { color: INK_MUTED } }, f))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 16 } }, /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => onSave(draft, flags),
+        style: { ...fld, flex: 1, background: GREEN, color: "#fff", border: "none", fontWeight: 700, fontSize: 17, cursor: "pointer" }
+      },
+      "\u2713 Confirm case ",
+      caseNum
+    ), /* @__PURE__ */ React.createElement("button", { onClick: onCancel, style: { ...fld, padding: "0 20px", cursor: "pointer" } }, "Cancel")));
+  }
+  function CaseGrid({ cases, caseWeights, setCaseWeights, palletAssignments, setPalletAssignments, highlightBoxes = null, highlightKey = null, litCases = [], caseOverrides = {}, setCaseOverrides = null, onEditCase = null, editOrder = null, editData = null }) {
+    const [editingCase, setEditingCase] = useState(null);
     const [sel, setSel] = useState(cases.length ? cases[0].caseNum : null);
     const chosen = cases.find((c) => c.caseNum === sel) || cases[0];
     const [pulse, setPulse] = useState(false);
@@ -5086,9 +5278,43 @@ Here's the order:`;
         className: "flex items-center justify-between px-4 py-2.5",
         style: { background: "#FAFAF8", borderBottom: `1px solid ${BORDER}` }
       },
-      /* @__PURE__ */ React.createElement("span", { className: "font-semibold", style: { color: INK } }, "Case ", /* @__PURE__ */ React.createElement(Mono, { className: "font-bold" }, chosen.caseNum)),
-      /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, caseState(chosen).label)
-    ), chosen.packedOutside ? /* @__PURE__ */ React.createElement("div", { className: "px-4 py-3 text-sm", style: { color: INK_MUTED } }, "Packed before the app was involved \u2014 what's inside is on the paper sheet, not recorded here. The weight and pallet can still be entered below.") : chosen.contributions.map((r, i) => /* @__PURE__ */ React.createElement(
+      /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          onClick: () => setEditingCase(editingCase === chosen.caseNum ? null : chosen.caseNum),
+          style: {
+            background: "none",
+            border: "none",
+            padding: "4px 0",
+            cursor: onEditCase ? "pointer" : "default",
+            font: "inherit",
+            color: INK,
+            fontWeight: 600,
+            textAlign: "left",
+            display: "flex",
+            alignItems: "baseline",
+            gap: 10,
+            flexWrap: "wrap"
+          }
+        },
+        /* @__PURE__ */ React.createElement("span", null, "Case ", /* @__PURE__ */ React.createElement(Mono, { className: "font-bold", style: { fontSize: 20 } }, chosen.caseNum)),
+        onEditCase && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, color: NAVY, fontWeight: 700, whiteSpace: "nowrap" } }, editingCase === chosen.caseNum ? "\u2715 close" : "tap to confirm or amend")
+      ),
+      /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, marginLeft: 12, whiteSpace: "nowrap" } }, caseState(chosen).label)
+    ), onEditCase && editingCase === chosen.caseNum && /* @__PURE__ */ React.createElement(
+      CaseContentsEditor,
+      {
+        order: editOrder,
+        caseNum: chosen.caseNum,
+        rows: chosen.contributions || [],
+        data: editData,
+        onSave: (rows2, flags) => {
+          onEditCase(chosen.caseNum, rows2, flags);
+          setEditingCase(null);
+        },
+        onCancel: () => setEditingCase(null)
+      }
+    ), chosen.packedOutside ? /* @__PURE__ */ React.createElement("div", { className: "px-4 py-3 text-sm", style: { color: INK_MUTED } }, "Packed before the app was involved \u2014 what's inside is on the paper sheet, not recorded here. The weight and pallet can still be entered below.") : onEditCase && editingCase === chosen.caseNum ? null : chosen.contributions.map((r, i) => /* @__PURE__ */ React.createElement(
       "div",
       {
         key: i,
@@ -5119,7 +5345,9 @@ Here's the order:`;
       )
     )));
   }
-  function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = null, highlightKey = null }) {
+  function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = null, highlightKey = null, onAllocateBoxes = null }) {
+    const [overrideOn, setOverrideOn] = useState(false);
+    const { requirePassword: requireAdmin, modal: adminModal } = useAdminPasswordGate();
     const { lineItems, bondingRuns } = data;
     const orderId = order.id;
     const [sizeFilter, setSizeFilter] = useState("all");
@@ -5178,6 +5406,35 @@ Here's the order:`;
       }
       return { caseRows: caseRows2, smallRows: smallRows2, otherAssigned: orphaned };
     }, [orderId, items, bondingRuns, caseOverrides, order?.startingCaseNum]);
+    const saveCaseContents = (caseNum, rows, flags) => {
+      const toAllocate = [];
+      const overrides = {};
+      for (const r of rows) {
+        if (!r.boxNumber || !(Number(r.qty) > 0)) continue;
+        overrides[r.boxNumber] = caseNum;
+        const run = (data.bondingRuns || []).find((x) => !x.deleted && x.boxNumber === r.boxNumber);
+        if (run && run.workNumber !== order.id) {
+          toAllocate.push({
+            id: run.id,
+            boxNumber: r.boxNumber,
+            productSize: run.productSize,
+            location: "",
+            proposedQty: Number(r.qty),
+            confirmedQty: Number(r.qty),
+            damaged: false,
+            caseOverride: caseNum,
+            baselineBatchCode: run.baselineBatchCode || ""
+          });
+        }
+      }
+      setData((prev) => ({ ...prev, orders: prev.orders.map((o) => o.id === order.id ? {
+        ...o,
+        caseOverrides: { ...o.caseOverrides || {}, ...overrides },
+        caseFlags: { ...o.caseFlags || {}, [caseNum]: flags && flags.length ? flags : void 0 },
+        updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      } : o) }));
+      if (toAllocate.length && typeof onAllocateBoxes === "function") onAllocateBoxes(toAllocate);
+    };
     const litCaseNums = useMemo(() => {
       if (!highlightBoxes || !highlightBoxes.length) return [];
       const want = new Set(highlightBoxes.map((b) => String(b).trim().toUpperCase()));
@@ -5324,7 +5581,40 @@ Here's the order:`;
       const tooMany = allCases.length > 60;
       const showGrid = packView === "grid" && !tooMany;
       const litCases = litCaseNums;
-      return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(CaseAnnouncement, { cases: litCases, boxes: highlightBoxes, fireKey: highlightKey }), allCases.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-3 no-print" }, /* @__PURE__ */ React.createElement(
+      return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(CaseAnnouncement, { cases: litCases, boxes: highlightBoxes, fireKey: highlightKey }), adminModal, /* @__PURE__ */ React.createElement("div", { className: "no-print mb-3" }, !overrideOn ? /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          onClick: () => requireAdmin(() => setOverrideOn(true)),
+          className: "px-3",
+          style: {
+            height: 40,
+            borderRadius: 6,
+            border: `1px solid ${BORDER}`,
+            background: "#fff",
+            color: INK_MUTED,
+            fontSize: 13,
+            fontWeight: 600,
+            cursor: "pointer"
+          }
+        },
+        "\u{1F512} Packing override"
+      ) : /* @__PURE__ */ React.createElement(
+        "div",
+        {
+          className: "px-3 py-2.5 flex items-center justify-between flex-wrap gap-2",
+          style: { background: "#FFF7E6", border: `1px solid ${AMBER}`, borderRadius: 6 }
+        },
+        /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13 } }, /* @__PURE__ */ React.createElement("b", null, "Packing override is on."), " ", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Tap a case number to confirm or amend what's in it. Changes allocate stock directly, bypassing the pick list.")),
+        /* @__PURE__ */ React.createElement(
+          "button",
+          {
+            onClick: () => setOverrideOn(false),
+            className: "px-3",
+            style: { height: 36, borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer" }
+          },
+          "Turn off"
+        )
+      )), overrideOn && /* @__PURE__ */ React.createElement(PackingDiscrepancies, { order, data, setData }), allCases.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-3 no-print" }, /* @__PURE__ */ React.createElement(
         "button",
         {
           onClick: () => setPackView("grid"),
@@ -5358,7 +5648,10 @@ Here's the order:`;
           highlightKey,
           litCases,
           caseOverrides,
-          setCaseOverrides
+          setCaseOverrides,
+          editOrder: order,
+          editData: data,
+          onEditCase: overrideOn ? ((caseNum, rows, flags) => saveCaseContents(caseNum, rows, flags)) : null
         }
       ));
     })(), /* @__PURE__ */ React.createElement("div", { className: "mobile-only mb-5 no-print", style: gridActive ? { display: "none" } : void 0 }, caseRows.length === 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 text-sm", style: { color: INK_MUTED } }, "No standard-size items on this order."), caseRows.map((c) => (
