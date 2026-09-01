@@ -693,7 +693,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-01.9";
+  var APP_VERSION = "2026-09-01.11";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -766,7 +766,7 @@
   }
   var SYNC_TABLES = {
     orders: { table: "orders", cols: { orderDate: "order_date", dueDate: "due_date", shippedDate: "shipped_date" } },
-    lineItems: { table: "line_items", cols: { orderId: "order_id", unitPrice: "unit_price", fromOtherStock: "from_other_stock" } },
+    lineItems: { table: "line_items", cols: { orderId: "order_id", unitPrice: "unit_price", fromOtherStock: "from_other_stock", customerRef: "customer_ref" } },
     bondingRuns: { table: "bonding_runs", cols: {
       productSize: "product_size",
       baselineBatchCode: "baseline_batch_code",
@@ -1708,14 +1708,14 @@
         if (!current || current.remaining <= 0 || current.maxSize !== maxSize) startCase(maxSize);
         if (runIdx >= sorted.length || runRemaining <= 0) {
           const take2 = Math.min(remaining, current.remaining);
-          current.contributions.push({ spec: li.description, boxNumber: null, batchCode: null, qty: take2 });
+          current.contributions.push({ spec: li.description, customerRef: li.customerRef || null, boxNumber: null, batchCode: null, qty: take2 });
           current.remaining -= take2;
           remaining -= take2;
           continue;
         }
         const take = Math.min(remaining, current.remaining, runRemaining);
         const run = sorted[runIdx];
-        current.contributions.push({ spec: li.description, boxNumber: run.boxNumber, batchCode: run.baselineBatchCode, qty: take });
+        current.contributions.push({ spec: li.description, customerRef: li.customerRef || null, boxNumber: run.boxNumber, batchCode: run.baselineBatchCode, qty: take });
         current.remaining -= take;
         remaining -= take;
         runRemaining -= take;
@@ -2836,6 +2836,50 @@ Here's the order:`;
       } }, /* @__PURE__ */ React.createElement("div", { className: "font-semibold mb-1.5" }, "How to use this:"), /* @__PURE__ */ React.createElement("ol", { style: { paddingLeft: 16, margin: 0, listStyle: "decimal" } }, /* @__PURE__ */ React.createElement("li", null, "Click to copy this prompt"), /* @__PURE__ */ React.createElement("li", null, "Open any Claude chat (claude.ai)"), /* @__PURE__ */ React.createElement("li", null, "Paste it, and attach the order \u2014 PDF or a photo \u2014 in the same message"), /* @__PURE__ */ React.createElement("li", null, "Send it \u2014 Claude replies with the order in the right format"), /* @__PURE__ */ React.createElement("li", null, "Copy Claude's reply and paste it in the box below"), /* @__PURE__ */ React.createElement("li", null, "Click Preview, check it looks right, then Add this order")))
     );
   }
+  function CaseMover({ boxNumber, caseNum, caseOverrides, setCaseOverrides, size = 30 }) {
+    if (!boxNumber) return null;
+    const at = caseOverrides[boxNumber] ?? caseNum;
+    const moved = caseOverrides[boxNumber] != null;
+    const move = (n) => {
+      if (n >= 1) setCaseOverrides({ ...caseOverrides, [boxNumber]: n });
+    };
+    const btn = {
+      width: size,
+      height: size,
+      borderRadius: size > 36 ? 8 : 6,
+      border: `1px solid ${BORDER}`,
+      background: "#fff",
+      color: INK,
+      fontSize: size > 36 ? 20 : 17,
+      fontWeight: 700,
+      lineHeight: 1,
+      cursor: "pointer",
+      padding: 0
+    };
+    return /* @__PURE__ */ React.createElement("div", { className: "no-print", style: { display: "flex", alignItems: "center", gap: size > 36 ? 8 : 4, flexWrap: "wrap" } }, size > 36 && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, "In case"), /* @__PURE__ */ React.createElement("button", { onClick: () => move(at - 1), disabled: at <= 1, style: { ...btn, opacity: at <= 1 ? 0.35 : 1 }, title: "Move to the case before" }, "\u2212"), /* @__PURE__ */ React.createElement("span", { style: { minWidth: size > 36 ? 34 : 30, textAlign: "center", fontWeight: 800, fontSize: size > 36 ? 18 : 15, color: moved ? NAVY : INK } }, at), /* @__PURE__ */ React.createElement("button", { onClick: () => move(at + 1), style: btn, title: "Move to the case after" }, "+"), moved && /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => {
+          const n = { ...caseOverrides };
+          delete n[boxNumber];
+          setCaseOverrides(n);
+        },
+        style: { background: "none", border: "none", padding: 0, cursor: "pointer", color: NAVY, fontSize: 11.5, fontWeight: 600 }
+      },
+      "moved by hand \xB7 put back"
+    ));
+  }
+  function SpecWithRef({ spec, customerRef, className = "", style }) {
+    return /* @__PURE__ */ React.createElement("span", { className, style }, spec, customerRef && /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: "0.8em", color: INK_MUTED, fontWeight: 400 } }, "their ref: ", customerRef));
+  }
+  function splitCustomerRef(text) {
+    const t = String(text || "").trim();
+    const i = t.indexOf(", ");
+    if (i < 0) return { customerRef: null, description: t };
+    const head = t.slice(0, i).trim(), tail = t.slice(i + 2).trim();
+    if (!/(mm|\dpt|\(\d+(\.\d+)?m\))/i.test(tail)) return { customerRef: null, description: t };
+    return { customerRef: head, description: tail };
+  }
   function PasteOrderPanel({ data, setData }) {
     const [open, setOpen] = useState(false);
     const [raw, setRaw, rawRestored, discardRaw] = useDraftState("pasteOrder", "", "");
@@ -2858,7 +2902,10 @@ Here's the order:`;
       }
       setParsed({
         ...obj,
-        lineItems: obj.lineItems.map((li) => ({ ...li, description: normaliseUltraSpec(li.description) }))
+        lineItems: obj.lineItems.map((li) => {
+          const { customerRef, description } = splitCustomerRef(li.description);
+          return { ...li, customerRef: li.customerRef || customerRef, description: normaliseUltraSpec(description) };
+        })
       });
     };
     const handleConfirm = () => {
@@ -2882,6 +2929,7 @@ Here's the order:`;
           id: uid("li"),
           orderId: id,
           description: li.description || "",
+          customerRef: li.customerRef || null,
           qty: Number(li.qty) || 0,
           unitPrice: Number(li.unitPrice) || 0
         }));
@@ -3197,7 +3245,7 @@ Here's the order:`;
     const { sorted, sortBy, sortDir, toggleSort } = useSortableRows(itemsWithTotal, "description", "asc");
     const fullTable = /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm mb-3" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { className: "text-xs uppercase tracking-wide", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement(SortTh, { col: "description", sortBy, sortDir, onSort: toggleSort, className: "text-left", style: { color: INK_MUTED } }, "Product spec"), /* @__PURE__ */ React.createElement(SortTh, { col: "qty", sortBy, sortDir, onSort: toggleSort, startDir: "desc", className: "text-right", style: { width: 70, color: INK_MUTED } }, "Qty"), /* @__PURE__ */ React.createElement(SortTh, { col: "unitPrice", sortBy, sortDir, onSort: toggleSort, startDir: "desc", className: "text-right", style: { width: 90, color: INK_MUTED } }, "Unit price"), /* @__PURE__ */ React.createElement(SortTh, { col: "lineTotal", sortBy, sortDir, onSort: toggleSort, startDir: "desc", className: "text-right", style: { width: 90, color: INK_MUTED } }, "Line total"), /* @__PURE__ */ React.createElement(ThR, { w: 110 }, "From other stock"), lineEditMode && /* @__PURE__ */ React.createElement("th", { style: { width: 28 } }))), /* @__PURE__ */ React.createElement("tbody", null, sorted.map((li) => {
       const bal = otherStockBalance(data.otherStock || [], lineItems, li.description) + Number(li.fromOtherStock || 0);
-      return /* @__PURE__ */ React.createElement("tr", { key: li.id, className: "border-t", style: { borderColor: BORDER } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5 no-wrap" }, lineEditMode ? /* @__PURE__ */ React.createElement(TextInput, { value: li.description, onChange: (e) => updateLineItemField(li.id, "description", e.target.value) }) : li.description), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, lineEditMode ? /* @__PURE__ */ React.createElement(
+      return /* @__PURE__ */ React.createElement("tr", { key: li.id, className: "border-t", style: { borderColor: BORDER } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5 no-wrap" }, lineEditMode ? /* @__PURE__ */ React.createElement(TextInput, { value: li.description, onChange: (e) => updateLineItemField(li.id, "description", e.target.value) }) : /* @__PURE__ */ React.createElement(SpecWithRef, { spec: li.description, customerRef: li.customerRef })), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, lineEditMode ? /* @__PURE__ */ React.createElement(
         "input",
         {
           type: "number",
@@ -4092,7 +4140,7 @@ Here's the order:`;
       const o = shippedPrintJob.order;
       const m = o.shippingManifest;
       return /* @__PURE__ */ React.createElement("div", { className: "print-only" }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Georgia, serif", fontWeight: 700, fontSize: 22, color: NAVY } }, "Shipped \u2014 ", o.customer), o.address && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, whiteSpace: "pre-line", marginTop: 2 } }, o.address), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 24, marginTop: 10, fontSize: 13 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Order: "), /* @__PURE__ */ React.createElement("b", null, o.id)), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Shipped: "), /* @__PURE__ */ React.createElement("b", null, o.shippedDate || "\u2014")), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Total weight: "), /* @__PURE__ */ React.createElement("b", null, m.totalWeight.toFixed(2), " kg"))), /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { marginTop: 16 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, { w: 60 }, "Case #"), /* @__PURE__ */ React.createElement(Th, null, "Product spec"), /* @__PURE__ */ React.createElement(ThR, { w: 60 }, "Qty"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Weight kg"), /* @__PURE__ */ React.createElement(Th, { w: 150 }, "Box / reel number(s)"), /* @__PURE__ */ React.createElement(Th, { w: 140 }, "Batch code(s)"))), /* @__PURE__ */ React.createElement("tbody", null, m.caseRows.flatMap(
-        (c, ci) => c.contributions.map((row, ri) => /* @__PURE__ */ React.createElement("tr", { key: `${c.caseNum}-${ri}`, className: ci % 2 ? "" : "bg-black/[0.015]", style: { borderTop: ri === 0 ? `2px solid ${NAVY}` : `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-3" }, ri === 0 && /* @__PURE__ */ React.createElement(Mono, null, c.caseNum)), /* @__PURE__ */ React.createElement("td", { className: "px-3 no-wrap" }, row.spec), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, row.qty), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, ri === 0 ? c.weight ? c.weight.toFixed(2) : "\u2014" : ""), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, row.boxNumber || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, row.batchCode || "\u2014"))))
+        (c, ci) => c.contributions.map((row, ri) => /* @__PURE__ */ React.createElement("tr", { key: `${c.caseNum}-${ri}`, className: ci % 2 ? "" : "bg-black/[0.015]", style: { borderTop: ri === 0 ? `2px solid ${NAVY}` : `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-3" }, ri === 0 && /* @__PURE__ */ React.createElement(Mono, null, c.caseNum)), /* @__PURE__ */ React.createElement("td", { className: "px-3 no-wrap" }, /* @__PURE__ */ React.createElement(SpecWithRef, { spec: row.spec, customerRef: row.customerRef })), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, row.qty), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, ri === 0 ? c.weight ? c.weight.toFixed(2) : "\u2014" : ""), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, row.boxNumber || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, row.batchCode || "\u2014"))))
       ), /* @__PURE__ */ React.createElement("tr", { style: { borderTop: `2px solid ${NAVY}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 font-semibold", colSpan: 3, style: { textAlign: "right", color: INK_MUTED } }, "Total weight"), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-bold" }, m.totalWeight.toFixed(2)), /* @__PURE__ */ React.createElement("td", null), /* @__PURE__ */ React.createElement("td", null)))), m.smallRows.length > 0 && /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { marginTop: 16 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product spec"), /* @__PURE__ */ React.createElement(ThR, { w: 80 }, "Qty"), /* @__PURE__ */ React.createElement(Th, { w: 150 }, "Box / reel number(s)"), /* @__PURE__ */ React.createElement(Th, { w: 140 }, "Batch code(s)"))), /* @__PURE__ */ React.createElement("tbody", null, m.smallRows.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.id || i, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 no-wrap" }, r.spec), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.qty), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.boxNumbers || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.batchCodes || "\u2014")))))));
     })());
   }
@@ -4810,7 +4858,7 @@ Here's the order:`;
       )
     );
   }
-  function CaseGrid({ cases, caseWeights, setCaseWeights, palletAssignments, setPalletAssignments, highlightBoxes = null, highlightKey = null, litCases = [] }) {
+  function CaseGrid({ cases, caseWeights, setCaseWeights, palletAssignments, setPalletAssignments, highlightBoxes = null, highlightKey = null, litCases = [], caseOverrides = {}, setCaseOverrides = null }) {
     const [sel, setSel] = useState(cases.length ? cases[0].caseNum : null);
     const chosen = cases.find((c) => c.caseNum === sel) || cases[0];
     const [pulse, setPulse] = useState(false);
@@ -4863,7 +4911,7 @@ Here's the order:`;
         className: "flex items-baseline justify-between gap-3 px-4 py-2.5",
         style: { borderTop: i ? `1px solid #F0F0EC` : "none" }
       },
-      /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { fontWeight: 600, color: INK } }, r.spec), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-0.5", style: { color: INK_MUTED } }, r.boxNumber ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Mono, null, r.boxNumber), r.batchCode ? /* @__PURE__ */ React.createElement(React.Fragment, null, " \xB7 batch ", /* @__PURE__ */ React.createElement(Mono, null, r.batchCode)) : null) : /* @__PURE__ */ React.createElement("span", { style: { color: AMBER, fontWeight: 600 } }, "not run yet \u2014 no box or batch assigned"))),
+      /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { fontWeight: 600, color: INK } }, /* @__PURE__ */ React.createElement(SpecWithRef, { spec: r.spec, customerRef: r.customerRef })), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-0.5", style: { color: INK_MUTED } }, r.boxNumber ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Mono, null, r.boxNumber), r.batchCode ? /* @__PURE__ */ React.createElement(React.Fragment, null, " \xB7 batch ", /* @__PURE__ */ React.createElement(Mono, null, r.batchCode)) : null) : /* @__PURE__ */ React.createElement("span", { style: { color: AMBER, fontWeight: 600 } }, "not run yet \u2014 no box or batch assigned")), setCaseOverrides && r.boxNumber && /* @__PURE__ */ React.createElement("div", { className: "mt-1.5" }, /* @__PURE__ */ React.createElement(CaseMover, { boxNumber: r.boxNumber, caseNum: chosen.caseNum, caseOverrides, setCaseOverrides }))),
       /* @__PURE__ */ React.createElement("span", { className: "font-mono shrink-0", style: { fontWeight: 800, fontSize: 13.5 } }, r.qty)
     )), /* @__PURE__ */ React.createElement(
       "div",
@@ -5124,7 +5172,9 @@ Here's the order:`;
           setPalletAssignments,
           highlightBoxes,
           highlightKey,
-          litCases
+          litCases,
+          caseOverrides,
+          setCaseOverrides
         }
       ));
     })(), /* @__PURE__ */ React.createElement("div", { className: "mobile-only mb-5 no-print", style: gridActive ? { display: "none" } : void 0 }, caseRows.length === 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 text-sm", style: { color: INK_MUTED } }, "No standard-size items on this order."), caseRows.map((c) => (
@@ -5153,38 +5203,7 @@ Here's the order:`;
           /* @__PURE__ */ React.createElement("span", { className: "font-semibold", style: { color: INK } }, "Case ", /* @__PURE__ */ React.createElement(Mono, { className: "font-bold" }, c.caseNum)),
           /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, c.contributions.reduce((t, r) => t + (Number(r.qty) || 0), 0), " items")
         ),
-        /* @__PURE__ */ React.createElement("div", { className: "px-4 py-2" }, c.contributions.map((row, ri) => /* @__PURE__ */ React.createElement("div", { key: ri, className: "py-2", style: { borderTop: ri ? `1px solid #EFEFEC` : "none" } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline justify-between gap-3" }, /* @__PURE__ */ React.createElement("span", { className: "text-sm", style: { color: INK, fontWeight: 600 } }, row.spec), /* @__PURE__ */ React.createElement("span", { className: "font-mono text-sm font-bold shrink-0" }, row.qty)), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement(Mono, { style: { color: row.boxNumber ? INK : INK_MUTED } }, row.boxNumber || "not run yet"), row.batchCode ? /* @__PURE__ */ React.createElement(React.Fragment, null, " \xB7 batch ", /* @__PURE__ */ React.createElement(Mono, null, row.batchCode)) : null), row.boxNumber && (() => {
-          const at = caseOverrides[row.boxNumber] ?? c.caseNum;
-          const moved = caseOverrides[row.boxNumber] != null;
-          const move = (n) => {
-            if (n >= 1) setCaseOverrides({ ...caseOverrides, [row.boxNumber]: n });
-          };
-          const btn = {
-            width: 44,
-            height: 44,
-            borderRadius: 8,
-            border: `1px solid ${BORDER}`,
-            background: "#fff",
-            color: INK,
-            fontSize: 20,
-            fontWeight: 700,
-            lineHeight: 1,
-            cursor: "pointer",
-            padding: 0
-          };
-          return /* @__PURE__ */ React.createElement("div", { className: "no-print mt-2", style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, "In case"), /* @__PURE__ */ React.createElement("button", { onClick: () => move(at - 1), disabled: at <= 1, style: { ...btn, opacity: at <= 1 ? 0.35 : 1 } }, "\u2212"), /* @__PURE__ */ React.createElement("span", { style: { minWidth: 34, textAlign: "center", fontWeight: 800, fontSize: 18, color: moved ? NAVY : INK } }, at), /* @__PURE__ */ React.createElement("button", { onClick: () => move(at + 1), style: btn }, "+"), moved && /* @__PURE__ */ React.createElement(
-            "button",
-            {
-              onClick: () => {
-                const n = { ...caseOverrides };
-                delete n[row.boxNumber];
-                setCaseOverrides(n);
-              },
-              style: { background: "none", border: "none", padding: 0, cursor: "pointer", color: NAVY, fontSize: 12, fontWeight: 600 }
-            },
-            "moved by hand \xB7 put back"
-          ));
-        })()))),
+        /* @__PURE__ */ React.createElement("div", { className: "px-4 py-2" }, c.contributions.map((row, ri) => /* @__PURE__ */ React.createElement("div", { key: ri, className: "py-2", style: { borderTop: ri ? `1px solid #EFEFEC` : "none" } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline justify-between gap-3" }, /* @__PURE__ */ React.createElement(SpecWithRef, { className: "text-sm", style: { color: INK, fontWeight: 600 }, spec: row.spec, customerRef: row.customerRef }), /* @__PURE__ */ React.createElement("span", { className: "font-mono text-sm font-bold shrink-0" }, row.qty)), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement(Mono, { style: { color: row.boxNumber ? INK : INK_MUTED } }, row.boxNumber || "not run yet"), row.batchCode ? /* @__PURE__ */ React.createElement(React.Fragment, null, " \xB7 batch ", /* @__PURE__ */ React.createElement(Mono, null, row.batchCode)) : null), row.boxNumber && /* @__PURE__ */ React.createElement("div", { className: "mt-2" }, /* @__PURE__ */ React.createElement(CaseMover, { boxNumber: row.boxNumber, caseNum: c.caseNum, caseOverrides, setCaseOverrides, size: 44 }))))),
         /* @__PURE__ */ React.createElement(
           "div",
           {
@@ -5215,70 +5234,7 @@ Here's the order:`;
           className: ci % 2 ? "" : "bg-black/[0.015]",
           style: { borderTop: ri === 0 ? `2px solid ${NAVY}` : `1px solid ${BORDER}` }
         },
-        /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-3" }, ri === 0 && /* @__PURE__ */ React.createElement(Mono, null, c.caseNum), row.boxNumber && (() => {
-          const at = caseOverrides[row.boxNumber] ?? c.caseNum;
-          const moved = caseOverrides[row.boxNumber] != null;
-          const move = (n) => {
-            if (n < 1) return;
-            setCaseOverrides({ ...caseOverrides, [row.boxNumber]: n });
-          };
-          const btn = {
-            width: 30,
-            height: 30,
-            borderRadius: 6,
-            border: `1px solid ${BORDER}`,
-            background: "#fff",
-            color: INK,
-            fontSize: 17,
-            fontWeight: 700,
-            lineHeight: 1,
-            cursor: "pointer",
-            padding: 0
-          };
-          return /* @__PURE__ */ React.createElement("div", { className: "no-print mt-1" }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ React.createElement(
-            "button",
-            {
-              onClick: () => move(at - 1),
-              disabled: at <= 1,
-              style: { ...btn, opacity: at <= 1 ? 0.35 : 1 },
-              title: "Move this box to the case before"
-            },
-            "\u2212"
-          ), /* @__PURE__ */ React.createElement("span", { style: {
-            minWidth: 30,
-            textAlign: "center",
-            fontWeight: 700,
-            color: moved ? NAVY : INK,
-            fontSize: 15
-          } }, at), /* @__PURE__ */ React.createElement(
-            "button",
-            {
-              onClick: () => move(at + 1),
-              style: btn,
-              title: "Move this box to the case after"
-            },
-            "+"
-          )), moved && /* @__PURE__ */ React.createElement(
-            "button",
-            {
-              onClick: () => {
-                const next = { ...caseOverrides };
-                delete next[row.boxNumber];
-                setCaseOverrides(next);
-              },
-              style: {
-                background: "none",
-                border: "none",
-                padding: "2px 0 0",
-                cursor: "pointer",
-                color: NAVY,
-                fontSize: 11,
-                fontWeight: 600
-              }
-            },
-            "moved by hand \xB7 put back"
-          ));
-        })()),
+        /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-3" }, ri === 0 && /* @__PURE__ */ React.createElement(Mono, null, c.caseNum), row.boxNumber && /* @__PURE__ */ React.createElement("div", { className: "mt-1" }, /* @__PURE__ */ React.createElement(CaseMover, { boxNumber: row.boxNumber, caseNum: c.caseNum, caseOverrides, setCaseOverrides }))),
         /* @__PURE__ */ React.createElement("td", { className: "px-3 no-wrap" }, row.spec),
         /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs", style: { color: row.boxNumber ? INK : INK_MUTED } }, row.boxNumber || "not run yet")),
         /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs", style: { color: row.batchCode ? INK : INK_MUTED } }, row.batchCode || "\u2014")),
