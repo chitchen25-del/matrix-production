@@ -654,6 +654,10 @@
     extrusion2: [],
     stockPicks: [],
     otherStock: [],
+    cases: [],
+    pickSheets: [],
+    movements: [],
+    issues: [],
     tooling: { ...DEFAULT_TOOLING, ken: KEN_TOOLING },
     ncrs: [],
     customSizes: [],
@@ -696,7 +700,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-02.16";
+  var APP_VERSION = "2026-09-02.36";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -773,6 +777,24 @@
   }
   var SYNC_TABLES = {
     orders: { table: "orders", cols: { orderDate: "order_date", dueDate: "due_date", shippedDate: "shipped_date" } },
+    /* A case is a RECORD, not a number that other data hangs off. Weight and
+       pallet used to be keyed by case NUMBER — and numbers move whenever
+       something is packed, confirmed or displaced, so 14.18 kg recorded against
+       "case 1" stayed on case 1 after case 1 held different boxes, and the
+       carrier was quoted that figure. `caseNum` is now a label on the record. */
+    cases: { table: "cases", cols: { orderId: "order_id", caseNum: "case_num", packedOutside: "packed_outside" } },
+    /* A printed pick sheet, so paper picking has a front door. A sheet used to
+       leave the building with no identity: nothing knew it was out, when it came
+       back, or whether it had already been entered — and entering one twice is
+       how WO-0017 got case 29 as a copy of case 27. */
+    pickSheets: { table: "pick_sheets", cols: { orderId: "order_id", printedAt: "printed_at", printedBy: "printed_by", reconciledAt: "reconciled_at", reconciledBy: "reconciled_by" } },
+    /* The movement ledger: one append-only row per physical event. Current state
+       is a PROJECTION over this, never stored. Appends from two devices merge
+       trivially, so none of the tombstone/key-merge trouble applies here. */
+    movements: { table: "movements", cols: { boxNumber: "box_number", orderId: "order_id", caseNum: "case_num", reelCode: "reel_code", sourceId: "source_id" } },
+    /* The register of loud flags. The app never blocks an operator, but nothing
+       that costs a customer gets to disappear quietly either. */
+    issues: { table: "issues", cols: { raisedAt: "raised_at", raisedBy: "raised_by", orderId: "order_id", boxNumber: "box_number", resolvedAt: "resolved_at", resolvedBy: "resolved_by" } },
     lineItems: { table: "line_items", cols: { orderId: "order_id", unitPrice: "unit_price", fromOtherStock: "from_other_stock", customerRef: "customer_ref" } },
     bondingRuns: { table: "bonding_runs", cols: {
       productSize: "product_size",
@@ -1584,14 +1606,6 @@
     const added = otherStock.filter((o) => o.productSpec === spec).reduce((s, o) => s + Number(o.qty || 0), 0);
     return added - otherStockUsed(lineItems, spec);
   }
-  function otherStockRows(otherStock, lineItems) {
-    const specs = [...new Set(otherStock.map((o) => o.productSpec))].filter(Boolean);
-    return specs.map((spec) => {
-      const added = otherStock.filter((o) => o.productSpec === spec).reduce((s, o) => s + Number(o.qty || 0), 0);
-      const used = otherStockUsed(lineItems, spec);
-      return { spec, added, used, balance: added - used };
-    });
-  }
   function orderPctComplete(lineItems, bondingRuns, orderId) {
     const total = orderTotalItems(lineItems, orderId);
     if (total <= 0) return 0;
@@ -2175,15 +2189,6 @@
     });
     return eligible[0];
   }
-  function liveStockRows(bondingRuns, stockPicks) {
-    const confirmedRuns = bondingRuns.filter((r) => r.checked === "Yes");
-    const specs = /* @__PURE__ */ new Set([...confirmedRuns.map((r) => r.productSize), ...stockPicks.map((p) => p.productSpec)]);
-    return [...specs].filter(Boolean).map((spec) => {
-      const made = confirmedRuns.filter((r) => r.productSize === spec).reduce((s, r) => s + Number(r.toStock || 0), 0);
-      const picked = stockPicks.filter((p) => p.productSpec === spec).reduce((s, p) => s + Number(p.qtyPicked || 0), 0);
-      return { spec, made, picked, inStock: made - picked };
-    }).filter((r) => r.made > 0 || r.picked > 0);
-  }
   function unknownReelWarning(batchCode, glueLineBatches) {
     const code = (batchCode || "").trim();
     if (!code) return null;
@@ -2266,7 +2271,43 @@
     if (wantMetres && haveMetres && Math.abs(wantMetres - haveMetres) > 0.01) return false;
     return true;
   }
+  var LEDGER_MOVEMENTS = [];
+  function setLedgerMovements(m) {
+    LEDGER_MOVEMENTS = m || [];
+  }
   function boxedStockAvailable(bondingRuns, stockPicks) {
+    if (LEDGER_MOVEMENTS.length) {
+      const seen = /* @__PURE__ */ new Set();
+      const out = [];
+      for (const r of bondingRuns) {
+        if (!r.boxNumber || r.checked !== "Yes" || seen.has(r.boxNumber)) continue;
+        seen.add(r.boxNumber);
+        const p = projectBox(LEDGER_MOVEMENTS, r.boxNumber);
+        if (!(p.made > 0)) continue;
+        const alreadyPicked = (stockPicks || []).filter((x) => x.boxNumber === r.boxNumber).reduce((t, x) => t + Number(x.qtyPicked || 0), 0);
+        const available = p.onShelf - alreadyPicked;
+        if (available <= 0) continue;
+        const meta = bondingRuns.find((x) => x.boxNumber === r.boxNumber && Number(x.toStock || 0) > 0) || r;
+        out.push({
+          id: meta.id,
+          boxNumber: r.boxNumber,
+          productSize: meta.productSize,
+          date: meta.date || "",
+          location: meta.location || "",
+          available,
+          boxTypeId: meta.boxTypeId || null,
+          baselineBatchCode: meta.baselineBatchCode || "",
+          packageType: meta.packageType || null,
+          metersPerBox: Number(meta.metersPerBox) || null
+        });
+      }
+      const ledgered = new Set(out.map((o) => o.boxNumber));
+      const legacy = boxedStockAvailableStored(bondingRuns.filter((r) => !ledgered.has(r.boxNumber) && !(projectBox(LEDGER_MOVEMENTS, r.boxNumber).made > 0)), stockPicks);
+      return [...out, ...legacy];
+    }
+    return boxedStockAvailableStored(bondingRuns, stockPicks);
+  }
+  function boxedStockAvailableStored(bondingRuns, stockPicks) {
     return bondingRuns.filter((r) => r.checked === "Yes" && Number(r.toStock || 0) > 0 && r.boxNumber).map((r) => {
       const alreadyPicked = (stockPicks || []).filter((p) => p.boxNumber === r.boxNumber).reduce((s, p) => s + Number(p.qtyPicked || 0), 0);
       const available = Number(r.toStock || 0) - alreadyPicked;
@@ -2861,7 +2902,7 @@
           background: "#F4F4F1",
           border: "1px solid #EBEBE7",
           color: INK_MUTED
-        } }, /* @__PURE__ */ React.createElement("b", { style: { fontWeight: 800, color: INK } }, o.caseCount), " case", o.caseCount === 1 ? "" : "s")), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-4", style: { flexDirection: "row-reverse" } }, /* @__PURE__ */ React.createElement(OrderDial, { madePct: seg.madePct, stockPct: seg.stockPct, ready: seg.ready, uid: o.id.replace(/[^A-Za-z0-9]/g, "") }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement(DialKeyRow, { colour: DIAL_MADE, label: "Made or assigned", value: seg.made }), /* @__PURE__ */ React.createElement(DialKeyRow, { colour: DIAL_STOCK, label: "Ready to pick", value: seg.stockUnits }), /* @__PURE__ */ React.createElement(DialKeyRow, { colour: DIAL_TODO, label: "Still to make", value: seg.makeUnits, hatched: true }))))
+        } }, /* @__PURE__ */ React.createElement("b", { style: { fontWeight: 800, color: INK } }, o.caseCount), " case", o.caseCount === 1 ? "" : "s")), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-4", style: { flexDirection: "row-reverse" } }, /* @__PURE__ */ React.createElement(OrderDial, { madePct: seg.madePct, stockPct: seg.stockPct, ready: seg.ready, uid: o.id.replace(/[^A-Za-z0-9]/g, "") }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement(DialKeyRow, { colour: DIAL_MADE, label: "Made or assigned", value: seg.made, note: "recorded" }), /* @__PURE__ */ React.createElement(DialKeyRow, { colour: DIAL_STOCK, label: "Ready to pick", value: seg.stockUnits, note: "worked out from stock" }), /* @__PURE__ */ React.createElement(DialKeyRow, { colour: DIAL_TODO, label: "Still to make", value: seg.makeUnits, hatched: true, note: "worked out from demand" }))))
       );
     }), rows.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-sm py-8", style: { color: INK_MUTED } }, "No orders yet.")));
   }
@@ -3185,6 +3226,156 @@ Here's the order:`;
       setData((prev) => ({ ...prev, ...appendLog(prev, { action: "print", entity, entityId, summary: summary || `Printed ${what}` }) }));
     }
     window.print();
+  }
+  function recordMovement(prev, m) {
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    const row = {
+      id: uid("mv"),
+      at: stamp,
+      actor: currentActor(),
+      device: currentDevice(),
+      kind: m.kind,
+      boxNumber: m.boxNumber || null,
+      spec: m.spec || null,
+      qty: Number(m.qty) || 0,
+      orderId: m.orderId || null,
+      caseNum: m.caseNum ?? null,
+      reelCode: m.reelCode || null,
+      note: m.note || null,
+      source: m.source || "app",
+      sourceId: m.sourceId || null,
+      updatedAt: stamp
+    };
+    return { ...prev, movements: [...prev.movements || [], row] };
+  }
+  function recordMovements(prev, list) {
+    return (list || []).reduce((acc, m) => recordMovement(acc, m), prev);
+  }
+  function projectBox(movements, boxNumber) {
+    const rows = (movements || []).filter((m) => !m.deleted && m.boxNumber === boxNumber);
+    const made = rows.filter((m) => m.kind === "made" || m.kind === "adjusted").reduce((t, m) => t + Number(m.qty || 0), 0);
+    const byOrder = {};
+    for (const m of rows) {
+      if (m.kind === "allocated") byOrder[m.orderId] = (byOrder[m.orderId] || 0) + Number(m.qty || 0);
+      if (m.kind === "unallocated") byOrder[m.orderId] = (byOrder[m.orderId] || 0) - Number(m.qty || 0);
+    }
+    const allocated = Object.values(byOrder).reduce((t, q) => t + q, 0);
+    const scrapped = rows.filter((m) => m.kind === "scrapped").reduce((t, m) => t + Number(m.qty || 0), 0);
+    return { made, allocated, scrapped, onShelf: made - allocated - scrapped, byOrder };
+  }
+  function raiseIssue(prev, { kind, orderId, boxNumber, summary, detail }) {
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    const row = {
+      id: uid("iss"),
+      raisedAt: stamp,
+      raisedBy: currentActor(),
+      kind,
+      severity: "loud",
+      orderId: orderId || null,
+      boxNumber: boxNumber || null,
+      summary,
+      detail: detail || null,
+      resolvedAt: null,
+      resolvedBy: null,
+      resolution: null,
+      updatedAt: stamp
+    };
+    const next = { ...prev, issues: [...prev.issues || [], row] };
+    return { ...next, ...appendLog(next, { action: "add", entity: "issue", entityId: row.id, summary: `Flag raised: ${summary}` }) };
+  }
+  function openIssues(issues) {
+    return (issues || []).filter((i) => !i.deleted && !i.resolvedAt).sort((a, b) => String(b.raisedAt).localeCompare(String(a.raisedAt)));
+  }
+  function resolveIssue(prev, issueId, resolution) {
+    if (!String(resolution || "").trim()) return prev;
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    const iss = (prev.issues || []).find((i) => i.id === issueId);
+    if (!iss) return prev;
+    const next = { ...prev, issues: prev.issues.map((i) => i.id === issueId ? { ...i, resolvedAt: stamp, resolvedBy: currentActor(), resolution: String(resolution).trim(), updatedAt: stamp } : i) };
+    return { ...next, ...appendLog(next, {
+      action: "edit",
+      entity: "issue",
+      entityId: issueId,
+      summary: `Flag cleared: ${iss.summary} \u2014 ${String(resolution).trim()}`
+    }) };
+  }
+  function reelDiscrepancy(batch, bondingRuns) {
+    const recorded = Number(batch?.meterage || 0);
+    const used = batchMeterageUsed(bondingRuns, batch?.batchNumber);
+    if (!recorded) return null;
+    const leftover = recorded - used;
+    return {
+      batchNumber: batch.batchNumber,
+      recorded,
+      used,
+      leftover,
+      // Negative: the reel ran out early — it gave less than recorded.
+      // Positive: it kept going — it gave more.
+      metres: -leftover,
+      pct: recorded ? -leftover / recorded * 100 : 0
+    };
+  }
+  function runningReelDiscrepancy(glueLineBatches, bondingRuns) {
+    const cleared = (glueLineBatches || []).filter((b) => !b.deleted && String(b.cleared).toLowerCase() === "yes" && Number(b.meterage) > 0);
+    let recorded = 0, metres = 0;
+    const rows = [];
+    for (const b of cleared) {
+      const d = reelDiscrepancy(b, bondingRuns);
+      if (!d) continue;
+      recorded += d.recorded;
+      metres += d.metres;
+      rows.push(d);
+    }
+    return {
+      reels: rows.length,
+      recordedMetres: recorded,
+      metres,
+      pct: recorded ? metres / recorded * 100 : 0,
+      worst: [...rows].sort((a, z) => Math.abs(z.pct) - Math.abs(a.pct)).slice(0, 5)
+    };
+  }
+  var REEL_DISCREPANCY_TOLERANCE_PCT = 10;
+  function nextPickSheetRef(pickSheets, orderId) {
+    const used = (pickSheets || []).filter((p) => !p.deleted && p.orderId === orderId).length;
+    return `PS-${orderId}-${String(used + 1).padStart(2, "0")}`;
+  }
+  function recordPickSheet(prev, orderId, lines, actor) {
+    const ref = nextPickSheetRef(prev.pickSheets, orderId);
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    const sheet = {
+      id: uid("ps"),
+      ref,
+      orderId,
+      lines: lines || null,
+      printedAt: stamp,
+      printedBy: actor || currentActor(),
+      reconciledAt: null,
+      reconciledBy: null,
+      notes: "",
+      updatedAt: stamp
+    };
+    const next = { ...prev, pickSheets: [...prev.pickSheets || [], sheet] };
+    return { data: { ...next, ...appendLog(next, {
+      action: "print",
+      entity: "pickSheet",
+      entityId: sheet.id,
+      summary: `Printed pick sheet ${ref} for ${orderId} \u2014 out on the floor until its contents are recorded`
+    }) }, ref };
+  }
+  function openPickSheets(pickSheets, orderId) {
+    return (pickSheets || []).filter((p) => !p.deleted && !p.reconciledAt && (!orderId || p.orderId === orderId)).sort((a, b) => String(a.printedAt).localeCompare(String(b.printedAt)));
+  }
+  function reconcilePickSheet(prev, sheetId, note) {
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    const sheet = (prev.pickSheets || []).find((p) => p.id === sheetId);
+    if (!sheet) return prev;
+    const next = { ...prev, pickSheets: prev.pickSheets.map((p) => p.id === sheetId ? { ...p, reconciledAt: stamp, reconciledBy: currentActor(), notes: note || p.notes || "", updatedAt: stamp } : p) };
+    return { ...next, ...appendLog(next, {
+      action: "edit",
+      entity: "pickSheet",
+      entityId: sheetId,
+      summary: `Pick sheet ${sheet.ref} recorded \u2014 its contents are now in the system`
+    }) };
   }
   var EDIT_LOG_IGNORE = /* @__PURE__ */ new Set(["id", "updatedAt", "updatedBy", "deleted", "deletedAt"]);
   function diffRowFields(before, after) {
@@ -3674,7 +3865,7 @@ Here's the order:`;
           smallRows.push({ id: li.id, spec: li.description, qty: Number(li.qty), boxNumbers: details[0].boxNumbers, batchCodes: details[0].batchCodes });
         }
       }
-      const caseRows = buildCombinedCases(byLineItem, (Number(order.startingCaseNum) || 0) + 1, order.packedOutside || {}).map((c) => ({ ...c, weight: Number(caseWeights[c.caseNum]) || 0 }));
+      const caseRows = buildCombinedCases(byLineItem, (Number(order.startingCaseNum) || 0) + 1, liveMapEntries(order.packedOutside)).map((c) => ({ ...c, weight: Number(caseWeights[c.caseNum]) || 0 }));
       const totalWeight = caseRows.reduce((s, r) => s + (r.weight || 0), 0);
       return { caseRows, smallRows, otherAssigned: orphaned, totalWeight, shippedAt: (/* @__PURE__ */ new Date()).toISOString() };
     };
@@ -3941,7 +4132,7 @@ Here's the order:`;
       let nextFreeNum = highestExisting + 1;
       const boxToCases = {};
       const pickedBoxNumbers = new Set(pendingPickItems.filter((it) => !it.damaged).map((it) => it.boxNumber));
-      for (const c of buildCombinedCases(byLineItem, 1, order.packedOutside || {})) {
+      for (const c of buildCombinedCases(byLineItem, 1, liveMapEntries(order.packedOutside))) {
         if (!c.contributions.some((row) => row.boxNumber && pickedBoxNumbers.has(row.boxNumber))) continue;
         const knownNum = c.contributions.map((row) => row.boxNumber && existingOverrides[row.boxNumber]).find((n) => n != null);
         const caseNum = knownNum != null ? knownNum : nextFreeNum++;
@@ -4044,7 +4235,7 @@ Here's the order:`;
         if (damagedItems.length > 0) summaryParts.push(`${damagedItems.length} written off as damaged while picking`);
         if (pendingPickItems.length - toApply.length - damagedItems.length > 0) summaryParts.push(`${pendingPickItems.length - toApply.length - damagedItems.length} not found on the shelf`);
         if (shortfalls.length > 0) summaryParts.push(`${shortfalls.length} further reduced \u2014 already partly claimed elsewhere since the pick list was generated`);
-        return {
+        let result = {
           ...prevData,
           bondingRuns: runsAfterNewAdditions,
           orders: prevData.orders.map((o) => o.id === order.id ? { ...o, caseOverrides: newOverrides } : o),
@@ -4058,6 +4249,17 @@ Here's the order:`;
             after: { workNumber: order.id }
           })
         };
+        const moves = [];
+        for (const it of toApply) {
+          const r = prevData.bondingRuns.find((row) => row.id === it.id);
+          const taken = it.isNewlyAdded ? Number(it.confirmedQty) : Math.min(Number(it.confirmedQty), Number(r?.toStock || 0));
+          if (taken <= 0) continue;
+          if (it.isNewlyAdded) moves.push({ kind: "made", boxNumber: it.boxNumber, spec: it.productSize, qty: taken, reelCode: it.baselineBatchCode || null, source: "pick", note: "Found on shelf while picking \u2014 not previously logged" });
+          moves.push({ kind: "allocated", boxNumber: it.boxNumber, spec: it.productSize || r?.productSize, qty: taken, orderId: order.id, reelCode: r?.baselineBatchCode || it.baselineBatchCode || null, source: "pick" });
+        }
+        for (const dmg of newDamagedPicks) moves.push({ kind: "scrapped", boxNumber: dmg.boxNumber, spec: dmg.productSpec, qty: Number(dmg.qtyPicked), source: "pick", note: dmg.comments });
+        result = recordMovements(result, moves);
+        return result;
       });
       if (shortfalls.length > 0) {
         setAllocateShortfallWarning({ orderId: order.id, shortfalls });
@@ -4295,7 +4497,15 @@ Here's the order:`;
             },
             message: "Your pick walk was restored \u2014 the quantities and cases you'd already entered are still here. Nothing was confirmed."
           }
-        ), /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-3", style: { borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1" }, "Go and check this against real stock before confirming"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Grouped by product, oldest first within each. Find each box: correct the quantity if it's short, tick Damaged if it's unusable, and check the Case # it's going in \u2014 a suggestion's filled in already, change it if you're packing differently. Nothing is allocated until you hit Confirm below.")), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 flex-wrap mb-2" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => printAndLog(setData, "pick list", "order", o.id, `Printed pick list for ${o.id} (${o.customer})`) }, "\u{1F5A8} Print pick list"), /* @__PURE__ */ React.createElement(Button, { variant: pickByPhone ? "accent" : "ghost", onClick: () => setPickByPhone(!pickByPhone) }, "\u{1F4F1} ", pickByPhone ? "Back to full view" : "Pick by phone"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setCustomizingPick(!customizingPick) }, customizingPick ? "Done customizing" : "\u270E Customize pick list"), anyAdjusted && /* @__PURE__ */ React.createElement("span", { className: "text-sm font-semibold", style: { color: AMBER } }, "Confirmed total ", totalConfirmed, " differs from proposed ", totalProposed), damagedCount > 0 && /* @__PURE__ */ React.createElement("span", { className: "text-sm font-semibold", style: { color: RED } }, damagedCount, " box", damagedCount === 1 ? "" : "es", " marked damaged \u2014 written off, not allocated")), customizingPick && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, `Remove anything you don't want, or use "+ Add another box" on a product if you find you're short \u2014 it goes straight back to unpicked stock either way, nothing's touched until you Confirm.`), pickByPhone ? /* @__PURE__ */ React.createElement(
+        ), /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-3", style: { borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1" }, "Go and check this against real stock before confirming"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Grouped by product, oldest first within each. Find each box: correct the quantity if it's short, tick Damaged if it's unusable, and check the Case # it's going in \u2014 a suggestion's filled in already, change it if you're packing differently. Nothing is allocated until you hit Confirm below.")), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 flex-wrap mb-2" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => {
+          let ref = "";
+          setData((prev) => {
+            const r = recordPickSheet(prev, o.id, null);
+            ref = r.ref;
+            return r.data;
+          });
+          setTimeout(() => window.print(), 0);
+        } }, "\u{1F5A8} Print pick list"), /* @__PURE__ */ React.createElement(Button, { variant: pickByPhone ? "accent" : "ghost", onClick: () => setPickByPhone(!pickByPhone) }, "\u{1F4F1} ", pickByPhone ? "Back to full view" : "Pick by phone"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setCustomizingPick(!customizingPick) }, customizingPick ? "Done customizing" : "\u270E Customize pick list"), anyAdjusted && /* @__PURE__ */ React.createElement("span", { className: "text-sm font-semibold", style: { color: AMBER } }, "Confirmed total ", totalConfirmed, " differs from proposed ", totalProposed), damagedCount > 0 && /* @__PURE__ */ React.createElement("span", { className: "text-sm font-semibold", style: { color: RED } }, damagedCount, " box", damagedCount === 1 ? "" : "es", " marked damaged \u2014 written off, not allocated")), customizingPick && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, `Remove anything you don't want, or use "+ Add another box" on a product if you find you're short \u2014 it goes straight back to unpicked stock either way, nothing's touched until you Confirm.`), pickByPhone ? /* @__PURE__ */ React.createElement(
           PickByPhoneView,
           {
             setPickItemConfirmed,
@@ -4494,7 +4704,15 @@ Here's the order:`;
     const [viewMode, setViewMode] = useState(initialCategory ? "size" : "size");
     const allRows = productionOutstandingRows(data.orders, data.lineItems, data.bondingRuns, data.stockPicks);
     const [cat, setCat] = useState(initialCategory || "7mm");
-    const rows = allRows.filter((r) => classifySize(r.spec) === cat);
+    const [prodSearch, setProdSearch] = useState("");
+    const searchTerms = prodSearch.trim().toLowerCase().replace(/[x×,]/g, " ").split(/\s+/).filter(Boolean);
+    const matchesSearch = (r) => {
+      if (!searchTerms.length) return true;
+      const hay = `${r.spec} ${[...r.orderIds || []].join(" ")} ${r.customers || ""}`.toLowerCase();
+      return searchTerms.every((term) => hay.includes(term) || /^\d*\.?\d+$/.test(term) && hay.includes(Number(term).toFixed(2)) || /^\d+$/.test(term) && hay.includes("0." + term));
+    };
+    const searchHits = searchTerms.length ? allRows.filter(matchesSearch) : [];
+    const rows = searchTerms.length ? searchHits : allRows.filter((r) => classifySize(r.spec) === cat);
     const rowsWithSortFields = rows.map((r) => ({ ...r, orderCount: r.orderIds.size, priorityRank: r.priority ?? 99 }));
     const { sorted: sortedProdRows, sortBy: prodSortBy, sortDir: prodSortDir, toggleSort: prodToggleSort } = useSortableRows(rowsWithSortFields, "priorityRank", "asc");
     const catLabel = SIZE_CATEGORIES.find((c) => c.key === cat).label;
@@ -4524,7 +4742,25 @@ Here's the order:`;
         style: { border: `1px solid ${viewMode === m.key ? NAVY : BORDER}`, background: viewMode === m.key ? NAVY : "#fff", color: viewMode === m.key ? "#fff" : INK }
       },
       m.label
-    ))), viewMode === "size" && /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-5 flex-wrap" }, SIZE_CATEGORIES.map((c) => {
+    ))), viewMode === "size" && /* @__PURE__ */ React.createElement("div", { className: "mb-3", style: { maxWidth: 380 } }, /* @__PURE__ */ React.createElement(
+      TextInput,
+      {
+        value: prodSearch,
+        onChange: (e) => setProdSearch(e.target.value),
+        placeholder: "Search a size \u2014 40 1.3, 0.50x1.50, Ken, WO-0017",
+        autoCorrect: "off",
+        autoCapitalize: "off",
+        spellCheck: "false"
+      }
+    ), searchTerms.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, searchHits.length === 0 ? "Nothing matches \u2014 try fewer words, or just the gap (1.30)" : `${searchHits.length} size${searchHits.length === 1 ? "" : "s"} across every category`, " \xB7 ", /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        type: "button",
+        onClick: () => setProdSearch(""),
+        style: { background: "none", border: "none", color: NAVY, cursor: "pointer", padding: 0, fontWeight: 600 }
+      },
+      "clear"
+    ))), viewMode === "size" && searchTerms.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-5 flex-wrap" }, SIZE_CATEGORIES.map((c) => {
       const count = allRows.filter((r) => classifySize(r.spec) === c.key).length;
       return /* @__PURE__ */ React.createElement(
         "button",
@@ -5472,6 +5708,7 @@ Here's the order:`;
     const removals = {};
     for (const code of removed || []) if (code) removals[String(code).trim()] = true;
     const o0 = (prev.orders || []).find((x) => x.id === order.id) || order;
+    const moves = [];
     for (const r of rows) {
       if (!r.boxNumber || !(Number(r.qty) > 0)) continue;
       const qty = Number(r.qty);
@@ -5514,6 +5751,16 @@ Here's the order:`;
           extraFlags.push(`${shortfall} of ${code} was not on record anywhere \u2014 recorded as in this case; check its reel and date against the paper.`);
           logs.push({ action: "add", entity: "bondingRun", entityId: code, summary: `Packing override: ${shortfall} of ${code} recorded into ${order.id}, case ${caseNum} \u2014 not previously on record` });
         }
+        moves.push({
+          kind: "allocated",
+          boxNumber: code,
+          spec,
+          qty: needTotal - (mine ? Number(mine.onOrderQty || 0) : 0),
+          orderId: order.id,
+          caseNum,
+          source: "override",
+          note: `Packing override, case ${caseNum}`
+        });
         if (mine) {
           runs = runs.map((x) => x.id === mine.id ? { ...x, onOrderQty: needTotal, amountMade: needTotal, toStock: 0, updatedAt: stamp } : x);
         } else {
@@ -5586,6 +5833,19 @@ Here's the order:`;
         };
       })
     };
+    for (const r of rows) if (r.boxNumber && Number(r.qty) > 0) {
+      moves.push({
+        kind: "placed",
+        boxNumber: String(r.boxNumber).trim(),
+        spec: r.spec || null,
+        qty: Number(r.qty),
+        orderId: order.id,
+        caseNum,
+        source: "override"
+      });
+    }
+    for (const code of Object.keys(removals)) moves.push({ kind: "unplaced", boxNumber: code, qty: 0, orderId: order.id, caseNum, source: "override" });
+    next = recordMovements(next, moves.filter((m) => m.kind !== "allocated" || m.qty > 0));
     for (const l of logs) next = { ...next, ...appendLog(next, l) };
     return next;
   }
@@ -5624,8 +5884,66 @@ Here's the order:`;
     }).filter((r) => !(r.workNumber === orderId && Number(r.onOrderQty) === 0 && Number(r.toStock || 0) === 0 && Number(r.amountMade || 0) === 0));
     return { items: nextItems, runs: nextRuns, consumed };
   }
-  function arrangeCases({ caseRows, orphaned, caseOverrides = {}, caseRemovals = {}, confirmedCases: confirmedCasesIn = {}, startingCaseNum = 0, bondingRuns = [], orderId }) {
-    let confirmedCases = confirmedCasesIn;
+  function caseRecordFor(cases, orderId, caseNum) {
+    return (cases || []).find((c) => !c.deleted && c.orderId === orderId && Number(c.caseNum) === Number(caseNum)) || null;
+  }
+  function caseWeightOf(cases, order, caseNum) {
+    const rec = caseRecordFor(cases, order?.id, caseNum);
+    if (rec && rec.weight !== void 0 && rec.weight !== null && rec.weight !== "") return rec.weight;
+    return (order?.caseWeights || {})[caseNum];
+  }
+  function casePalletOf(cases, order, caseNum) {
+    const rec = caseRecordFor(cases, order?.id, caseNum);
+    if (rec && rec.pallet !== void 0 && rec.pallet !== null && rec.pallet !== "") return rec.pallet;
+    return (order?.palletAssignments || {})[caseNum];
+  }
+  function liveMapEntries(map) {
+    const out = {};
+    for (const [k, v] of Object.entries(map || {})) if (v !== null && v !== void 0) out[k] = v;
+    return out;
+  }
+  function refillCases(caseRows, rows, startingCaseNum, isClosed) {
+    if (!rows.length) return caseRows;
+    const out = [...caseRows];
+    const roomIn = (c) => (Number(c.maxSize) || CASE_MAX_SIZE_DEFAULT) - c.contributions.reduce((t, r) => t + (Number(r.qty) || 0), 0);
+    const used = new Set(out.map((c) => c.caseNum));
+    let probe = (Number(startingCaseNum) || 0) + 1;
+    const nextFree = () => {
+      while (used.has(probe)) probe++;
+      used.add(probe);
+      return probe;
+    };
+    for (const row of rows) {
+      let left = Number(row.qty) || 0;
+      while (left > 0) {
+        const open = out.filter((c) => !isClosed(c) && roomIn(c) > 0).sort((a, b) => a.caseNum - b.caseNum)[0];
+        const target = open || (() => {
+          const c = { caseNum: nextFree(), maxSize: Number(row.maxSize) || CASE_MAX_SIZE_DEFAULT, contributions: [] };
+          out.push(c);
+          return c;
+        })();
+        const take = Math.min(left, roomIn(target));
+        const same = row.boxNumber && target.contributions.find((r) => r.boxNumber === row.boxNumber && r.spec === row.spec);
+        if (same) same.qty = (Number(same.qty) || 0) + take;
+        else target.contributions.push({ ...row, qty: take });
+        left -= take;
+      }
+    }
+    return out.sort((a, b) => a.caseNum - b.caseNum);
+  }
+  function isCaseClosed(caseNum, { confirmedCases = {}, caseWeights = {}, palletAssignments = {} } = {}) {
+    if (confirmedCases[caseNum]) return true;
+    if (String(caseWeights[caseNum] ?? "").trim() !== "" && Number(caseWeights[caseNum]) > 0) return true;
+    if (String(palletAssignments[caseNum] ?? "").trim() !== "") return true;
+    return false;
+  }
+  function arrangeCases({ caseRows, orphaned, caseOverrides: caseOverridesIn = {}, caseRemovals: caseRemovalsIn = {}, confirmedCases: confirmedCasesIn = {}, caseWeights: caseWeightsIn = {}, palletAssignments: palletAssignmentsIn = {}, startingCaseNum = 0, bondingRuns = [], orderId }) {
+    const caseOverrides = liveMapEntries(caseOverridesIn);
+    const caseRemovals = liveMapEntries(caseRemovalsIn);
+    let confirmedCases = liveMapEntries(confirmedCasesIn);
+    const caseWeights = liveMapEntries(caseWeightsIn);
+    const palletAssignments = liveMapEntries(palletAssignmentsIn);
+    const closed = (c) => isCaseClosed(c.caseNum, { confirmedCases, caseWeights, palletAssignments });
     const removedFrom = (box, caseNum) => {
       const r = box && caseRemovals[box];
       return r === true || Array.isArray(r) && r.includes(caseNum);
@@ -5687,7 +6005,7 @@ Here's the order:`;
       caseRows = [...regrouped.values()].sort((a, b) => a.caseNum - b.caseNum);
       const evicted = [];
       caseRows = caseRows.map((c) => {
-        if (confirmedCases[c.caseNum]) return c;
+        if (closed(c)) return c;
         const cap = Number(c.maxSize) || CASE_MAX_SIZE_DEFAULT;
         let total = c.contributions.reduce((t, r) => t + (Number(r.qty) || 0), 0);
         if (total <= cap) return c;
@@ -5695,6 +6013,9 @@ Here's the order:`;
         const plannedIdx = [];
         c.contributions.forEach((r, i) => {
           if (!r.boxNumber) plannedIdx.push(i);
+        });
+        c.contributions.forEach((r, i) => {
+          if (r.boxNumber && !r.confirmedQty && !r.offOrder && caseOverrides[r.boxNumber] !== c.caseNum) plannedIdx.push(i);
         });
         const drop = /* @__PURE__ */ new Set();
         for (let k = plannedIdx.length - 1; k >= 0 && total > cap; k--) {
@@ -5715,31 +6036,7 @@ Here's the order:`;
         });
         return { ...c, contributions: kept, overCapacity: total > cap ? total - cap : void 0 };
       });
-      if (evicted.length) {
-        const used = new Set(caseRows.map((c) => c.caseNum));
-        let probe = (Number(startingCaseNum) || 0) + 1;
-        const nextFree = () => {
-          while (used.has(probe)) probe++;
-          used.add(probe);
-          return probe;
-        };
-        let current = null;
-        for (const row of evicted) {
-          let left = Number(row.qty) || 0;
-          const size = Number(row.maxSize) || CASE_MAX_SIZE_DEFAULT;
-          while (left > 0) {
-            if (!current || current.remaining <= 0) {
-              current = { caseNum: nextFree(), remaining: size, maxSize: size, contributions: [] };
-              caseRows.push(current);
-            }
-            const take = Math.min(left, current.remaining);
-            current.contributions.push({ ...row, qty: take });
-            current.remaining -= take;
-            left -= take;
-          }
-        }
-        caseRows = [...caseRows].sort((a, b) => a.caseNum - b.caseNum);
-      }
+      if (evicted.length) caseRows = refillCases(caseRows, evicted, startingCaseNum, closed);
     }
     const placedOrphans = (orphaned || []).filter((run) => run.boxNumber && !explicitBoxes.has(run.boxNumber) && caseOverrides[run.boxNumber] != null && !removedFrom(run.boxNumber, caseOverrides[run.boxNumber]));
     if (placedOrphans.length) {
@@ -5784,29 +6081,13 @@ Here's the order:`;
       });
       if (displacedPlanned.length) {
         caseRows = caseRows.filter((c) => c.contributions.length > 0);
-        const used = new Set(caseRows.map((c) => c.caseNum));
-        let probe = (Number(startingCaseNum) || 0) + 1;
-        const nextFree = () => {
-          while (used.has(probe)) probe++;
-          used.add(probe);
-          return probe;
-        };
-        let current = null;
-        for (const row of displacedPlanned) {
-          let left = Number(row.qty) || 0;
-          const size = Number(row.maxSize) || 20;
-          while (left > 0) {
-            if (!current || current.remaining <= 0) {
-              current = { caseNum: nextFree(), remaining: size, maxSize: size, contributions: [] };
-              caseRows.push(current);
-            }
-            const take = Math.min(left, current.remaining);
-            current.contributions.push({ spec: row.spec, customerRef: row.customerRef || null, boxNumber: null, batchCode: null, qty: take });
-            current.remaining -= take;
-            left -= take;
-          }
-        }
-        caseRows = [...caseRows].sort((a, b) => a.caseNum - b.caseNum);
+        caseRows = refillCases(
+          caseRows,
+          displacedPlanned.map((row) => ({ spec: row.spec, customerRef: row.customerRef || null, boxNumber: null, batchCode: null, qty: row.qty, maxSize: row.maxSize })),
+          startingCaseNum,
+          closed
+        );
+        caseRows = caseRows.filter((c) => c.contributions.length > 0).sort((a, b) => a.caseNum - b.caseNum);
       } else {
         caseRows = caseRows.filter((c) => c.contributions.length > 0);
       }
@@ -5835,18 +6116,35 @@ Here's the order:`;
     const orderId = order.id;
     const [sizeFilter, setSizeFilter] = useState("all");
     const [packView, setPackView] = useState("grid");
-    const caseWeights = order?.caseWeights || {};
+    const caseRecords = data.cases || [];
+    const caseWeights = new Proxy({}, { get: (_t, k) => caseWeightOf(caseRecords, order, k), has: () => true, ownKeys: () => Object.keys(order?.caseWeights || {}), getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true }) });
     const smallCaseSizes = order?.smallCaseSizes || {};
     const caseRemovals = order?.caseRemovals || {};
     const confirmedCases = order?.confirmedCases || {};
     const caseOverrides = order?.caseOverrides || {};
-    const palletAssignments = order?.palletAssignments || {};
+    const palletAssignments = new Proxy({}, { get: (_t, k) => casePalletOf(caseRecords, order, k), has: () => true, ownKeys: () => Object.keys(order?.palletAssignments || {}), getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true }) });
     const palletWeights = order?.palletWeights || {};
-    const packedOutside = order?.packedOutside || {};
-    const setCaseWeights = (next) => setData((prevData) => ({ ...prevData, orders: prevData.orders.map((o) => o.id === orderId ? { ...o, caseWeights: next } : o) }));
+    const packedOutside = liveMapEntries(order?.packedOutside);
+    const writeCaseField = (prevData, caseNum, patch) => {
+      const stamp = (/* @__PURE__ */ new Date()).toISOString();
+      const existing = (prevData.cases || []).find((c) => !c.deleted && c.orderId === orderId && Number(c.caseNum) === Number(caseNum));
+      const cases = existing ? (prevData.cases || []).map((c) => c.id === existing.id ? { ...c, ...patch, updatedAt: stamp } : c) : [...prevData.cases || [], { id: uid("case"), orderId, caseNum: Number(caseNum), contents: null, confirmed: false, weight: "", pallet: "", packedOutside: false, ...patch, updatedAt: stamp }];
+      return { ...prevData, cases };
+    };
+    const setCaseWeights = (next) => setData((prevData) => {
+      let out = { ...prevData, orders: prevData.orders.map((o) => o.id === orderId ? { ...o, caseWeights: next } : o) };
+      const before = prevData.orders.find((o) => o.id === orderId)?.caseWeights || {};
+      for (const [n, v] of Object.entries(next)) if (String(v ?? "") !== String(before[n] ?? "")) out = writeCaseField(out, n, { weight: String(v ?? "") });
+      return out;
+    });
     const setSmallCaseSizes = (next) => setData((prevData) => ({ ...prevData, orders: prevData.orders.map((o) => o.id === orderId ? { ...o, smallCaseSizes: next } : o) }));
     const setCaseOverrides = (next) => setData((prevData) => ({ ...prevData, orders: prevData.orders.map((o) => o.id === orderId ? { ...o, caseOverrides: next } : o) }));
-    const setPalletAssignments = (next) => setData((prevData) => ({ ...prevData, orders: prevData.orders.map((o) => o.id === orderId ? { ...o, palletAssignments: next } : o) }));
+    const setPalletAssignments = (next) => setData((prevData) => {
+      let out = { ...prevData, orders: prevData.orders.map((o) => o.id === orderId ? { ...o, palletAssignments: next } : o) };
+      const before = prevData.orders.find((o) => o.id === orderId)?.palletAssignments || {};
+      for (const [n, v] of Object.entries(next)) if (String(v ?? "") !== String(before[n] ?? "")) out = writeCaseField(out, n, { pallet: String(v ?? "") });
+      return out;
+    });
     const setPalletWeights = (next) => setData((prevData) => ({ ...prevData, orders: prevData.orders.map((o) => o.id === orderId ? { ...o, palletWeights: next } : o) }));
     const setPackedOutside = (next) => setData((prevData) => ({ ...prevData, orders: prevData.orders.map((o) => o.id === orderId ? { ...o, packedOutside: next } : o) }));
     const setStartingCaseNum = (next) => setData((prevData) => {
@@ -5879,7 +6177,18 @@ Here's the order:`;
         }
       }
       let caseRows2 = buildCombinedCases(byLineItem, (Number(order?.startingCaseNum) || 0) + 1, packedOutside);
-      const arranged = arrangeCases({ caseRows: caseRows2, orphaned, caseOverrides, caseRemovals, confirmedCases, startingCaseNum: order?.startingCaseNum, bondingRuns, orderId });
+      const arranged = arrangeCases({
+        caseRows: caseRows2,
+        orphaned,
+        caseOverrides,
+        caseRemovals,
+        confirmedCases,
+        caseWeights: order?.caseWeights || {},
+        palletAssignments: order?.palletAssignments || {},
+        startingCaseNum: order?.startingCaseNum,
+        bondingRuns,
+        orderId
+      });
       return { caseRows: arranged.caseRows, smallRows: smallRows2, otherAssigned: arranged.otherAssigned };
     }, [orderId, items, bondingRuns, caseOverrides, caseRemovals, confirmedCases, order?.startingCaseNum]);
     const saveCaseContents = (caseNum, rows, flags, removed) => setData((prev) => applyCaseContents(prev, order, caseNum, rows, flags, removed));
@@ -6230,245 +6539,6 @@ Here's the order:`;
       )), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, cases ?? "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs", style: { color: r.boxNumbers ? INK : INK_MUTED } }, r.boxNumbers || "not run yet")), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs", style: { color: r.batchCodes ? INK : INK_MUTED } }, r.batchCodes || "\u2014")));
     })))))), otherAssigned.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "no-print" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-2 mt-5 font-display", style: { color: AMBER } }, "Other assigned stock"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, "Assigned to this order, but the spec doesn't match any line item at all \u2014 check these are meant for this order before packing."), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, { w: 140 }, "Box / reel number"), /* @__PURE__ */ React.createElement(Th, null, "Product size"), /* @__PURE__ */ React.createElement(Th, { w: 140 }, "Batch code"), /* @__PURE__ */ React.createElement(ThR, { w: 80 }, "Qty"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Date"))), /* @__PURE__ */ React.createElement("tbody", null, otherAssigned.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.boxNumber || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.productSize), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.baselineBatchCode || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.onOrderQty), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, manufactureDateLabel(r.boxNumber, "") || r.date || "\u2014"))))))));
   }
-  function BoxSelect({ value, onChange, boxOptions }) {
-    const groups = {};
-    for (const [box, spec] of boxOptions) (groups[spec] = groups[spec] || []).push(box);
-    const specs = Object.keys(groups).sort();
-    return /* @__PURE__ */ React.createElement(Select, { value, onChange: (e) => onChange(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose box\u2026"), specs.map((spec) => /* @__PURE__ */ React.createElement("optgroup", { key: spec, label: spec }, groups[spec].map((box) => /* @__PURE__ */ React.createElement("option", { key: box, value: box }, box)))));
-  }
-  function OrderSelect({ value, onChange, orders }) {
-    return /* @__PURE__ */ React.createElement(Select, { value, onChange: (e) => onChange(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014"), /* @__PURE__ */ React.createElement("option", { value: "DAMAGED" }, "\u26A0 Damaged (write off)"), orders.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.id, value: o.id }, o.id, " \u2014 ", o.customer)));
-  }
-  function PickLogSection({ data, setData }) {
-    const { bondingRuns, stockPicks, orders, lineItems } = data;
-    const { sorted: sortedPicks, sortBy: pickSortBy, sortDir: pickSortDir, toggleSort: pickToggleSort } = useSortableRows(
-      stockPicks.map((p) => ({ ...p, qtyPicked: Number(p.qtyPicked) || 0 })),
-      "datePicked",
-      "desc"
-    );
-    const boxOptions = [...new Map(
-      bondingRuns.filter((r) => r.boxNumber && r.boxNumber.trim() && r.checked === "Yes").map((r) => [r.boxNumber, r.productSize])
-    ).entries()].sort((a, b) => a[0].localeCompare(b[0]));
-    const blank = { boxNumber: "", productSpec: "", qtyPicked: "", datePicked: todayISO(), pickedFor: "", comments: "" };
-    const [form, setForm, draftRestored, discardDraft] = useDraftForm("pickLog", blank);
-    const [discrepancy, setDiscrepancy] = useState("");
-    const [editingId, setEditingId, editForm, setEditForm, editRestored, discardEdit] = useDraftEdit("edit-pickLog");
-    const [error, setError] = useState("");
-    const [editError, setEditError] = useState("");
-    const specForBox = (box) => (bondingRuns.find((r) => r.boxNumber === box) || {}).productSize || "";
-    const isOnOrder = (boxNumber, orderId) => {
-      if (!orderId || orderId === "DAMAGED") return true;
-      const spec = specForBox(boxNumber);
-      return orderLineItems(lineItems, orderId).some((li) => looseSpecMatch(spec, li.description));
-    };
-    const availableInBox = (boxNumber, excludePickId = null) => {
-      const totalInBox = bondingRuns.filter((r) => r.boxNumber === boxNumber).reduce((s, r) => s + Number(r.toStock || 0), 0);
-      const alreadyPicked = stockPicks.filter((p) => p.boxNumber === boxNumber && p.id !== excludePickId).reduce((s, p) => s + Number(p.qtyPicked || 0), 0);
-      return totalInBox - alreadyPicked;
-    };
-    const setPicks = (updater) => setData((prevData) => ({
-      ...prevData,
-      stockPicks: typeof updater === "function" ? updater(prevData.stockPicks) : updater
-    }));
-    const addPick = () => {
-      setError("");
-      if (!form.boxNumber || !form.qtyPicked) return;
-      if (!isOnOrder(form.boxNumber, form.pickedFor)) {
-        setError("Not on order \u2014 that order doesn't have this product on it.");
-        return;
-      }
-      const discrepancyAmt = Number(discrepancy) || 0;
-      const avail = availableInBox(form.boxNumber) - discrepancyAmt;
-      if (Number(form.qtyPicked) > avail) {
-        setError(discrepancyAmt > 0 ? `Only ${avail} left in box ${form.boxNumber} once the ${discrepancyAmt} short is accounted for.` : `Only ${avail} left in box ${form.boxNumber} \u2014 check the box code.`);
-        return;
-      }
-      setData((prevData) => {
-        const newPick = { id: uid("pick"), ...form, productSpec: specForBox(form.boxNumber) };
-        let patch = { stockPicks: [...prevData.stockPicks, newPick] };
-        if (discrepancyAmt > 0) {
-          const targetRow = prevData.bondingRuns.find((r) => r.boxNumber === form.boxNumber);
-          const newToStock = Math.max(Number(targetRow?.toStock || 0) - discrepancyAmt, 0);
-          patch.bondingRuns = prevData.bondingRuns.map((r) => r.boxNumber === form.boxNumber ? { ...r, toStock: newToStock } : r);
-          patch = { ...patch, ...appendLog(prevData, {
-            action: "stock_adjustment",
-            entity: "bondingRun",
-            entityId: targetRow?.id,
-            summary: `Discrepancy found in box ${form.boxNumber}: ${discrepancyAmt} fewer than recorded (while picking)`,
-            before: { toStock: targetRow?.toStock },
-            after: { toStock: newToStock }
-          }) };
-        }
-        return { ...prevData, ...patch };
-      });
-      setForm({ ...blank, datePicked: form.datePicked });
-      setDiscrepancy("");
-    };
-    const removePick = (id) => {
-      const target = stockPicks.find((x) => x.id === id);
-      if (!window.confirm(`Delete this pick (${target?.qtyPicked ?? "?"} \xD7 ${target?.productSpec || "?"} from box ${target?.boxNumber || "?"})? Nothing is lost \u2014 if it's a mistake, Chris can put it straight back.`)) return;
-      setData((prevData) => {
-        const p = prevData.stockPicks.find((x) => x.id === id);
-        return {
-          ...prevData,
-          stockPicks: prevData.stockPicks.filter((x) => x.id !== id),
-          ...appendLog(prevData, {
-            action: "delete",
-            entity: "stockPick",
-            entityId: id,
-            summary: `Deleted pick: ${p?.qtyPicked ?? "?"} \xD7 ${p?.productSpec || "?"} from box ${p?.boxNumber || "?"}`,
-            before: p,
-            after: null
-          })
-        };
-      });
-    };
-    const startEdit = (p) => {
-      setEditingId(p.id);
-      setEditForm({ ...p });
-      setEditError("");
-    };
-    const cancelEdit = () => {
-      setEditingId(null);
-      setEditForm(null);
-      setEditError("");
-    };
-    const saveEdit = () => {
-      setEditError("");
-      if (!editForm.boxNumber || !editForm.qtyPicked) return;
-      if (!isOnOrder(editForm.boxNumber, editForm.pickedFor)) {
-        setEditError("Not on order \u2014 that order doesn't have this product on it.");
-        return;
-      }
-      const avail = availableInBox(editForm.boxNumber, editingId);
-      if (Number(editForm.qtyPicked) > avail) {
-        setEditError(`Only ${avail} left in box ${editForm.boxNumber} \u2014 check the box code.`);
-        return;
-      }
-      setPicks(stockPicks.map((p) => p.id === editingId ? { ...p, ...editForm, productSpec: specForBox(editForm.boxNumber) } : p));
-      setEditingId(null);
-      setEditForm(null);
-    };
-    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Pick Log", subtitle: "For marking stock as damaged, or a manual correction \u2014 for fulfilling an order from stock, use Check Stock on the order itself instead. Found fewer than expected while picking? Fill in Discrepancy to correct the box's recorded stock at the same time." }), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-3", style: { color: INK_MUTED } }, "PICK A BOX"), /* @__PURE__ */ React.createElement(DraftRestoredBanner, { show: draftRestored, onDiscard: discardDraft }), /* @__PURE__ */ React.createElement(
-      DraftRestoredBanner,
-      {
-        show: editRestored,
-        onDiscard: discardEdit,
-        message: "Unfinished edit restored \u2014 a row below is still open with unsaved changes.",
-        action: "Discard edit"
-      }
-    ), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-2 items-end" }, /* @__PURE__ */ React.createElement("div", { style: { width: 240 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Box code"), /* @__PURE__ */ React.createElement(BoxSelect, { value: form.boxNumber, onChange: (v) => {
-      setForm({ ...form, boxNumber: v });
-      setError("");
-    }, boxOptions }), form.boxNumber && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, availableInBox(form.boxNumber), " available in this box", Number(discrepancy) > 0 && ` (${availableInBox(form.boxNumber) - Number(discrepancy)} once the ${discrepancy} short is corrected)`)), /* @__PURE__ */ React.createElement("div", { style: { width: 100 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Qty picked"), /* @__PURE__ */ React.createElement(TextInput, { type: "number", value: form.qtyPicked, onChange: (e) => setForm({ ...form, qtyPicked: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 130 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: AMBER } }, "Discrepancy?"), /* @__PURE__ */ React.createElement(TextInput, { type: "number", placeholder: "Fewer than shown", value: discrepancy, onChange: (e) => setDiscrepancy(e.target.value) })), /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Date picked"), /* @__PURE__ */ React.createElement(TextInput, { type: "date", value: form.datePicked, onChange: (e) => setForm({ ...form, datePicked: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 220 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Picked for (order)"), /* @__PURE__ */ React.createElement(OrderSelect, { value: form.pickedFor, onChange: (v) => {
-      setForm({ ...form, pickedFor: v });
-      setError("");
-    }, orders })), /* @__PURE__ */ React.createElement("div", { className: "flex-1 min-w-[160px]" }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Comments"), /* @__PURE__ */ React.createElement(TextInput, { value: form.comments, onChange: (e) => setForm({ ...form, comments: e.target.value }) })), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: addPick }, "+ Add")), error && /* @__PURE__ */ React.createElement("div", { className: "text-sm mt-2", style: { color: RED } }, error), boxOptions.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-3", style: { color: INK_MUTED } }, "No boxes yet \u2014 box codes come from the Box number field on Bonding Line runs.")), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(SortTh, { col: "boxNumber", sortBy: pickSortBy, sortDir: pickSortDir, onSort: pickToggleSort, className: "text-left px-3 py-2", style: { width: 110 } }, "Box code"), /* @__PURE__ */ React.createElement(SortTh, { col: "productSpec", sortBy: pickSortBy, sortDir: pickSortDir, onSort: pickToggleSort, className: "text-left px-3 py-2" }, "Product spec"), /* @__PURE__ */ React.createElement(SortTh, { col: "qtyPicked", sortBy: pickSortBy, sortDir: pickSortDir, onSort: pickToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 90 } }, "Qty"), /* @__PURE__ */ React.createElement(SortTh, { col: "datePicked", sortBy: pickSortBy, sortDir: pickSortDir, onSort: pickToggleSort, startDir: "desc", className: "text-left px-3 py-2", style: { width: 120 } }, "Date picked"), /* @__PURE__ */ React.createElement(Th, { w: 170 }, "Picked for"), /* @__PURE__ */ React.createElement(Th, null, "Comments"), /* @__PURE__ */ React.createElement("th", { style: { width: 70 } }))), /* @__PURE__ */ React.createElement("tbody", null, sortedPicks.map((p, i) => {
-      const isEditing = editingId === p.id;
-      const order = orders.find((o) => o.id === p.pickedFor);
-      return /* @__PURE__ */ React.createElement(React.Fragment, { key: p.id }, /* @__PURE__ */ React.createElement("tr", { className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}`, background: isEditing ? "#FFF8EF" : void 0 } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, isEditing ? /* @__PURE__ */ React.createElement(BoxSelect, { value: editForm.boxNumber, onChange: (v) => {
-        setEditForm({ ...editForm, boxNumber: v });
-        setEditError("");
-      }, boxOptions }) : /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, p.boxNumber)), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, isEditing ? specForBox(editForm.boxNumber) || /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014") : p.productSpec), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, isEditing ? /* @__PURE__ */ React.createElement(TextInput, { type: "number", value: editForm.qtyPicked, onChange: (e) => setEditForm({ ...editForm, qtyPicked: e.target.value }) }) : p.qtyPicked), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, isEditing ? /* @__PURE__ */ React.createElement(TextInput, { type: "date", value: editForm.datePicked, onChange: (e) => setEditForm({ ...editForm, datePicked: e.target.value }) }) : p.datePicked || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, isEditing ? /* @__PURE__ */ React.createElement(OrderSelect, { value: editForm.pickedFor, onChange: (v) => {
-        setEditForm({ ...editForm, pickedFor: v });
-        setEditError("");
-      }, orders }) : p.pickedFor === "DAMAGED" ? /* @__PURE__ */ React.createElement(Badge, { color: RED }, "Damaged") : order ? `${order.id} \u2014 ${order.customer}` : p.pickedFor || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, isEditing ? /* @__PURE__ */ React.createElement(TextInput, { value: editForm.comments, onChange: (e) => setEditForm({ ...editForm, comments: e.target.value }) }) : p.comments || ""), /* @__PURE__ */ React.createElement("td", { className: "px-2 whitespace-nowrap" }, isEditing ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: saveEdit, title: "Save", className: "opacity-60 hover:opacity-100 px-1", style: { color: GREEN } }, "\u2713"), /* @__PURE__ */ React.createElement("button", { onClick: cancelEdit, title: "Cancel", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: () => startEdit(p), title: "Edit", className: "opacity-40 hover:opacity-100 px-1" }, "\u270E"), /* @__PURE__ */ React.createElement("button", { onClick: () => removePick(p.id), title: "Delete", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715")))), isEditing && editError && /* @__PURE__ */ React.createElement("tr", { style: { background: "#FFF8EF" } }, /* @__PURE__ */ React.createElement("td", { colSpan: 7, className: "px-3 pb-2 text-sm", style: { color: RED } }, editError)));
-    }), stockPicks.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 7 }, "No picks yet.")))));
-  }
-  function OtherStockSpecFields({ values, setValues, listId }) {
-    return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { width: 140 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Range"), /* @__PURE__ */ React.createElement(Select, { value: values.range, onChange: (e) => setValues({ ...values, range: e.target.value, size: "" }) }, Object.keys(PRODUCT_RANGES).map((r) => /* @__PURE__ */ React.createElement("option", { key: r, value: r }, r)), /* @__PURE__ */ React.createElement("option", { value: "Custom" }, "Custom / other"))), /* @__PURE__ */ React.createElement("div", { className: "flex-1 min-w-[200px]" }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Size"), values.range === "Custom" ? /* @__PURE__ */ React.createElement(
-      TextInput,
-      {
-        placeholder: "Type the full product description",
-        value: values.size,
-        onChange: (e) => setValues({ ...values, size: e.target.value })
-      }
-    ) : /* @__PURE__ */ React.createElement(
-      Autocomplete,
-      {
-        placeholder: "Start typing to search\u2026",
-        value: values.size,
-        options: PRODUCT_RANGES[values.range] || [],
-        onChange: (v) => setValues({ ...values, size: v })
-      }
-    )), /* @__PURE__ */ React.createElement("div", { style: { width: 110 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Pt"), /* @__PURE__ */ React.createElement(Select, { value: values.pt, onChange: (e) => setValues({ ...values, pt: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014"), /* @__PURE__ */ React.createElement("option", { value: "2-3pt" }, "2-3pt"), /* @__PURE__ */ React.createElement("option", { value: "3-4pt" }, "3-4pt"), /* @__PURE__ */ React.createElement("option", { value: "6pt" }, "6pt"))));
-  }
-  function OtherStockSection({ data, setData }) {
-    const undo = useUndoToast();
-    const { otherStock = [], lineItems } = data;
-    const { sorted: sortedOtherStock, sortBy: osSortBy, sortDir: osSortDir, toggleSort: osToggleSort } = useSortableRows(otherStock, "dateAdded", "desc");
-    const blank = { range: "PX Plus", size: "", pt: "", qty: "", boxNumber: "", dateAdded: todayISO(), notes: "" };
-    const [form, setForm, draftRestored, discardDraft] = useDraftForm("otherStock", blank);
-    const [editingId, setEditingId, editForm, setEditForm, editRestored, discardEdit] = useDraftEdit("edit-otherStock");
-    const buildSpec = (f) => {
-      let spec = f.range === "Custom" ? f.size.trim() : `${f.range} ${f.size.trim()}`;
-      if (f.pt && !spec.includes(f.pt)) spec += ` ${f.pt}`;
-      return spec;
-    };
-    const setStock = (updater) => setData((prevData) => applyRowsWithLog(prevData, "otherStock", updater, "otherStock", (r) => `other stock ${r.boxNumber || r.productSpec || r.id}`));
-    const [addError, setAddError] = useState("");
-    const addRow = () => {
-      if (!form.size.trim() || !form.qty) return;
-      const code = (form.boxNumber || "").trim();
-      if (code) {
-        const dupe = otherStock.find((r) => (r.boxNumber || "").trim().toUpperCase() === code.toUpperCase());
-        if (dupe) {
-          setAddError(`${code} is already used on another entry (${dupe.productSpec}).`);
-          return;
-        }
-      }
-      setAddError("");
-      const newRow = { id: uid("os"), productSpec: buildSpec(form), qty: Number(form.qty), boxNumber: form.boxNumber, dateAdded: form.dateAdded, notes: form.notes };
-      setStock((prevStock) => [...prevStock, newRow]);
-      setForm({ ...blank, dateAdded: form.dateAdded });
-      undo.offer(`${newRow.qty} \xD7 ${newRow.productSpec}`, () => setStock((rows) => rows.filter((r) => r.id !== newRow.id)));
-    };
-    const removeRow = (id) => {
-      const target = otherStock.find((x) => x.id === id);
-      if (!window.confirm(`Delete this stock entry (${target?.qty ?? "?"} \xD7 ${target?.productSpec || "?"})? Nothing is lost \u2014 if it's a mistake, Chris can put it straight back.`)) return;
-      setData((prevData) => {
-        const r = prevData.otherStock.find((x) => x.id === id);
-        return {
-          ...prevData,
-          otherStock: prevData.otherStock.filter((x) => x.id !== id),
-          ...appendLog(prevData, {
-            action: "delete",
-            entity: "otherStock",
-            entityId: id,
-            summary: `Deleted stock entry: ${r?.qty ?? "?"} \xD7 ${r?.productSpec || "unknown spec"}`,
-            before: r,
-            after: null
-          })
-        };
-      });
-    };
-    const startEdit = (r) => {
-      setEditingId(r.id);
-      setEditForm({ range: "Custom", size: r.productSpec, pt: "", qty: r.qty, boxNumber: r.boxNumber || "", dateAdded: r.dateAdded || todayISO(), notes: r.notes || "" });
-    };
-    const cancelEdit = () => {
-      setEditingId(null);
-      setEditForm(null);
-    };
-    const saveEdit = () => {
-      if (!editForm.size.trim() || !editForm.qty) return;
-      setStock(otherStock.map((r) => r.id === editingId ? { ...r, productSpec: buildSpec(editForm), qty: Number(editForm.qty), boxNumber: editForm.boxNumber, dateAdded: editForm.dateAdded, notes: editForm.notes } : r));
-      setEditingId(null);
-      setEditForm(null);
-    };
-    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Add Other Stock", subtitle: "Log a quantity here \u2014 it becomes available to allocate against any order's line items." }), /* @__PURE__ */ React.createElement(UndoToast, { state: undo }), /* @__PURE__ */ React.createElement("datalist", { id: "size-catalog-stock" }, (PRODUCT_RANGES[form.range] || []).map((s) => /* @__PURE__ */ React.createElement("option", { key: s, value: s }))), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-3", style: { color: INK_MUTED } }, "ADD ROW"), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-2 items-end" }, /* @__PURE__ */ React.createElement(OtherStockSpecFields, { values: form, setValues: setForm, listId: "size-catalog-stock" }), /* @__PURE__ */ React.createElement("div", { style: { width: 90 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Qty"), /* @__PURE__ */ React.createElement(TextInput, { type: "number", value: form.qty, onChange: (e) => setForm({ ...form, qty: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 120 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Box code"), /* @__PURE__ */ React.createElement(TextInput, { value: form.boxNumber, onChange: (e) => setForm({ ...form, boxNumber: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Date added"), /* @__PURE__ */ React.createElement(TextInput, { type: "date", value: form.dateAdded, onChange: (e) => setForm({ ...form, dateAdded: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { className: "flex-1 min-w-[160px]" }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Notes"), /* @__PURE__ */ React.createElement(TextInput, { value: form.notes, onChange: (e) => setForm({ ...form, notes: e.target.value }) })), /* @__PURE__ */ React.createElement(DraftRestoredBanner, { show: draftRestored, onDiscard: discardDraft }), /* @__PURE__ */ React.createElement(
-      DraftRestoredBanner,
-      {
-        show: editRestored,
-        onDiscard: discardEdit,
-        message: "Unfinished edit restored \u2014 a row below is still open with unsaved changes.",
-        action: "Discard edit"
-      }
-    ), addError && /* @__PURE__ */ React.createElement("div", { className: "text-sm mb-2 w-full", style: { color: RED } }, "\u26A0 ", addError), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: addRow }, "+ Add"))), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(SortTh, { col: "productSpec", sortBy: osSortBy, sortDir: osSortDir, onSort: osToggleSort, className: "text-left px-3 py-2" }, "Product spec"), /* @__PURE__ */ React.createElement(SortTh, { col: "qty", sortBy: osSortBy, sortDir: osSortDir, onSort: osToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 90 } }, "Qty"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Box code"), /* @__PURE__ */ React.createElement(SortTh, { col: "dateAdded", sortBy: osSortBy, sortDir: osSortDir, onSort: osToggleSort, startDir: "desc", className: "text-left px-3 py-2", style: { width: 120 } }, "Date added"), /* @__PURE__ */ React.createElement(Th, null, "Notes"), /* @__PURE__ */ React.createElement("th", { style: { width: 70 } }))), /* @__PURE__ */ React.createElement("tbody", null, sortedOtherStock.map((r, i) => {
-      const isEditing = editingId === r.id;
-      return /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}`, background: isEditing ? "#FFF8EF" : void 0 } }, isEditing ? /* @__PURE__ */ React.createElement("td", { className: "px-3 py-2", colSpan: 5 }, /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-2 items-end" }, /* @__PURE__ */ React.createElement(OtherStockSpecFields, { values: editForm, setValues: setEditForm, listId: "size-catalog-stock" }), /* @__PURE__ */ React.createElement("div", { style: { width: 90 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Qty"), /* @__PURE__ */ React.createElement(TextInput, { type: "number", value: editForm.qty, onChange: (e) => setEditForm({ ...editForm, qty: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 120 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Box code"), /* @__PURE__ */ React.createElement(TextInput, { value: editForm.boxNumber, onChange: (e) => setEditForm({ ...editForm, boxNumber: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Date added"), /* @__PURE__ */ React.createElement(TextInput, { type: "date", value: editForm.dateAdded, onChange: (e) => setEditForm({ ...editForm, dateAdded: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { className: "flex-1 min-w-[160px]" }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Notes"), /* @__PURE__ */ React.createElement(TextInput, { value: editForm.notes, onChange: (e) => setEditForm({ ...editForm, notes: e.target.value }) })))) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 no-wrap" }, r.productSpec), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, r.qty), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.boxNumber || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.dateAdded || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.notes || "")), /* @__PURE__ */ React.createElement("td", { className: "px-2 whitespace-nowrap" }, isEditing ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: saveEdit, title: "Save", className: "opacity-60 hover:opacity-100 px-1", style: { color: GREEN } }, "\u2713"), /* @__PURE__ */ React.createElement("button", { onClick: cancelEdit, title: "Cancel", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: () => startEdit(r), title: "Edit", className: "opacity-40 hover:opacity-100 px-1" }, "\u270E"), /* @__PURE__ */ React.createElement("button", { onClick: () => removeRow(r.id), title: "Delete", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715"))));
-    }), otherStock.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 5 }, "No rows yet.")))));
-  }
   function DetailGrid({ items, showEmpty }) {
     const isBlank = (v) => v === void 0 || v === null || v === "";
     const shown = showEmpty ? items : items.filter((it) => !isBlank(it.value));
@@ -6493,7 +6563,240 @@ Here's the order:`;
   function ChainArrow({ broken }) {
     return /* @__PURE__ */ React.createElement("div", { className: "shrink-0 flex items-center justify-center", style: { width: 26, color: broken ? AMBER : "#C9C9C4" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 16, fontWeight: 700 } }, broken ? "\u21E2" : "\u2192"));
   }
-  function BoxHistoryView({ data, initialQuery }) {
+  function LiveBoxStockView({ data }) {
+    const [search, setSearch] = useState("");
+    const [openSpec, setOpenSpec] = useState(null);
+    const boxes = boxedStockAvailable(data.bondingRuns, data.stockPicks || []);
+    const bySpec = /* @__PURE__ */ new Map();
+    for (const b of boxes) {
+      const qty = Number(b.available || 0);
+      if (qty <= 0) continue;
+      const e = bySpec.get(b.productSize) || { spec: b.productSize, qty: 0, batches: [] };
+      e.qty += qty;
+      e.batches.push({ boxNumber: b.boxNumber, qty, location: b.location || "", reel: b.baselineBatchCode || "", date: b.date || "" });
+      bySpec.set(b.productSize, e);
+    }
+    const terms = search.trim().toLowerCase().replace(/[x×,]/g, " ").split(/\s+/).filter(Boolean);
+    const rows = [...bySpec.values()].filter((r) => !terms.length || terms.every((t) => {
+      const hay = `${r.spec} ${r.batches.map((b) => b.boxNumber + " " + b.location).join(" ")}`.toLowerCase();
+      return hay.includes(t) || /^\d*\.?\d+$/.test(t) && hay.includes(Number(t).toFixed(2)) || /^\d+$/.test(t) && hay.includes("0." + t);
+    })).sort((a, b) => a.spec.localeCompare(b.spec));
+    const total = rows.reduce((t, r) => t + r.qty, 0);
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Live box stock", subtitle: "Boxes on the shelf right now \u2014 made, and not committed to an order. Click a size for the batches behind it." }), /* @__PURE__ */ React.createElement("div", { className: "mb-3", style: { maxWidth: 380 } }, /* @__PURE__ */ React.createElement(
+      TextInput,
+      {
+        value: search,
+        onChange: (e) => setSearch(e.target.value),
+        placeholder: "Search a size, box code or shelf \u2014 40 1.3, H625, C1",
+        autoCorrect: "off",
+        autoCapitalize: "off",
+        spellCheck: "false"
+      }
+    )), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED } }, rows.length, " size", rows.length === 1 ? "" : "s", " \xB7 ", total, " boxes available"), /* @__PURE__ */ React.createElement("div", { style: { border: `1px solid ${BORDER}`, borderRadius: 8, overflow: "hidden" } }, rows.map((r) => /* @__PURE__ */ React.createElement("div", { key: r.spec, style: { borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => setOpenSpec(openSpec === r.spec ? null : r.spec),
+        className: "w-full flex items-center justify-between px-3 py-2.5 text-left",
+        style: { background: openSpec === r.spec ? "#F4F4F2" : "#fff", border: "none", cursor: "pointer" }
+      },
+      /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 600 } }, r.spec),
+      /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("b", null, r.qty), " ", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 12 } }, "in ", r.batches.length, " batch", r.batches.length === 1 ? "" : "es"))
+    ), openSpec === r.spec && /* @__PURE__ */ React.createElement("div", { style: { background: "#FAFAF8", padding: "4px 12px 10px" } }, r.batches.sort((a, b) => String(a.date).localeCompare(String(b.date))).map((b) => /* @__PURE__ */ React.createElement("div", { key: b.boxNumber, className: "flex justify-between py-1", style: { fontSize: 13 } }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, b.boxNumber), b.location ? /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " \xB7 ", b.location) : /* @__PURE__ */ React.createElement("span", { style: { color: AMBER } }, " \xB7 no shelf recorded"), b.reel ? /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " \xB7 reel ", b.reel) : ""), /* @__PURE__ */ React.createElement("b", null, b.qty)))))), rows.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "px-3 py-6 text-center", style: { color: INK_MUTED } }, "Nothing matches.")));
+  }
+  function LiveReelStockView({ data }) {
+    const [search, setSearch] = useState("");
+    const [cat, setCat] = useState("all");
+    const rows = useMemo(
+      () => batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || [], data.stockPicks || []),
+      [data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs, data.stockPicks]
+    );
+    const terms = search.trim().toLowerCase().replace(/[x×,]/g, " ").split(/\s+/).filter(Boolean);
+    const shown = rows.filter((r) => r.available !== false).filter((r) => terms.length > 0 || cat === "all" || classifySize(r.spec || r.productSize || "") === cat).filter((r) => !terms.length || terms.every((t) => {
+      const hay = `${r.spec || r.productSize || ""} ${r.batchNumber || ""}`.toLowerCase();
+      return hay.includes(t) || /^\d*\.?\d+$/.test(t) && hay.includes(Number(t).toFixed(2)) || /^\d+$/.test(t) && hay.includes("0." + t);
+    }));
+    const metres = shown.reduce((t, r) => t + (Number(r.remaining) || 0), 0);
+    const disc = runningReelDiscrepancy(data.glueLineBatches, data.bondingRuns);
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Live reel stock", subtitle: "Reels available to bond \u2014 checked, not cleared, and not already used up." }), /* @__PURE__ */ React.createElement("div", { className: "mb-3", style: { maxWidth: 380 } }, /* @__PURE__ */ React.createElement(
+      TextInput,
+      {
+        value: search,
+        onChange: (e) => setSearch(e.target.value),
+        placeholder: "Search a size or reel code \u2014 40 1.3, PBLI601",
+        autoCorrect: "off",
+        autoCapitalize: "off",
+        spellCheck: "false"
+      }
+    )), !terms.length && /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-3 flex-wrap" }, [{ key: "all", label: "All" }, ...SIZE_CATEGORIES].map((c) => {
+      const count = c.key === "all" ? rows.filter((r) => r.available !== false).length : rows.filter((r) => r.available !== false && classifySize(r.spec || r.productSize || "") === c.key).length;
+      return /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          key: c.key,
+          onClick: () => setCat(c.key),
+          className: "px-3.5 py-1.5 rounded-full text-sm font-medium",
+          style: { border: `1px solid ${cat === c.key ? NAVY : BORDER}`, background: cat === c.key ? NAVY : "#fff", color: cat === c.key ? "#fff" : INK }
+        },
+        c.label,
+        " ",
+        /* @__PURE__ */ React.createElement("span", { style: { opacity: 0.7 } }, "(", count, ")")
+      );
+    })), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED } }, shown.length, " reel", shown.length === 1 ? "" : "s", " \xB7 ", Math.round(metres), "m available", disc.reels > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, " \xB7 across ", disc.reels, " cleared reels they have run ", /* @__PURE__ */ React.createElement("b", null, disc.pct > 0 ? "+" : "", disc.pct.toFixed(1), "%"), " against recorded length")), /* @__PURE__ */ React.createElement("div", { style: { border: `1px solid ${BORDER}`, borderRadius: 8, overflow: "hidden" } }, shown.map((r) => /* @__PURE__ */ React.createElement("div", { key: r.batchNumber, className: "flex items-center justify-between px-3 py-2.5", style: { borderBottom: `1px solid ${BORDER}`, fontSize: 13 } }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, r.batchNumber), " ", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, r.spec || r.productSize)), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("b", null, Math.round(Number(r.remaining) || 0), "m"), r.boxesInBatch ? /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 12 } }, " \xB7 about ", r.boxesInBatch, " boxes") : null))), shown.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "px-3 py-6 text-center", style: { color: INK_MUTED } }, "Nothing matches.")));
+  }
+  function IssuesRegisterView({ data, setData }) {
+    const [showClosed, setShowClosed] = useState(false);
+    const [drafts, setDrafts] = useState({});
+    const admin = isAdminDevice();
+    const open = openIssues(data.issues);
+    const closed = (data.issues || []).filter((i) => !i.deleted && i.resolvedAt).sort((a, b) => String(b.resolvedAt).localeCompare(String(a.resolvedAt)));
+    const when = (iso) => {
+      try {
+        const d = new Date(iso);
+        return d.toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+      } catch {
+        return iso;
+      }
+    };
+    const KIND = { short_allocation: "Customer short", count_discrepancy: "Count disagrees", duplicate_box_code: "Duplicate box code", unrecorded_box: "Box not on record", other: "Flag" };
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Register", subtitle: "Things the app has flagged loudly. They come off only when an admin records what was actually done about them." }), open.length === 0 && /* @__PURE__ */ React.createElement(Panel, null, /* @__PURE__ */ React.createElement("div", { style: { color: INK_MUTED } }, "Nothing open. That's the state to be in.")), open.map((i) => /* @__PURE__ */ React.createElement(Panel, { key: i.id, className: "mb-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-start justify-between gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 260 } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: RED } }, KIND[i.kind] || i.kind, i.orderId ? ` \xB7 ${i.orderId}` : "", i.boxNumber ? ` \xB7 ` : "", i.boxNumber && /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 11 } }, i.boxNumber)), /* @__PURE__ */ React.createElement("div", { className: "font-semibold mt-1" }, i.summary), i.detail && /* @__PURE__ */ React.createElement("div", { className: "text-sm mt-1", style: { color: INK_MUTED } }, i.detail), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: INK_MUTED } }, "Raised ", when(i.raisedAt), i.raisedBy ? ` by ${i.raisedBy}` : "")), /* @__PURE__ */ React.createElement("div", { style: { width: 320 } }, admin ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "What was done about it"), /* @__PURE__ */ React.createElement(
+      TextInput,
+      {
+        value: drafts[i.id] || "",
+        onChange: (e) => setDrafts({ ...drafts, [i.id]: e.target.value }),
+        placeholder: "Remake sanctioned \xB7 customer advised short \xB7 counted, 10 found\u2026"
+      }
+    ), /* @__PURE__ */ React.createElement("div", { className: "mt-2" }, /* @__PURE__ */ React.createElement(
+      Button,
+      {
+        disabled: !String(drafts[i.id] || "").trim(),
+        onClick: () => {
+          setData((prev) => resolveIssue(prev, i.id, drafts[i.id]));
+          setDrafts((d) => {
+            const n = { ...d };
+            delete n[i.id];
+            return n;
+          });
+        }
+      },
+      "Clear it"
+    ))) : /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Only an admin can clear this, and only by recording what was done."))))), closed.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-6" }, /* @__PURE__ */ React.createElement("button", { onClick: () => setShowClosed(!showClosed), className: "text-sm font-semibold", style: { background: "none", border: "none", color: NAVY, cursor: "pointer", padding: 0 } }, showClosed ? "Hide" : "Show", " ", closed.length, " cleared"), showClosed && closed.map((i) => /* @__PURE__ */ React.createElement("div", { key: i.id, className: "mt-2 px-3 py-2", style: { border: `1px solid ${BORDER}`, borderRadius: 6, fontSize: 13 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("b", null, i.summary), " ", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\xB7 ", KIND[i.kind] || i.kind)), /* @__PURE__ */ React.createElement("div", { style: { color: GREEN } }, "\u2713 ", i.resolution, " ", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014 ", i.resolvedBy, ", ", when(i.resolvedAt)))))));
+  }
+  function StockSection({ data, setData, initialQuery }) {
+    const [tab, setTab] = useState(initialQuery ? "history" : "history");
+    const TABS = [
+      { key: "history", label: "History and movement" },
+      { key: "boxes", label: "Live box stock" },
+      { key: "reels", label: "Live reel stock" }
+    ];
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-4 flex-wrap no-print" }, TABS.map((t) => /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        key: t.key,
+        onClick: () => setTab(t.key),
+        className: "px-3.5 py-1.5 rounded-full text-sm font-medium",
+        style: { border: `1px solid ${tab === t.key ? NAVY : BORDER}`, background: tab === t.key ? NAVY : "#fff", color: tab === t.key ? "#fff" : INK }
+      },
+      t.label
+    ))), tab === "history" && /* @__PURE__ */ React.createElement(BoxHistoryView, { data, setData, initialQuery }), tab === "boxes" && /* @__PURE__ */ React.createElement(LiveBoxStockView, { data }), tab === "reels" && /* @__PURE__ */ React.createElement(LiveReelStockView, { data }));
+  }
+  function MoveBoxPanel({ data, setData, boxNumber, spec, available }) {
+    const [dest, setDest] = useState("");
+    const [orderId, setOrderId] = useState("");
+    const [caseNum, setCaseNum] = useState("");
+    const [location2, setLocation] = useState("");
+    const [reason, setReason] = useState("");
+    const [qty, setQty] = useState("");
+    const [done, setDone] = useState("");
+    const openOrders = (data.orders || []).filter((o) => !o.deleted && !["Shipped", "Cancelled"].includes(o.stage)).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99) || a.id.localeCompare(b.id));
+    const caseOptions = (() => {
+      if (!orderId) return [];
+      const order = openOrders.find((o) => o.id === orderId);
+      if (!order) return [];
+      const items = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description));
+      const sub = subtractConfirmed(items, data.bondingRuns, order.confirmedCases || {}, order.id);
+      const g = groupAssignedRunsByLineItem(sub.runs, order.id, sub.items);
+      const arranged = arrangeCases({
+        caseRows: buildCombinedCases(g.byLineItem, (Number(order.startingCaseNum) || 0) + 1, liveMapEntries(order.packedOutside)),
+        orphaned: g.orphaned,
+        caseOverrides: order.caseOverrides || {},
+        caseRemovals: order.caseRemovals || {},
+        confirmedCases: order.confirmedCases || {},
+        caseWeights: order.caseWeights || {},
+        palletAssignments: order.palletAssignments || {},
+        startingCaseNum: order.startingCaseNum,
+        bondingRuns: data.bondingRuns,
+        orderId: order.id
+      });
+      const rows = arranged.caseRows.filter((c) => !isCaseClosed(c.caseNum, { confirmedCases: order.confirmedCases || {}, caseWeights: order.caseWeights || {}, palletAssignments: order.palletAssignments || {} })).map((c) => {
+        const used = c.contributions.reduce((t, r) => t + (Number(r.qty) || 0), 0);
+        const cap = Number(c.maxSize) || CASE_MAX_SIZE_DEFAULT;
+        return { caseNum: c.caseNum, room: cap - used, sameSize: c.contributions.some((r) => looseSpecMatch(r.spec, spec)) };
+      }).filter((c) => c.room > 0);
+      return rows.sort((a, b) => b.sameSize - a.sameSize || b.room - a.room || a.caseNum - b.caseNum);
+    })();
+    const n = Number(qty) || 0;
+    const canSave = n > 0 && (dest === "order" && orderId || dest === "stock" && location2 || dest === "scrapped" && reason.trim());
+    const reset = () => {
+      setDest("");
+      setOrderId("");
+      setCaseNum("");
+      setLocation("");
+      setReason("");
+      setQty("");
+    };
+    const save = () => {
+      if (!canSave) return;
+      setData((prev) => {
+        let next = prev;
+        if (dest === "order") {
+          next = recordMovement(next, {
+            kind: "allocated",
+            boxNumber,
+            spec,
+            qty: n,
+            orderId,
+            caseNum: caseNum ? Number(caseNum) : null,
+            source: "move",
+            note: caseNum ? `Moved to ${orderId}, case ${caseNum}` : `Moved to ${orderId}`
+          });
+          if (caseNum) next = recordMovement(next, { kind: "placed", boxNumber, spec, qty: n, orderId, caseNum: Number(caseNum), source: "move" });
+        } else if (dest === "stock") {
+          next = recordMovement(next, {
+            kind: "adjusted",
+            boxNumber,
+            spec,
+            qty: 0,
+            source: "move",
+            note: `Moved to shelf ${location2}`
+          });
+          next = { ...next, bondingRuns: (next.bondingRuns || []).map((r) => !r.deleted && r.boxNumber === boxNumber ? { ...r, location: location2, updatedAt: (/* @__PURE__ */ new Date()).toISOString() } : r) };
+        } else if (dest === "scrapped") {
+          next = recordMovement(next, { kind: "scrapped", boxNumber, spec, qty: n, source: "move", note: reason.trim() });
+          next = raiseIssue(next, {
+            kind: "other",
+            boxNumber,
+            summary: `${n} of ${boxNumber} scrapped`,
+            detail: reason.trim()
+          });
+        }
+        return next;
+      });
+      setDone(dest === "order" ? `${n} moved to ${orderId}${caseNum ? `, case ${caseNum}` : ""}` : dest === "stock" ? `${n} moved to shelf ${location2}` : `${n} scrapped \u2014 ${reason.trim()}`);
+      reset();
+      setTimeout(() => setDone(""), 6e3);
+    };
+    return /* @__PURE__ */ React.createElement("div", { className: "no-print mt-5 p-4", style: { border: `1px solid ${BORDER}`, borderRadius: 8, background: "#FAFAF8" } }, /* @__PURE__ */ React.createElement("div", { className: "font-semibold mb-1" }, "Move this box"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED } }, available != null ? `${available} available on the shelf. ` : "", "Nothing here asks permission \u2014 it records what you say happened."), done && /* @__PURE__ */ React.createElement("div", { className: "text-sm mb-3 px-3 py-2", style: { background: "#E7F5EC", border: "1px solid #BFE6CE", borderRadius: 5 } }, "\u2713 ", done), /* @__PURE__ */ React.createElement("div", { className: "flex gap-3 flex-wrap items-end" }, /* @__PURE__ */ React.createElement("div", { style: { width: 190 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Move to"), /* @__PURE__ */ React.createElement(Select, { value: dest, onChange: (e) => {
+      setDest(e.target.value);
+      setOrderId("");
+      setCaseNum("");
+      setLocation("");
+      setReason("");
+    } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose\u2026"), /* @__PURE__ */ React.createElement("option", { value: "order" }, "An order"), /* @__PURE__ */ React.createElement("option", { value: "stock" }, "Stock \u2014 a shelf"), /* @__PURE__ */ React.createElement("option", { value: "scrapped" }, "Scrapped"))), dest === "order" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { width: 250 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Order"), /* @__PURE__ */ React.createElement(Select, { value: orderId, onChange: (e) => {
+      setOrderId(e.target.value);
+      setCaseNum("");
+    } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose\u2026"), openOrders.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.id, value: o.id }, o.id, " \u2014 ", o.customer, o.priority ? ` (P${o.priority})` : "")))), orderId && /* @__PURE__ */ React.createElement("div", { style: { width: 230 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Case"), /* @__PURE__ */ React.createElement(Select, { value: caseNum, onChange: (e) => setCaseNum(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "To the order, no case yet"), caseOptions.map((c) => /* @__PURE__ */ React.createElement("option", { key: c.caseNum, value: c.caseNum }, "Case ", c.caseNum, " \u2014 ", c.room, " space", c.room === 1 ? "" : "s", c.sameSize ? " \xB7 same size already in it" : ""))))), dest === "stock" && /* @__PURE__ */ React.createElement("div", { style: { width: 160 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Shelf"), /* @__PURE__ */ React.createElement(Select, { value: location2, onChange: (e) => setLocation(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose\u2026"), BOX_LOCATIONS.map((loc) => /* @__PURE__ */ React.createElement("option", { key: loc, value: loc }, loc)))), dest === "scrapped" && /* @__PURE__ */ React.createElement("div", { style: { width: 320 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Why"), /* @__PURE__ */ React.createElement(TextInput, { value: reason, onChange: (e) => setReason(e.target.value), placeholder: "Crushed in transit, wrong pt, damaged on the line\u2026" })), dest && /* @__PURE__ */ React.createElement("div", { style: { width: 110 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "How many"), /* @__PURE__ */ React.createElement(TextInput, { type: "number", inputMode: "numeric", value: qty, onChange: (e) => setQty(e.target.value) })), dest && /* @__PURE__ */ React.createElement(Button, { onClick: save, disabled: !canSave }, "Record it")));
+  }
+  function BoxHistoryView({ data, setData, initialQuery }) {
     const { bondingRuns, glueLineBatches, extrusion1, extrusion2, stockPicks, orders } = data;
     const otherStock = data.otherStock || [];
     const ncrs = data.ncrs || [];
@@ -6683,7 +6986,19 @@ Here's the order:`;
       { label: "Qty", value: otherStockMatch.qty },
       { label: "Date added", value: otherStockMatch.dateAdded },
       { label: "Notes", value: otherStockMatch.notes }
-    ] })))));
+    ] }))), typeof setData === "function" && (bondingMatch || otherStockMatch) && /* @__PURE__ */ React.createElement(
+      MoveBoxPanel,
+      {
+        data,
+        setData,
+        boxNumber: q,
+        spec: bondingMatch && bondingMatch.productSize || otherStockMatch && otherStockMatch.productSpec || "",
+        available: (() => {
+          const b = boxedStockAvailable(data.bondingRuns, data.stockPicks || []).find((x) => x.boxNumber === q);
+          return b ? Number(b.available) : null;
+        })()
+      }
+    )));
   }
   function ToolingCategorySection({ title, rows, setRows, lastRunFor }) {
     const undo = useUndoToast();
@@ -7239,7 +7554,7 @@ Here's the order:`;
       ready: Math.min(100, madePct + stockPct)
     };
   }
-  function DialKeyRow({ colour, label, value, hatched }) {
+  function DialKeyRow({ colour, label, value, hatched, note }) {
     return /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2.5", style: { fontSize: 12.5, padding: "6px 0", borderTop: `1px solid #EBEBE7` } }, /* @__PURE__ */ React.createElement("span", { style: {
       width: 9,
       height: 9,
@@ -7247,7 +7562,7 @@ Here's the order:`;
       borderRadius: 5,
       background: colour,
       backgroundImage: hatched ? `repeating-linear-gradient(45deg, ${colour} 0 2px, #EDEDEA 2px 4px)` : void 0
-    } }), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, flex: 1, whiteSpace: "nowrap" } }, label), /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: {
+    } }), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, flex: 1, whiteSpace: "nowrap" } }, label, note && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 10, color: INK_MUTED, marginLeft: 6, fontWeight: 500 } }, note)), /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: {
       fontWeight: 800,
       fontSize: 14,
       letterSpacing: "-0.02em",
@@ -7890,7 +8205,16 @@ Here's the order:`;
     const addRow = () => {
       if (!form.batchNumber || !form.reason.trim()) return;
       const newRow = { id: uid("ncr"), ...form };
+      const ncrMove = form.batchNumber ? [{
+        kind: "scrapped",
+        boxNumber: form.batchNumber,
+        spec: form.productSize || null,
+        qty: Number(form.quantity || form.qty || 0) || 0,
+        source: "ncr",
+        note: form.description || form.reason || "NCR raised"
+      }] : [];
       setNcrs((prevNcrs) => [...prevNcrs, newRow]);
+      if (ncrMove.length && ncrMove[0].qty > 0) setData((prev) => recordMovements(prev, ncrMove));
       setForm({ ...blank, date: form.date });
       undo.offer(`NCR for ${newRow.batchNumber}`, () => setNcrs((rows) => rows.filter((r) => r.id !== newRow.id)));
     };
@@ -8001,61 +8325,6 @@ Here's the order:`;
   }
   function SortTh({ col, sortBy, sortDir, onSort, startDir, children, className, style }) {
     return /* @__PURE__ */ React.createElement("th", { onClick: () => onSort(col, startDir), style: { cursor: "pointer", userSelect: "none", ...style }, className }, children, " ", /* @__PURE__ */ React.createElement("span", { style: { opacity: sortBy === col ? 1 : 0.35, fontSize: 10 } }, sortBy === col ? sortDir === "asc" ? "\u25B2" : "\u25BC" : "\u25B2"));
-  }
-  function reelStockForSpec(spec, reelRows, bondingRuns, lineItems) {
-    const perBox = knownMeterageForSpec(spec, "", bondingRuns, lineItems) || 24;
-    return reelRows.filter((r) => r.remaining > 0 && !r.scrapped && r.cleared !== "Yes" && looseSpecMatch(r.productSize, spec)).map((r) => ({
-      ...r,
-      boxesFromReel: Math.round(r.remaining / perBox * 10) / 10,
-      state: r.checked !== "Yes" ? "Needs checking" : "Ready to bond"
-    })).sort((a, b) => (b.state === "Ready to bond") - (a.state === "Ready to bond") || (a.date || "").localeCompare(b.date || ""));
-  }
-  function LiveStockView({ data, setData }) {
-    const rows = liveStockRows(data.bondingRuns, data.stockPicks);
-    const boxes = boxedStockAvailable(data.bondingRuns, data.stockPicks);
-    const reelRows = useMemo(
-      () => batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || [], data.stockPicks || []),
-      [data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs]
-    );
-    const otherRows = otherStockRows(data.otherStock || [], data.lineItems);
-    const { sorted: sortedOtherRows, sortBy: otherSortBy, sortDir: otherSortDir, toggleSort: otherToggleSort } = useSortableRows(otherRows, "spec", "asc");
-    const { sorted: sortedRowsRaw, sortBy, sortDir, toggleSort } = useSortableRows(rows, "spec", "asc");
-    const [search, setSearch] = useState("");
-    const [expandedSpec, setExpandedSpec] = useState(null);
-    const q = search.trim().toLowerCase();
-    const sortedRows = q ? sortedRowsRaw.filter((r) => r.spec.toLowerCase().includes(q) || boxes.some((b) => b.productSize === r.spec && b.boxNumber.toLowerCase().includes(q)) || reelRows.some((b) => (b.batchNumber || "").toLowerCase().includes(q) && looseSpecMatch(b.productSize, r.spec))) : sortedRowsRaw;
-    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Live Stock", subtitle: "Made to stock, minus what's been picked for orders. Click a column to sort, or a row to see the actual boxes." }), /* @__PURE__ */ React.createElement("div", { className: "mb-4", style: { maxWidth: 320 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Search product spec or box code"), /* @__PURE__ */ React.createElement(TextInput, { value: search, onChange: (e) => setSearch(e.target.value), placeholder: "e.g. 0.50 x 1.30mm or H61301GDB" })), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto mb-6", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement("th", { style: { width: 24 } }), /* @__PURE__ */ React.createElement(SortTh, { col: "spec", sortBy, sortDir, onSort: toggleSort, className: "text-left px-3 py-2" }, "Product spec"), /* @__PURE__ */ React.createElement(SortTh, { col: "made", sortBy, sortDir, onSort: toggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 100 } }, "Made"), /* @__PURE__ */ React.createElement(SortTh, { col: "picked", sortBy, sortDir, onSort: toggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 100 } }, "Picked"), /* @__PURE__ */ React.createElement(SortTh, { col: "inStock", sortBy, sortDir, onSort: toggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 100 } }, "In stock"))), /* @__PURE__ */ React.createElement("tbody", null, sortedRows.map((r, i) => {
-      const isOpen = expandedSpec === r.spec;
-      const specBoxes = isOpen ? boxes.filter((b) => b.productSize === r.spec).sort((a, b) => (a.date || "").localeCompare(b.date || "")) : [];
-      return /* @__PURE__ */ React.createElement(React.Fragment, { key: r.spec }, /* @__PURE__ */ React.createElement(
-        "tr",
-        {
-          className: (i % 2 ? "" : "bg-black/[0.015]") + " cursor-pointer hover:bg-black/[0.03]",
-          style: { borderTop: `1px solid ${BORDER}` },
-          onClick: () => setExpandedSpec(isOpen ? null : r.spec)
-        },
-        /* @__PURE__ */ React.createElement("td", { className: "px-2 text-center", style: { color: INK_MUTED } }),
-        /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 no-wrap" }, r.spec, (() => {
-          const ready = reelStockForSpec(r.spec, reelRows, data.bondingRuns, data.lineItems).filter((x) => x.state === "Ready to bond");
-          if (!ready.length) return null;
-          const bx = Math.floor(ready.reduce((t, x) => t + x.boxesFromReel, 0));
-          if (bx < 1) return null;
-          return /* @__PURE__ */ React.createElement("span", { className: "ml-2 text-xs", style: { color: DIAL_STOCK, fontWeight: 600 } }, "+", bx, " from reel");
-        })()),
-        /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.made),
-        /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.picked),
-        /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-semibold", style: { color: r.inStock < 0 ? RED : INK } }, r.inStock)
-      ), isOpen && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", null), /* @__PURE__ */ React.createElement("td", { colSpan: 4, className: "px-3 pb-3" }, specBoxes.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "text-xs py-2", style: { color: INK_MUTED } }, "No individual confirmed boxes currently in stock for this spec (may be fully picked, or only Other Stock).") : /* @__PURE__ */ React.createElement("table", { className: "w-full text-xs", style: { background: "#F7F7F5" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("th", { className: "text-left py-1" }, "Box number"), /* @__PURE__ */ React.createElement("th", { className: "text-left py-1" }, "Location"), /* @__PURE__ */ React.createElement("th", { className: "text-left py-1" }, "Date made"), /* @__PURE__ */ React.createElement("th", { className: "text-right py-1" }, "Available"))), /* @__PURE__ */ React.createElement("tbody", null, specBoxes.map((b) => /* @__PURE__ */ React.createElement("tr", { key: b.id, style: { borderTop: "1px solid #E5E5E0" } }, /* @__PURE__ */ React.createElement("td", { className: "py-1" }, /* @__PURE__ */ React.createElement(Mono, null, b.boxNumber)), /* @__PURE__ */ React.createElement("td", { className: "py-1" }, b.location || /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "py-1" }, manufactureDateLabel(b.boxNumber, "") || b.date || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "text-right py-1 font-medium" }, b.available))))), (() => {
-        const reels = reelStockForSpec(r.spec, reelRows, data.bondingRuns, data.lineItems);
-        if (!reels.length) {
-          return /* @__PURE__ */ React.createElement("div", { className: "text-xs pt-3", style: { color: INK_MUTED } }, "No reel stock for this spec either \u2014 this one has to be glue-lined first.");
-        }
-        return /* @__PURE__ */ React.createElement("div", { className: "pt-3" }, /* @__PURE__ */ React.createElement("div", { className: "text-xs font-semibold mb-1", style: { color: INK } }, "Reel stock for this product"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-1.5", style: { color: INK_MUTED } }, "What could still be bonded into boxes. Only checked, uncleared reels can be run today."), /* @__PURE__ */ React.createElement("table", { className: "w-full text-xs", style: { background: "#F4F7F5" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("th", { className: "text-left py-1" }, "Reel batch"), /* @__PURE__ */ React.createElement("th", { className: "text-left py-1" }, "Made"), /* @__PURE__ */ React.createElement("th", { className: "text-right py-1" }, "Metres left"), /* @__PURE__ */ React.createElement("th", { className: "text-right py-1" }, "\u2248 boxes"), /* @__PURE__ */ React.createElement("th", { className: "text-left py-1 pl-3" }, "Status"))), /* @__PURE__ */ React.createElement("tbody", null, reels.map((b) => {
-          const ok = b.state === "Ready to bond";
-          return /* @__PURE__ */ React.createElement("tr", { key: b.id, style: { borderTop: "1px solid #E2E8E4" } }, /* @__PURE__ */ React.createElement("td", { className: "py-1" }, /* @__PURE__ */ React.createElement(Mono, null, b.batchNumber)), /* @__PURE__ */ React.createElement("td", { className: "py-1" }, b.date || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "text-right py-1 font-medium" }, Math.round(b.remaining), "m"), /* @__PURE__ */ React.createElement("td", { className: "text-right py-1 font-medium", style: { color: ok ? INK : INK_MUTED } }, b.boxesFromReel), /* @__PURE__ */ React.createElement("td", { className: "py-1 pl-3", style: { color: ok ? DIAL_STOCK : AMBER, fontWeight: 600 } }, b.state));
-        }))));
-      })())));
-    }), sortedRows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 5 }, q ? `Nothing matches "${search}".` : "No stock activity yet.")))), /* @__PURE__ */ React.createElement(PickLogSection, { data, setData }), /* @__PURE__ */ React.createElement("div", { className: "h-8" }), /* @__PURE__ */ React.createElement(SectionHeader, { title: "Other Stock", subtitle: "Stock that isn't tracked through a bonding run \u2014 counted stock, bought-in items, odds and ends. Allocate it to an order from the line item's own row on the Orders tab." }), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto mb-6", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(SortTh, { col: "spec", sortBy: otherSortBy, sortDir: otherSortDir, onSort: otherToggleSort, className: "text-left px-3 py-2" }, "Product spec"), /* @__PURE__ */ React.createElement(SortTh, { col: "added", sortBy: otherSortBy, sortDir: otherSortDir, onSort: otherToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 100 } }, "Added"), /* @__PURE__ */ React.createElement(SortTh, { col: "used", sortBy: otherSortBy, sortDir: otherSortDir, onSort: otherToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 100 } }, "Allocated"), /* @__PURE__ */ React.createElement(SortTh, { col: "balance", sortBy: otherSortBy, sortDir: otherSortDir, onSort: otherToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 100 } }, "Balance"))), /* @__PURE__ */ React.createElement("tbody", null, sortedOtherRows.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.spec, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 no-wrap" }, r.spec), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.added), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.used), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-semibold", style: { color: r.balance < 0 ? RED : INK } }, r.balance))), otherRows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 4 }, "No other stock logged yet.")))), /* @__PURE__ */ React.createElement(OtherStockSection, { data, setData }));
   }
   function EvaLineView({ data, setData }) {
     const undo = useUndoToast();
@@ -8562,7 +8831,11 @@ Here's the order:`;
         });
         const totalSplit = validLines.reduce((s, l) => s + Number(l.qty), 0);
         const updatedSource = { ...source, amountMade: Number(source.amountMade || 0) - totalSplit, toStock: Number(source.toStock || 0) - totalSplit };
-        return {
+        const splitMoves = [
+          ...source.workNumber ? [{ kind: "unallocated", boxNumber: source.boxNumber, spec: source.productSize, qty: validLines.reduce((t, l) => t + Number(l.qty), 0), orderId: source.workNumber, source: "split" }] : [],
+          ...validLines.map((l) => ({ kind: "allocated", boxNumber: source.boxNumber, spec: source.productSize, qty: Number(l.qty), orderId: l.orderId, reelCode: source.baselineBatchCode || null, source: "split" }))
+        ];
+        return recordMovements({
           ...prevData,
           bondingRuns: [...prevData.bondingRuns.map((r) => r.id === source.id ? updatedSource : r), ...newRows],
           ...appendLog(prevData, {
@@ -8570,10 +8843,12 @@ Here's the order:`;
             entity: "bondingRun",
             entityId: source.id,
             summary: `Split box ${source.boxNumber || source.id} across ${validLines.length} order${validLines.length === 1 ? "" : "s"} (${validLines.map((l) => `${l.qty} to ${l.orderId}`).join(", ")}), ${splitRemaining} left to stock`,
+            /* Ledger: a split is one allocation per destination, and — if the source
+               was itself on an order — an unallocation from it for the same total. */
             before: { amountMade: source.amountMade, toStock: source.toStock },
             after: { amountMade: updatedSource.amountMade, toStock: updatedSource.toStock }
           })
-        };
+        }, splitMoves);
       });
       setSplitPrompt(null);
     };
@@ -8863,6 +9138,22 @@ Here's the order:`;
           bondingRuns: runsAfter,
           glueLineBatches: batchCode ? prevData.glueLineBatches.map((b) => b.batchNumber === batchCode ? { ...b, cleared: reelCleared || autoCleared ? "Yes" : b.cleared || "No" } : b) : prevData.glueLineBatches
         };
+        working = recordMovements(working, newRuns.flatMap((r) => [
+          { kind: "made", boxNumber: r.boxNumber, spec: r.productSize, qty: Number(r.amountMade) || 0, reelCode: r.baselineBatchCode || null, source: "bonding", sourceId: r.id },
+          ...r.workNumber && Number(r.onOrderQty) > 0 ? [{ kind: "allocated", boxNumber: r.boxNumber, spec: r.productSize, qty: Number(r.onOrderQty), orderId: r.workNumber, reelCode: r.baselineBatchCode || null, source: "bonding", sourceId: r.id }] : []
+        ]));
+        if (reelCleared && batchCode) {
+          const b = prevData.glueLineBatches.find((x) => x.batchNumber === batchCode);
+          const d = b ? reelDiscrepancy(b, runsAfter) : null;
+          if (d && Math.abs(d.pct) > REEL_DISCREPANCY_TOLERANCE_PCT) {
+            working = raiseIssue(working, {
+              kind: "count_discrepancy",
+              boxNumber: batchCode,
+              summary: `Reel ${batchCode} cleared with ${Math.round(Math.abs(d.leftover))}m unaccounted (${d.pct > 0 ? "+" : ""}${d.pct.toFixed(1)}%)`,
+              detail: `Recorded ${d.recorded}m, boxes account for ${Math.round(d.used)}m. The operator cleared it, so the reel is finished and the remainder is written off \u2014 but a gap this size usually means metres-per-box is wrong on the bonding rows, or a box is pointing at the wrong reel. Worth checking before it repeats.`
+            });
+          }
+        }
         if (autoCleared) {
           const b = prevData.glueLineBatches.find((x) => x.batchNumber === batchCode);
           const over = reelOverConsumption({ ...b }, runsAfter);
@@ -9551,7 +9842,10 @@ Here's the order:`;
         date: todayISO(),
         comments: "Added via Stock Taker"
       };
-      setData((prevData) => ({ ...prevData, bondingRuns: [...prevData.bondingRuns, newRun] }));
+      setData((prevData) => recordMovements({ ...prevData, bondingRuns: [...prevData.bondingRuns, newRun] }, [
+        { kind: "made", boxNumber: newRun.boxNumber, spec: newRun.productSize, qty: Number(newRun.amountMade) || 0, reelCode: newRun.baselineBatchCode || null, source: "stocktake", sourceId: newRun.id, note: "Found on stock take" },
+        { kind: "counted", boxNumber: newRun.boxNumber, spec: newRun.productSize, qty: Number(newRun.toStock) || 0, source: "stocktake", sourceId: newRun.id }
+      ]));
       setBoxSessionAdds([{ id: newRun.id, size, boxCode, qty, location: location2 }, ...boxSessionAdds]);
       setBoxInputs({ ...boxInputs, [size]: { boxCode: "", qty: "", location: "", pt } });
     };
@@ -9590,7 +9884,10 @@ Here's the order:`;
         date: todayISO(),
         comments: "Added via Stock Taker (custom size)"
       };
-      setData((prevData) => ({ ...prevData, bondingRuns: [...prevData.bondingRuns, newRun] }));
+      setData((prevData) => recordMovements({ ...prevData, bondingRuns: [...prevData.bondingRuns, newRun] }, [
+        { kind: "made", boxNumber: newRun.boxNumber, spec: newRun.productSize, qty: Number(newRun.amountMade) || 0, reelCode: newRun.baselineBatchCode || null, source: "stocktake", sourceId: newRun.id, note: "Found on stock take" },
+        { kind: "counted", boxNumber: newRun.boxNumber, spec: newRun.productSize, qty: Number(newRun.toStock) || 0, source: "stocktake", sourceId: newRun.id }
+      ]));
       setBoxSessionAdds([{ id: newRun.id, size, boxCode, qty, location: location2 }, ...boxSessionAdds]);
       setCustomInput({ size: "", boxCode: "", qty: "", location: "", pt });
     };
@@ -10471,12 +10768,13 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     { key: "gluelineschedule", label: "Glue Line Schedule", icon: IconLink },
     { key: "bonding", label: "Bonding", icon: IconLink },
     { key: "eva", label: "EVA Line", icon: IconLayers },
-    { key: "stock", label: "Live Stock", icon: IconArchive },
+    { key: "stock", label: "Stock", icon: IconArchive },
     { key: "stocktaker", label: "Stock Taker", icon: IconCheckBox },
     { key: "boxhistory", label: "Box History", icon: IconSearch },
     { key: "materials", label: "Materials", icon: IconSack },
     { key: "tooling", label: "Extrusion Tooling", icon: IconTool },
     { key: "ncr", label: "NCR Log", icon: IconAlert },
+    { key: "register", label: "Register", icon: IconAlert, badge: (data) => openIssues(data.issues).length },
     { key: "metrics", label: "Metrics", icon: IconChart },
     { key: "admin", label: "Admin", icon: IconAlert }
   ];
@@ -10488,7 +10786,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     { label: "Bonding", keys: ["bonding", "eva", "batches", "schedule"] },
     { label: "Stock & Traceability", keys: ["stock", "stocktaker", "boxhistory"] },
     { label: "Materials", keys: ["materials"] },
-    { label: "Quality & Reports", keys: ["ncr", "metrics"] },
+    { label: "Quality & Reports", keys: ["register", "ncr", "metrics"] },
     { label: "Admin", keys: ["admin"] }
   ];
   var PHONE_SHORTCUTS = ["dashboard", "glueline", "bonding", "stock", "production"];
@@ -10815,6 +11113,9 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     useEffect(() => {
       setStorageFailed(!saveData(data));
     }, [data]);
+    useEffect(() => {
+      setLedgerMovements(data.movements || []);
+    }, [data.movements]);
     useEffect(() => {
       const flush = () => {
         if (syncStatus === "connected" && syncClientRef.current) {
@@ -11417,12 +11718,13 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       gluelineschedule: /* @__PURE__ */ React.createElement(GlueLineScheduleView, { data, setData }),
       bonding: /* @__PURE__ */ React.createElement(BondingLineView, { data, setData, jumpToPacking }),
       eva: /* @__PURE__ */ React.createElement(EvaLineView, { data, setData }),
-      stock: /* @__PURE__ */ React.createElement(LiveStockView, { data, setData }),
+      stock: /* @__PURE__ */ React.createElement(StockSection, { data, setData }),
       stocktaker: /* @__PURE__ */ React.createElement(StockTakerView, { data, setData }),
-      boxhistory: /* @__PURE__ */ React.createElement(BoxHistoryView, { data, initialQuery: searchJump?.view === "boxhistory" ? searchJump.query : null }),
+      boxhistory: /* @__PURE__ */ React.createElement(BoxHistoryView, { data, setData, initialQuery: searchJump?.view === "boxhistory" ? searchJump.query : null }),
       materials: /* @__PURE__ */ React.createElement(MaterialsView, { data, setData }),
       tooling: /* @__PURE__ */ React.createElement(BaselineToolingView, { data, setData }),
       ncr: /* @__PURE__ */ React.createElement(NcrLogView, { data, setData }),
+      register: /* @__PURE__ */ React.createElement(IssuesRegisterView, { data, setData }),
       metrics: /* @__PURE__ */ React.createElement(MetricsView, { data, setData }),
       admin: syncUserRole === "standard" ? (
         // Reached via search or direct navigation, not the nav link — the nav
@@ -11448,7 +11750,19 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         style: { background: "none", border: "none", padding: 6, width: 36, display: "flex", alignItems: "center", justifyContent: "center", color: NAVY }
       },
       /* @__PURE__ */ React.createElement("svg", { width: "22", height: "22", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" }, /* @__PURE__ */ React.createElement("path", { d: "M15 18l-6-6 6-6" }))
-    ) : /* @__PURE__ */ React.createElement("div", { style: { width: 36 } })), syncEnabled && syncStatus !== "offline" && syncFailureDetail && syncFailureDetail.length > 0 && (syncFailureDetail.some(isUpdateRequiredFailure) ? /* @__PURE__ */ React.createElement("div", { className: "no-print", onClick: applyUpdate, role: "button", style: {
+    ) : /* @__PURE__ */ React.createElement("div", { style: { width: 36 } })), (() => {
+      const out = openPickSheets(data.pickSheets);
+      if (!out.length) return null;
+      return /* @__PURE__ */ React.createElement("div", { className: "no-print", style: { background: "#FFF4D6", borderBottom: `1px solid ${BORDER}`, padding: "6px 12px", fontSize: 13 } }, /* @__PURE__ */ React.createElement("b", null, out.length, " pick sheet", out.length === 1 ? "" : "s", " out on the floor"), " \u2014 printed but not yet recorded:", " ", out.map((p, i) => /* @__PURE__ */ React.createElement("span", { key: p.id }, i > 0 && " \xB7 ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, p.ref), " ", /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          type: "button",
+          onClick: () => setData((prev) => reconcilePickSheet(prev, p.id)),
+          style: { background: "none", border: "none", color: NAVY, cursor: "pointer", padding: 0, fontSize: 12, fontWeight: 700 }
+        },
+        "mark recorded"
+      ))));
+    })(), syncEnabled && syncStatus !== "offline" && syncFailureDetail && syncFailureDetail.length > 0 && (syncFailureDetail.some(isUpdateRequiredFailure) ? /* @__PURE__ */ React.createElement("div", { className: "no-print", onClick: applyUpdate, role: "button", style: {
       background: RED,
       color: "#fff",
       cursor: "pointer",
@@ -11566,7 +11880,9 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
             }
           },
           /* @__PURE__ */ React.createElement("span", { className: "nav-icon-chip flex items-center justify-center shrink-0", style: { background: active ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.08)" } }, /* @__PURE__ */ React.createElement(Icon, null)),
-          /* @__PURE__ */ React.createElement("span", null, n.label)
+          /* @__PURE__ */ React.createElement("span", null, n.label, typeof n.badge === "function" && n.badge(data) > 0 && // A quiet count, not an alarm. Chris wants the register
+          // to be a list you go to, not a banner that shouts.
+          /* @__PURE__ */ React.createElement("span", { style: { marginLeft: 8, fontSize: 11, fontWeight: 700, background: "rgba(255,255,255,0.18)", borderRadius: 10, padding: "1px 7px" } }, n.badge(data)))
         );
       }));
     }))), /* @__PURE__ */ React.createElement("div", { className: "pt-4 space-y-2.5", style: { borderTop: `1px solid #3D4676` } }, /* @__PURE__ */ React.createElement("input", { ref: fileInputRef, type: "file", accept: "application/json", onChange: handleRestoreFile, style: { display: "none" } }), /* @__PURE__ */ React.createElement("div", { ref: sidebarSyncRef }, /* @__PURE__ */ React.createElement(SyncPanel, { syncStatus, syncEmail, syncError, connectSync, disconnectSync, refreshFromCloud, syncFailureDetail, syncWarnings, updateLatest, applyUpdate })), modePasswordModal, /* @__PURE__ */ React.createElement("button", { onClick: () => setShowMoreOptions(!showMoreOptions), className: "text-xs pt-2", style: { background: "none", border: "none", color: "#8D95C4", cursor: "pointer", padding: "8px 0 0 0" } }, "More options"), showMoreOptions && /* @__PURE__ */ React.createElement("div", { className: "pt-1 space-y-2" }, /* @__PURE__ */ React.createElement("button", { onClick: handleBackup, className: "w-full text-left text-xs px-3 py-2", style: { background: "#2E3868", color: "#fff", borderRadius: 5 } }, "\u2B73 Download backup (.json)"), /* @__PURE__ */ React.createElement("div", { className: "text-xs px-3", style: { color: backupAge.stale ? "#FFC46B" : "#8D95C4", marginTop: -4 } }, backupAge.stale && "\u26A0 ", backupAge.label), /* @__PURE__ */ React.createElement("button", { onClick: handleRestoreClick, className: "w-full text-left text-xs px-3 py-2", style: { background: "#2E3868", color: "#fff", borderRadius: 5 } }, "\u2B71 Restore from backup"), !testMode && /* @__PURE__ */ React.createElement("button", { onClick: loadTestData, className: "w-full text-left text-xs px-3 py-2", style: { background: "#2E3868", color: "#fff", borderRadius: 5 } }, "\u{1F9EA} Load test data"), testMode && /* @__PURE__ */ React.createElement("button", { onClick: goLive, className: "w-full text-left text-xs px-3 py-2", style: { background: ORANGE, color: "#fff", borderRadius: 5, fontWeight: 600 } }, "\u{1F680} Go live (clears test data)"))), /* @__PURE__ */ React.createElement("div", { style: { position: "relative", minHeight: 190, marginLeft: -16, marginRight: -16, marginTop: 24, marginBottom: -16, overflow: "hidden" } }, /* @__PURE__ */ React.createElement("div", { style: {
