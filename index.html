@@ -696,7 +696,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-02.5";
+  var APP_VERSION = "2026-09-02.6";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -5062,7 +5062,7 @@ Here's the order:`;
         lineHeight: 1,
         color: c.packedOutside ? "#9A9CA3" : INK
       } }, c.caseNum),
-      !c.packedOutside && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 10, color: fill && fill.allocated > 0 ? "#6B6E76" : "#9A9CA3", marginTop: 3, fontWeight: 600 } }, fill.complete || fill.allocated === 0 ? `${fill.planned} items` : `${fill.allocated}/${fill.planned} in`),
+      !c.packedOutside && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 10, color: fill && fill.allocated > 0 ? "#6B6E76" : "#9A9CA3", marginTop: 3, fontWeight: 600 } }, c.confirmed ? `${fill.planned} items \xB7 confirmed` : fill.complete || fill.allocated === 0 ? `${fill.planned} items` : `${fill.allocated}/${fill.planned} in`),
       Number(c.weight) > 0 && /* @__PURE__ */ React.createElement("span", { style: { position: "absolute", bottom: 4, left: 5, fontSize: 9, fontWeight: 700, color: "#2E8B57" } }, c.weight, "kg"),
       c.pallet && /* @__PURE__ */ React.createElement("span", { style: { position: "absolute", bottom: 4, right: 5, fontSize: 9, fontWeight: 800, color: INK_MUTED } }, c.pallet)
     );
@@ -5568,19 +5568,123 @@ Here's the order:`;
         if (o.id !== order.id) return o;
         const prevOverrides = { ...o.caseOverrides || {} };
         for (const code of Object.keys(removals)) if (prevOverrides[code] === caseNum) delete prevOverrides[code];
-        const prevRemovals = { ...o.caseRemovals || {} };
-        for (const code of Object.keys(overrides)) delete prevRemovals[code];
+        const nextRemovals = { ...o.caseRemovals || {} };
+        const asList = (v) => v === true ? null : Array.isArray(v) ? v : [];
+        for (const code of Object.keys(overrides)) {
+          const cur = asList(nextRemovals[code]);
+          if (cur === null) delete nextRemovals[code];
+          else {
+            const left = cur.filter((n) => n !== caseNum);
+            if (left.length) nextRemovals[code] = left;
+            else delete nextRemovals[code];
+          }
+        }
+        for (const code of Object.keys(removals)) {
+          const cur = asList(nextRemovals[code]);
+          nextRemovals[code] = cur === null ? [caseNum] : [.../* @__PURE__ */ new Set([...cur, caseNum])];
+        }
         return {
           ...o,
           caseOverrides: { ...prevOverrides, ...overrides },
-          caseRemovals: { ...prevRemovals, ...removals },
+          caseRemovals: nextRemovals,
           caseFlags: { ...o.caseFlags || {}, [caseNum]: allFlags.length ? allFlags : void 0 },
+          /* Chris, 2 Sep: "When I confirm case it should be the end of it." A
+             confirmed case is closed: its contents are exactly what was saved.
+             The planner may not put planned demand into it any more — whatever
+             it wanted here goes to new cases at the end instead. */
+          confirmedCases: { ...o.confirmedCases || {}, [caseNum]: true },
           updatedAt: stamp
         };
       })
     };
     for (const l of logs) next = { ...next, ...appendLog(next, l) };
     return next;
+  }
+  function arrangeCases({ caseRows, orphaned, caseOverrides = {}, caseRemovals = {}, confirmedCases = {}, startingCaseNum = 0, bondingRuns = [], orderId }) {
+    const removedFrom = (box, caseNum) => {
+      const r = box && caseRemovals[box];
+      return r === true || Array.isArray(r) && r.includes(caseNum);
+    };
+    const removedPortions = [];
+    if (Object.keys(caseRemovals).length > 0) {
+      caseRows = caseRows.map((c) => ({ ...c, contributions: c.contributions.filter((row) => {
+        if (!removedFrom(row.boxNumber, c.caseNum)) return true;
+        removedPortions.push({ boxNumber: row.boxNumber, qty: Number(row.qty) || 0 });
+        return false;
+      }) })).filter((c) => c.contributions.length > 0);
+    }
+    if (Object.keys(caseOverrides).length > 0) {
+      const regrouped = /* @__PURE__ */ new Map();
+      for (const c of caseRows) {
+        for (const row of c.contributions) {
+          const effectiveCase = row.boxNumber && caseOverrides[row.boxNumber] || c.caseNum;
+          if (!regrouped.has(effectiveCase)) regrouped.set(effectiveCase, { caseNum: effectiveCase, contributions: [] });
+          regrouped.get(effectiveCase).contributions.push(row);
+        }
+      }
+      caseRows = [...regrouped.values()].sort((a, b) => a.caseNum - b.caseNum);
+    }
+    const placedOrphans = (orphaned || []).filter((run) => run.boxNumber && caseOverrides[run.boxNumber] != null && !removedFrom(run.boxNumber, caseOverrides[run.boxNumber]));
+    if (placedOrphans.length) {
+      const byCase = new Map(caseRows.map((c) => [c.caseNum, c]));
+      for (const run of placedOrphans) {
+        const caseNum = caseOverrides[run.boxNumber];
+        if (!byCase.has(caseNum)) {
+          const c = { caseNum, contributions: [] };
+          byCase.set(caseNum, c);
+          caseRows.push(c);
+        }
+        byCase.get(caseNum).contributions.push({
+          spec: run.productSize,
+          customerRef: null,
+          boxNumber: run.boxNumber,
+          batchCode: run.baselineBatchCode || null,
+          qty: Number(run.onOrderQty) || 0,
+          offOrder: true
+        });
+      }
+      caseRows = [...caseRows].sort((a, b) => a.caseNum - b.caseNum);
+    }
+    const displacedPlanned = [];
+    const displacedBoxes = [];
+    if (Object.keys(confirmedCases).length > 0) {
+      caseRows = caseRows.map((c) => {
+        if (!confirmedCases[c.caseNum]) return c;
+        const kept = [], dropped = [];
+        for (const row of c.contributions) {
+          const placedHere = row.boxNumber && (caseOverrides[row.boxNumber] === c.caseNum || row.offOrder);
+          (placedHere ? kept : dropped).push(row);
+        }
+        for (const row of dropped) (row.boxNumber ? displacedBoxes : displacedPlanned).push({ ...row, fromCase: c.caseNum, maxSize: c.maxSize });
+        return { ...c, contributions: kept, confirmed: true };
+      });
+      if (displacedPlanned.length) {
+        let nextNum = Math.max(Number(startingCaseNum) || 0, ...caseRows.map((c) => c.caseNum)) + 1;
+        let current = null;
+        for (const row of displacedPlanned) {
+          let left = Number(row.qty) || 0;
+          const size = Number(row.maxSize) || 20;
+          while (left > 0) {
+            if (!current || current.remaining <= 0) {
+              current = { caseNum: nextNum++, remaining: size, maxSize: size, contributions: [] };
+              caseRows.push(current);
+            }
+            const take = Math.min(left, current.remaining);
+            current.contributions.push({ spec: row.spec, customerRef: row.customerRef || null, boxNumber: null, batchCode: null, qty: take });
+            current.remaining -= take;
+            left -= take;
+          }
+        }
+        caseRows = [...caseRows].sort((a, b) => a.caseNum - b.caseNum);
+      }
+    }
+    const portionByBox = /* @__PURE__ */ new Map();
+    for (const p of removedPortions) portionByBox.set(p.boxNumber, (portionByBox.get(p.boxNumber) || 0) + p.qty);
+    const removedRuns = bondingRuns.filter((r) => !r.deleted && r.workNumber === orderId && r.boxNumber && portionByBox.has(r.boxNumber) && !orphaned.some((x) => x.id === r.id)).map((r) => ({ ...r, unplacedQty: portionByBox.get(r.boxNumber) }));
+    const displacedByBox = /* @__PURE__ */ new Map();
+    for (const row of displacedBoxes) displacedByBox.set(row.boxNumber, (displacedByBox.get(row.boxNumber) || 0) + (Number(row.qty) || 0));
+    const displacedRuns = [...displacedByBox.keys()].map((box) => bondingRuns.find((r) => !r.deleted && r.workNumber === orderId && r.boxNumber === box)).filter(Boolean).filter((r) => !removedRuns.some((x) => x.id === r.id) && !orphaned.some((x) => x.id === r.id)).map((r) => ({ ...r, unplacedQty: displacedByBox.get(r.boxNumber) }));
+    return { caseRows, otherAssigned: [...orphaned.filter((run) => !(run.boxNumber && caseOverrides[run.boxNumber] != null && !removedFrom(run.boxNumber, caseOverrides[run.boxNumber]))), ...removedRuns, ...displacedRuns] };
   }
   function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = null, highlightKey = null, onAllocateBoxes = null }) {
     const [overrideOn, setOverrideOn] = useState(false);
@@ -5592,6 +5696,7 @@ Here's the order:`;
     const caseWeights = order?.caseWeights || {};
     const smallCaseSizes = order?.smallCaseSizes || {};
     const caseRemovals = order?.caseRemovals || {};
+    const confirmedCases = order?.confirmedCases || {};
     const caseOverrides = order?.caseOverrides || {};
     const palletAssignments = order?.palletAssignments || {};
     const palletWeights = order?.palletWeights || {};
@@ -5631,44 +5736,9 @@ Here's the order:`;
         }
       }
       let caseRows2 = buildCombinedCases(byLineItem, (Number(order?.startingCaseNum) || 0) + 1, packedOutside);
-      if (Object.keys(caseRemovals).length > 0) {
-        caseRows2 = caseRows2.map((c) => ({ ...c, contributions: c.contributions.filter((row) => !(row.boxNumber && caseRemovals[row.boxNumber])) })).filter((c) => c.contributions.length > 0);
-      }
-      if (Object.keys(caseOverrides).length > 0) {
-        const regrouped = /* @__PURE__ */ new Map();
-        for (const c of caseRows2) {
-          for (const row of c.contributions) {
-            const effectiveCase = row.boxNumber && caseOverrides[row.boxNumber] || c.caseNum;
-            if (!regrouped.has(effectiveCase)) regrouped.set(effectiveCase, { caseNum: effectiveCase, contributions: [] });
-            regrouped.get(effectiveCase).contributions.push(row);
-          }
-        }
-        caseRows2 = [...regrouped.values()].sort((a, b) => a.caseNum - b.caseNum);
-      }
-      const placedOrphans = (orphaned || []).filter((run) => run.boxNumber && caseOverrides[run.boxNumber] != null && !caseRemovals[run.boxNumber]);
-      if (placedOrphans.length) {
-        const byCase = new Map(caseRows2.map((c) => [c.caseNum, c]));
-        for (const run of placedOrphans) {
-          const caseNum = caseOverrides[run.boxNumber];
-          if (!byCase.has(caseNum)) {
-            const c = { caseNum, contributions: [] };
-            byCase.set(caseNum, c);
-            caseRows2.push(c);
-          }
-          byCase.get(caseNum).contributions.push({
-            spec: run.productSize,
-            customerRef: null,
-            boxNumber: run.boxNumber,
-            batchCode: run.baselineBatchCode || null,
-            qty: Number(run.onOrderQty) || 0,
-            offOrder: true
-          });
-        }
-        caseRows2 = [...caseRows2].sort((a, b) => a.caseNum - b.caseNum);
-      }
-      const removedRuns = bondingRuns.filter((r) => !r.deleted && r.workNumber === orderId && r.boxNumber && caseRemovals[r.boxNumber] && !orphaned.some((x) => x.id === r.id));
-      return { caseRows: caseRows2, smallRows: smallRows2, otherAssigned: [...orphaned.filter((run) => !(run.boxNumber && caseOverrides[run.boxNumber] != null && !caseRemovals[run.boxNumber])), ...removedRuns] };
-    }, [orderId, items, bondingRuns, caseOverrides, caseRemovals, order?.startingCaseNum]);
+      const arranged = arrangeCases({ caseRows: caseRows2, orphaned, caseOverrides, caseRemovals, confirmedCases, startingCaseNum: order?.startingCaseNum, bondingRuns, orderId });
+      return { caseRows: arranged.caseRows, smallRows: smallRows2, otherAssigned: arranged.otherAssigned };
+    }, [orderId, items, bondingRuns, caseOverrides, caseRemovals, confirmedCases, order?.startingCaseNum]);
     const saveCaseContents = (caseNum, rows, flags, removed) => setData((prev) => applyCaseContents(prev, order, caseNum, rows, flags, removed));
     const litCaseNums = useMemo(() => {
       if (!highlightBoxes || !highlightBoxes.length) return [];
@@ -10769,7 +10839,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const mergeRemoteIntoData = (currentData, remote) => {
       const pending = pendingDeletionsRef.current;
       const merged = { ...currentData };
-      const ORDER_MAP_MERGE_FIELDS = ["caseWeights", "caseOverrides", "palletAssignments", "smallCaseSizes", "palletWeights", "packedOutside", "caseFlags", "caseRemovals"];
+      const ORDER_MAP_MERGE_FIELDS = ["caseWeights", "caseOverrides", "palletAssignments", "smallCaseSizes", "palletWeights", "packedOutside", "caseFlags", "caseRemovals", "confirmedCases"];
       for (const key of Object.keys(SYNC_TABLES)) {
         merged[key] = mergeById(currentData[key], remote[key], pending, key === "orders" ? ORDER_MAP_MERGE_FIELDS : null);
       }
