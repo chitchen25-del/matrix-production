@@ -696,7 +696,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-02.6";
+  var APP_VERSION = "2026-09-02.8";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -5592,7 +5592,7 @@ Here's the order:`;
              confirmed case is closed: its contents are exactly what was saved.
              The planner may not put planned demand into it any more — whatever
              it wanted here goes to new cases at the end instead. */
-          confirmedCases: { ...o.confirmedCases || {}, [caseNum]: true },
+          confirmedCases: { ...o.confirmedCases || {}, [caseNum]: { boxes: Object.fromEntries(rows.filter((r) => r.boxNumber && Number(r.qty) > 0).map((r) => [String(r.boxNumber).trim(), Number(r.qty)])) } },
           updatedAt: stamp
         };
       })
@@ -5613,18 +5613,32 @@ Here's the order:`;
         return false;
       }) })).filter((c) => c.contributions.length > 0);
     }
+    const explicit = {};
+    for (const [n, v] of Object.entries(confirmedCases)) if (v && typeof v === "object" && v.boxes) explicit[Number(n)] = v.boxes;
+    const explicitBoxes = new Set(Object.values(explicit).flatMap((b) => Object.keys(b)));
+    if (explicitBoxes.size) {
+      const need = {};
+      for (const boxes of Object.values(explicit)) for (const [b, q] of Object.entries(boxes)) need[b] = (need[b] || 0) + Number(q);
+      caseRows = caseRows.map((c) => ({ ...c, contributions: c.contributions.flatMap((row) => {
+        if (!row.boxNumber || !(need[row.boxNumber] > 0)) return [row];
+        const take = Math.min(Number(row.qty) || 0, need[row.boxNumber]);
+        need[row.boxNumber] -= take;
+        const rest = (Number(row.qty) || 0) - take;
+        return rest > 0 ? [{ ...row, qty: rest }] : [];
+      }) }));
+    }
     if (Object.keys(caseOverrides).length > 0) {
       const regrouped = /* @__PURE__ */ new Map();
       for (const c of caseRows) {
         for (const row of c.contributions) {
-          const effectiveCase = row.boxNumber && caseOverrides[row.boxNumber] || c.caseNum;
+          const effectiveCase = row.boxNumber && !explicitBoxes.has(row.boxNumber) && caseOverrides[row.boxNumber] || c.caseNum;
           if (!regrouped.has(effectiveCase)) regrouped.set(effectiveCase, { caseNum: effectiveCase, contributions: [] });
           regrouped.get(effectiveCase).contributions.push(row);
         }
       }
       caseRows = [...regrouped.values()].sort((a, b) => a.caseNum - b.caseNum);
     }
-    const placedOrphans = (orphaned || []).filter((run) => run.boxNumber && caseOverrides[run.boxNumber] != null && !removedFrom(run.boxNumber, caseOverrides[run.boxNumber]));
+    const placedOrphans = (orphaned || []).filter((run) => run.boxNumber && !explicitBoxes.has(run.boxNumber) && caseOverrides[run.boxNumber] != null && !removedFrom(run.boxNumber, caseOverrides[run.boxNumber]));
     if (placedOrphans.length) {
       const byCase = new Map(caseRows.map((c) => [c.caseNum, c]));
       for (const run of placedOrphans) {
@@ -5648,25 +5662,39 @@ Here's the order:`;
     const displacedPlanned = [];
     const displacedBoxes = [];
     if (Object.keys(confirmedCases).length > 0) {
+      for (const n of Object.keys(explicit).map(Number)) if (!caseRows.some((c) => c.caseNum === n)) caseRows.push({ caseNum: n, contributions: [] });
       caseRows = caseRows.map((c) => {
         if (!confirmedCases[c.caseNum]) return c;
         const kept = [], dropped = [];
         for (const row of c.contributions) {
-          const placedHere = row.boxNumber && (caseOverrides[row.boxNumber] === c.caseNum || row.offOrder);
+          const placedHere = row.boxNumber && !explicitBoxes.has(row.boxNumber) && (caseOverrides[row.boxNumber] === c.caseNum || row.offOrder);
           (placedHere ? kept : dropped).push(row);
         }
         for (const row of dropped) (row.boxNumber ? displacedBoxes : displacedPlanned).push({ ...row, fromCase: c.caseNum, maxSize: c.maxSize });
+        if (explicit[c.caseNum]) {
+          for (const [box, qty] of Object.entries(explicit[c.caseNum])) {
+            const run = bondingRuns.find((r) => !r.deleted && r.workNumber === orderId && r.boxNumber === box);
+            kept.push({ spec: run ? run.productSize : box, customerRef: null, boxNumber: box, batchCode: run ? run.baselineBatchCode || null : null, qty: Number(qty) || 0, confirmedQty: true });
+          }
+        }
         return { ...c, contributions: kept, confirmed: true };
       });
       if (displacedPlanned.length) {
-        let nextNum = Math.max(Number(startingCaseNum) || 0, ...caseRows.map((c) => c.caseNum)) + 1;
+        caseRows = caseRows.filter((c) => c.contributions.length > 0 || c.confirmed);
+        const used = new Set(caseRows.map((c) => c.caseNum));
+        let probe = (Number(startingCaseNum) || 0) + 1;
+        const nextFree = () => {
+          while (used.has(probe)) probe++;
+          used.add(probe);
+          return probe;
+        };
         let current = null;
         for (const row of displacedPlanned) {
           let left = Number(row.qty) || 0;
           const size = Number(row.maxSize) || 20;
           while (left > 0) {
             if (!current || current.remaining <= 0) {
-              current = { caseNum: nextNum++, remaining: size, maxSize: size, contributions: [] };
+              current = { caseNum: nextFree(), remaining: size, maxSize: size, contributions: [] };
               caseRows.push(current);
             }
             const take = Math.min(left, current.remaining);
@@ -5676,8 +5704,19 @@ Here's the order:`;
           }
         }
         caseRows = [...caseRows].sort((a, b) => a.caseNum - b.caseNum);
+      } else {
+        caseRows = caseRows.filter((c) => c.contributions.length > 0 || c.confirmed);
       }
     }
+    caseRows = caseRows.map((c) => {
+      const merged = [];
+      for (const row of c.contributions) {
+        const same = row.boxNumber && merged.find((m) => m.boxNumber === row.boxNumber && m.spec === row.spec);
+        if (same) same.qty = (Number(same.qty) || 0) + (Number(row.qty) || 0);
+        else merged.push({ ...row });
+      }
+      return { ...c, contributions: merged };
+    });
     const portionByBox = /* @__PURE__ */ new Map();
     for (const p of removedPortions) portionByBox.set(p.boxNumber, (portionByBox.get(p.boxNumber) || 0) + p.qty);
     const removedRuns = bondingRuns.filter((r) => !r.deleted && r.workNumber === orderId && r.boxNumber && portionByBox.has(r.boxNumber) && !orphaned.some((x) => x.id === r.id)).map((r) => ({ ...r, unplacedQty: portionByBox.get(r.boxNumber) }));
