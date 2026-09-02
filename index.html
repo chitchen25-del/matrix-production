@@ -696,7 +696,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-02.8";
+  var APP_VERSION = "2026-09-02.9";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -5466,97 +5466,74 @@ Here's the order:`;
     const logs = [];
     const removals = {};
     for (const code of removed || []) if (code) removals[String(code).trim()] = true;
+    const o0 = (prev.orders || []).find((x) => x.id === order.id) || order;
     for (const r of rows) {
       if (!r.boxNumber || !(Number(r.qty) > 0)) continue;
       const qty = Number(r.qty);
       const code = String(r.boxNumber).trim();
-      const mine = runs.find((x) => !x.deleted && x.boxNumber === code && x.workNumber === order.id);
-      if (mine) {
-        overrides[code] = caseNum;
-        continue;
-      }
-      const stock = runs.find((x) => !x.deleted && x.boxNumber === code && !x.workNumber && Number(x.toStock || 0) > 0);
-      if (stock) {
-        const take = Math.min(qty, Number(stock.toStock || 0));
-        const sibling = {
-          ...stock,
-          id: uid("br"),
-          amountMade: take,
-          onOrderQty: take,
-          toStock: 0,
-          workNumber: order.id,
-          customerName: order.customer || "",
-          updatedAt: stamp
-        };
-        const reduced = { ...stock, amountMade: Number(stock.amountMade || 0) - take, toStock: Number(stock.toStock || 0) - take, updatedAt: stamp };
-        runs = [...runs.map((x) => x.id === stock.id ? reduced : x), sibling];
-        overrides[code] = caseNum;
-        if (take < qty) extraFlags.push(`${code}: only ${take} on the shelf, ${qty} asked for`);
-        logs.push({ action: "split", entity: "bondingRun", entityId: stock.id, summary: `Packing override: ${take} of ${code} moved from stock to ${order.id}, case ${caseNum}` });
-        continue;
-      }
-      const theirs = runs.find((x) => !x.deleted && x.boxNumber === code && x.workNumber && x.workNumber !== order.id);
-      if (theirs) {
-        extraFlags.push(`${code} is on ${theirs.workNumber} \u2014 not moved. Split it there first if it really is in this case.`);
-        continue;
-      }
-      const os = other.find((o) => !o.deleted && (o.boxNumber === code || "OS-" + String(o.id).replace(/^os-/, "").toUpperCase() === code) && Number(o.qty) > 0);
-      if (os) {
-        const take = Math.min(qty, Number(os.qty || 0));
-        runs = [...runs, {
-          id: uid("br"),
-          boxNumber: code,
-          productSize: os.productSpec,
-          baselineBatchCode: "",
-          evaCode: "",
-          tapeCode: "",
-          amountMade: take,
-          onOrderQty: take,
-          toStock: 0,
-          workNumber: order.id,
-          customerName: order.customer || "",
-          metersPerBox: knownMeterageForSpec(os.productSpec, null, runs, prev.lineItems || []) || METERS_PER_BOX_DEFAULT,
-          date: todayISO(),
-          checked: "Yes",
-          packageType: "Box",
-          comments: `From Other Stock (${os.id})${os.notes ? " \u2014 " + os.notes : ""}`,
-          createdAt: stamp,
-          updatedAt: stamp
-        }];
-        other = other.map((o) => o.id === os.id ? { ...o, qty: Number(o.qty || 0) - take, updatedAt: stamp } : o);
-        overrides[code] = caseNum;
-        if (take < qty) extraFlags.push(`${code}: only ${take} in Other Stock, ${qty} asked for`);
-        logs.push({ action: "add", entity: "bondingRun", entityId: code, summary: `Packing override: ${take} \xD7 ${os.productSpec} taken from Other Stock into ${order.id}, case ${caseNum}` });
-        continue;
-      }
-      if (r.spec) {
-        runs = [...runs, {
-          id: uid("br"),
-          boxNumber: code,
-          productSize: r.spec,
-          baselineBatchCode: "",
-          evaCode: "",
-          tapeCode: "",
-          amountMade: qty,
-          onOrderQty: qty,
-          toStock: 0,
-          workNumber: order.id,
-          customerName: order.customer || "",
-          metersPerBox: knownMeterageForSpec(r.spec, null, runs, prev.lineItems || []) || METERS_PER_BOX_DEFAULT,
-          date: todayISO(),
-          checked: "Yes",
-          packageType: "Box",
-          comments: `Added via packing override \u2014 box was in case ${caseNum} but had never been logged. Confirm reel and date from the paper record.`,
-          createdAt: stamp,
-          updatedAt: stamp
-        }];
-        overrides[code] = caseNum;
-        extraFlags.push(`${code} was not in the app \u2014 added as ${qty} \xD7 ${r.spec} on this order; check its reel and date`);
-        logs.push({ action: "add", entity: "bondingRun", entityId: code, summary: `Packing override: ${code} (${qty} \xD7 ${r.spec}) added to ${order.id}, case ${caseNum} \u2014 box had never been logged` });
-        continue;
-      }
       overrides[code] = caseNum;
-      extraFlags.push(`${code} is not a box the app knows about \u2014 recorded in the case as typed`);
+      const otherConfirmed = Object.entries(o0 && o0.confirmedCases || {}).filter(([n, v]) => Number(n) !== caseNum && v && typeof v === "object" && v.boxes && Number(v.boxes[code]) > 0).reduce((t, [, v]) => t + Number(v.boxes[code]), 0);
+      const needTotal = otherConfirmed + qty;
+      const mine = runs.find((x) => !x.deleted && x.boxNumber === code && x.workNumber === order.id);
+      let shortfall = needTotal - (mine ? Number(mine.onOrderQty || 0) : 0);
+      const known = runs.find((x) => !x.deleted && x.boxNumber === code && x.productSize) || other.find((x) => !x.deleted && (x.boxNumber === code || "OS-" + String(x.id).replace(/^os-/, "").toUpperCase() === code));
+      const spec = r.spec || mine && mine.productSize || known && (known.productSize || known.productSpec) || code;
+      if (shortfall > 0) {
+        const stock = runs.find((x) => !x.deleted && x.boxNumber === code && !x.workNumber && Number(x.toStock || 0) > 0);
+        if (stock) {
+          const take = Math.min(shortfall, Number(stock.toStock || 0));
+          runs = runs.map((x) => x.id === stock.id ? { ...x, amountMade: Number(x.amountMade || 0) - take, toStock: Number(x.toStock || 0) - take, updatedAt: stamp } : x);
+          shortfall -= take;
+          logs.push({ action: "split", entity: "bondingRun", entityId: stock.id, summary: `Packing override: ${take} of ${code} moved from stock to ${order.id}, case ${caseNum}` });
+        }
+        if (shortfall > 0) {
+          for (const theirs of runs.filter((x) => !x.deleted && x.boxNumber === code && x.workNumber && x.workNumber !== order.id && Number(x.onOrderQty || 0) > 0)) {
+            if (shortfall <= 0) break;
+            const take = Math.min(shortfall, Number(theirs.onOrderQty || 0));
+            runs = runs.map((x) => x.id === theirs.id ? { ...x, amountMade: Number(x.amountMade || 0) - take, onOrderQty: Number(x.onOrderQty || 0) - take, updatedAt: stamp } : x);
+            shortfall -= take;
+            extraFlags.push(`${take} of ${code} taken from ${theirs.workNumber} \u2014 it is in this case, so ${theirs.workNumber} is now short and needs re-picking.`);
+            logs.push({ action: "split", entity: "bondingRun", entityId: theirs.id, summary: `Packing override: ${take} of ${code} moved from ${theirs.workNumber} to ${order.id}, case ${caseNum}` });
+          }
+        }
+        if (shortfall > 0) {
+          const os = other.find((x) => !x.deleted && (x.boxNumber === code || "OS-" + String(x.id).replace(/^os-/, "").toUpperCase() === code) && Number(x.qty) > 0);
+          if (os) {
+            const take = Math.min(shortfall, Number(os.qty || 0));
+            other = other.map((x) => x.id === os.id ? { ...x, qty: Number(x.qty || 0) - take, updatedAt: stamp } : x);
+            shortfall -= take;
+            logs.push({ action: "add", entity: "bondingRun", entityId: code, summary: `Packing override: ${take} \xD7 ${os.productSpec} taken from Other Stock into ${order.id}, case ${caseNum}` });
+          }
+        }
+        if (shortfall > 0) {
+          extraFlags.push(`${shortfall} of ${code} was not on record anywhere \u2014 recorded as in this case; check its reel and date against the paper.`);
+          logs.push({ action: "add", entity: "bondingRun", entityId: code, summary: `Packing override: ${shortfall} of ${code} recorded into ${order.id}, case ${caseNum} \u2014 not previously on record` });
+        }
+        if (mine) {
+          runs = runs.map((x) => x.id === mine.id ? { ...x, onOrderQty: needTotal, amountMade: needTotal, toStock: 0, updatedAt: stamp } : x);
+        } else {
+          runs = [...runs, {
+            id: uid("br"),
+            boxNumber: code,
+            productSize: spec,
+            baselineBatchCode: "",
+            evaCode: "",
+            tapeCode: "",
+            amountMade: needTotal,
+            onOrderQty: needTotal,
+            toStock: 0,
+            workNumber: order.id,
+            customerName: order.customer || "",
+            metersPerBox: knownMeterageForSpec(spec, null, runs, prev.lineItems || []) || METERS_PER_BOX_DEFAULT,
+            date: todayISO(),
+            checked: "Yes",
+            packageType: "Box",
+            comments: `Recorded by packing override \u2014 in case ${caseNum} of ${order.id}.`,
+            createdAt: stamp,
+            updatedAt: stamp
+          }];
+        }
+      }
     }
     for (const code of Object.keys(overrides)) delete removals[code];
     const allFlags = [...flags || [], ...extraFlags];
