@@ -696,7 +696,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-02.15";
+  var APP_VERSION = "2026-09-02.16";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -5675,15 +5675,71 @@ Here's the order:`;
       }) }));
     }
     if (Object.keys(caseOverrides).length > 0) {
+      const capacityOf = new Map(caseRows.map((c) => [c.caseNum, Number(c.maxSize) || CASE_MAX_SIZE_DEFAULT]));
       const regrouped = /* @__PURE__ */ new Map();
       for (const c of caseRows) {
         for (const row of c.contributions) {
           const effectiveCase = row.boxNumber && !explicitBoxes.has(row.boxNumber) && caseOverrides[row.boxNumber] || c.caseNum;
-          if (!regrouped.has(effectiveCase)) regrouped.set(effectiveCase, { caseNum: effectiveCase, contributions: [] });
+          if (!regrouped.has(effectiveCase)) regrouped.set(effectiveCase, { caseNum: effectiveCase, maxSize: capacityOf.get(effectiveCase) || CASE_MAX_SIZE_DEFAULT, contributions: [] });
           regrouped.get(effectiveCase).contributions.push(row);
         }
       }
       caseRows = [...regrouped.values()].sort((a, b) => a.caseNum - b.caseNum);
+      const evicted = [];
+      caseRows = caseRows.map((c) => {
+        if (confirmedCases[c.caseNum]) return c;
+        const cap = Number(c.maxSize) || CASE_MAX_SIZE_DEFAULT;
+        let total = c.contributions.reduce((t, r) => t + (Number(r.qty) || 0), 0);
+        if (total <= cap) return c;
+        const kept = [];
+        const plannedIdx = [];
+        c.contributions.forEach((r, i) => {
+          if (!r.boxNumber) plannedIdx.push(i);
+        });
+        const drop = /* @__PURE__ */ new Set();
+        for (let k = plannedIdx.length - 1; k >= 0 && total > cap; k--) {
+          const row = c.contributions[plannedIdx[k]];
+          const over = total - cap;
+          const take = Math.min(Number(row.qty) || 0, over);
+          if (take >= (Number(row.qty) || 0)) {
+            drop.add(plannedIdx[k]);
+            evicted.push({ ...row, maxSize: cap });
+          } else {
+            c.contributions[plannedIdx[k]] = { ...row, qty: (Number(row.qty) || 0) - take };
+            evicted.push({ ...row, qty: take, maxSize: cap });
+          }
+          total -= take;
+        }
+        c.contributions.forEach((r, i) => {
+          if (!drop.has(i)) kept.push(r);
+        });
+        return { ...c, contributions: kept, overCapacity: total > cap ? total - cap : void 0 };
+      });
+      if (evicted.length) {
+        const used = new Set(caseRows.map((c) => c.caseNum));
+        let probe = (Number(startingCaseNum) || 0) + 1;
+        const nextFree = () => {
+          while (used.has(probe)) probe++;
+          used.add(probe);
+          return probe;
+        };
+        let current = null;
+        for (const row of evicted) {
+          let left = Number(row.qty) || 0;
+          const size = Number(row.maxSize) || CASE_MAX_SIZE_DEFAULT;
+          while (left > 0) {
+            if (!current || current.remaining <= 0) {
+              current = { caseNum: nextFree(), remaining: size, maxSize: size, contributions: [] };
+              caseRows.push(current);
+            }
+            const take = Math.min(left, current.remaining);
+            current.contributions.push({ ...row, qty: take });
+            current.remaining -= take;
+            left -= take;
+          }
+        }
+        caseRows = [...caseRows].sort((a, b) => a.caseNum - b.caseNum);
+      }
     }
     const placedOrphans = (orphaned || []).filter((run) => run.boxNumber && !explicitBoxes.has(run.boxNumber) && caseOverrides[run.boxNumber] != null && !removedFrom(run.boxNumber, caseOverrides[run.boxNumber]));
     if (placedOrphans.length) {
