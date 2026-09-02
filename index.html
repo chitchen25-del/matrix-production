@@ -696,7 +696,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-02.4";
+  var APP_VERSION = "2026-09-02.5";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -5332,7 +5332,14 @@ Here's the order:`;
     )), picked && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, picked.code, " holds ", picked.left, ", ", picked.where, ".")), flags.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-3 px-3 py-2", style: { background: "#FFF7E6", border: `1px solid ${AMBER}`, borderRadius: 6 } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { fontWeight: 700, color: INK } }, "Doesn't add up \u2014 saved anyway, and listed at the end"), flags.map((f, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "text-xs mt-0.5", style: { color: INK_MUTED } }, f))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 16 } }, /* @__PURE__ */ React.createElement(
       "button",
       {
-        onClick: () => onSave(draft, flags),
+        onClick: () => onSave(
+          draft,
+          flags,
+          // Boxes that were in this case when the editor opened and are not
+          // in it now. Without this a removal was never recorded — overrides
+          // can only place — so the automatic contents came straight back.
+          rows.filter((r) => r.boxNumber && !draft.some((d) => d.boxNumber === r.boxNumber)).map((r) => r.boxNumber)
+        ),
         style: { ...fld, flex: 1, background: GREEN, color: "#fff", border: "none", fontWeight: 700, fontSize: 17, cursor: "pointer" }
       },
       "\u2713 Confirm case ",
@@ -5414,8 +5421,8 @@ Here's the order:`;
         caseNum: chosen.caseNum,
         rows: chosen.contributions || [],
         data: editData,
-        onSave: (rows2, flags) => {
-          onEditCase(chosen.caseNum, rows2, flags);
+        onSave: (rows2, flags, removed) => {
+          onEditCase(chosen.caseNum, rows2, flags, removed);
           setEditingCase(null);
         },
         onCancel: () => setEditingCase(null)
@@ -5451,12 +5458,14 @@ Here's the order:`;
       )
     )));
   }
-  function applyCaseContents(prev, order, caseNum, rows, flags, stamp = (/* @__PURE__ */ new Date()).toISOString()) {
+  function applyCaseContents(prev, order, caseNum, rows, flags, removed = [], stamp = (/* @__PURE__ */ new Date()).toISOString()) {
     const overrides = {};
     const extraFlags = [];
     let runs = [...prev.bondingRuns || []];
     let other = [...prev.otherStock || []];
     const logs = [];
+    const removals = {};
+    for (const code of removed || []) if (code) removals[String(code).trim()] = true;
     for (const r of rows) {
       if (!r.boxNumber || !(Number(r.qty) > 0)) continue;
       const qty = Number(r.qty);
@@ -5520,20 +5529,55 @@ Here's the order:`;
         logs.push({ action: "add", entity: "bondingRun", entityId: code, summary: `Packing override: ${take} \xD7 ${os.productSpec} taken from Other Stock into ${order.id}, case ${caseNum}` });
         continue;
       }
+      if (r.spec) {
+        runs = [...runs, {
+          id: uid("br"),
+          boxNumber: code,
+          productSize: r.spec,
+          baselineBatchCode: "",
+          evaCode: "",
+          tapeCode: "",
+          amountMade: qty,
+          onOrderQty: qty,
+          toStock: 0,
+          workNumber: order.id,
+          customerName: order.customer || "",
+          metersPerBox: knownMeterageForSpec(r.spec, null, runs, prev.lineItems || []) || METERS_PER_BOX_DEFAULT,
+          date: todayISO(),
+          checked: "Yes",
+          packageType: "Box",
+          comments: `Added via packing override \u2014 box was in case ${caseNum} but had never been logged. Confirm reel and date from the paper record.`,
+          createdAt: stamp,
+          updatedAt: stamp
+        }];
+        overrides[code] = caseNum;
+        extraFlags.push(`${code} was not in the app \u2014 added as ${qty} \xD7 ${r.spec} on this order; check its reel and date`);
+        logs.push({ action: "add", entity: "bondingRun", entityId: code, summary: `Packing override: ${code} (${qty} \xD7 ${r.spec}) added to ${order.id}, case ${caseNum} \u2014 box had never been logged` });
+        continue;
+      }
       overrides[code] = caseNum;
       extraFlags.push(`${code} is not a box the app knows about \u2014 recorded in the case as typed`);
     }
+    for (const code of Object.keys(overrides)) delete removals[code];
     const allFlags = [...flags || [], ...extraFlags];
     let next = {
       ...prev,
       bondingRuns: runs,
       otherStock: other,
-      orders: prev.orders.map((o) => o.id === order.id ? {
-        ...o,
-        caseOverrides: { ...o.caseOverrides || {}, ...overrides },
-        caseFlags: { ...o.caseFlags || {}, [caseNum]: allFlags.length ? allFlags : void 0 },
-        updatedAt: stamp
-      } : o)
+      orders: prev.orders.map((o) => {
+        if (o.id !== order.id) return o;
+        const prevOverrides = { ...o.caseOverrides || {} };
+        for (const code of Object.keys(removals)) if (prevOverrides[code] === caseNum) delete prevOverrides[code];
+        const prevRemovals = { ...o.caseRemovals || {} };
+        for (const code of Object.keys(overrides)) delete prevRemovals[code];
+        return {
+          ...o,
+          caseOverrides: { ...prevOverrides, ...overrides },
+          caseRemovals: { ...prevRemovals, ...removals },
+          caseFlags: { ...o.caseFlags || {}, [caseNum]: allFlags.length ? allFlags : void 0 },
+          updatedAt: stamp
+        };
+      })
     };
     for (const l of logs) next = { ...next, ...appendLog(next, l) };
     return next;
@@ -5547,6 +5591,7 @@ Here's the order:`;
     const [packView, setPackView] = useState("grid");
     const caseWeights = order?.caseWeights || {};
     const smallCaseSizes = order?.smallCaseSizes || {};
+    const caseRemovals = order?.caseRemovals || {};
     const caseOverrides = order?.caseOverrides || {};
     const palletAssignments = order?.palletAssignments || {};
     const palletWeights = order?.palletWeights || {};
@@ -5586,6 +5631,9 @@ Here's the order:`;
         }
       }
       let caseRows2 = buildCombinedCases(byLineItem, (Number(order?.startingCaseNum) || 0) + 1, packedOutside);
+      if (Object.keys(caseRemovals).length > 0) {
+        caseRows2 = caseRows2.map((c) => ({ ...c, contributions: c.contributions.filter((row) => !(row.boxNumber && caseRemovals[row.boxNumber])) })).filter((c) => c.contributions.length > 0);
+      }
       if (Object.keys(caseOverrides).length > 0) {
         const regrouped = /* @__PURE__ */ new Map();
         for (const c of caseRows2) {
@@ -5597,7 +5645,7 @@ Here's the order:`;
         }
         caseRows2 = [...regrouped.values()].sort((a, b) => a.caseNum - b.caseNum);
       }
-      const placedOrphans = (orphaned || []).filter((run) => run.boxNumber && caseOverrides[run.boxNumber] != null);
+      const placedOrphans = (orphaned || []).filter((run) => run.boxNumber && caseOverrides[run.boxNumber] != null && !caseRemovals[run.boxNumber]);
       if (placedOrphans.length) {
         const byCase = new Map(caseRows2.map((c) => [c.caseNum, c]));
         for (const run of placedOrphans) {
@@ -5618,9 +5666,10 @@ Here's the order:`;
         }
         caseRows2 = [...caseRows2].sort((a, b) => a.caseNum - b.caseNum);
       }
-      return { caseRows: caseRows2, smallRows: smallRows2, otherAssigned: orphaned.filter((run) => !(run.boxNumber && caseOverrides[run.boxNumber] != null)) };
-    }, [orderId, items, bondingRuns, caseOverrides, order?.startingCaseNum]);
-    const saveCaseContents = (caseNum, rows, flags) => setData((prev) => applyCaseContents(prev, order, caseNum, rows, flags));
+      const removedRuns = bondingRuns.filter((r) => !r.deleted && r.workNumber === orderId && r.boxNumber && caseRemovals[r.boxNumber] && !orphaned.some((x) => x.id === r.id));
+      return { caseRows: caseRows2, smallRows: smallRows2, otherAssigned: [...orphaned.filter((run) => !(run.boxNumber && caseOverrides[run.boxNumber] != null && !caseRemovals[run.boxNumber])), ...removedRuns] };
+    }, [orderId, items, bondingRuns, caseOverrides, caseRemovals, order?.startingCaseNum]);
+    const saveCaseContents = (caseNum, rows, flags, removed) => setData((prev) => applyCaseContents(prev, order, caseNum, rows, flags, removed));
     const litCaseNums = useMemo(() => {
       if (!highlightBoxes || !highlightBoxes.length) return [];
       const want = new Set(highlightBoxes.map((b) => String(b).trim().toUpperCase()));
@@ -5837,7 +5886,7 @@ Here's the order:`;
           setCaseOverrides,
           editOrder: order,
           editData: data,
-          onEditCase: overrideOn ? ((caseNum, rows, flags) => saveCaseContents(caseNum, rows, flags)) : null
+          onEditCase: overrideOn ? ((caseNum, rows, flags, removed) => saveCaseContents(caseNum, rows, flags, removed)) : null
         }
       ));
     })(), /* @__PURE__ */ React.createElement("div", { className: "mobile-only mb-5 no-print", style: gridActive ? { display: "none" } : void 0 }, caseRows.length === 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 text-sm", style: { color: INK_MUTED } }, "No standard-size items on this order."), caseRows.map((c) => (
@@ -10720,7 +10769,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const mergeRemoteIntoData = (currentData, remote) => {
       const pending = pendingDeletionsRef.current;
       const merged = { ...currentData };
-      const ORDER_MAP_MERGE_FIELDS = ["caseWeights", "caseOverrides", "palletAssignments", "smallCaseSizes", "palletWeights", "packedOutside", "caseFlags"];
+      const ORDER_MAP_MERGE_FIELDS = ["caseWeights", "caseOverrides", "palletAssignments", "smallCaseSizes", "palletWeights", "packedOutside", "caseFlags", "caseRemovals"];
       for (const key of Object.keys(SYNC_TABLES)) {
         merged[key] = mergeById(currentData[key], remote[key], pending, key === "orders" ? ORDER_MAP_MERGE_FIELDS : null);
       }
