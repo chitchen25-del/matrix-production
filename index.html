@@ -697,7 +697,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-02.43";
+  var APP_VERSION = "2026-09-02.44";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1603,13 +1603,59 @@
     const added = otherStock.filter((o) => o.productSpec === spec).reduce((s, o) => s + Number(o.qty || 0), 0);
     return added - otherStockUsed(lineItems, spec);
   }
+  function ledgerCorrectedRuns(bondingRuns, movements = LEDGER_MOVEMENTS) {
+    if (!movements || !movements.length) return bondingRuns;
+    const byBox = /* @__PURE__ */ new Map();
+    for (const r of bondingRuns || []) {
+      if (!r.deleted && r.boxNumber) (byBox.get(r.boxNumber) || byBox.set(r.boxNumber, []).get(r.boxNumber)).push(r);
+    }
+    const patched = /* @__PURE__ */ new Map();
+    for (const [box, rows] of byBox) {
+      const p = projectBox(movements, box);
+      if (!(p.made > 0)) continue;
+      const orderSeen = /* @__PURE__ */ new Set();
+      let shelfPlaced = false;
+      const stockRowIdx = rows.findIndex((r) => !r.workNumber);
+      rows.forEach((r, i) => {
+        let onOrderQty = 0, toStock = 0;
+        if (r.workNumber) {
+          if (!orderSeen.has(r.workNumber)) {
+            onOrderQty = Math.max(0, Number(p.byOrder[r.workNumber] || 0));
+            orderSeen.add(r.workNumber);
+          }
+        }
+        const isShelfRow = stockRowIdx >= 0 ? i === stockRowIdx : i === 0;
+        if (isShelfRow && !shelfPlaced) {
+          toStock = Math.max(0, p.onShelf);
+          shelfPlaced = true;
+        }
+        if (Number(r.onOrderQty || 0) !== onOrderQty || Number(r.toStock || 0) !== toStock) patched.set(r.id, { ...r, onOrderQty, toStock });
+      });
+      for (const [orderId, qty] of Object.entries(p.byOrder)) {
+        if (qty > 0 && !orderSeen.has(orderId)) {
+          const tmpl = rows[0];
+          patched.set(`${tmpl.id}~${orderId}`, { ...tmpl, id: `${tmpl.id}~${orderId}`, workNumber: orderId, onOrderQty: qty, toStock: 0, amountMade: qty, _synth: true });
+        }
+      }
+    }
+    if (!patched.size) return bondingRuns;
+    const out = bondingRuns.map((r) => patched.get(r.id) || r);
+    for (const [k, v] of patched) if (v._synth) out.push(v);
+    return out;
+  }
   function orderPctComplete(lineItems, bondingRuns, orderId) {
+    return orderPctCompleteStored(lineItems, ledgerCorrectedRuns(bondingRuns), orderId);
+  }
+  function orderPctCompleteStored(lineItems, bondingRuns, orderId) {
     const total = orderTotalItems(lineItems, orderId);
     if (total <= 0) return 0;
     const outstanding = orderOutstanding(lineItems, bondingRuns, orderId);
     return Math.round((total - outstanding) / total * 100);
   }
   function shelfReservations(orders, lineItems, bondingRuns, stockPicks) {
+    return shelfReservationsStored(orders, lineItems, ledgerCorrectedRuns(bondingRuns), stockPicks);
+  }
+  function shelfReservationsStored(orders, lineItems, bondingRuns, stockPicks) {
     const shelf = boxedStockAvailable(bondingRuns, stockPicks || []).map((b) => ({ ...b, left: Number(b.available || 0) }));
     const shelfIndex = specCandidateIndex(shelf, (b) => b.productSize);
     const claimants = (orders || []).filter((o) => o.stage !== "Shipped" && o.stage !== "Packing").sort((a, z) => {
@@ -1645,6 +1691,9 @@
     return out;
   }
   function orderPickablePercent(order, lineItems, bondingRuns, stockPicks, reservations) {
+    return orderPickablePercentStored(order, lineItems, ledgerCorrectedRuns(bondingRuns), stockPicks, reservations);
+  }
+  function orderPickablePercentStored(order, lineItems, bondingRuns, stockPicks, reservations) {
     const items = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description) && !isSmallItem(li.description));
     const { byLineItem } = groupAssignedRunsByLineItem(bondingRuns, order.id, items);
     const mine = reservations ? reservations.get(order.id) : null;
@@ -1693,6 +1742,9 @@
     { key: "boughtin", label: "Profitape" }
   ];
   function productionOutstandingRows(orders, lineItems, bondingRuns, stockPicks) {
+    return productionOutstandingRowsStored(orders, lineItems, ledgerCorrectedRuns(bondingRuns), stockPicks);
+  }
+  function productionOutstandingRowsStored(orders, lineItems, bondingRuns, stockPicks) {
     const activeOrders = orders.filter((o) => o.stage !== "Packing" && o.stage !== "Shipped");
     const map = /* @__PURE__ */ new Map();
     for (const order of activeOrders) {
@@ -1895,6 +1947,9 @@
     return null;
   }
   function batchesAvailableRows(glueLineBatches, bondingRuns, orders, lineItems, ncrs = [], stockPicks = []) {
+    return batchesAvailableRowsStored(glueLineBatches, ledgerCorrectedRuns(bondingRuns), orders, lineItems, ncrs, stockPicks);
+  }
+  function batchesAvailableRowsStored(glueLineBatches, bondingRuns, orders, lineItems, ncrs = [], stockPicks = []) {
     const scrappedBatches = new Set(ncrs.map((n) => n.batchNumber));
     const prodRows = productionOutstandingRows(orders, lineItems, bondingRuns, stockPicks || []);
     const meterageForSpec = /* @__PURE__ */ new Map();
@@ -2142,6 +2197,9 @@
     return { waiting, toExtrude };
   }
   function glueLineScheduleRows(orders, lineItems, glueLineBatches, bondingRuns = [], stockPicks = [], ncrs = []) {
+    return glueLineScheduleRowsStored(orders, lineItems, glueLineBatches, ledgerCorrectedRuns(bondingRuns), stockPicks, ncrs);
+  }
+  function glueLineScheduleRowsStored(orders, lineItems, glueLineBatches, bondingRuns = [], stockPicks = [], ncrs = []) {
     const demand = productionOutstandingRows(orders, lineItems, bondingRuns, stockPicks).filter((d) => classifySize(d.spec) !== "boughtin");
     const scrappedBatches = new Set((ncrs || []).map((n) => n.batchNumber));
     return demand.map((d) => {
@@ -2535,6 +2593,9 @@
     return `Due in ${daysUntil} days`;
   }
   function packingReadyRows(orders, lineItems, bondingRuns) {
+    return packingReadyRowsStored(orders, lineItems, ledgerCorrectedRuns(bondingRuns));
+  }
+  function packingReadyRowsStored(orders, lineItems, bondingRuns) {
     return orders.filter((o) => o.stage !== "Shipped").map((o) => ({ ...o, pct: orderPctComplete(lineItems, bondingRuns, o.id) })).filter((o) => o.pct >= 100).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
   }
   function planScore({ daysUntil, priority, qty }) {
@@ -2561,7 +2622,8 @@
     if (daysUntil === 1) return "due tomorrow";
     return `due in ${daysUntil} days (${due})`;
   }
-  function buildDailyPlan(data, todayStr) {
+  function buildDailyPlan(dataIn, todayStr) {
+    const data = { ...dataIn, bondingRuns: ledgerCorrectedRuns(dataIn.bondingRuns) };
     const orders = data.orders || [], lineItems = data.lineItems || [];
     const bondingRuns = data.bondingRuns || [], glueLineBatches = data.glueLineBatches || [];
     const orderById = Object.fromEntries(orders.map((o) => [o.id, o]));
