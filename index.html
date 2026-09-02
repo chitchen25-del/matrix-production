@@ -696,7 +696,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-02.10";
+  var APP_VERSION = "2026-09-02.11";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -5582,6 +5582,41 @@ Here's the order:`;
     for (const l of logs) next = { ...next, ...appendLog(next, l) };
     return next;
   }
+  function subtractConfirmed(items, bondingRuns, confirmedCases, orderId) {
+    const pool = [];
+    for (const v of Object.values(confirmedCases || {})) {
+      if (!v || typeof v !== "object" || !v.boxes) continue;
+      for (const [box, qty] of Object.entries(v.boxes)) {
+        const n = Number(qty) || 0;
+        if (n <= 0) continue;
+        const run = (bondingRuns || []).find((r) => !r.deleted && r.boxNumber === box && r.productSize);
+        pool.push({ box, spec: run ? run.productSize : box, qty: n });
+      }
+    }
+    if (!pool.length) return { items, runs: bondingRuns, consumed: [] };
+    const consumed = [];
+    const nextItems = (items || []).map((li) => {
+      let left = Number(li.qty) || 0;
+      for (const p of pool) {
+        if (left <= 0 || p.qty <= 0) continue;
+        if (!looseSpecMatch(p.spec, li.description)) continue;
+        const take = Math.min(left, p.qty);
+        p.qty -= take;
+        left -= take;
+        consumed.push({ box: p.box, qty: take, lineId: li.id });
+      }
+      return left === Number(li.qty) ? li : { ...li, qty: left };
+    }).filter((li) => Number(li.qty) > 0);
+    const takenByBox = /* @__PURE__ */ new Map();
+    for (const c of consumed) takenByBox.set(c.box, (takenByBox.get(c.box) || 0) + c.qty);
+    const nextRuns = (bondingRuns || []).map((r) => {
+      if (r.deleted || r.workNumber !== orderId || !takenByBox.has(r.boxNumber)) return r;
+      const take = Math.min(Number(r.onOrderQty) || 0, takenByBox.get(r.boxNumber));
+      takenByBox.set(r.boxNumber, takenByBox.get(r.boxNumber) - take);
+      return take > 0 ? { ...r, onOrderQty: Number(r.onOrderQty) - take, amountMade: Number(r.amountMade || 0) - take } : r;
+    }).filter((r) => !(r.workNumber === orderId && Number(r.onOrderQty) === 0 && Number(r.toStock || 0) === 0 && Number(r.amountMade || 0) === 0));
+    return { items: nextItems, runs: nextRuns, consumed };
+  }
   function arrangeCases({ caseRows, orphaned, caseOverrides = {}, caseRemovals = {}, confirmedCases = {}, startingCaseNum = 0, bondingRuns = [], orderId }) {
     const removedFrom = (box, caseNum) => {
       const r = box && caseRemovals[box];
@@ -5749,7 +5784,8 @@ Here's the order:`;
     const sizeCounts = Object.fromEntries(["7mm", "10mm", "12mm"].map((k) => [k, allItems.filter((li) => classifySize(li.description) === k).length]));
     const { caseRows, smallRows, otherAssigned } = useMemo(() => {
       const smallRows2 = [];
-      const { byLineItem, orphaned } = groupAssignedRunsByLineItem(bondingRuns, orderId, items);
+      const { items: openItems, runs: openRuns } = subtractConfirmed(items, bondingRuns, confirmedCases, orderId);
+      const { byLineItem, orphaned } = groupAssignedRunsByLineItem(openRuns, orderId, openItems);
       for (const { li, runs: runsForSpec } of byLineItem) {
         if (isSmallItem(li.description)) {
           const details = allocateCaseDetails(runsForSpec, [Number(li.qty)]);
