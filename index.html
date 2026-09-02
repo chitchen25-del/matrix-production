@@ -696,7 +696,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-02.3";
+  var APP_VERSION = "2026-09-02.4";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -5451,6 +5451,93 @@ Here's the order:`;
       )
     )));
   }
+  function applyCaseContents(prev, order, caseNum, rows, flags, stamp = (/* @__PURE__ */ new Date()).toISOString()) {
+    const overrides = {};
+    const extraFlags = [];
+    let runs = [...prev.bondingRuns || []];
+    let other = [...prev.otherStock || []];
+    const logs = [];
+    for (const r of rows) {
+      if (!r.boxNumber || !(Number(r.qty) > 0)) continue;
+      const qty = Number(r.qty);
+      const code = String(r.boxNumber).trim();
+      const mine = runs.find((x) => !x.deleted && x.boxNumber === code && x.workNumber === order.id);
+      if (mine) {
+        overrides[code] = caseNum;
+        continue;
+      }
+      const stock = runs.find((x) => !x.deleted && x.boxNumber === code && !x.workNumber && Number(x.toStock || 0) > 0);
+      if (stock) {
+        const take = Math.min(qty, Number(stock.toStock || 0));
+        const sibling = {
+          ...stock,
+          id: uid("br"),
+          amountMade: take,
+          onOrderQty: take,
+          toStock: 0,
+          workNumber: order.id,
+          customerName: order.customer || "",
+          updatedAt: stamp
+        };
+        const reduced = { ...stock, amountMade: Number(stock.amountMade || 0) - take, toStock: Number(stock.toStock || 0) - take, updatedAt: stamp };
+        runs = [...runs.map((x) => x.id === stock.id ? reduced : x), sibling];
+        overrides[code] = caseNum;
+        if (take < qty) extraFlags.push(`${code}: only ${take} on the shelf, ${qty} asked for`);
+        logs.push({ action: "split", entity: "bondingRun", entityId: stock.id, summary: `Packing override: ${take} of ${code} moved from stock to ${order.id}, case ${caseNum}` });
+        continue;
+      }
+      const theirs = runs.find((x) => !x.deleted && x.boxNumber === code && x.workNumber && x.workNumber !== order.id);
+      if (theirs) {
+        extraFlags.push(`${code} is on ${theirs.workNumber} \u2014 not moved. Split it there first if it really is in this case.`);
+        continue;
+      }
+      const os = other.find((o) => !o.deleted && (o.boxNumber === code || "OS-" + String(o.id).replace(/^os-/, "").toUpperCase() === code) && Number(o.qty) > 0);
+      if (os) {
+        const take = Math.min(qty, Number(os.qty || 0));
+        runs = [...runs, {
+          id: uid("br"),
+          boxNumber: code,
+          productSize: os.productSpec,
+          baselineBatchCode: "",
+          evaCode: "",
+          tapeCode: "",
+          amountMade: take,
+          onOrderQty: take,
+          toStock: 0,
+          workNumber: order.id,
+          customerName: order.customer || "",
+          metersPerBox: knownMeterageForSpec(os.productSpec, null, runs, prev.lineItems || []) || METERS_PER_BOX_DEFAULT,
+          date: todayISO(),
+          checked: "Yes",
+          packageType: "Box",
+          comments: `From Other Stock (${os.id})${os.notes ? " \u2014 " + os.notes : ""}`,
+          createdAt: stamp,
+          updatedAt: stamp
+        }];
+        other = other.map((o) => o.id === os.id ? { ...o, qty: Number(o.qty || 0) - take, updatedAt: stamp } : o);
+        overrides[code] = caseNum;
+        if (take < qty) extraFlags.push(`${code}: only ${take} in Other Stock, ${qty} asked for`);
+        logs.push({ action: "add", entity: "bondingRun", entityId: code, summary: `Packing override: ${take} \xD7 ${os.productSpec} taken from Other Stock into ${order.id}, case ${caseNum}` });
+        continue;
+      }
+      overrides[code] = caseNum;
+      extraFlags.push(`${code} is not a box the app knows about \u2014 recorded in the case as typed`);
+    }
+    const allFlags = [...flags || [], ...extraFlags];
+    let next = {
+      ...prev,
+      bondingRuns: runs,
+      otherStock: other,
+      orders: prev.orders.map((o) => o.id === order.id ? {
+        ...o,
+        caseOverrides: { ...o.caseOverrides || {}, ...overrides },
+        caseFlags: { ...o.caseFlags || {}, [caseNum]: allFlags.length ? allFlags : void 0 },
+        updatedAt: stamp
+      } : o)
+    };
+    for (const l of logs) next = { ...next, ...appendLog(next, l) };
+    return next;
+  }
   function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = null, highlightKey = null, onAllocateBoxes = null }) {
     const [overrideOn, setOverrideOn] = useState(false);
     const { requirePassword: requireAdmin, modal: adminModal } = useAdminPasswordGate();
@@ -5510,37 +5597,30 @@ Here's the order:`;
         }
         caseRows2 = [...regrouped.values()].sort((a, b) => a.caseNum - b.caseNum);
       }
-      return { caseRows: caseRows2, smallRows: smallRows2, otherAssigned: orphaned };
-    }, [orderId, items, bondingRuns, caseOverrides, order?.startingCaseNum]);
-    const saveCaseContents = (caseNum, rows, flags) => {
-      const toAllocate = [];
-      const overrides = {};
-      for (const r of rows) {
-        if (!r.boxNumber || !(Number(r.qty) > 0)) continue;
-        overrides[r.boxNumber] = caseNum;
-        const run = (data.bondingRuns || []).find((x) => !x.deleted && x.boxNumber === r.boxNumber);
-        if (run && run.workNumber !== order.id) {
-          toAllocate.push({
-            id: run.id,
-            boxNumber: r.boxNumber,
-            productSize: run.productSize,
-            location: "",
-            proposedQty: Number(r.qty),
-            confirmedQty: Number(r.qty),
-            damaged: false,
-            caseOverride: caseNum,
-            baselineBatchCode: run.baselineBatchCode || ""
+      const placedOrphans = (orphaned || []).filter((run) => run.boxNumber && caseOverrides[run.boxNumber] != null);
+      if (placedOrphans.length) {
+        const byCase = new Map(caseRows2.map((c) => [c.caseNum, c]));
+        for (const run of placedOrphans) {
+          const caseNum = caseOverrides[run.boxNumber];
+          if (!byCase.has(caseNum)) {
+            const c = { caseNum, contributions: [] };
+            byCase.set(caseNum, c);
+            caseRows2.push(c);
+          }
+          byCase.get(caseNum).contributions.push({
+            spec: run.productSize,
+            customerRef: null,
+            boxNumber: run.boxNumber,
+            batchCode: run.baselineBatchCode || null,
+            qty: Number(run.onOrderQty) || 0,
+            offOrder: true
           });
         }
+        caseRows2 = [...caseRows2].sort((a, b) => a.caseNum - b.caseNum);
       }
-      setData((prev) => ({ ...prev, orders: prev.orders.map((o) => o.id === order.id ? {
-        ...o,
-        caseOverrides: { ...o.caseOverrides || {}, ...overrides },
-        caseFlags: { ...o.caseFlags || {}, [caseNum]: flags && flags.length ? flags : void 0 },
-        updatedAt: (/* @__PURE__ */ new Date()).toISOString()
-      } : o) }));
-      if (toAllocate.length && typeof onAllocateBoxes === "function") onAllocateBoxes(toAllocate);
-    };
+      return { caseRows: caseRows2, smallRows: smallRows2, otherAssigned: orphaned.filter((run) => !(run.boxNumber && caseOverrides[run.boxNumber] != null)) };
+    }, [orderId, items, bondingRuns, caseOverrides, order?.startingCaseNum]);
+    const saveCaseContents = (caseNum, rows, flags) => setData((prev) => applyCaseContents(prev, order, caseNum, rows, flags));
     const litCaseNums = useMemo(() => {
       if (!highlightBoxes || !highlightBoxes.length) return [];
       const want = new Set(highlightBoxes.map((b) => String(b).trim().toUpperCase()));
@@ -10640,7 +10720,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const mergeRemoteIntoData = (currentData, remote) => {
       const pending = pendingDeletionsRef.current;
       const merged = { ...currentData };
-      const ORDER_MAP_MERGE_FIELDS = ["caseWeights", "caseOverrides", "palletAssignments", "smallCaseSizes", "palletWeights", "packedOutside"];
+      const ORDER_MAP_MERGE_FIELDS = ["caseWeights", "caseOverrides", "palletAssignments", "smallCaseSizes", "palletWeights", "packedOutside", "caseFlags"];
       for (const key of Object.keys(SYNC_TABLES)) {
         merged[key] = mergeById(currentData[key], remote[key], pending, key === "orders" ? ORDER_MAP_MERGE_FIELDS : null);
       }
