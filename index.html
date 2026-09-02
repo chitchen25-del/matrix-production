@@ -696,7 +696,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-02.2";
+  var APP_VERSION = "2026-09-02.3";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -5189,13 +5189,16 @@ Here's the order:`;
     const [qty, setQty] = useState("");
     const [manual, setManual] = useState(false);
     const [manualCode, setManualCode] = useState("");
+    const shelfAll = boxedStockAvailable(data.bondingRuns, data.stockPicks || []);
+    const otherAll = (data.otherStock || []).filter((o) => !o.deleted && Number(o.qty) > 0);
     const boxesFor = (forSpec) => {
       if (!forSpec) return [];
-      const shelf = boxedStockAvailable(data.bondingRuns, data.stockPicks || []).filter((b) => looseSpecMatch(b.productSize, forSpec) && stockFormMatchesLine(b, forSpec)).map((b) => ({ code: b.boxNumber, left: Number(b.available), where: "on the shelf", batch: b.baselineBatchCode || "" }));
+      const shelf = shelfAll.filter((b) => looseSpecMatch(b.productSize, forSpec) && stockFormMatchesLine(b, forSpec)).map((b) => ({ code: b.boxNumber, left: Number(b.available), where: "on the shelf", batch: b.baselineBatchCode || "" }));
       const mine = (data.bondingRuns || []).filter((r) => !r.deleted && r.workNumber === order.id && r.boxNumber && looseSpecMatch(r.productSize, forSpec)).map((r) => ({ code: r.boxNumber, left: Number(r.onOrderQty) || 0, where: "on this order", batch: r.baselineBatchCode || "" }));
+      const other = otherAll.filter((o) => looseSpecMatch(o.productSpec, forSpec)).map((o) => ({ code: o.boxNumber || "OS-" + String(o.id).replace(/^os-/, "").toUpperCase(), left: Number(o.qty) || 0, where: "other stock", batch: "" }));
       const seen = /* @__PURE__ */ new Set();
       const out = [];
-      for (const b of [...mine, ...shelf]) {
+      for (const b of [...mine, ...shelf, ...other]) {
         if (b.code && !seen.has(b.code)) {
           seen.add(b.code);
           out.push(b);
@@ -5204,6 +5207,18 @@ Here's the order:`;
       return out;
     };
     const options = boxesFor(spec);
+    const lineSpecs = lines.map((li) => li.description);
+    const extraSpecs = (() => {
+      const seen = /* @__PURE__ */ new Set();
+      const out = [];
+      for (const sp of [...shelfAll.map((b) => b.productSize), ...otherAll.map((o) => o.productSpec)]) {
+        if (!sp || seen.has(sp)) continue;
+        if (lineSpecs.some((ls) => looseSpecMatch(ls, sp))) continue;
+        seen.add(sp);
+        out.push(sp);
+      }
+      return out.sort();
+    })();
     const picked = options.find((o) => o.code === box) || null;
     const chosenCode = manual ? manualCode.trim() : box;
     const isUnknown = manual && !!chosenCode && !options.some((o) => o.code === chosenCode);
@@ -5252,7 +5267,7 @@ Here's the order:`;
       setSpec(e.target.value);
       setBox("");
       setQty("");
-    }, style: { ...fld, width: "100%" } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose from this order\u2026"), lines.map((li) => /* @__PURE__ */ React.createElement("option", { key: li.id, value: li.description }, li.description))), /* @__PURE__ */ React.createElement("label", { style: lbl }, "2 \xB7 Box / batch code"), /* @__PURE__ */ React.createElement(
+    }, style: { ...fld, width: "100%" } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose from this order\u2026"), lines.map((li) => /* @__PURE__ */ React.createElement("option", { key: li.id, value: li.description }, li.description)), extraSpecs.length > 0 && /* @__PURE__ */ React.createElement("optgroup", { label: "Other sizes in stock (not on this order)" }, extraSpecs.map((sp) => /* @__PURE__ */ React.createElement("option", { key: "x-" + sp, value: sp }, sp)))), /* @__PURE__ */ React.createElement("label", { style: lbl }, "2 \xB7 Box / batch code"), /* @__PURE__ */ React.createElement(
       "select",
       {
         value: box,
@@ -5265,7 +5280,7 @@ Here's the order:`;
         style: { ...fld, width: "100%", opacity: spec ? 1 : 0.5 }
       },
       /* @__PURE__ */ React.createElement("option", { value: "" }, spec ? options.length ? `Choose one of ${options.length}\u2026` : "No boxes exist for this size" : "Choose a product first"),
-      options.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.code, value: o.code }, o.code, " \u2014 ", o.left, " available", o.batch ? ` \xB7 reel ${o.batch}` : ""))
+      options.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.code, value: o.code }, o.code, " \u2014 ", o.left, " available \xB7 ", o.where, o.batch ? ` \xB7 reel ${o.batch}` : ""))
     ), /* @__PURE__ */ React.createElement("div", { className: "mt-1" }, /* @__PURE__ */ React.createElement(
       "button",
       {
