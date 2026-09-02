@@ -696,7 +696,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-01.21";
+  var APP_VERSION = "2026-09-02.1";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -867,7 +867,7 @@
       return clean;
     };
     const tag = (rows, cat) => (rows || []).map((r) => ({ ...syncToSnakeRow(stripDerived(r), cols), category: cat }));
-    return [...tag(t.standard, "standard"), ...tag(t.mini, "mini"), ...tag(t.offcentre, "offcentre"), ...tag(t.doubles, "doubles")];
+    return [...tag(t.standard, "standard"), ...tag(t.mini, "mini"), ...tag(t.offcentre, "offcentre"), ...tag(t.doubles, "doubles"), ...tag(t.ken, "ken")];
   }
   function syncToolingFromRows(rows) {
     const cols = { screwSpeed: "screw_speed", haulOff: "haul_off" };
@@ -1167,6 +1167,37 @@
   }
   function isKenPin(spec) {
     return /^ken\b/i.test((spec || "").trim());
+  }
+  function specCandidateIndex(rows, getSpec) {
+    const buckets = /* @__PURE__ */ new Map();
+    const wild = [];
+    const keyOf = (h, g, spec) => `${h}|${g}|${isOffCentre(spec) ? 1 : 0}|${isKenPin(spec) ? 1 : 0}`;
+    rows.forEach((row, i) => {
+      const spec = getSpec(row);
+      const d = specDimensions(spec);
+      const entry = { row, i };
+      if (d.length < 2) {
+        wild.push(entry);
+        return;
+      }
+      const k = keyOf(Math.round(d[0] * 100), Math.round(d[1] * 100), spec);
+      if (!buckets.has(k)) buckets.set(k, []);
+      buckets.get(k).push(entry);
+    });
+    return {
+      candidates(spec) {
+        const d = specDimensions(spec);
+        if (d.length < 2) return rows;
+        const h = Math.round(d[0] * 100), g = Math.round(d[1] * 100);
+        const found = [...wild];
+        for (let dh = -1; dh <= 1; dh++) for (let dg = -1; dg <= 1; dg++) {
+          const b = buckets.get(keyOf(h + dh, g + dg, spec));
+          if (b) found.push(...b);
+        }
+        found.sort((a, b) => a.i - b.i);
+        return found.map((e) => e.row);
+      }
+    };
   }
   function looseSpecMatch(specA, specB) {
     const a = specDimensions(specA), b = specDimensions(specB);
@@ -1565,6 +1596,7 @@
   }
   function shelfReservations(orders, lineItems, bondingRuns, stockPicks) {
     const shelf = boxedStockAvailable(bondingRuns, stockPicks || []).map((b) => ({ ...b, left: Number(b.available || 0) }));
+    const shelfIndex = specCandidateIndex(shelf, (b) => b.productSize);
     const claimants = (orders || []).filter((o) => o.stage !== "Shipped" && o.stage !== "Packing").sort((a, z) => {
       const pa = a.priority ?? 999, pz = z.priority ?? 999;
       if (pa !== pz) return pa - pz;
@@ -1581,7 +1613,7 @@
         const assigned = runs.reduce((s, r) => s + Number(r.onOrderQty || 0), 0);
         let outstanding = Math.max(0, Number(li.qty) - assigned);
         let taken = 0;
-        for (const box of shelf) {
+        for (const box of shelfIndex.candidates(li.description)) {
           if (outstanding <= 0) break;
           if (box.left <= 0) continue;
           if (!looseSpecMatch(box.productSize, li.description)) continue;
@@ -1850,15 +1882,26 @@
   function batchesAvailableRows(glueLineBatches, bondingRuns, orders, lineItems, ncrs = [], stockPicks = []) {
     const scrappedBatches = new Set(ncrs.map((n) => n.batchNumber));
     const prodRows = productionOutstandingRows(orders, lineItems, bondingRuns, stockPicks || []);
+    const meterageForSpec = /* @__PURE__ */ new Map();
+    const knownMeterageMemo = (spec) => {
+      if (!meterageForSpec.has(spec)) meterageForSpec.set(spec, knownMeterageForSpec(spec, null, bondingRuns, lineItems));
+      return meterageForSpec.get(spec);
+    };
+    const usedByBatch = /* @__PURE__ */ new Map();
+    for (const r of bondingRuns) {
+      const code = r.baselineBatchCode;
+      if (!code) continue;
+      usedByBatch.set(code, (usedByBatch.get(code) || 0) + Number(r.amountMade || 0) * Number(r.metersPerBox || 0));
+    }
     const rows = glueLineBatches.map((b) => {
-      const used = batchMeterageUsed(bondingRuns, b.batchNumber);
+      const used = usedByBatch.get(b.batchNumber) || 0;
       const remaining = Number(b.meterage || 0) - used;
       const scrapped = scrappedBatches.has(b.batchNumber);
       const gluedToday = String(b.date || "") === todayISO();
       const available = !b.deleted && b.checked === "Yes" && remaining > 0 && !scrapped && b.cleared !== "Yes" && !gluedToday;
       const need = prodRows.find((r) => looseSpecMatch(b.productSize, r.spec));
       const qtyNeeded = need ? need.toMake ?? need.qty : 0;
-      const metersPerBox = knownMeterageForSpec(b.productSize, null, bondingRuns, lineItems) || METERS_PER_BOX_DEFAULT;
+      const metersPerBox = knownMeterageMemo(b.productSize) || METERS_PER_BOX_DEFAULT;
       const boxesInBatch = Math.round(remaining / metersPerBox * 10) / 10;
       const specGap = gapFromSpec(b.productSize);
       const derivedGap = specGap != null ? specGap : b.gapWidth !== "" && b.gapWidth != null ? Number(b.gapWidth) : null;
@@ -10414,7 +10457,11 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     useEffect(() => {
       const flush = () => {
         if (syncStatus === "connected" && syncClientRef.current) {
-          pushSyncChanges(syncClientRef.current, prevDataRef.current, data).catch(() => {
+          const prev = prevDataRef.current;
+          pushSyncChanges(syncClientRef.current, prev, data).then((res) => {
+            prevDataRef.current = advancePrevForTables(prev, data, res.okTables);
+          }).catch((err) => {
+            if (err && err.okTables) prevDataRef.current = advancePrevForTables(prev, data, err.okTables);
           });
         }
       };
@@ -10584,7 +10631,11 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         standard: mergeById(currentData.tooling?.standard, remote.tooling?.standard, pending),
         mini: mergeById(currentData.tooling?.mini, remote.tooling?.mini, pending),
         offcentre: mergeById(currentData.tooling?.offcentre, remote.tooling?.offcentre, pending),
-        doubles: mergeById(currentData.tooling?.doubles, remote.tooling?.doubles, pending)
+        doubles: mergeById(currentData.tooling?.doubles, remote.tooling?.doubles, pending),
+        // Until the server has ever seen a Ken row, remote.tooling.ken is empty
+        // and mergeById(local, []) keeps local — so the defaults survive the
+        // first sync and only start round-tripping once someone edits one.
+        ken: mergeById(currentData.tooling?.ken, remote.tooling?.ken, pending)
       };
       return merged;
     };
