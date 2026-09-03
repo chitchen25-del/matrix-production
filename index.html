@@ -714,7 +714,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-03.24";
+  var APP_VERSION = "2026-09-03.25";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -2510,9 +2510,9 @@
     others.sort((a, b) => a.orderId.localeCompare(b.orderId));
     return { needing, others };
   }
-  function openCasesForOrder(data, orderId, spec) {
+  function arrangedCasesForOrder(data, orderId) {
     const order = (data.orders || []).find((o) => o.id === orderId && !o.deleted);
-    if (!order) return [];
+    if (!order) return { order: null, caseRows: [] };
     try {
       const items = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description));
       const sub = subtractConfirmed(items, data.bondingRuns, order.confirmedCases || {}, order.id);
@@ -2529,27 +2529,42 @@
         bondingRuns: data.bondingRuns,
         orderId: order.id
       });
-      return arranged.caseRows.filter((c) => !isCaseClosed(c.caseNum, {
+      return { order, caseRows: arranged.caseRows || [] };
+    } catch (e) {
+      if (typeof console !== "undefined" && console.warn) console.warn("arrangedCasesForOrder failed for " + orderId, e);
+      return { order, caseRows: [] };
+    }
+  }
+  function casesHoldingBox(data, orderId, boxNumber) {
+    const want = String(boxNumber || "").trim().toUpperCase();
+    if (!want) return [];
+    const { caseRows } = arrangedCasesForOrder(data, orderId);
+    return caseRows.filter((c) => (c.contributions || []).some((r) => String(r.boxNumber || "").trim().toUpperCase() === want)).map((c) => c.caseNum);
+  }
+  function openCasesForOrder(data, orderId, spec) {
+    const { order, caseRows } = arrangedCasesForOrder(data, orderId);
+    if (!order) return [];
+    return caseRows.map((c) => {
+      const planned = c.contributions.reduce((t, r) => t + (Number(r.qty) || 0), 0);
+      const cap = Number(c.maxSize) || CASE_MAX_SIZE_DEFAULT;
+      const closed = isCaseClosed(c.caseNum, {
         confirmedCases: order.confirmedCases || {},
         caseWeights: order.caseWeights || {},
         palletAssignments: order.palletAssignments || {},
-        fill: c.contributions.reduce((t, r) => t + (Number(r.qty) || 0), 0),
-        capacity: Number(c.maxSize) || CASE_MAX_SIZE_DEFAULT
-      })).map((c) => {
-        const planned = c.contributions.reduce((t, r) => t + (Number(r.qty) || 0), 0);
-        const cap = Number(c.maxSize) || CASE_MAX_SIZE_DEFAULT;
-        return {
-          caseNum: c.caseNum,
-          planned,
-          capacity: cap,
-          room: cap - planned,
-          sameSize: c.contributions.some((r) => looseSpecMatch(r.spec, spec))
-        };
-      }).sort((a, b) => b.sameSize - a.sameSize || a.caseNum - b.caseNum);
-    } catch (e) {
-      if (typeof console !== "undefined" && console.warn) console.warn("openCasesForOrder failed for " + orderId, e);
-      return [];
-    }
+        fill: planned,
+        capacity: cap
+      });
+      const why = c.confirmed || (order.confirmedCases || {})[c.caseNum] ? "confirmed" : Number((order.caseWeights || {})[c.caseNum]) > 0 ? "weighed" : String((order.palletAssignments || {})[c.caseNum] || "").trim() ? "on a pallet" : closed ? "full" : "";
+      return {
+        caseNum: c.caseNum,
+        planned,
+        capacity: cap,
+        room: cap - planned,
+        closed,
+        why,
+        sameSize: c.contributions.some((r) => looseSpecMatch(r.spec, spec))
+      };
+    }).sort((a, b) => b.sameSize - a.sameSize || a.caseNum - b.caseNum);
   }
   function moveBoxRow(data, rowId, dest) {
     const runs = data.bondingRuns || [];
@@ -7759,7 +7774,10 @@ This changes the order quantities. It is recorded in the change log and can be r
       if (have <= 0) return null;
       const ranked = ordersNeedingSpec(data, r.productSize, r.workNumber ? [r.workNumber] : []);
       const toShelf = d.to === "__shelf__";
-      return /* @__PURE__ */ React.createElement("div", { key: r.id, className: "mb-3 pb-3", style: { borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline gap-2 flex-wrap mb-2", style: { fontSize: 14 } }, /* @__PURE__ */ React.createElement("b", null, have), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, have === 1 ? "box" : "boxes", " currently"), r.workNumber ? /* @__PURE__ */ React.createElement("span", null, "on ", /* @__PURE__ */ React.createElement("b", null, r.workNumber), orderName(r.workNumber) ? ` \u2014 ${orderName(r.workNumber)}` : "") : /* @__PURE__ */ React.createElement("span", null, "on the shelf", r.location ? /* @__PURE__ */ React.createElement(React.Fragment, null, " at ", /* @__PURE__ */ React.createElement("b", null, r.location)) : /* @__PURE__ */ React.createElement("span", { style: { color: AMBER } }, " (no location recorded)"))), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 items-center flex-wrap" }, /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 220px", minWidth: 0 } }, /* @__PURE__ */ React.createElement(Select, { value: d.to, onChange: (e) => setDraft(r, { to: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Move to\u2026"), r.workNumber && /* @__PURE__ */ React.createElement("option", { value: "__shelf__" }, "Back to the shelf"), /* @__PURE__ */ React.createElement("option", { value: "__scrap__" }, "Scrap (damaged / unusable)"), ranked.needing.length > 0 && /* @__PURE__ */ React.createElement("optgroup", { label: "Orders needing this size" }, ranked.needing.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.orderId, value: o.orderId }, o.customer, " \xB7 ", o.orderId, " \u2014 needs ", o.needs, o.priority != null ? ` \xB7 P${o.priority}` : "", o.dueDate ? ` \xB7 due ${o.dueDate}` : ""))), /* @__PURE__ */ React.createElement("optgroup", { label: "Every other open order" }, ranked.others.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.orderId, value: o.orderId }, o.customer, " \xB7 ", o.orderId))))), /* @__PURE__ */ React.createElement("div", { style: { width: 80 } }, /* @__PURE__ */ React.createElement(
+      return /* @__PURE__ */ React.createElement("div", { key: r.id, className: "mb-3 pb-3", style: { borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline gap-2 flex-wrap mb-2", style: { fontSize: 14 } }, /* @__PURE__ */ React.createElement("b", null, have), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, have === 1 ? "box" : "boxes", " currently"), r.workNumber ? (() => {
+        const inCases = casesHoldingBox(data, r.workNumber, r.boxNumber);
+        return /* @__PURE__ */ React.createElement("span", null, "on ", /* @__PURE__ */ React.createElement("b", null, r.workNumber), orderName(r.workNumber) ? ` \u2014 ${orderName(r.workNumber)}` : "", inCases.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, ", ", /* @__PURE__ */ React.createElement("b", null, "case", inCases.length === 1 ? "" : "s", " ", caseRangeLabel(inCases))));
+      })() : /* @__PURE__ */ React.createElement("span", null, "on the shelf", r.location ? /* @__PURE__ */ React.createElement(React.Fragment, null, " at ", /* @__PURE__ */ React.createElement("b", null, r.location)) : /* @__PURE__ */ React.createElement("span", { style: { color: AMBER } }, " (no location recorded)"))), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 items-center flex-wrap" }, /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 220px", minWidth: 0 } }, /* @__PURE__ */ React.createElement(Select, { value: d.to, onChange: (e) => setDraft(r, { to: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Move to\u2026"), r.workNumber && /* @__PURE__ */ React.createElement("option", { value: "__shelf__" }, "Back to the shelf"), /* @__PURE__ */ React.createElement("option", { value: "__scrap__" }, "Scrap (damaged / unusable)"), ranked.needing.length > 0 && /* @__PURE__ */ React.createElement("optgroup", { label: "Orders needing this size" }, ranked.needing.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.orderId, value: o.orderId }, o.customer, " \xB7 ", o.orderId, " \u2014 needs ", o.needs, o.priority != null ? ` \xB7 P${o.priority}` : "", o.dueDate ? ` \xB7 due ${o.dueDate}` : ""))), /* @__PURE__ */ React.createElement("optgroup", { label: "Every other open order" }, ranked.others.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.orderId, value: o.orderId }, o.customer, " \xB7 ", o.orderId))))), /* @__PURE__ */ React.createElement("div", { style: { width: 80 } }, /* @__PURE__ */ React.createElement(
         TextInput,
         {
           type: "number",
@@ -7770,7 +7788,7 @@ This changes the order quantities. It is recorded in the change log and can be r
         }
       )), toShelf && /* @__PURE__ */ React.createElement("div", { style: { width: 130 } }, /* @__PURE__ */ React.createElement(Select, { value: d.location, onChange: (e) => setDraft(r, { location: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Which shelf?"), BOX_LOCATIONS.map((loc) => /* @__PURE__ */ React.createElement("option", { key: loc, value: loc }, loc)))), d.to && d.to !== "__shelf__" && d.to !== "__scrap__" && (() => {
         const cases = openCasesForOrder(data, d.to, r.productSize);
-        return /* @__PURE__ */ React.createElement("div", { style: { width: 170 } }, /* @__PURE__ */ React.createElement(Select, { value: d.caseNum || "", onChange: (e) => setDraft(r, { caseNum: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Case: let the app decide"), cases.map((c2) => /* @__PURE__ */ React.createElement("option", { key: c2.caseNum, value: c2.caseNum }, "Case ", c2.caseNum, " \u2014 ", c2.planned, " of ", c2.capacity, c2.sameSize ? " \xB7 same size" : ""))));
+        return /* @__PURE__ */ React.createElement("div", { style: { width: 170 } }, /* @__PURE__ */ React.createElement(Select, { value: d.caseNum || "", onChange: (e) => setDraft(r, { caseNum: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Case: let the app decide"), cases.map((c2) => /* @__PURE__ */ React.createElement("option", { key: c2.caseNum, value: c2.caseNum }, "Case ", c2.caseNum, " \u2014 ", c2.planned, " of ", c2.capacity, c2.sameSize ? " \xB7 same size" : "", c2.why ? ` \xB7 ${c2.why}` : ""))));
       })(), d.to === "__scrap__" && /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 200px", minWidth: 0 } }, /* @__PURE__ */ React.createElement(TextInput, { value: d.reason || "", placeholder: "Why? (goes on the NCR)", onChange: (e) => setDraft(r, { reason: e.target.value }) })), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => d.to === "__scrap__" ? scrap(r) : move(r), disabled: !d.to }, d.to === "__scrap__" ? "Scrap" : "Move")), d.qty !== "" && Number(d.qty) > 0 && Number(d.qty) < have && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, have - Number(d.qty), " will stay where ", have - Number(d.qty) === 1 ? "it is" : "they are", "."));
     }), error && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: RED } }, error));
   }
@@ -7921,7 +7939,11 @@ This changes the order quantities. It is recorded in the change log and can be r
           code: order?.id || picks[0] && picks[0].pickedFor,
           state: order || picks.length ? "ok" : "idle",
           sub: order ? order.customer : picks.length ? "picked" : "not allocated to an order",
-          detail: order?.stage
+          detail: (() => {
+            if (!order) return null;
+            const cases = casesHoldingBox(data, order.id, q);
+            return cases.length ? `${order.stage} \xB7 case${cases.length === 1 ? "" : "s"} ${caseRangeLabel(cases)}` : order.stage;
+          })()
         }
       )), overDrawn && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2 px-3 py-2 rounded", style: { background: "#FEF3F1", color: RED } }, "This box used ", boxUsed, "m but the reel it names only held ", glueMatch.meterage, "m. The real source reel probably wasn't recorded \u2014 worth checking the paper record for that day."));
     })(), bondingRowsForCode.length > 0 && /* @__PURE__ */ React.createElement(MoveBoxPanel, { rows: bondingRowsForCode, data, setData }), /* @__PURE__ */ React.createElement(
