@@ -300,15 +300,11 @@
     body.print-case-map aside,
     body.print-case-map header { display: none !important; }
 
-    /* Same treatment for the shipping manifest. It goes to a carrier, so it
-       must never come out with a pick sheet or the app's own packing list
-       stapled behind it — and both of those are `print-only` blocks that
-       would otherwise print alongside it if their state happened to be set. */
-    body.print-manifest .manifest-sheet { display: block !important; }
-    body.print-manifest main > *:not(.manifest-sheet),
-    body.print-manifest aside,
-    body.print-manifest header { display: none !important; }
-    body.print-manifest .print-only:not(.manifest-sheet) { display: none !important; }
+    /* The shipping manifest is printed through its own iframe, not from this
+       page — see printShippingManifest(). A body-class approach was tried and
+       failed on real paper: window.print() returns immediately on Safari, the
+       cleanup timer stripped the class before the preview rendered, and a pick
+       list still mounted from an earlier print came out above the manifest. */
 
     /* html defaults to filling the full browser viewport height (matched
        directly against a real print — confirmed this exact behaviour is
@@ -721,7 +717,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-03.18";
+  var APP_VERSION = "2026-09-03.20";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -2357,6 +2353,123 @@
       }
     }
     return out;
+  }
+  function printShippingManifest(order, setData) {
+    const m = order && order.shippingManifest;
+    if (!m) return false;
+    const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+    const n2 = (v) => (Number(v) || 0).toFixed(2);
+    const palletRows = (Array.isArray(m.pallets) ? m.pallets : []).map((p) => `<tr>
+      <td class="l">${esc(p.label)}</td>
+      <td class="l">${esc(caseRangeLabel(p.cases))}</td>
+      <td class="r">${n2(p.goods)}</td>
+      <td class="r">${Number(p.tare) > 0 ? n2(p.tare) : "&mdash;"}</td>
+      <td class="r b">${n2(p.gross)}</td>
+    </tr>`).join("");
+    const palletBlock = palletRows ? `
+    <h2>Pallets</h2>
+    <table>
+      <thead><tr><th>Pallet</th><th>Cases</th><th class="r">Goods kg</th><th class="r">Pallet kg</th><th class="r">Gross kg</th></tr></thead>
+      <tbody>${palletRows}</tbody>
+      <tfoot><tr>
+        <td class="l b">Total</td><td class="l">${m.caseRows.length} case${m.caseRows.length === 1 ? "" : "s"}</td>
+        <td class="r b">${n2(m.goodsWeight)}</td><td class="r b">${n2(m.tareWeight)}</td><td class="r b">${n2(m.grossWeight)}</td>
+      </tr></tfoot>
+    </table>` : `<p class="note">Not shipped on pallets &mdash; goods weight ${n2(m.totalWeight)} kg.</p>`;
+    const caseRows = m.caseRows.map((c) => {
+      const rows = c.contributions || [];
+      if (!rows.length) return "";
+      return rows.map((r, i) => `<tr class="${i === 0 ? "first" : ""}">
+      <td class="c b">${i === 0 ? esc(c.caseNum) : ""}</td>
+      <td class="l">${esc(r.spec)}</td>
+      <td class="r">${esc(r.qty)}</td>
+      <td class="r">${i === 0 ? c.weight ? n2(c.weight) : "&mdash;" : ""}</td>
+      <td class="l mono">${esc(r.boxNumber || "")}</td>
+      <td class="l mono">${esc(r.batchCode || "")}</td>
+    </tr>`).join("");
+    }).join("");
+    const smallBlock = m.smallRows && m.smallRows.length ? `
+    <h2>Other items</h2>
+    <table>
+      <thead><tr><th>Product</th><th class="r">Qty</th><th>Box / reel</th><th>Batch</th></tr></thead>
+      <tbody>${m.smallRows.map((r) => `<tr>
+        <td class="l">${esc(r.spec)}</td><td class="r">${esc(r.qty)}</td>
+        <td class="l mono">${esc(r.boxNumbers || "")}</td><td class="l mono">${esc(r.batchCodes || "")}</td>
+      </tr>`).join("")}</tbody>
+    </table>` : "";
+    const totalQty = m.caseRows.reduce((t, c) => t + (c.contributions || []).reduce((s, r) => s + (Number(r.qty) || 0), 0), 0);
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Shipping manifest ${esc(order.id)}</title>
+  <style>
+    @page { margin: 14mm; }
+    body { font-family: -apple-system, Arial, sans-serif; color: #000; margin: 0; font-size: 10pt; }
+    h1 { font-size: 16pt; margin: 0 0 1px; }
+    h2 { font-size: 10pt; text-transform: uppercase; letter-spacing: .06em; margin: 14px 0 4px; color: #333; }
+    .addr { font-size: 9.5pt; color: #333; white-space: pre-line; margin-bottom: 6px; }
+    .meta { font-size: 9.5pt; border-top: 1px solid #000; border-bottom: 1px solid #000; padding: 5px 0; margin-bottom: 4px; }
+    .meta span { margin-right: 18px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border-bottom: 1px solid #bbb; padding: 3px 5px; font-size: 9pt; vertical-align: top; }
+    th { background: #eee; text-align: left; font-size: 8pt; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid #000; }
+    .r { text-align: right; } .c { text-align: center; } .l { text-align: left; }
+    .b { font-weight: 700; }
+    .mono { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 8pt; }
+    tr.first td { border-top: 1.5px solid #000; }
+    tfoot td { border-top: 1.5px solid #000; background: #f4f4f4; }
+    tr { page-break-inside: avoid; }
+    thead { display: table-header-group; }
+    .note { font-size: 9.5pt; margin: 8px 0; }
+    .foot { margin-top: 16px; font-size: 9pt; }
+    .line { display: inline-block; border-bottom: 1px solid #000; width: 170px; margin-left: 6px; }
+    col.spec { width: 34%; } col.num { width: 7%; } col.wt { width: 10%; } col.code { width: 16%; }
+  </style></head><body>
+    <h1>Shipping manifest</h1>
+    <div style="font-size:12pt;font-weight:700">${esc(order.customer || "")}</div>
+    ${order.address ? `<div class="addr">${esc(order.address)}</div>` : ""}
+    <div class="meta">
+      <span>Order <b>${esc(order.id)}</b></span>
+      ${order.customerRef ? `<span>Their ref <b>${esc(order.customerRef)}</b></span>` : ""}
+      <span>Shipped <b>${esc(order.shippedDate || "")}</b></span>
+      <span>Gross <b>${n2(m.grossWeight ?? m.totalWeight)} kg</b></span>
+    </div>
+    ${palletBlock}
+    <h2>Case contents &mdash; ${m.caseRows.length} case${m.caseRows.length === 1 ? "" : "s"}, ${totalQty} item${totalQty === 1 ? "" : "s"}</h2>
+    <table>
+      <colgroup><col style="width:6%"><col class="spec"><col class="num"><col class="wt"><col class="code"><col class="code"></colgroup>
+      <thead><tr><th class="c">Case</th><th>Product</th><th class="r">Qty</th><th class="r">Weight kg</th><th>Box / reel</th><th>Batch</th></tr></thead>
+      <tbody>${caseRows}</tbody>
+    </table>
+    ${smallBlock}
+    <div class="foot">Checked by<span class="line"></span> &nbsp; Date<span class="line" style="width:110px"></span></div>
+  </body></html>`;
+    let iframe = document.getElementById("manifest-print-frame");
+    if (!iframe) {
+      iframe = document.createElement("iframe");
+      iframe.id = "manifest-print-frame";
+      iframe.style.position = "fixed";
+      iframe.style.right = "0";
+      iframe.style.bottom = "0";
+      iframe.style.width = "0";
+      iframe.style.height = "0";
+      iframe.style.border = "0";
+      document.body.appendChild(iframe);
+    }
+    const doc = iframe.contentWindow.document;
+    doc.open();
+    doc.write(html);
+    doc.close();
+    if (typeof setData === "function") {
+      setData((prev) => ({ ...prev, ...appendLog(prev, {
+        action: "print",
+        entity: "order",
+        entityId: order.id,
+        summary: `Printed shipping manifest for ${order.id} (${order.customer})`
+      }) }));
+    }
+    setTimeout(() => {
+      iframe.contentWindow.focus();
+      iframe.contentWindow.print();
+    }, 150);
+    return true;
   }
   function reelCapacityWarning(batchCode, amountMade, metersPerBox, glueLineBatches, bondingRuns, excludeId) {
     const code = (batchCode || "").trim();
@@ -4001,6 +4114,7 @@ Here's the order:`;
       done: false,
       cases: [{ caseNum: (Number(order.startingCaseNum) || 0) + 1, boxes: [] }]
     });
+    const [printingPick, setPrintingPick] = useState(false);
     const [pendingPick, setPendingPick, pickDraftRestored, discardPickDraft] = useDraftState("pendingPick", { orderId: null, items: [] }, { orderId: null, items: [] });
     const pendingPickFor = pendingPick.orderId;
     const pendingPickItems = pendingPick.items;
@@ -4590,22 +4704,24 @@ Here's the order:`;
       return () => clearTimeout(t);
     }, [printJob]);
     useEffect(() => {
+      if (!printingPick) return;
+      const done = () => setPrintingPick(false);
+      window.addEventListener("afterprint", done);
+      const fallback = setTimeout(done, 6e4);
+      const t = setTimeout(() => window.print(), 80);
+      return () => {
+        window.removeEventListener("afterprint", done);
+        clearTimeout(fallback);
+        clearTimeout(t);
+      };
+    }, [printingPick]);
+    useEffect(() => {
       if (!shippedPrintJob) return;
       const t = setTimeout(() => {
-        document.body.classList.add("print-manifest");
-        printAndLog(
-          setData,
-          "shipping manifest",
-          "order",
-          shippedPrintJob.order.id,
-          `Printed shipping manifest for ${shippedPrintJob.order.id} (${shippedPrintJob.order.customer})`
-        );
-        setTimeout(() => document.body.classList.remove("print-manifest"), 1e3);
-      }, 150);
-      return () => {
-        clearTimeout(t);
-        document.body.classList.remove("print-manifest");
-      };
+        printShippingManifest(shippedPrintJob.order, setData);
+        setShippedPrintJob(null);
+      }, 60);
+      return () => clearTimeout(t);
     }, [shippedPrintJob]);
     function renderOrderDetail() {
       const o = orders.find((x) => x.id === expanded) || allOrders.find((x) => x.id === expanded);
@@ -4738,7 +4854,7 @@ Here's the order:`;
             ref = r.ref;
             return r.data;
           });
-          setTimeout(() => window.print(), 0);
+          setPrintingPick(true);
         } }, "\u{1F5A8} Print pick list"), /* @__PURE__ */ React.createElement(Button, { variant: pickByPhone ? "accent" : "ghost", onClick: () => setPickByPhone(!pickByPhone) }, "\u{1F4F1} ", pickByPhone ? "Back to full view" : "Pick by phone"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setCustomizingPick(!customizingPick) }, customizingPick ? "Done customizing" : "\u270E Customize pick list"), anyAdjusted && /* @__PURE__ */ React.createElement("span", { className: "text-sm font-semibold", style: { color: AMBER } }, "Confirmed total ", totalConfirmed, " differs from proposed ", totalProposed), damagedCount > 0 && /* @__PURE__ */ React.createElement("span", { className: "text-sm font-semibold", style: { color: RED } }, damagedCount, " box", damagedCount === 1 ? "" : "es", " marked damaged \u2014 written off, not allocated")), customizingPick && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, `Remove anything you don't want, or use "+ Add another box" on a product if you find you're short \u2014 it goes straight back to unpicked stock either way, nothing's touched until you Confirm.`), pickByPhone ? /* @__PURE__ */ React.createElement(
           PickByPhoneView,
           {
@@ -4863,7 +4979,7 @@ Here's the order:`;
         title: mode === "completed" ? "Completed Orders" : "Orders",
         subtitle: mode === "completed" ? "Shipped orders live here, out of the way of active planning. Change Stage on any order below to bring it back to active." : "Every line item belongs to a real order \u2014 there's no such thing as an Order ID typo here."
       }
-    ), /* @__PURE__ */ React.createElement("datalist", { id: "size-catalog" }, (PRODUCT_RANGES[newLine.range] || []).map((s) => /* @__PURE__ */ React.createElement("option", { key: s, value: s }))), mode !== "completed" && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-5", style: { color: INK_MUTED } }, "Looking to add a new order? That's moved to ", /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 600 } }, "New Orders"), " in the sidebar \u2014 this screen is for orders already on the books."), expanded ? renderOrderDetail() : renderOrdersList()), pendingPickFor && (() => {
+    ), /* @__PURE__ */ React.createElement("datalist", { id: "size-catalog" }, (PRODUCT_RANGES[newLine.range] || []).map((s) => /* @__PURE__ */ React.createElement("option", { key: s, value: s }))), mode !== "completed" && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-5", style: { color: INK_MUTED } }, "Looking to add a new order? That's moved to ", /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 600 } }, "New Orders"), " in the sidebar \u2014 this screen is for orders already on the books."), expanded ? renderOrderDetail() : renderOrdersList()), pendingPickFor && printingPick && (() => {
       const order = orders.find((o) => o.id === pendingPickFor) || allOrders.find((o) => o.id === pendingPickFor);
       const orderItemsForPrint = order ? orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description)) : [];
       const allMatchingForPrint = order ? matchingBoxesFor(order) : [];
@@ -4883,13 +4999,7 @@ Here's the order:`;
           return list.map((c) => `${c.qty}\u2192#${c.caseNum}`).join(", ");
         })())));
       }))));
-    })(), printJob && /* @__PURE__ */ React.createElement("div", { className: "print-only" }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Georgia, serif", fontWeight: 700, fontSize: 22, color: NAVY } }, "Pick Sheet \u2014 ", printJob.order.customer), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 2 } }, "Order ", printJob.order.id, " \xB7 ", (/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", year: "numeric", month: "long", day: "numeric" })), /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { marginTop: 16 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, { w: 140 }, "Box number"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Location"), /* @__PURE__ */ React.createElement(Th, { w: 130 }, "Batch code"), /* @__PURE__ */ React.createElement(Th, null, "Product size"), /* @__PURE__ */ React.createElement(Th, { w: 100 }, "Case #"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Qty"))), /* @__PURE__ */ React.createElement("tbody", null, printJob.boxes.map((b, i) => /* @__PURE__ */ React.createElement("tr", { key: b.id, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, b.boxNumber)), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, b.location || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, b.baselineBatchCode || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, b.productSize), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, b.cases && b.cases.length ? b.cases.join(", ") : "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, b.available)))))), shippedPrintJob && shippedPrintJob.order.shippingManifest && (() => {
-      const o = shippedPrintJob.order;
-      const m = o.shippingManifest;
-      return /* @__PURE__ */ React.createElement("div", { className: "print-only manifest-sheet" }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Georgia, serif", fontWeight: 700, fontSize: 22, color: NAVY } }, "Shipping manifest \u2014 ", o.customer), o.address && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, whiteSpace: "pre-line", marginTop: 2 } }, o.address), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 24, marginTop: 10, fontSize: 13 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Order: "), /* @__PURE__ */ React.createElement("b", null, o.id)), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Shipped: "), /* @__PURE__ */ React.createElement("b", null, o.shippedDate || "\u2014")), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Gross weight: "), /* @__PURE__ */ React.createElement("b", null, Number(m.grossWeight ?? m.totalWeight).toFixed(2), " kg"))), Array.isArray(m.pallets) && m.pallets.length > 0 && /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { marginTop: 14 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, { w: 90 }, "Pallet"), /* @__PURE__ */ React.createElement(Th, null, "Cases"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Goods kg"), /* @__PURE__ */ React.createElement(ThR, { w: 80 }, "Pallet kg"), /* @__PURE__ */ React.createElement(ThR, { w: 95 }, "Gross kg"))), /* @__PURE__ */ React.createElement("tbody", null, m.pallets.map((p, i) => /* @__PURE__ */ React.createElement("tr", { key: p.label || i, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 font-medium" }, p.label), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, caseRangeLabel(p.cases))), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, Number(p.goods || 0).toFixed(2)), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, p.tare > 0 ? Number(p.tare).toFixed(2) : "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-semibold" }, Number(p.gross || 0).toFixed(2)))), /* @__PURE__ */ React.createElement("tr", { style: { borderTop: `2px solid ${NAVY}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-2 font-semibold" }, "Total"), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-2" }, m.caseRows.length, " case", m.caseRows.length === 1 ? "" : "s"), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-semibold" }, Number(m.goodsWeight || 0).toFixed(2)), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-semibold" }, Number(m.tareWeight || 0).toFixed(2)), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-bold" }, Number(m.grossWeight || 0).toFixed(2))))), /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { marginTop: 16 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, { w: 60 }, "Case #"), /* @__PURE__ */ React.createElement(Th, null, "Product spec"), /* @__PURE__ */ React.createElement(ThR, { w: 60 }, "Qty"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Weight kg"), /* @__PURE__ */ React.createElement(Th, { w: 150 }, "Box / reel number(s)"), /* @__PURE__ */ React.createElement(Th, { w: 140 }, "Batch code(s)"))), /* @__PURE__ */ React.createElement("tbody", null, m.caseRows.flatMap(
-        (c, ci) => c.contributions.map((row, ri) => /* @__PURE__ */ React.createElement("tr", { key: `${c.caseNum}-${ri}`, className: ci % 2 ? "" : "bg-black/[0.015]", style: { borderTop: ri === 0 ? `2px solid ${NAVY}` : `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-3" }, ri === 0 && /* @__PURE__ */ React.createElement(Mono, null, c.caseNum)), /* @__PURE__ */ React.createElement("td", { className: "px-3 no-wrap" }, /* @__PURE__ */ React.createElement(SpecWithRef, { spec: row.spec, customerRef: row.customerRef })), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, row.qty), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, ri === 0 ? c.weight ? c.weight.toFixed(2) : "\u2014" : ""), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, row.boxNumber || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, row.batchCode || "\u2014"))))
-      ), /* @__PURE__ */ React.createElement("tr", { style: { borderTop: `2px solid ${NAVY}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 font-semibold", colSpan: 3, style: { textAlign: "right", color: INK_MUTED } }, "Goods weight (cases only)"), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-bold" }, m.totalWeight.toFixed(2)), /* @__PURE__ */ React.createElement("td", null), /* @__PURE__ */ React.createElement("td", null)))), m.smallRows.length > 0 && /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { marginTop: 16 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product spec"), /* @__PURE__ */ React.createElement(ThR, { w: 80 }, "Qty"), /* @__PURE__ */ React.createElement(Th, { w: 150 }, "Box / reel number(s)"), /* @__PURE__ */ React.createElement(Th, { w: 140 }, "Batch code(s)"))), /* @__PURE__ */ React.createElement("tbody", null, m.smallRows.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.id || i, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 no-wrap" }, r.spec), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.qty), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.boxNumbers || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.batchCodes || "\u2014")))))));
-    })());
+    })(), printJob && /* @__PURE__ */ React.createElement("div", { className: "print-only" }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Georgia, serif", fontWeight: 700, fontSize: 22, color: NAVY } }, "Pick Sheet \u2014 ", printJob.order.customer), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 2 } }, "Order ", printJob.order.id, " \xB7 ", (/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", year: "numeric", month: "long", day: "numeric" })), /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { marginTop: 16 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, { w: 140 }, "Box number"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Location"), /* @__PURE__ */ React.createElement(Th, { w: 130 }, "Batch code"), /* @__PURE__ */ React.createElement(Th, null, "Product size"), /* @__PURE__ */ React.createElement(Th, { w: 100 }, "Case #"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Qty"))), /* @__PURE__ */ React.createElement("tbody", null, printJob.boxes.map((b, i) => /* @__PURE__ */ React.createElement("tr", { key: b.id, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, b.boxNumber)), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, b.location || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, b.baselineBatchCode || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, b.productSize), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, b.cases && b.cases.length ? b.cases.join(", ") : "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, b.available)))))));
   }
   function NewOrdersView({ data, setData, jumpToOrder }) {
     const allOrders = data.orders;
