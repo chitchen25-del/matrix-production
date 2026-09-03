@@ -717,7 +717,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-03.21";
+  var APP_VERSION = "2026-09-03.22";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -2512,6 +2512,63 @@
     });
     others.sort((a, b) => a.orderId.localeCompare(b.orderId));
     return { needing, others };
+  }
+  function moveBoxRow(data, rowId, dest) {
+    const runs = data.bondingRuns || [];
+    const row = runs.find((r) => r.id === rowId && !r.deleted);
+    if (!row) return { error: "That box row no longer exists." };
+    const fromOrder = row.workNumber || null;
+    const have = fromOrder ? Number(row.onOrderQty) || 0 : Number(row.toStock) || 0;
+    if (have <= 0) return { error: "There is nothing on this row to move." };
+    const toOrder = dest.toOrderId || null;
+    const qty = dest.qty == null || dest.qty === "" ? have : Math.round(Number(dest.qty) || 0);
+    if (qty <= 0) return { error: "Quantity must be above zero." };
+    if (qty > have) return { error: `Only ${have} on this row \u2014 can't move ${qty}.` };
+    if (toOrder === fromOrder) return { error: fromOrder ? "It's already on that order." : "It's already on the shelf." };
+    if (toOrder && !(data.orders || []).some((o) => o.id === toOrder && !o.deleted)) return { error: `Order ${toOrder} not found.` };
+    if (!toOrder && !String(dest.location || row.location || "").trim()) return { error: "Pick a shelf location for boxes going back to stock." };
+    const customer = toOrder ? (data.orders || []).find((o) => o.id === toOrder)?.customer || "" : "";
+    const moved = {
+      ...row,
+      id: uid("br"),
+      workNumber: toOrder,
+      customerName: customer,
+      onOrderQty: toOrder ? qty : 0,
+      toStock: toOrder ? 0 : qty,
+      amountMade: qty,
+      location: toOrder ? "" : dest.location || row.location || "",
+      movedFrom: row.id
+    };
+    let nextRuns;
+    if (qty === have) {
+      nextRuns = runs.map((r) => r.id === rowId ? { ...moved, id: r.id, movedFrom: void 0 } : r);
+    } else {
+      nextRuns = runs.map((r) => r.id === rowId ? {
+        ...r,
+        onOrderQty: fromOrder ? (Number(r.onOrderQty) || 0) - qty : r.onOrderQty,
+        toStock: fromOrder ? r.toStock : (Number(r.toStock) || 0) - qty,
+        amountMade: Math.max(0, (Number(r.amountMade) || 0) - qty)
+      } : r).concat([moved]);
+    }
+    let working = { ...data, bondingRuns: nextRuns };
+    const spec = row.productSize;
+    const box = row.boxNumber;
+    const facts = [];
+    if (fromOrder) facts.push({ kind: "unallocated", boxNumber: box, spec, qty, orderId: fromOrder, source: "move", sourceId: row.id });
+    if (toOrder) facts.push({ kind: "allocated", boxNumber: box, spec, qty, orderId: toOrder, source: "move", sourceId: row.id });
+    working = recordMovements(working, facts);
+    const fromLabel = fromOrder ? `order ${fromOrder}` : `shelf${row.location ? ` ${row.location}` : ""}`;
+    const toLabel = toOrder ? `order ${toOrder}` : `shelf ${moved.location}`;
+    const summary = `Moved ${qty} \xD7 ${box || row.id} from ${fromLabel} to ${toLabel}${qty < have ? ` (${have - qty} left where it was)` : ""}`;
+    working = { ...working, ...appendLog(working, {
+      action: "stock_adjustment",
+      entity: "bondingRun",
+      entityId: row.id,
+      summary,
+      before: { workNumber: fromOrder, onOrderQty: row.onOrderQty, toStock: row.toStock, location: row.location || "" },
+      after: { workNumber: toOrder, qty, location: moved.location, partial: qty < have }
+    }) };
+    return { patch: working, summary, qty, partial: qty < have };
   }
   function reelCapacityWarning(batchCode, amountMade, metersPerBox, glueLineBatches, bondingRuns, excludeId) {
     const code = (batchCode || "").trim();
@@ -7440,7 +7497,7 @@ This changes the order quantities. It is recorded in the change log and can be r
       onAdded && onAdded(batchNumber);
     } }, "Add it")));
   }
-  function MoveBoxPanel({ data, setData, boxNumber, spec, available }) {
+  function MoveOtherStockPanel({ data, setData, boxNumber, spec, available }) {
     const [dest, setDest] = useState("");
     const [orderId, setOrderId] = useState("");
     const [caseNum, setCaseNum] = useState("");
@@ -7543,6 +7600,104 @@ This changes the order quantities. It is recorded in the change log and can be r
       setCaseNum("");
     } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose\u2026"), openOrders.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.id, value: o.id }, o.id, " \u2014 ", o.customer, o.priority ? ` (P${o.priority})` : "")))), orderId && /* @__PURE__ */ React.createElement("div", { style: { width: 230 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Case"), /* @__PURE__ */ React.createElement(Select, { value: caseNum, onChange: (e) => setCaseNum(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "To the order, no case yet"), caseOptions.map((c) => /* @__PURE__ */ React.createElement("option", { key: c.caseNum, value: c.caseNum }, "Case ", c.caseNum, " \u2014 ", c.room, " space", c.room === 1 ? "" : "s", c.sameSize ? " \xB7 same size already in it" : ""))))), dest === "stock" && /* @__PURE__ */ React.createElement("div", { style: { width: 160 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Shelf"), /* @__PURE__ */ React.createElement(Select, { value: location2, onChange: (e) => setLocation(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose\u2026"), BOX_LOCATIONS.map((loc) => /* @__PURE__ */ React.createElement("option", { key: loc, value: loc }, loc)))), dest === "scrapped" && /* @__PURE__ */ React.createElement("div", { style: { width: 320 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Why"), /* @__PURE__ */ React.createElement(TextInput, { value: reason, onChange: (e) => setReason(e.target.value), placeholder: "Crushed in transit, wrong pt, damaged on the line\u2026" })), dest && /* @__PURE__ */ React.createElement("div", { style: { width: 110 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "How many"), /* @__PURE__ */ React.createElement(TextInput, { type: "number", inputMode: "numeric", value: qty, onChange: (e) => setQty(e.target.value) })), dest && /* @__PURE__ */ React.createElement(Button, { onClick: save, disabled: !canSave }, "Record it")));
   }
+  function MoveBoxPanel({ rows, data, setData }) {
+    const [drafts, setDrafts] = useState({});
+    const [done, setDone] = useState(null);
+    const [error, setError] = useState(null);
+    const live = (rows || []).filter((r) => !r.deleted);
+    const scrap = (r) => {
+      const d = draftFor(r);
+      const have = holds(r);
+      const n = d.qty === "" ? have : Math.round(Number(d.qty) || 0);
+      if (n <= 0 || n > have) {
+        setError(`Scrap between 1 and ${have}.`);
+        return;
+      }
+      if (!String(d.reason || "").trim()) {
+        setError("Say why it's being scrapped \u2014 that's what the NCR will need.");
+        return;
+      }
+      if (!window.confirm(`Scrap ${n} \xD7 ${r.boxNumber}? Reason: ${d.reason.trim()}`)) return;
+      setData((prev) => {
+        let next = recordMovement(prev, { kind: "scrapped", boxNumber: r.boxNumber, spec: r.productSize, qty: n, orderId: r.workNumber || null, source: "move", note: d.reason.trim() });
+        next = { ...next, bondingRuns: (next.bondingRuns || []).map((x) => x.id === r.id ? {
+          ...x,
+          amountMade: Math.max(0, (Number(x.amountMade) || 0) - n),
+          onOrderQty: x.workNumber ? Math.max(0, (Number(x.onOrderQty) || 0) - n) : x.onOrderQty,
+          toStock: x.workNumber ? x.toStock : Math.max(0, (Number(x.toStock) || 0) - n)
+        } : x) };
+        next = raiseIssue(next, { kind: "other", boxNumber: r.boxNumber, summary: `${n} of ${r.boxNumber} scrapped`, detail: d.reason.trim() });
+        return { ...next, ...appendLog(next, {
+          action: "stock_adjustment",
+          entity: "bondingRun",
+          entityId: r.id,
+          summary: `Scrapped ${n} \xD7 ${r.boxNumber} \u2014 ${d.reason.trim()}`,
+          before: { amountMade: r.amountMade, onOrderQty: r.onOrderQty, toStock: r.toStock },
+          after: { scrapped: n }
+        }) };
+      });
+      setDone(`Scrapped ${n} \xD7 ${r.boxNumber}`);
+      setDrafts((x) => {
+        const c = { ...x };
+        delete c[r.id];
+        return c;
+      });
+    };
+    if (!live.length) return null;
+    const draftFor = (r) => drafts[r.id] || { to: "", qty: "", location: "", reason: "" };
+    const setDraft = (r, patch) => {
+      setError(null);
+      setDrafts((d) => ({ ...d, [r.id]: { ...draftFor(r), ...patch } }));
+    };
+    const holds = (r) => r.workNumber ? Number(r.onOrderQty) || 0 : Number(r.toStock) || 0;
+    const orderName = (id) => (data.orders || []).find((o) => o.id === id)?.customer || "";
+    const move = (r) => {
+      const d = draftFor(r);
+      if (!d.to) {
+        setError("Pick where it's going.");
+        return;
+      }
+      if (d.to === "__scrap__") {
+        scrap(r);
+        return;
+      }
+      const toOrderId = d.to === "__shelf__" ? null : d.to;
+      const dest = { toOrderId, qty: d.qty === "" ? holds(r) : d.qty, location: d.location || "" };
+      const trial = moveBoxRow(data, r.id, dest);
+      if (trial.error) {
+        setError(trial.error);
+        return;
+      }
+      if (!window.confirm(`${trial.summary}?`)) return;
+      setData((prev) => {
+        const res = moveBoxRow(prev, r.id, dest);
+        return res.error ? prev : res.patch;
+      });
+      setDone(trial.summary);
+      setDrafts((x) => {
+        const n = { ...x };
+        delete n[r.id];
+        return n;
+      });
+    };
+    return /* @__PURE__ */ React.createElement(Panel, { className: "no-print p-4 mb-5" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: INK_MUTED } }, "MOVE THIS BOX"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED } }, "Where it is now, and where you want it. Part of it or all of it \u2014 the rest stays put."), done && /* @__PURE__ */ React.createElement("div", { className: "mb-3 px-3 py-2", style: { background: "rgba(63,125,92,0.10)", border: `1px solid ${GREEN}`, borderRadius: 5, fontSize: 13 } }, "\u2713 ", done), live.map((r) => {
+      const d = draftFor(r);
+      const have = holds(r);
+      if (have <= 0) return null;
+      const ranked = ordersNeedingSpec(data, r.productSize, r.workNumber ? [r.workNumber] : []);
+      const toShelf = d.to === "__shelf__";
+      return /* @__PURE__ */ React.createElement("div", { key: r.id, className: "mb-3 pb-3", style: { borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline gap-2 flex-wrap mb-2", style: { fontSize: 14 } }, /* @__PURE__ */ React.createElement("b", null, have), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, have === 1 ? "box" : "boxes", " currently"), r.workNumber ? /* @__PURE__ */ React.createElement("span", null, "on ", /* @__PURE__ */ React.createElement("b", null, r.workNumber), orderName(r.workNumber) ? ` \u2014 ${orderName(r.workNumber)}` : "") : /* @__PURE__ */ React.createElement("span", null, "on the shelf", r.location ? /* @__PURE__ */ React.createElement(React.Fragment, null, " at ", /* @__PURE__ */ React.createElement("b", null, r.location)) : /* @__PURE__ */ React.createElement("span", { style: { color: AMBER } }, " (no location recorded)"))), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 items-center flex-wrap" }, /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 220px", minWidth: 0 } }, /* @__PURE__ */ React.createElement(Select, { value: d.to, onChange: (e) => setDraft(r, { to: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Move to\u2026"), r.workNumber && /* @__PURE__ */ React.createElement("option", { value: "__shelf__" }, "Back to the shelf"), /* @__PURE__ */ React.createElement("option", { value: "__scrap__" }, "Scrap (damaged / unusable)"), ranked.needing.length > 0 && /* @__PURE__ */ React.createElement("optgroup", { label: "Orders needing this size" }, ranked.needing.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.orderId, value: o.orderId }, o.customer, " \xB7 ", o.orderId, " \u2014 needs ", o.needs, o.priority != null ? ` \xB7 P${o.priority}` : "", o.dueDate ? ` \xB7 due ${o.dueDate}` : ""))), /* @__PURE__ */ React.createElement("optgroup", { label: "Every other open order" }, ranked.others.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.orderId, value: o.orderId }, o.customer, " \xB7 ", o.orderId))))), /* @__PURE__ */ React.createElement("div", { style: { width: 80 } }, /* @__PURE__ */ React.createElement(
+        TextInput,
+        {
+          type: "number",
+          value: d.qty,
+          placeholder: String(have),
+          style: { textAlign: "right" },
+          onChange: (e) => setDraft(r, { qty: e.target.value })
+        }
+      )), toShelf && /* @__PURE__ */ React.createElement("div", { style: { width: 130 } }, /* @__PURE__ */ React.createElement(Select, { value: d.location, onChange: (e) => setDraft(r, { location: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Which shelf?"), BOX_LOCATIONS.map((loc) => /* @__PURE__ */ React.createElement("option", { key: loc, value: loc }, loc)))), d.to === "__scrap__" && /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 200px", minWidth: 0 } }, /* @__PURE__ */ React.createElement(TextInput, { value: d.reason || "", placeholder: "Why? (goes on the NCR)", onChange: (e) => setDraft(r, { reason: e.target.value }) })), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => d.to === "__scrap__" ? scrap(r) : move(r), disabled: !d.to }, d.to === "__scrap__" ? "Scrap" : "Move")), d.qty !== "" && Number(d.qty) > 0 && Number(d.qty) < have && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, have - Number(d.qty), " will stay where ", have - Number(d.qty) === 1 ? "it is" : "they are", "."));
+    }), error && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: RED } }, error));
+  }
   function BoxHistoryView({ data, setData, initialQuery }) {
     const { bondingRuns, glueLineBatches, extrusion1, extrusion2, stockPicks, orders } = data;
     const otherStock = data.otherStock || [];
@@ -7559,6 +7714,7 @@ This changes the order quantities. It is recorded in the change log and can be r
     ])].sort();
     const q = String(query || "").trim();
     const bondingMatch = q ? bondingRuns.find((r) => r.boxNumber === q) : null;
+    const bondingRowsForCode = q ? bondingRuns.filter((r) => r.boxNumber === q && !r.deleted) : [];
     const otherStockMatch = q ? otherStock.find((r) => r.boxNumber === q) : null;
     const directGlueMatch = !bondingMatch && q ? glueLineBatches.find((g) => g.batchNumber === q) : null;
     const directExtrusionMatch1 = !bondingMatch && q ? extrusion1.find((e) => e.batchNumber === q) : null;
@@ -7635,8 +7791,8 @@ This changes the order quantities. It is recorded in the change log and can be r
     )), !q && noCodeMode && /* @__PURE__ */ React.createElement(Panel, { className: "p-5 mb-5" }, /* @__PURE__ */ React.createElement(AddBoxOrReelChoice, { data, setData, query: "", onAdded: (v) => {
       setNoCodeMode(false);
       setQuery(v || "");
-    } })), /* @__PURE__ */ React.createElement("datalist", { id: "box-history-list" }, allBoxCodes.map((b) => /* @__PURE__ */ React.createElement("option", { key: b, value: b }))), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5" }, /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 320 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Box code"), /* @__PURE__ */ React.createElement(TextInput, { list: "box-history-list", value: query, placeholder: "e.g. BOX-101", onChange: (e) => setQuery(e.target.value) }))), q && !found && sizeMatch && /* @__PURE__ */ React.createElement(SizeWhereabouts, { result: sizeMatch }), q && !found && !sizeMatch && /* @__PURE__ */ React.createElement(Panel, { className: "p-5" }, /* @__PURE__ */ React.createElement("div", { className: "text-center mb-3", style: { color: INK_MUTED } }, "No record found for ", /* @__PURE__ */ React.createElement(Mono, null, q), "."), typeof setData === "function" && (/^P[BP]L/i.test(q) ? /* @__PURE__ */ React.createElement(AddReelInline, { data, setData, batchNumber: q.toUpperCase(), onAdded: () => setQuery(q.toUpperCase()) }) : /* @__PURE__ */ React.createElement(AddBoxOrReelChoice, { data, setData, query: q, onAdded: (v) => setQuery(v || q) }))), found && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5", style: { borderLeft: `4px solid ${statusColor}` } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: INK_MUTED } }, "STATUS"), /* @__PURE__ */ React.createElement("div", { className: "text-lg font-semibold font-display", style: { color: INK } }, statusLabel)), typeof setData === "function" && (bondingMatch || otherStockMatch) && /* @__PURE__ */ React.createElement(
-      MoveBoxPanel,
+    } })), /* @__PURE__ */ React.createElement("datalist", { id: "box-history-list" }, allBoxCodes.map((b) => /* @__PURE__ */ React.createElement("option", { key: b, value: b }))), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5" }, /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 320 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Box code"), /* @__PURE__ */ React.createElement(TextInput, { list: "box-history-list", value: query, placeholder: "e.g. BOX-101", onChange: (e) => setQuery(e.target.value) }))), q && !found && sizeMatch && /* @__PURE__ */ React.createElement(SizeWhereabouts, { result: sizeMatch }), q && !found && !sizeMatch && /* @__PURE__ */ React.createElement(Panel, { className: "p-5" }, /* @__PURE__ */ React.createElement("div", { className: "text-center mb-3", style: { color: INK_MUTED } }, "No record found for ", /* @__PURE__ */ React.createElement(Mono, null, q), "."), typeof setData === "function" && (/^P[BP]L/i.test(q) ? /* @__PURE__ */ React.createElement(AddReelInline, { data, setData, batchNumber: q.toUpperCase(), onAdded: () => setQuery(q.toUpperCase()) }) : /* @__PURE__ */ React.createElement(AddBoxOrReelChoice, { data, setData, query: q, onAdded: (v) => setQuery(v || q) }))), found && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5", style: { borderLeft: `4px solid ${statusColor}` } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: INK_MUTED } }, "STATUS"), /* @__PURE__ */ React.createElement("div", { className: "text-lg font-semibold font-display", style: { color: INK } }, statusLabel)), typeof setData === "function" && !bondingMatch && otherStockMatch && /* @__PURE__ */ React.createElement(
+      MoveOtherStockPanel,
       {
         data,
         setData,
@@ -7692,7 +7848,7 @@ This changes the order quantities. It is recorded in the change log and can be r
           detail: order?.stage
         }
       )), overDrawn && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2 px-3 py-2 rounded", style: { background: "#FEF3F1", color: RED } }, "This box used ", boxUsed, "m but the reel it names only held ", glueMatch.meterage, "m. The real source reel probably wasn't recorded \u2014 worth checking the paper record for that day."));
-    })(), /* @__PURE__ */ React.createElement(
+    })(), bondingRowsForCode.length > 0 && /* @__PURE__ */ React.createElement(MoveBoxPanel, { rows: bondingRowsForCode, data, setData }), /* @__PURE__ */ React.createElement(
       "button",
       {
         type: "button",
@@ -9800,30 +9956,13 @@ This changes the order quantities. It is recorded in the change log and can be r
     };
     const assignRowToOrder = (row, orderId) => {
       setData((prevData) => {
-        const bondingRuns2 = prevData.bondingRuns;
-        const liveRow = bondingRuns2.find((r) => r.id === row.id) || row;
-        const customerName = orderId ? prevData.orders.find((o) => o.id === orderId)?.customer || "" : "";
-        let updated;
-        if (!orderId) {
-          updated = bondingRuns2.map((r) => r.id === row.id ? { ...r, workNumber: null, customerName, onOrderQty: 0, toStock: Number(r.toStock || 0) + Number(r.onOrderQty || 0) } : r);
-        } else if (!liveRow.workNumber) {
-          const available = Number(liveRow.toStock || 0);
-          updated = bondingRuns2.map((r) => r.id === row.id ? { ...r, workNumber: orderId, customerName, onOrderQty: Number(r.onOrderQty || 0) + available, toStock: 0 } : r);
-        } else {
-          updated = bondingRuns2.map((r) => r.id === row.id ? { ...r, workNumber: orderId, customerName } : r);
+        const live = prevData.bondingRuns.find((r) => r.id === row.id) || row;
+        const res = moveBoxRow(prevData, row.id, { toOrderId: orderId || null, location: live.location || "" });
+        if (res.error) {
+          window.alert(res.error);
+          return prevData;
         }
-        return {
-          ...prevData,
-          bondingRuns: updated,
-          ...appendLog(prevData, {
-            action: "stock_adjustment",
-            entity: "bondingRun",
-            entityId: row.id,
-            summary: orderId ? `Allocated box ${liveRow.boxNumber || row.id} to order ${orderId}` : `Returned box ${liveRow.boxNumber || row.id} to stock`,
-            before: { workNumber: liveRow.workNumber || null, onOrderQty: liveRow.onOrderQty, toStock: liveRow.toStock },
-            after: { workNumber: orderId || null }
-          })
-        };
+        return res.patch;
       });
     };
     const toRun = (f, excludeId) => ({
