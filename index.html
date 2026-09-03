@@ -458,9 +458,6 @@
   function AccentUnderline() {
     return /* @__PURE__ */ React.createElement("div", { style: { width: 44, height: 7, background: ORANGE, clipPath: "polygon(0 0, 85% 0, 100% 100%, 15% 100%)" } });
   }
-  function IconDashboard({ size = 17 }) {
-    return /* @__PURE__ */ React.createElement("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "1.75", strokeLinecap: "round", strokeLinejoin: "round" }, /* @__PURE__ */ React.createElement("rect", { x: "3", y: "3", width: "7", height: "9", rx: "1.5" }), /* @__PURE__ */ React.createElement("rect", { x: "14", y: "3", width: "7", height: "5", rx: "1.5" }), /* @__PURE__ */ React.createElement("rect", { x: "14", y: "12", width: "7", height: "9", rx: "1.5" }), /* @__PURE__ */ React.createElement("rect", { x: "3", y: "16", width: "7", height: "5", rx: "1.5" }));
-  }
   function IconOrders({ size = 17 }) {
     return /* @__PURE__ */ React.createElement("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "1.75", strokeLinecap: "round", strokeLinejoin: "round" }, /* @__PURE__ */ React.createElement("rect", { x: "5", y: "4", width: "14", height: "17", rx: "2" }), /* @__PURE__ */ React.createElement("path", { d: "M9 3h6a1 1 0 0 1 1 1v1H8V4a1 1 0 0 1 1-1Z" }), /* @__PURE__ */ React.createElement("path", { d: "M8 11h8M8 15h8M8 19h5" }));
   }
@@ -717,7 +714,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-03.22";
+  var APP_VERSION = "2026-09-03.24";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -2513,6 +2510,47 @@
     others.sort((a, b) => a.orderId.localeCompare(b.orderId));
     return { needing, others };
   }
+  function openCasesForOrder(data, orderId, spec) {
+    const order = (data.orders || []).find((o) => o.id === orderId && !o.deleted);
+    if (!order) return [];
+    try {
+      const items = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description));
+      const sub = subtractConfirmed(items, data.bondingRuns, order.confirmedCases || {}, order.id);
+      const g = groupAssignedRunsByLineItem(sub.runs, order.id, sub.items);
+      const arranged = arrangeCases({
+        caseRows: buildCombinedCases(g.byLineItem, (Number(order.startingCaseNum) || 0) + 1, liveMapEntries(order.packedOutside)),
+        orphaned: g.orphaned,
+        caseOverrides: order.caseOverrides || {},
+        caseRemovals: order.caseRemovals || {},
+        confirmedCases: order.confirmedCases || {},
+        caseWeights: order.caseWeights || {},
+        palletAssignments: order.palletAssignments || {},
+        startingCaseNum: order.startingCaseNum,
+        bondingRuns: data.bondingRuns,
+        orderId: order.id
+      });
+      return arranged.caseRows.filter((c) => !isCaseClosed(c.caseNum, {
+        confirmedCases: order.confirmedCases || {},
+        caseWeights: order.caseWeights || {},
+        palletAssignments: order.palletAssignments || {},
+        fill: c.contributions.reduce((t, r) => t + (Number(r.qty) || 0), 0),
+        capacity: Number(c.maxSize) || CASE_MAX_SIZE_DEFAULT
+      })).map((c) => {
+        const planned = c.contributions.reduce((t, r) => t + (Number(r.qty) || 0), 0);
+        const cap = Number(c.maxSize) || CASE_MAX_SIZE_DEFAULT;
+        return {
+          caseNum: c.caseNum,
+          planned,
+          capacity: cap,
+          room: cap - planned,
+          sameSize: c.contributions.some((r) => looseSpecMatch(r.spec, spec))
+        };
+      }).sort((a, b) => b.sameSize - a.sameSize || a.caseNum - b.caseNum);
+    } catch (e) {
+      if (typeof console !== "undefined" && console.warn) console.warn("openCasesForOrder failed for " + orderId, e);
+      return [];
+    }
+  }
   function moveBoxRow(data, rowId, dest) {
     const runs = data.bondingRuns || [];
     const row = runs.find((r) => r.id === rowId && !r.deleted);
@@ -2556,9 +2594,14 @@
     const facts = [];
     if (fromOrder) facts.push({ kind: "unallocated", boxNumber: box, spec, qty, orderId: fromOrder, source: "move", sourceId: row.id });
     if (toOrder) facts.push({ kind: "allocated", boxNumber: box, spec, qty, orderId: toOrder, source: "move", sourceId: row.id });
+    const chosenCase = toOrder && dest.caseNum != null && String(dest.caseNum).trim() !== "" ? Number(dest.caseNum) : null;
+    if (chosenCase != null && !isNaN(chosenCase)) {
+      working = { ...working, orders: (working.orders || []).map((o) => o.id === toOrder ? { ...o, caseOverrides: { ...o.caseOverrides || {}, [box]: chosenCase } } : o) };
+      facts.push({ kind: "placed", boxNumber: box, spec, qty, orderId: toOrder, caseNum: chosenCase, source: "move", sourceId: row.id });
+    }
     working = recordMovements(working, facts);
     const fromLabel = fromOrder ? `order ${fromOrder}` : `shelf${row.location ? ` ${row.location}` : ""}`;
-    const toLabel = toOrder ? `order ${toOrder}` : `shelf ${moved.location}`;
+    const toLabel = toOrder ? `order ${toOrder}${chosenCase != null && !isNaN(chosenCase) ? `, case ${chosenCase}` : ""}` : `shelf ${moved.location}`;
     const summary = `Moved ${qty} \xD7 ${box || row.id} from ${fromLabel} to ${toLabel}${qty < have ? ` (${have - qty} left where it was)` : ""}`;
     working = { ...working, ...appendLog(working, {
       action: "stock_adjustment",
@@ -3179,9 +3222,11 @@
       /* @__PURE__ */ React.createElement("span", { className: "font-medium", style: { color: GREEN } }, "100%")
     )), packingReady.length > 6 && /* @__PURE__ */ React.createElement("div", { className: "text-xs pt-1.5", style: { color: INK_MUTED } }, "+", packingReady.length - 6, " more")))), /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-3", style: { color: INK_MUTED, borderTop: `1px solid ${BORDER}`, paddingTop: 20 } }, "BY SIZE"), byCategory.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-sm py-8", style: { color: INK_MUTED } }, "Nothing outstanding across any size right now."), /* @__PURE__ */ React.createElement("div", { className: "grid gap-4", style: { gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" } }, byCategory.map((c) => /* @__PURE__ */ React.createElement(Panel, { key: c.key, className: "p-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between mb-1" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold", style: { color: NAVY } }, c.label), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, c.rows.length, " product", c.rows.length === 1 ? "" : "s", " \xB7 ", c.totalQty, " needed")), /* @__PURE__ */ React.createElement("div", { className: "mb-3" }, c.urgent.map((r) => /* @__PURE__ */ React.createElement("div", { key: r.spec, className: "flex items-center justify-between text-xs py-1", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("span", { className: "no-wrap", style: { maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis" } }, r.spec), /* @__PURE__ */ React.createElement("span", { className: "font-medium" }, r.qty))), c.rows.length > c.urgent.length && /* @__PURE__ */ React.createElement("div", { className: "text-xs pt-1", style: { color: INK_MUTED } }, "+", c.rows.length - c.urgent.length, " more")), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => jumpToProduction(c.key) }, "Print ", c.label)))));
   }
-  function Dashboard({ data, jumpToOrder }) {
+  function Dashboard({ data, jumpToOrder, goTo }) {
+    const [sortBy, setSortBy] = useState("urgent");
+    const [stageFilter, setStageFilter] = useState("all");
     const { lineItems, bondingRuns } = data;
-    const orders = data.orders.filter((o) => o.stage !== "Shipped");
+    const orders = data.orders.filter((o) => o.stage !== "Shipped").filter((o) => stageFilter === "all" || o.stage === stageFilter);
     const reservations = shelfReservations(data.orders, lineItems, bondingRuns, data.stockPicks);
     const rows = orders.map((o) => ({
       ...o,
@@ -3192,12 +3237,26 @@
       caseCount: orderCaseCount(o, lineItems, bondingRuns)
     }));
     rows.sort((a, b) => {
+      if (sortBy === "id") return a.id.localeCompare(b.id, void 0, { numeric: true });
+      if (sortBy === "customer") return (a.customer || "").localeCompare(b.customer || "");
+      if (sortBy === "due") {
+        const da = a.dueDate || "9999-99-99", db = b.dueDate || "9999-99-99";
+        if (da !== db) return da < db ? -1 : 1;
+        return a.id.localeCompare(b.id, void 0, { numeric: true });
+      }
       const pa = a.priority ?? 999, pb = b.priority ?? 999;
       if (pa !== pb) return pa - pb;
       return b.pickablePct - a.pickablePct;
     });
     const { top2 } = top2SizeRows(orders, lineItems);
-    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Dashboard", subtitle: "Live \u2014 every figure recalculates immediately, nothing to regenerate. Click any order card to open it." }), top2.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5", style: { borderLeft: `4px solid ${RED}` } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: RED } }, "MOST URGENT RIGHT NOW"), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-5" }, top2.map((o) => /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(
+      SectionHeader,
+      {
+        title: "Orders",
+        subtitle: "Every order on the books. Click a card to open it.",
+        right: /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => goTo && goTo("neworders") }, "+ New order"), " ", /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => goTo && goTo("completed") }, "Completed orders"), " ", /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => goTo && goTo("customers") }, "Customers"))
+      }
+    ), /* @__PURE__ */ React.createElement("div", { className: "no-print flex items-center gap-2 flex-wrap mb-4" }, /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, "Sort"), /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement(Select, { value: sortBy, onChange: (e) => setSortBy(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "urgent" }, "Most urgent"), /* @__PURE__ */ React.createElement("option", { value: "id" }, "Order number"), /* @__PURE__ */ React.createElement("option", { value: "customer" }, "Customer"), /* @__PURE__ */ React.createElement("option", { value: "due" }, "Due date"))), /* @__PURE__ */ React.createElement("span", { className: "text-xs ml-2", style: { color: INK_MUTED } }, "Stage"), /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement(Select, { value: stageFilter, onChange: (e) => setStageFilter(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "all" }, "All stages"), Object.keys(STAGE_COLORS).filter((st) => st !== "Shipped").map((st) => /* @__PURE__ */ React.createElement("option", { key: st, value: st }, st)))), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, rows.length, " order", rows.length === 1 ? "" : "s")), top2.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5", style: { borderLeft: `4px solid ${RED}` } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: RED } }, "MOST URGENT RIGHT NOW"), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-5" }, top2.map((o) => /* @__PURE__ */ React.createElement(
       "button",
       {
         key: o.id,
@@ -4057,7 +4116,11 @@ Here's the order:`;
         customer: parent.customer,
         address: parent.address || "",
         reference: parent.reference || "",
-        customerRef: parent.customerRef || null,
+        /* No customerRef here. The customer's own reference lives on the LINE
+           ITEM (line_items.customer_ref), not the order — orders has no such
+           column, so copying it here would have had Postgres reject every
+           split-order write. The child's line items carry their descriptions
+           across unchanged, so the reference travels with them. */
         currency: parent.currency || "GBP",
         orderDate: todayISO(),
         // Deliberately blank: the balance of a short shipment needs a NEW promise
@@ -4196,14 +4259,22 @@ Here's the order:`;
       totalCases: allNums.length
     };
   }
-  function OrdersView({ data, setData, mode = "active", initialExpandedId = null, jumpToPacking }) {
+  function BackToOrders({ onBack }) {
+    useEffect(() => {
+      const t = setTimeout(() => onBack && onBack(), 0);
+      return () => clearTimeout(t);
+    }, []);
+    return /* @__PURE__ */ React.createElement("div", { className: "text-sm py-8", style: { color: INK_MUTED } }, "Taking you back to Orders\u2026", " ", /* @__PURE__ */ React.createElement("button", { onClick: () => onBack && onBack(), style: { background: "none", border: "none", color: NAVY, cursor: "pointer", textDecoration: "underline" } }, "Go now"));
+  }
+  function OrdersView({ data, setData, mode = "active", initialExpandedId = null, jumpToPacking, onBackToOrders }) {
     const { lineItems } = data;
     const allOrders = data.orders;
     const orders = mode === "completed" ? allOrders.filter((o) => o.stage === "Shipped") : allOrders.filter((o) => o.stage !== "Shipped");
-    const [expanded, setExpanded] = useState(null);
+    const [expanded, setExpanded] = useState(initialExpandedId || null);
     useEffect(() => {
       if (initialExpandedId) setExpanded(initialExpandedId);
     }, [initialExpandedId]);
+    const nothingToShow = !expanded && !initialExpandedId;
     const [lineEditMode, setLineEditMode] = useState(false);
     const [checkStockFor, setCheckStockFor] = useState(null);
     const [walk, setWalk] = useDraftState("palletWalk", null, null);
@@ -4835,8 +4906,10 @@ Here's the order:`;
         "button",
         {
           onClick: () => {
-            setExpanded(null);
             setLineEditMode(false);
+            if (mode === "completed") setExpanded(null);
+            else if (onBackToOrders) onBackToOrders();
+            else setExpanded(null);
           },
           className: "text-sm font-medium mb-3",
           style: { background: "none", border: "none", cursor: "pointer", color: NAVY }
@@ -5078,7 +5151,7 @@ Here's the order:`;
         title: mode === "completed" ? "Completed Orders" : "Orders",
         subtitle: mode === "completed" ? "Shipped orders live here, out of the way of active planning. Change Stage on any order below to bring it back to active." : "Every line item belongs to a real order \u2014 there's no such thing as an Order ID typo here."
       }
-    ), /* @__PURE__ */ React.createElement("datalist", { id: "size-catalog" }, (PRODUCT_RANGES[newLine.range] || []).map((s) => /* @__PURE__ */ React.createElement("option", { key: s, value: s }))), mode !== "completed" && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-5", style: { color: INK_MUTED } }, "Looking to add a new order? That's moved to ", /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 600 } }, "New Orders"), " in the sidebar \u2014 this screen is for orders already on the books."), expanded ? renderOrderDetail() : renderOrdersList()), pendingPickFor && printingPick && (() => {
+    ), /* @__PURE__ */ React.createElement("datalist", { id: "size-catalog" }, (PRODUCT_RANGES[newLine.range] || []).map((s) => /* @__PURE__ */ React.createElement("option", { key: s, value: s }))), mode !== "completed" && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-5", style: { color: INK_MUTED } }, "Looking to add a new order? Use the ", /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 600 } }, "+ New order"), " button on the Orders page."), expanded ? renderOrderDetail() : mode === "completed" ? renderOrdersList() : nothingToShow ? /* @__PURE__ */ React.createElement(BackToOrders, { onBack: onBackToOrders }) : null), pendingPickFor && printingPick && (() => {
       const order = orders.find((o) => o.id === pendingPickFor) || allOrders.find((o) => o.id === pendingPickFor);
       const orderItemsForPrint = order ? orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description)) : [];
       const allMatchingForPrint = order ? matchingBoxesFor(order) : [];
@@ -5127,7 +5200,7 @@ Here's the order:`;
       setNewOrder({ customer: "", address: "", reference: "", currency: "GBP", orderDate: todayISO(), dueDate: "", priority: "", boxType: "" });
       jumpToOrder(id);
     };
-    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "New Orders", subtitle: "Paste an email, load a Claude-parsed snippet, or fill one in by hand. Adding an order takes you straight into it to add line items \u2014 to find an order already on the books, open it from its card on the Dashboard." }), /* @__PURE__ */ React.createElement(PasteOrderPanel, { data, setData }), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-3", style: { color: INK_MUTED } }, "NEW ORDER"), /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "New Orders", subtitle: "Paste an email, load a Claude-parsed snippet, or fill one in by hand. Adding an order takes you straight into it to add line items \u2014 to find an order already on the books, open it from its card on the Orders page." }), /* @__PURE__ */ React.createElement(PasteOrderPanel, { data, setData }), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-3", style: { color: INK_MUTED } }, "NEW ORDER"), /* @__PURE__ */ React.createElement(
       DraftRestoredBanner,
       {
         show: newOrderRestored,
@@ -5176,7 +5249,7 @@ Here's the order:`;
       }, 200);
       return () => clearTimeout(t);
     }, []);
-    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "no-print" }, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Production List", subtitle: "What needs making \u2014 across all orders by size, for one order, or your two most urgent combined.", right: viewMode !== "top2" && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => window.print() }, "Print", viewMode === "size" ? ` ${catLabel}` : "") }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-4" }, [{ key: "size", label: "By size" }, { key: "order", label: "By order" }, { key: "top2", label: "Top 2 priority" }].map((m) => /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "no-print" }, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Production List", subtitle: "What needs making \u2014 across all orders by size, for one order, or your two most urgent combined.", right: viewMode !== "top2" && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => window.print() }, "Print", viewMode === "size" ? ` ${catLabel}` : "") }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-4" }, [{ key: "size", label: "By size" }, { key: "order", label: "By order" }, { key: "top2", label: "Top 2 priority" }, { key: "eva", label: "EVA" }].map((m) => /* @__PURE__ */ React.createElement(
       "button",
       {
         key: m.key,
@@ -5185,7 +5258,7 @@ Here's the order:`;
         style: { border: `1px solid ${viewMode === m.key ? NAVY : BORDER}`, background: viewMode === m.key ? NAVY : "#fff", color: viewMode === m.key ? "#fff" : INK }
       },
       m.label
-    ))), viewMode === "size" && /* @__PURE__ */ React.createElement("div", { className: "mb-3", style: { maxWidth: 380 } }, /* @__PURE__ */ React.createElement(
+    ))), viewMode === "eva" && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED, maxWidth: 560 } }, "Reels checked and available now, grouped by the EVA die they need \u2014 what you could bond today, rather than what is still outstanding on the orders."), viewMode === "size" && /* @__PURE__ */ React.createElement("div", { className: "mb-3", style: { maxWidth: 380 } }, /* @__PURE__ */ React.createElement(
       TextInput,
       {
         value: prodSearch,
@@ -5241,7 +5314,7 @@ Here's the order:`;
     }), rows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 4 }, "Nothing outstanding in ", catLabel, ".")))), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto print-clean", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product spec"), /* @__PURE__ */ React.createElement(Th, null, "Customer"), /* @__PURE__ */ React.createElement(Th, { w: 90 }, "Order"), /* @__PURE__ */ React.createElement(ThR, { w: 80 }, "Qty"))), /* @__PURE__ */ React.createElement("tbody", null, rows.flatMap((r, ri) => [
       ...r.breakdown.map((b, bi) => /* @__PURE__ */ React.createElement("tr", { key: r.spec + "-" + bi, className: ri % 2 ? "" : "bg-black/[0.015]", style: { borderTop: bi === 0 ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-3 no-wrap" }, bi === 0 ? r.spec : ""), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, b.customer), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, b.orderId)), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, b.qty))),
       /* @__PURE__ */ React.createElement("tr", { key: r.spec + "-total", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-3 no-wrap font-semibold", colSpan: 3, style: { textAlign: "right", color: INK_MUTED } }, r.onShelf > 0 ? /* @__PURE__ */ React.createElement(React.Fragment, null, "Ordered ", /* @__PURE__ */ React.createElement("b", { style: { color: INK } }, r.qty), " \xB7 ", /* @__PURE__ */ React.createElement("span", { style: { color: GREEN } }, r.onShelf, " on the shelf"), " \xB7 to make") : /* @__PURE__ */ React.createElement(React.Fragment, null, "Total to make")), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-bold", style: { color: r.toMake === 0 ? GREEN : INK } }, r.toMake === 0 ? "covered" : r.toMake))
-    ]), rows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 4 }, "Nothing outstanding in ", catLabel, "."))))), viewMode === "order" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto no-print", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(SortTh, { col: "spec", sortBy: leftSortBy, sortDir: leftSortDir, onSort: leftToggleSort, className: "text-left px-3 py-2" }, "Product spec"), /* @__PURE__ */ React.createElement(SortTh, { col: "ordered", sortBy: leftSortBy, sortDir: leftSortDir, onSort: leftToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 90 } }, "Ordered"), /* @__PURE__ */ React.createElement(SortTh, { col: "made", sortBy: leftSortBy, sortDir: leftSortDir, onSort: leftToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 90 } }, "Made"), /* @__PURE__ */ React.createElement(SortTh, { col: "remaining", sortBy: leftSortBy, sortDir: leftSortDir, onSort: leftToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 100 } }, "Remaining"), /* @__PURE__ */ React.createElement(SortTh, { col: "status", sortBy: leftSortBy, sortDir: leftSortDir, onSort: leftToggleSort, className: "text-left px-3 py-2", style: { width: 120 } }, "Status"))), /* @__PURE__ */ React.createElement("tbody", null, sortedLeftRows.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 no-wrap" }, r.spec), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.ordered), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.made), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.remaining), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Badge, { color: statusColor[r.status] }, r.status)))), leftRows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 5 }, orderId ? "No line items." : "Pick an order.")))), orderId && /* @__PURE__ */ React.createElement("div", { className: "print-only" }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Georgia, serif", fontWeight: 700, fontSize: 22, color: NAVY } }, "What's Left To Make \u2014 ", orderId, order ? ` \u2014 ${order.customer}` : ""), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 2 } }, (/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", year: "numeric", month: "long", day: "numeric" })), /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { marginTop: 16 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product spec"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Ordered"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Made"), /* @__PURE__ */ React.createElement(ThR, { w: 100 }, "Remaining"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Status"))), /* @__PURE__ */ React.createElement("tbody", null, sortedLeftRows.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.id, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3" }, r.spec), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.ordered), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.made), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.remaining), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.status))), sortedLeftRows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 5 }, "No line items."))))), viewMode === "top2" && (top2.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "text-sm py-8", style: { color: INK_MUTED } }, "Set a Priority on at least one order to see this.") : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "flex gap-6 mb-4 text-sm" }, top2.map((o, i) => /* @__PURE__ */ React.createElement("div", { key: o.id }, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Priority order #", i + 1, ":"), " ", /* @__PURE__ */ React.createElement(Mono, { className: "font-semibold" }, o.id), " \u2014 ", o.customer, " (P", o.priority, ")"))), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product spec"), top2.map((o) => /* @__PURE__ */ React.createElement(ThR, { key: o.id, w: 110 }, o.id)), /* @__PURE__ */ React.createElement(ThR, { w: 110 }, "Combined"))), /* @__PURE__ */ React.createElement("tbody", null, top2Rows.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.spec, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 no-wrap" }, r.spec), top2.map((o) => /* @__PURE__ */ React.createElement("td", { key: o.id, className: "text-right px-3" }, r.qtyByOrder[o.id] || 0)), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-semibold" }, r.combined)))))))));
+    ]), rows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 4 }, "Nothing outstanding in ", catLabel, "."))))), viewMode === "order" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto no-print", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(SortTh, { col: "spec", sortBy: leftSortBy, sortDir: leftSortDir, onSort: leftToggleSort, className: "text-left px-3 py-2" }, "Product spec"), /* @__PURE__ */ React.createElement(SortTh, { col: "ordered", sortBy: leftSortBy, sortDir: leftSortDir, onSort: leftToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 90 } }, "Ordered"), /* @__PURE__ */ React.createElement(SortTh, { col: "made", sortBy: leftSortBy, sortDir: leftSortDir, onSort: leftToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 90 } }, "Made"), /* @__PURE__ */ React.createElement(SortTh, { col: "remaining", sortBy: leftSortBy, sortDir: leftSortDir, onSort: leftToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 100 } }, "Remaining"), /* @__PURE__ */ React.createElement(SortTh, { col: "status", sortBy: leftSortBy, sortDir: leftSortDir, onSort: leftToggleSort, className: "text-left px-3 py-2", style: { width: 120 } }, "Status"))), /* @__PURE__ */ React.createElement("tbody", null, sortedLeftRows.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 no-wrap" }, r.spec), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.ordered), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.made), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.remaining), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Badge, { color: statusColor[r.status] }, r.status)))), leftRows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 5 }, orderId ? "No line items." : "Pick an order.")))), orderId && /* @__PURE__ */ React.createElement("div", { className: "print-only" }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Georgia, serif", fontWeight: 700, fontSize: 22, color: NAVY } }, "What's Left To Make \u2014 ", orderId, order ? ` \u2014 ${order.customer}` : ""), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 2 } }, (/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", year: "numeric", month: "long", day: "numeric" })), /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { marginTop: 16 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product spec"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Ordered"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Made"), /* @__PURE__ */ React.createElement(ThR, { w: 100 }, "Remaining"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Status"))), /* @__PURE__ */ React.createElement("tbody", null, sortedLeftRows.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.id, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3" }, r.spec), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.ordered), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.made), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.remaining), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.status))), sortedLeftRows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 5 }, "No line items."))))), viewMode === "eva" && /* @__PURE__ */ React.createElement(ProductionScheduleView, { data, embedded: true }), viewMode === "top2" && (top2.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "text-sm py-8", style: { color: INK_MUTED } }, "Set a Priority on at least one order to see this.") : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "flex gap-6 mb-4 text-sm" }, top2.map((o, i) => /* @__PURE__ */ React.createElement("div", { key: o.id }, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Priority order #", i + 1, ":"), " ", /* @__PURE__ */ React.createElement(Mono, { className: "font-semibold" }, o.id), " \u2014 ", o.customer, " (P", o.priority, ")"))), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product spec"), top2.map((o) => /* @__PURE__ */ React.createElement(ThR, { key: o.id, w: 110 }, o.id)), /* @__PURE__ */ React.createElement(ThR, { w: 110 }, "Combined"))), /* @__PURE__ */ React.createElement("tbody", null, top2Rows.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.spec, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 no-wrap" }, r.spec), top2.map((o) => /* @__PURE__ */ React.createElement("td", { key: o.id, className: "text-right px-3" }, r.qtyByOrder[o.id] || 0)), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-semibold" }, r.combined)))))))));
   }
   function CustomersView({ data }) {
     const { orders, lineItems } = data;
@@ -5255,7 +5328,7 @@ Here's the order:`;
     }
     return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Customers", subtitle: "Every customer, their order count, and total value \u2014 click one for their full history." }), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(SortTh, { col: "customer", sortBy, sortDir, onSort: toggleSort, className: "text-left px-3 py-2" }, "Customer"), /* @__PURE__ */ React.createElement(SortTh, { col: "orderCount", sortBy, sortDir, onSort: toggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 100 } }, "Orders"), /* @__PURE__ */ React.createElement(SortTh, { col: "activeCount", sortBy, sortDir, onSort: toggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 90 } }, "Active"), /* @__PURE__ */ React.createElement(SortTh, { col: "totalValue", sortBy, sortDir, onSort: toggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 120 } }, "Total value"))), /* @__PURE__ */ React.createElement("tbody", null, sorted.map((c, i) => /* @__PURE__ */ React.createElement("tr", { key: c.customer, onClick: () => setSelected(c.customer), className: (i % 2 ? "" : "bg-black/[0.015]") + " cursor-pointer hover:bg-black/[0.03]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 font-medium" }, c.customer), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, c.orderCount), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3", style: { color: c.activeCount > 0 ? ORANGE : INK_MUTED } }, c.activeCount), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, fmtMoney(c.totalValue)))), rows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 4 }, "No customers yet.")))));
   }
-  function ProductionScheduleView({ data }) {
+  function ProductionScheduleView({ data, embedded = false }) {
     const [selectedEva, setSelectedEva] = useState(null);
     const allRows = batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || [], data.stockPicks || []);
     const availableRows = allRows.filter((r) => r.available && r.qtyNeeded > 0);
@@ -5268,7 +5341,7 @@ Here's the order:`;
       return da.localeCompare(db);
     });
     const evaLabel = EVA_DIES.find((d) => d.key === selectedEva)?.label;
-    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "no-print" }, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Ordered by Eva Size", subtitle: "Pick the EVA die you're running \u2014 see and print exactly which available batches to bond, most urgent first.", right: selectedEva && /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => window.print() }, "Print schedule") }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-5 flex-wrap" }, evaCounts.map((d) => /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "no-print" }, embedded ? selectedEva && /* @__PURE__ */ React.createElement("div", { className: "flex justify-end mb-2" }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => window.print() }, "Print schedule")) : /* @__PURE__ */ React.createElement(SectionHeader, { title: "Ordered by Eva Size", subtitle: "Pick the EVA die you're running \u2014 see and print exactly which available batches to bond, most urgent first.", right: selectedEva && /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => window.print() }, "Print schedule") }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-5 flex-wrap" }, evaCounts.map((d) => /* @__PURE__ */ React.createElement(
       "button",
       {
         key: d.key,
@@ -7644,7 +7717,7 @@ This changes the order quantities. It is recorded in the change log and can be r
       });
     };
     if (!live.length) return null;
-    const draftFor = (r) => drafts[r.id] || { to: "", qty: "", location: "", reason: "" };
+    const draftFor = (r) => drafts[r.id] || { to: "", qty: "", location: "", reason: "", caseNum: "" };
     const setDraft = (r, patch) => {
       setError(null);
       setDrafts((d) => ({ ...d, [r.id]: { ...draftFor(r), ...patch } }));
@@ -7662,7 +7735,7 @@ This changes the order quantities. It is recorded in the change log and can be r
         return;
       }
       const toOrderId = d.to === "__shelf__" ? null : d.to;
-      const dest = { toOrderId, qty: d.qty === "" ? holds(r) : d.qty, location: d.location || "" };
+      const dest = { toOrderId, qty: d.qty === "" ? holds(r) : d.qty, location: d.location || "", caseNum: d.caseNum || null };
       const trial = moveBoxRow(data, r.id, dest);
       if (trial.error) {
         setError(trial.error);
@@ -7695,7 +7768,10 @@ This changes the order quantities. It is recorded in the change log and can be r
           style: { textAlign: "right" },
           onChange: (e) => setDraft(r, { qty: e.target.value })
         }
-      )), toShelf && /* @__PURE__ */ React.createElement("div", { style: { width: 130 } }, /* @__PURE__ */ React.createElement(Select, { value: d.location, onChange: (e) => setDraft(r, { location: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Which shelf?"), BOX_LOCATIONS.map((loc) => /* @__PURE__ */ React.createElement("option", { key: loc, value: loc }, loc)))), d.to === "__scrap__" && /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 200px", minWidth: 0 } }, /* @__PURE__ */ React.createElement(TextInput, { value: d.reason || "", placeholder: "Why? (goes on the NCR)", onChange: (e) => setDraft(r, { reason: e.target.value }) })), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => d.to === "__scrap__" ? scrap(r) : move(r), disabled: !d.to }, d.to === "__scrap__" ? "Scrap" : "Move")), d.qty !== "" && Number(d.qty) > 0 && Number(d.qty) < have && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, have - Number(d.qty), " will stay where ", have - Number(d.qty) === 1 ? "it is" : "they are", "."));
+      )), toShelf && /* @__PURE__ */ React.createElement("div", { style: { width: 130 } }, /* @__PURE__ */ React.createElement(Select, { value: d.location, onChange: (e) => setDraft(r, { location: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Which shelf?"), BOX_LOCATIONS.map((loc) => /* @__PURE__ */ React.createElement("option", { key: loc, value: loc }, loc)))), d.to && d.to !== "__shelf__" && d.to !== "__scrap__" && (() => {
+        const cases = openCasesForOrder(data, d.to, r.productSize);
+        return /* @__PURE__ */ React.createElement("div", { style: { width: 170 } }, /* @__PURE__ */ React.createElement(Select, { value: d.caseNum || "", onChange: (e) => setDraft(r, { caseNum: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Case: let the app decide"), cases.map((c2) => /* @__PURE__ */ React.createElement("option", { key: c2.caseNum, value: c2.caseNum }, "Case ", c2.caseNum, " \u2014 ", c2.planned, " of ", c2.capacity, c2.sameSize ? " \xB7 same size" : ""))));
+      })(), d.to === "__scrap__" && /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 200px", minWidth: 0 } }, /* @__PURE__ */ React.createElement(TextInput, { value: d.reason || "", placeholder: "Why? (goes on the NCR)", onChange: (e) => setDraft(r, { reason: e.target.value }) })), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => d.to === "__scrap__" ? scrap(r) : move(r), disabled: !d.to }, d.to === "__scrap__" ? "Scrap" : "Move")), d.qty !== "" && Number(d.qty) > 0 && Number(d.qty) < have && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, have - Number(d.qty), " will stay where ", have - Number(d.qty) === 1 ? "it is" : "they are", "."));
     }), error && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: RED } }, error));
   }
   function BoxHistoryView({ data, setData, initialQuery }) {
@@ -11409,39 +11485,42 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     ));
   }
   var NAV = [
-    { key: "dashboard", label: "Dashboard", icon: IconDashboard },
-    { key: "daily", label: "Daily Plan", icon: IconClock },
-    { key: "neworders", label: "New Orders", icon: IconOrders },
-    { key: "completed", label: "Completed Orders", icon: IconCheckBox },
-    { key: "customers", label: "Customers", icon: IconOrders },
-    { key: "production", label: "Production List", icon: IconProduction },
-    { key: "extrusion", label: "Extrusion", icon: IconLayers },
-    { key: "glueline", label: "Glue Line", icon: IconDroplet },
-    { key: "batches", label: "Batches Available to Bond", icon: IconDiamond },
-    { key: "schedule", label: "Ordered by Eva Size", icon: IconLink },
-    { key: "gluelineschedule", label: "Glue Line Schedule", icon: IconLink },
+    { key: "dashboard", label: "Orders", icon: IconOrders },
+    { key: "daily", label: "Daily plan", icon: IconClock },
+    { key: "production", label: "Production list", icon: IconProduction },
+    { key: "gluelineschedule", label: "Glue line schedule", icon: IconLink },
+    { key: "batches", label: "Batches available to bond", icon: IconDiamond },
+    { key: "extrusion", label: "Baseline extrusion", icon: IconLayers },
+    { key: "eva", label: "EVA extrusion", icon: IconLayers },
+    { key: "glueline", label: "Glue line", icon: IconDroplet },
     { key: "bonding", label: "Bonding", icon: IconLink },
-    { key: "eva", label: "EVA Line", icon: IconLayers },
     { key: "stock", label: "Stock", icon: IconArchive },
     { key: "materials", label: "Materials", icon: IconSack },
-    { key: "tooling", label: "Extrusion Tooling", icon: IconTool },
-    { key: "ncr", label: "NCR Log", icon: IconAlert },
     { key: "register", label: "Register", icon: IconAlert, badge: (data) => openIssues(data.issues).length },
+    { key: "ncr", label: "NCR Log", icon: IconAlert },
     { key: "metrics", label: "Metrics", icon: IconChart },
-    { key: "admin", label: "Admin", icon: IconAlert }
+    { key: "tooling", label: "Tooling", icon: IconTool },
+    { key: "admin", label: "Admin", icon: IconAlert },
+    /* Reachable, but not in the sidebar. New Orders, Completed Orders and
+       Customers are buttons on the Orders page; "Ordered by Eva Size" is now
+       the EVA view inside Production list. They keep NAV entries so search,
+       history and direct navigation still find them by name. */
+    { key: "neworders", label: "New Orders", icon: IconOrders, hidden: true },
+    { key: "completed", label: "Completed Orders", icon: IconCheckBox, hidden: true },
+    { key: "customers", label: "Customers", icon: IconOrders, hidden: true },
+    { key: "schedule", label: "Ordered by Eva Size", icon: IconLink, hidden: true }
   ];
   var NAV_GROUPS = [
-    { label: null, keys: ["dashboard", "daily"] },
-    { label: "Orders", keys: ["neworders", "completed", "customers"] },
-    { label: "Planning", keys: ["production"] },
-    { label: "Baseline", keys: ["extrusion", "tooling", "glueline", "gluelineschedule"] },
-    { label: "Bonding", keys: ["bonding", "eva", "batches", "schedule"] },
-    /* Stock Taker and Box History folded into the Stock tab (2 Sep): it finds a
-       box, shows its history, moves it, and adds one the app has never seen. */
-    { label: "Stock & Traceability", keys: ["stock"] },
-    { label: "Materials", keys: ["materials"] },
-    { label: "Quality & Reports", keys: ["register", "ncr", "metrics"] },
-    { label: "Admin", keys: ["admin"] }
+    { label: null, prominent: true, keys: ["dashboard"] },
+    { label: "Planning", prominent: true, keys: ["daily", "production", "gluelineschedule", "batches"] },
+    { label: "Extrusion", prominent: true, keys: ["extrusion", "eva"] },
+    { label: null, prominent: true, keys: ["glueline"] },
+    { label: null, prominent: true, keys: ["bonding"] },
+    { label: null, prominent: true, keys: ["stock"] },
+    { label: null, keys: ["materials"] },
+    { label: "Quality and reports", keys: ["register", "ncr", "metrics"] },
+    { label: null, keys: ["tooling"] },
+    { label: null, keys: ["admin"] }
   ];
   var PHONE_SHORTCUTS = ["dashboard", "glueline", "bonding", "stock", "production"];
   var NAV_ALIASES = {
@@ -11452,9 +11531,10 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     admin: ["undo", "change log", "wipe stock", "custom sizes", "add a size", "recovery"],
     stock: ["add stock", "manual stock", "add box", "box history", "move box", "add reel", "new reel", "unlogged reel", "live stock", "reel stock"],
     boxhistory: ["find a box", "trace box", "where is this box"],
-    production: ["what needs making", "left to make", "remaining", "outstanding", "top 2", "priority sizes", "combined priority"],
+    production: ["what needs making", "left to make", "remaining", "outstanding", "top 2", "priority sizes", "combined priority", "eva die", "ordered by eva", "what to bond"],
     gluelineschedule: ["glue schedule", "what to glue"],
     schedule: ["eva die", "what to bond", "production schedule", "ordered by eva"],
+    dashboard: ["orders", "order list", "new order", "completed orders", "customers", "shipped orders"],
     eva: ["eva made", "make eva", "eva production", "eva run", "log eva", "eva reels", "screw speed", "line speed", "eva rack"]
   };
   function GlobalSearch({ data, onJump }) {
@@ -12339,7 +12419,10 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       };
     }, []);
     const views = {
-      dashboard: /* @__PURE__ */ React.createElement(Dashboard, { data, jumpToOrder }),
+      dashboard: /* @__PURE__ */ React.createElement(Dashboard, { data, jumpToOrder, goTo: (v) => {
+        navigateTo(v);
+        setOpenGroup(groupForView(v));
+      } }),
       daily: /* @__PURE__ */ React.createElement(
         TodayView,
         {
@@ -12354,7 +12437,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         }
       ),
       neworders: /* @__PURE__ */ React.createElement(NewOrdersView, { data, setData, jumpToOrder }),
-      orders: /* @__PURE__ */ React.createElement(OrdersView, { data, setData, initialExpandedId: searchJump?.view === "orders" ? searchJump.orderId : null, jumpToPacking }),
+      orders: /* @__PURE__ */ React.createElement(OrdersView, { data, setData, initialExpandedId: searchJump?.view === "orders" ? searchJump.orderId : null, jumpToPacking, onBackToOrders: () => navigateTo("dashboard") }),
       completed: /* @__PURE__ */ React.createElement(OrdersView, { data, setData, mode: "completed", initialExpandedId: searchJump?.view === "completed" ? searchJump.orderId : null, jumpToPacking }),
       packing: /* @__PURE__ */ React.createElement(
         PackingListScreen,
@@ -12504,44 +12587,57 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       },
       /* @__PURE__ */ React.createElement("span", { className: "text-xs font-bold tracking-wider", style: { color: "#8D95C4" } }, "ALL SCREENS"),
       /* @__PURE__ */ React.createElement("span", { style: { color: "#8D95C4", fontSize: 11, transform: allScreensOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s" } }, "\u25B6")
-    )), /* @__PURE__ */ React.createElement("nav", { className: "sidebar-nav space-y-3 mb-6 phone-collapsible" + (allScreensOpen ? " open" : "") }, NAV_GROUPS.filter((g) => g.label !== "Admin" || syncUserRole !== "standard").map((group, gi) => {
-      const items = group.keys.map((k) => NAV.find((n) => n.key === k));
+    )), /* @__PURE__ */ React.createElement("nav", { className: "sidebar-nav space-y-3 mb-6 phone-collapsible" + (allScreensOpen ? " open" : "") }, NAV_GROUPS.filter((g) => !g.keys.includes("admin") || syncUserRole !== "standard").map((group, gi) => {
+      const items = group.keys.map((k) => NAV.find((n) => n.key === k)).filter((n) => n && !n.hidden);
+      if (!items.length) return null;
       const isOpen = group.label === null || openGroup === group.label;
-      return /* @__PURE__ */ React.createElement("div", { key: group.label || "top", className: gi > 0 ? "mt-4" : "" }, group.label && items.length > 1 && /* @__PURE__ */ React.createElement(
-        "button",
+      return /* @__PURE__ */ React.createElement(
+        "div",
         {
-          onClick: () => setOpenGroup(isOpen ? null : group.label),
-          className: "w-full flex items-center justify-between px-3.5 py-2.5 text-left hover:bg-white/5",
-          style: { background: "none", border: "none", cursor: "pointer", borderRadius: 8 }
+          key: group.label || "top",
+          className: gi > 0 ? "mt-4" : "",
+          style: !group.prominent && (NAV_GROUPS[gi - 1] || {}).prominent ? { borderTop: "1px solid #3D4676", paddingTop: 10, marginTop: 14 } : void 0
         },
-        /* @__PURE__ */ React.createElement("span", { className: "text-xs font-bold tracking-wider", style: { color: "#8D95C4" } }, group.label.toUpperCase()),
-        /* @__PURE__ */ React.createElement("span", { style: { color: "#8D95C4", fontSize: 11, transform: isOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s" } }, "\u25B6")
-      ), (isOpen || items.length === 1) && items.map((n) => {
-        const Icon = n.icon;
-        const active = view === n.key;
-        return /* @__PURE__ */ React.createElement(
+        group.label && items.length > 1 && /* @__PURE__ */ React.createElement(
           "button",
           {
-            key: n.key,
-            onClick: () => {
-              navigateTo(n.key);
-              setOpenGroup(groupForView(n.key));
-              setMobileMenuOpen(false);
-            },
-            className: "nav-item-btn w-full flex items-center gap-3 transition-colors text-left" + (active ? "" : " hover:bg-white/10"),
-            style: {
-              background: active ? ORANGE : void 0,
-              color: active ? "#fff" : "#C7CCE8",
-              fontWeight: active ? 700 : 500,
-              boxShadow: active ? "0 3px 10px rgba(234,78,51,0.4)" : "none"
-            }
+            onClick: () => setOpenGroup(isOpen ? null : group.label),
+            className: "w-full flex items-center justify-between px-3.5 py-2.5 text-left hover:bg-white/5",
+            style: { background: "none", border: "none", cursor: "pointer", borderRadius: 8 }
           },
-          /* @__PURE__ */ React.createElement("span", { className: "nav-icon-chip flex items-center justify-center shrink-0", style: { background: active ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.08)" } }, /* @__PURE__ */ React.createElement(Icon, null)),
-          /* @__PURE__ */ React.createElement("span", null, n.label, typeof n.badge === "function" && n.badge(data) > 0 && // A quiet count, not an alarm. Chris wants the register
-          // to be a list you go to, not a banner that shouts.
-          /* @__PURE__ */ React.createElement("span", { style: { marginLeft: 8, fontSize: 11, fontWeight: 700, background: "rgba(255,255,255,0.18)", borderRadius: 10, padding: "1px 7px" } }, n.badge(data)))
-        );
-      }));
+          /* @__PURE__ */ React.createElement("span", { style: group.prominent ? { color: "#FFFFFF", fontSize: 16, fontWeight: 500, letterSpacing: "-0.015em" } : { color: "#8D95C4", fontSize: 12.5 } }, group.prominent ? group.label : group.label.toUpperCase()),
+          /* @__PURE__ */ React.createElement("span", { style: { color: "#8D95C4", fontSize: 11, transform: isOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s" } }, "\u25B6")
+        ),
+        (isOpen || items.length === 1) && items.map((n) => {
+          const active = view === n.key;
+          const isPrimary = group.prominent && items.length === 1;
+          const isChild = group.prominent && items.length > 1;
+          return /* @__PURE__ */ React.createElement(
+            "button",
+            {
+              key: n.key,
+              onClick: () => {
+                navigateTo(n.key);
+                setOpenGroup(groupForView(n.key));
+                setMobileMenuOpen(false);
+              },
+              className: "nav-item-btn w-full flex items-center text-left" + (active ? "" : " hover:bg-white/10"),
+              style: {
+                background: active ? ORANGE : void 0,
+                color: active ? "#fff" : isPrimary ? "#FFFFFF" : isChild ? "#C7CCE8" : "#8D95C4",
+                fontSize: isPrimary ? 16 : 12.5,
+                fontWeight: isPrimary ? 500 : active ? 600 : 400,
+                letterSpacing: isPrimary ? "-0.015em" : "normal",
+                paddingLeft: isChild ? 26 : void 0,
+                boxShadow: active ? "0 3px 10px rgba(234,78,51,0.4)" : "none"
+              }
+            },
+            /* @__PURE__ */ React.createElement("span", null, n.label, typeof n.badge === "function" && n.badge(data) > 0 && // A quiet count, not an alarm. Chris wants the register
+            // to be a list you go to, not a banner that shouts.
+            /* @__PURE__ */ React.createElement("span", { style: { marginLeft: 8, fontSize: 11, fontWeight: 700, background: "rgba(255,255,255,0.18)", borderRadius: 10, padding: "1px 7px" } }, n.badge(data)))
+          );
+        })
+      );
     }))), /* @__PURE__ */ React.createElement("div", { className: "pt-4 space-y-2.5", style: { borderTop: `1px solid #3D4676` } }, /* @__PURE__ */ React.createElement("input", { ref: fileInputRef, type: "file", accept: "application/json", onChange: handleRestoreFile, style: { display: "none" } }), /* @__PURE__ */ React.createElement("div", { ref: sidebarSyncRef }, /* @__PURE__ */ React.createElement(SyncPanel, { syncStatus, syncEmail, syncError, connectSync, disconnectSync, refreshFromCloud, syncFailureDetail, syncWarnings, updateLatest, applyUpdate })), modePasswordModal, /* @__PURE__ */ React.createElement("button", { onClick: () => setShowMoreOptions(!showMoreOptions), className: "text-xs pt-2", style: { background: "none", border: "none", color: "#8D95C4", cursor: "pointer", padding: "8px 0 0 0" } }, "More options"), showMoreOptions && /* @__PURE__ */ React.createElement("div", { className: "pt-1 space-y-2" }, /* @__PURE__ */ React.createElement("button", { onClick: handleBackup, className: "w-full text-left text-xs px-3 py-2", style: { background: "#2E3868", color: "#fff", borderRadius: 5 } }, "\u2B73 Download backup (.json)"), /* @__PURE__ */ React.createElement("div", { className: "text-xs px-3", style: { color: backupAge.stale ? "#FFC46B" : "#8D95C4", marginTop: -4 } }, backupAge.stale && "\u26A0 ", backupAge.label), /* @__PURE__ */ React.createElement("button", { onClick: handleRestoreClick, className: "w-full text-left text-xs px-3 py-2", style: { background: "#2E3868", color: "#fff", borderRadius: 5 } }, "\u2B71 Restore from backup"), !testMode && /* @__PURE__ */ React.createElement("button", { onClick: loadTestData, className: "w-full text-left text-xs px-3 py-2", style: { background: "#2E3868", color: "#fff", borderRadius: 5 } }, "\u{1F9EA} Load test data"), testMode && /* @__PURE__ */ React.createElement("button", { onClick: goLive, className: "w-full text-left text-xs px-3 py-2", style: { background: ORANGE, color: "#fff", borderRadius: 5, fontWeight: 600 } }, "\u{1F680} Go live (clears test data)"))), /* @__PURE__ */ React.createElement("div", { style: { position: "relative", minHeight: 190, marginLeft: -16, marginRight: -16, marginTop: 24, marginBottom: -16, overflow: "hidden" } }, /* @__PURE__ */ React.createElement("div", { style: {
       position: "absolute",
       inset: 0,
