@@ -697,7 +697,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-03.2";
+  var APP_VERSION = "2026-09-03.8";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1603,6 +1603,45 @@
     const added = otherStock.filter((o) => o.productSpec === spec).reduce((s, o) => s + Number(o.qty || 0), 0);
     return added - otherStockUsed(lineItems, spec);
   }
+  function reconcileLedgerToStored(bondingRuns, movements) {
+    const out = [];
+    const byBox = /* @__PURE__ */ new Map();
+    for (const r of bondingRuns || []) {
+      if (!r.deleted && r.boxNumber) (byBox.get(r.boxNumber) || byBox.set(r.boxNumber, []).get(r.boxNumber)).push(r);
+    }
+    const known = new Set((movements || []).filter((m) => !m.deleted && m.boxNumber).map((m) => m.boxNumber));
+    for (const [box, rows] of byBox) {
+      if (!known.has(box)) continue;
+      const p = projectBox(movements, box);
+      const spec = (rows.find((r) => r.productSize) || {}).productSize || null;
+      const sMade = rows.reduce((t, r) => t + Number(r.amountMade || 0), 0);
+      const sByOrder = {};
+      for (const r of rows) if (r.workNumber) sByOrder[r.workNumber] = (sByOrder[r.workNumber] || 0) + Number(r.onOrderQty || 0);
+      if (sMade !== p.made) out.push({
+        kind: "adjusted",
+        boxNumber: box,
+        spec,
+        qty: sMade - p.made,
+        source: "reconcile",
+        note: `Brought in line with stored columns (made ${p.made} \u2192 ${sMade}) \u2014 changed on a device without the ledger`
+      });
+      const orders = /* @__PURE__ */ new Set([...Object.keys(sByOrder), ...Object.keys(p.byOrder)]);
+      for (const orderId of orders) {
+        const want = Number(sByOrder[orderId] || 0), have = Number(p.byOrder[orderId] || 0);
+        if (want === have) continue;
+        out.push({
+          kind: want > have ? "allocated" : "unallocated",
+          boxNumber: box,
+          spec,
+          qty: Math.abs(want - have),
+          orderId,
+          source: "reconcile",
+          note: `Brought in line with stored columns (${orderId} ${have} \u2192 ${want}) \u2014 changed on a device without the ledger`
+        });
+      }
+    }
+    return out;
+  }
   function ledgerCorrectedRuns(bondingRuns, movements = LEDGER_MOVEMENTS) {
     if (!movements || !movements.length) return bondingRuns;
     const byBox = /* @__PURE__ */ new Map();
@@ -2002,7 +2041,7 @@
       }
       if (!r.available) continue;
       if (!r.qtyNeeded) {
-        r.matchStatus = "No order needs this \u2014 hold";
+        r.matchStatus = `No open order shows demand for ${r.productSize} on this device \u2014 if an order needs it, sync or check the size on the reel`;
         continue;
       }
       if (!r.allocatedBoxes) {
@@ -6544,6 +6583,76 @@ Here's the order:`;
   function ChainArrow({ broken }) {
     return /* @__PURE__ */ React.createElement("div", { className: "shrink-0 flex items-center justify-center", style: { width: 26, color: broken ? AMBER : "#C9C9C4" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 16, fontWeight: 700 } }, broken ? "\u21E2" : "\u2192"));
   }
+  function sizeWhereabouts(query, data) {
+    const terms = String(query || "").trim().toLowerCase().replace(/[x×,]/g, " ").split(/\s+/).filter(Boolean);
+    if (!terms.length) return null;
+    const known = /* @__PURE__ */ new Map();
+    for (const r of data.bondingRuns || []) if (!r.deleted && r.productSize) known.set(r.productSize, (known.get(r.productSize) || 0) + Number(r.amountMade || 0));
+    for (const li of data.lineItems || []) if (!li.deleted && li.description) known.set(li.description, known.get(li.description) || 0);
+    for (const b of data.glueLineBatches || []) if (!b.deleted && b.productSize) known.set(b.productSize, known.get(b.productSize) || 0);
+    const hit = (hay) => terms.every((t) => hay.includes(t) || /^\d*\.?\d+$/.test(t) && hay.includes(Number(t).toFixed(2)) || /^\d+$/.test(t) && hay.includes("0." + t));
+    const candidates = [...known.entries()].filter(([sp]) => hit(sp.toLowerCase()));
+    if (!candidates.length) return null;
+    const spec = candidates.sort((a, z) => z[1] - a[1])[0][0];
+    const runs = (data.bondingRuns || []).filter((r) => !r.deleted && r.boxNumber && looseSpecMatch(r.productSize, spec));
+    if (!runs.length && !(data.glueLineBatches || []).some((b) => !b.deleted && looseSpecMatch(b.productSize, spec))) return null;
+    const boxes = [...new Set(runs.map((r) => r.boxNumber))];
+    const shelfByLocation = /* @__PURE__ */ new Map();
+    const byOrder = /* @__PURE__ */ new Map();
+    let onShelf = 0, made = 0, scrapped = 0;
+    for (const box of boxes) {
+      const p = projectBox(data.movements, box);
+      const rows = runs.filter((r) => r.boxNumber === box);
+      const ledgered = p.made > 0;
+      made += ledgered ? p.made : rows.reduce((t, r) => t + Number(r.amountMade || 0), 0);
+      scrapped += p.scrapped || 0;
+      const shelf = ledgered ? p.onShelf : rows.reduce((t, r) => t + Number(r.toStock || 0), 0);
+      if (shelf > 0) {
+        onShelf += shelf;
+        const loc = (rows.find((r) => r.location) || {}).location || "(no shelf recorded)";
+        const e = shelfByLocation.get(loc) || { location: loc, qty: 0, boxes: [] };
+        e.qty += shelf;
+        e.boxes.push({ boxNumber: box, qty: shelf, reel: (rows[0] || {}).baselineBatchCode || "" });
+        shelfByLocation.set(loc, e);
+      }
+      const orders = ledgered ? p.byOrder : Object.fromEntries(rows.filter((r) => r.workNumber).map((r) => [r.workNumber, Number(r.onOrderQty || 0)]));
+      for (const [orderId, qty] of Object.entries(orders)) {
+        if (!(qty > 0)) continue;
+        const o = (data.orders || []).find((x) => x.id === orderId);
+        const e = byOrder.get(orderId) || { orderId, customer: o && o.customer || "", dueDate: o && o.dueDate || "", qty: 0, boxes: [], inCases: [] };
+        e.qty += qty;
+        e.boxes.push({ boxNumber: box, qty });
+        for (const [n, v] of Object.entries(liveMapEntries(o && o.confirmedCases || {}))) {
+          const held = v && typeof v === "object" && v.boxes ? Number(v.boxes[box] || 0) : 0;
+          if (held > 0) e.inCases.push({ caseNum: Number(n), boxNumber: box, qty: held });
+        }
+        byOrder.set(orderId, e);
+      }
+    }
+    const other = (data.otherStock || []).filter((o) => !o.deleted && Number(o.qty) > 0 && looseSpecMatch(o.productSpec, spec)).map((o) => ({ id: o.id, boxNumber: o.boxNumber || "", qty: Number(o.qty), notes: o.notes || "" }));
+    const reels = (data.glueLineBatches || []).filter((b) => !b.deleted && String(b.cleared).toLowerCase() !== "yes" && String(b.checked).toLowerCase() === "yes" && looseSpecMatch(b.productSize, spec)).map((b) => ({ batchNumber: b.batchNumber, remaining: Math.max(0, Number(b.meterage || 0) - batchMeterageUsed(data.bondingRuns, b.batchNumber)) })).filter((r) => r.remaining > 0);
+    const outstanding = (data.orders || []).filter((o) => !o.deleted && !["Shipped", "Cancelled"].includes(o.stage)).flatMap((o) => (data.lineItems || []).filter((li) => !li.deleted && li.orderId === o.id && looseSpecMatch(li.description, spec)).map((li) => ({ orderId: o.id, customer: o.customer, qty: Number(li.qty || 0), dueDate: o.dueDate })));
+    return {
+      spec,
+      made,
+      onShelf,
+      scrapped,
+      onOrders: [...byOrder.values()].sort((a, z) => String(a.dueDate).localeCompare(String(z.dueDate))),
+      shelves: [...shelfByLocation.values()].sort((a, z) => z.qty - a.qty),
+      other,
+      otherQty: other.reduce((t, o) => t + o.qty, 0),
+      reels,
+      reelMetres: reels.reduce((t, r) => t + r.remaining, 0),
+      ordered: outstanding.reduce((t, o) => t + o.qty, 0),
+      orderLines: outstanding
+    };
+  }
+  function SizeWhereabouts({ result }) {
+    const w = result;
+    const row = { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 };
+    const Row = ({ label, value, sub }) => /* @__PURE__ */ React.createElement("div", { style: { ...row, padding: "6px 0", borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("span", null, label, sub && /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 12 } }, " ", sub)), /* @__PURE__ */ React.createElement("b", { style: { whiteSpace: "nowrap" } }, value));
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: INK_MUTED } }, "WHAT WE HAVE"), /* @__PURE__ */ React.createElement("div", { className: "text-lg font-semibold font-display mb-3" }, w.spec), /* @__PURE__ */ React.createElement(Row, { label: "On the shelf", value: w.onShelf, sub: "free to pick" }), /* @__PURE__ */ React.createElement(Row, { label: "Committed to orders", value: w.onOrders.reduce((t, o) => t + o.qty, 0) }), w.otherQty > 0 && /* @__PURE__ */ React.createElement(Row, { label: "Other Stock", value: w.otherQty }), /* @__PURE__ */ React.createElement(Row, { label: "Reels available to bond", value: `${Math.round(w.reelMetres)}m`, sub: `${w.reels.length} reel${w.reels.length === 1 ? "" : "s"}` }), /* @__PURE__ */ React.createElement(Row, { label: "Still ordered by customers", value: w.ordered }), w.scrapped > 0 && /* @__PURE__ */ React.createElement(Row, { label: "Scrapped", value: w.scrapped })), w.shelves.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "WHERE IT IS"), w.shelves.map((sh) => /* @__PURE__ */ React.createElement("div", { key: sh.location, className: "mb-2.5" }, /* @__PURE__ */ React.createElement("div", { style: { ...row, fontWeight: 600 } }, /* @__PURE__ */ React.createElement("span", { style: { color: sh.location.startsWith("(") ? AMBER : INK } }, sh.location), /* @__PURE__ */ React.createElement("span", { style: { whiteSpace: "nowrap" } }, sh.qty)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, sh.boxes.map((b) => `${b.boxNumber} (${b.qty})`).join(" \xB7 "))))), w.onOrders.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "WHO HAS CLAIMED IT"), w.onOrders.map((o) => /* @__PURE__ */ React.createElement("div", { key: o.orderId, className: "mb-2.5" }, /* @__PURE__ */ React.createElement("div", { style: { ...row, fontWeight: 600 } }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, o.orderId), " ", o.customer, o.dueDate ? /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontWeight: 400 } }, " \xB7 due ", o.dueDate) : null), /* @__PURE__ */ React.createElement("span", { style: { whiteSpace: "nowrap" } }, o.qty)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, o.boxes.map((b) => `${b.boxNumber} (${b.qty})`).join(" \xB7 "), o.inCases.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, " \u2014 in case", o.inCases.length === 1 ? "" : "s", " ", [...new Set(o.inCases.map((c) => c.caseNum))].sort((a, z) => a - z).join(", ")))))), w.other.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "OTHER STOCK"), w.other.map((o) => /* @__PURE__ */ React.createElement("div", { key: o.id, style: { ...row, padding: "4px 0" } }, /* @__PURE__ */ React.createElement("span", null, o.boxNumber || "(no code)", o.notes ? /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " \xB7 ", o.notes) : null), /* @__PURE__ */ React.createElement("b", { style: { whiteSpace: "nowrap" } }, o.qty)))), w.reels.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "REELS THAT COULD MAKE MORE"), w.reels.map((r) => /* @__PURE__ */ React.createElement("div", { key: r.batchNumber, style: { ...row, padding: "4px 0" } }, /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, r.batchNumber), /* @__PURE__ */ React.createElement("b", { style: { whiteSpace: "nowrap" } }, Math.round(r.remaining), "m")))));
+  }
   function LiveBoxStockView({ data }) {
     const [search, setSearch] = useState("");
     const [openSpec, setOpenSpec] = useState(null);
@@ -6982,7 +7091,8 @@ Here's the order:`;
       statusColor = ncrMatch ? RED : INK_MUTED;
     }
     const found = !!(bondingMatch || otherStockMatch || directGlueMatch || directExtrusionMatch1 || directExtrusionMatch2);
-    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Box History", subtitle: "Search a box code for its full paper trail \u2014 production, batch details, and where it's going." }), /* @__PURE__ */ React.createElement("datalist", { id: "box-history-list" }, allBoxCodes.map((b) => /* @__PURE__ */ React.createElement("option", { key: b, value: b }))), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5" }, /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 320 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Box code"), /* @__PURE__ */ React.createElement(TextInput, { list: "box-history-list", value: query, placeholder: "e.g. BOX-101", onChange: (e) => setQuery(e.target.value) }))), q && !found && /* @__PURE__ */ React.createElement(Panel, { className: "p-5" }, /* @__PURE__ */ React.createElement("div", { className: "text-center mb-3", style: { color: INK_MUTED } }, "No record found for box ", /* @__PURE__ */ React.createElement(Mono, null, q), "."), typeof setData === "function" && (/^P[BP]L/i.test(q) ? /* @__PURE__ */ React.createElement(AddReelInline, { data, setData, batchNumber: q.toUpperCase(), onAdded: () => setQuery(q.toUpperCase()) }) : /* @__PURE__ */ React.createElement(AddBoxInline, { data, setData, boxNumber: q, onAdded: () => setQuery(q) }))), found && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5", style: { borderLeft: `4px solid ${statusColor}` } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: INK_MUTED } }, "STATUS"), /* @__PURE__ */ React.createElement("div", { className: "text-lg font-semibold font-display", style: { color: INK } }, statusLabel)), typeof setData === "function" && (bondingMatch || otherStockMatch) && /* @__PURE__ */ React.createElement(
+    const sizeMatch = useMemo(() => !found && q && /\d/.test(q) ? sizeWhereabouts(q, data) : null, [found, q, data]);
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "History and movement", subtitle: "Type a box or reel code to see where it has been and move it \u2014 or a product size to see how much you have and where." }), /* @__PURE__ */ React.createElement("datalist", { id: "box-history-list" }, allBoxCodes.map((b) => /* @__PURE__ */ React.createElement("option", { key: b, value: b }))), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5" }, /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 320 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Box code"), /* @__PURE__ */ React.createElement(TextInput, { list: "box-history-list", value: query, placeholder: "e.g. BOX-101", onChange: (e) => setQuery(e.target.value) }))), q && !found && sizeMatch && /* @__PURE__ */ React.createElement(SizeWhereabouts, { result: sizeMatch }), q && !found && !sizeMatch && /* @__PURE__ */ React.createElement(Panel, { className: "p-5" }, /* @__PURE__ */ React.createElement("div", { className: "text-center mb-3", style: { color: INK_MUTED } }, "No record found for box ", /* @__PURE__ */ React.createElement(Mono, null, q), "."), typeof setData === "function" && (/^P[BP]L/i.test(q) ? /* @__PURE__ */ React.createElement(AddReelInline, { data, setData, batchNumber: q.toUpperCase(), onAdded: () => setQuery(q.toUpperCase()) }) : /* @__PURE__ */ React.createElement(AddBoxInline, { data, setData, boxNumber: q, onAdded: () => setQuery(q) }))), found && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5", style: { borderLeft: `4px solid ${statusColor}` } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: INK_MUTED } }, "STATUS"), /* @__PURE__ */ React.createElement("div", { className: "text-lg font-semibold font-display", style: { color: INK } }, statusLabel)), typeof setData === "function" && (bondingMatch || otherStockMatch) && /* @__PURE__ */ React.createElement(
       MoveBoxPanel,
       {
         data,
@@ -8659,7 +8769,17 @@ Here's the order:`;
         onChange: (v) => setValues({ ...values, baselineBatchCode: v.toUpperCase() }),
         onBlur: handleBatchBlur
       }
-    ), reelWarning && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: AMBER, maxWidth: 200 } }, "\u26A0 ", reelWarning)), /* @__PURE__ */ React.createElement("div", { style: { width: 100 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Reel cleared"), /* @__PURE__ */ React.createElement(Select, { value: values.reelCleared || "No", onChange: (e) => setValues({ ...values, reelCleared: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "No" }, "No"), /* @__PURE__ */ React.createElement("option", { value: "Yes" }, "Yes"))), /* @__PURE__ */ React.createElement("div", { style: { width: 120 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Batch code"), /* @__PURE__ */ React.createElement(
+    ), reelWarning && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: AMBER, maxWidth: 200 } }, "\u26A0 ", reelWarning)), /* @__PURE__ */ React.createElement("div", { style: { width: 100 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Reel cleared"), /* @__PURE__ */ React.createElement(Select, { value: values.reelCleared || "No", onChange: (e) => setValues({ ...values, reelCleared: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "No" }, "No"), /* @__PURE__ */ React.createElement("option", { value: "Yes" }, "Yes")), values.reelCleared === "Yes" && values.baselineBatchCode && (() => {
+      const b = availableBatches.find((x) => x.batchNumber === values.baselineBatchCode.trim()) || { meterage: knownBatchCodes.includes(values.baselineBatchCode.trim()) ? null : null };
+      const recorded = Number(b?.meterage ?? b?.recorded ?? 0);
+      if (!recorded) return null;
+      const thisRun = (Number(values.amountMade) || 0) * (Number(values.metersPerBox) || 0);
+      const usedBefore = batchMeterageUsed(allBondingRuns, values.baselineBatchCode.trim());
+      const left = recorded - usedBefore - thisRun;
+      const pct = recorded ? Math.round(left / recorded * 1e3) / 10 : 0;
+      const tone = Math.abs(pct) > REEL_DISCREPANCY_TOLERANCE_PCT ? RED : INK_MUTED;
+      return /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: tone, maxWidth: 200 } }, left > 0 ? `Writes off ${Math.round(left)}m (${pct}%)` : left < 0 ? `Reel gave ${Math.round(-left)}m more than recorded (${pct}%)` : "Exactly used up", Math.abs(pct) > REEL_DISCREPANCY_TOLERANCE_PCT ? " \u2014 that's a lot; check the reel code" : "");
+    })()), /* @__PURE__ */ React.createElement("div", { style: { width: 120 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Batch code"), /* @__PURE__ */ React.createElement(
       TextInput,
       {
         value: values.boxNumber,
@@ -10931,6 +11051,11 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     useEffect(() => {
       setLedgerMovements(data.movements || []);
     }, [data.movements]);
+    useEffect(() => {
+      const fixes = reconcileLedgerToStored(data.bondingRuns, data.movements);
+      if (!fixes.length) return;
+      setData((prev) => recordMovements(prev, fixes));
+    }, [data.bondingRuns, data.movements]);
     useEffect(() => {
       const flush = () => {
         if (syncStatus === "connected" && syncClientRef.current) {
