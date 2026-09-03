@@ -697,7 +697,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-03.1";
+  var APP_VERSION = "2026-09-03.2";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -3322,6 +3322,47 @@ Here's the order:`;
     const scrapped = rows.filter((m) => m.kind === "scrapped").reduce((t, m) => t + Number(m.qty || 0), 0);
     return { made, allocated, scrapped, onShelf: made - allocated - scrapped, byOrder };
   }
+  function adjustBatchQuantity(prev, { boxNumber, spec, newQty, note }) {
+    const p = projectBox(prev.movements, boxNumber);
+    const delta = Number(newQty) - p.made;
+    if (!delta) return prev;
+    let next = recordMovement(prev, {
+      kind: "made",
+      boxNumber,
+      spec,
+      qty: delta,
+      source: "bonding",
+      note: note || `Batch quantity corrected from ${p.made} to ${newQty}`
+    });
+    const shelf = p.made - p.allocated - p.scrapped;
+    const shortfall = delta < 0 ? Math.min(0, shelf + delta) : 0;
+    if (shortfall < 0) {
+      const alloc = (prev.movements || []).filter((m) => !m.deleted && m.boxNumber === boxNumber && m.kind === "allocated" && Number(m.qty) > 0);
+      let owed = -shortfall;
+      for (const a of [...alloc].reverse()) {
+        if (owed <= 0) break;
+        const take = Math.min(owed, Number(a.qty));
+        next = recordMovement(next, {
+          kind: "unallocated",
+          boxNumber,
+          spec,
+          qty: take,
+          orderId: a.orderId,
+          source: "bonding",
+          note: `Batch corrected to ${newQty} and the shelf could not cover it \u2014 ${take} taken back from ${a.orderId}`
+        });
+        next = raiseIssue(next, {
+          kind: "short_allocation",
+          orderId: a.orderId,
+          boxNumber,
+          summary: `${a.orderId} is ${take} short of ${boxNumber}`,
+          detail: `Batch ${boxNumber} was corrected to ${newQty}${note ? " (" + note + ")" : ""}. The shelf could not cover the reduction, so ${take} came off ${a.orderId}. Sanction a remake or advise the customer, then clear this.`
+        });
+        owed -= take;
+      }
+    }
+    return next;
+  }
   function raiseIssue(prev, { kind, orderId, boxNumber, summary, detail }) {
     const stamp = (/* @__PURE__ */ new Date()).toISOString();
     const row = {
@@ -4184,6 +4225,16 @@ Here's the order:`;
         });
         const changed = boxes.filter((r) => confirmQtyEdits[r.id] !== void 0 && Number(confirmQtyEdits[r.id]) !== Number(r.onOrderQty || 0));
         let patch = { bondingRuns: updated };
+        const returns = changed.map((r) => ({
+          kind: "unallocated",
+          boxNumber: r.boxNumber,
+          spec: r.productSize,
+          qty: Number(r.onOrderQty || 0) - Math.max(0, Math.min(Number(confirmQtyEdits[r.id]), Number(r.onOrderQty || 0))),
+          orderId: order.id,
+          source: "pick",
+          note: "Pick quantity reduced"
+        })).filter((m) => m.qty > 0);
+        if (returns.length) patch = { ...patch, ...recordMovements({ ...prevData, ...patch }, returns) };
         if (changed.length > 0) {
           patch = { ...patch, ...appendLog(prevData, {
             action: "stock_adjustment",
@@ -4200,7 +4251,15 @@ Here's the order:`;
     };
     const returnBoxToStock = (order, box) => {
       setData((prevData) => ({
-        ...prevData,
+        ...recordMovement(prevData, {
+          kind: "unallocated",
+          boxNumber: box.boxNumber,
+          spec: box.productSize,
+          qty: Number(box.onOrderQty || 0),
+          orderId: order.id,
+          source: "pick",
+          note: "Box returned to stock"
+        }),
         bondingRuns: prevData.bondingRuns.map((r) => r.id === box.id ? { ...r, workNumber: null, onOrderQty: 0, toStock: Number(r.toStock || 0) + Number(box.onOrderQty || 0) } : r),
         ...appendLog(prevData, {
           action: "stock_adjustment",
@@ -4223,8 +4282,12 @@ Here's the order:`;
           pickedFor: "DAMAGED",
           comments: "Written off from " + order.id
         };
+        const withMoves = recordMovements(prevData, [
+          { kind: "unallocated", boxNumber: box.boxNumber, spec: box.productSize, qty: Number(box.onOrderQty || 0), orderId: order.id, source: "pick", note: "Written off as damaged" },
+          { kind: "scrapped", boxNumber: box.boxNumber, spec: box.productSize, qty: Number(box.onOrderQty || 0), source: "pick", note: "Written off from " + order.id }
+        ]);
         return {
-          ...prevData,
+          ...withMoves,
           bondingRuns: prevData.bondingRuns.map((r) => r.id === box.id ? { ...r, workNumber: null, onOrderQty: 0 } : r),
           stockPicks: [...prevData.stockPicks || [], damagedPick],
           ...appendLog(prevData, {
@@ -9367,6 +9430,8 @@ Here's the order:`;
       const batchCode = (editForm.baselineBatchCode || "").trim();
       const reelCleared = editForm.reelCleared === "Yes";
       setData((prevData) => {
+        const before = (prevData.bondingRuns || []).find((r) => r.id === editingId);
+        const after = before ? { ...before, ...toRun(editForm, editingId) } : null;
         let next = applyRowsWithLog(
           prevData,
           "bondingRuns",
@@ -9374,6 +9439,37 @@ Here's the order:`;
           "bondingRun",
           (r) => `box ${r.boxNumber || r.id}`
         );
+        if (before && after) {
+          const madeDelta = Number(after.amountMade || 0) - Number(before.amountMade || 0);
+          if (madeDelta && after.boxNumber) {
+            next = adjustBatchQuantity(next, {
+              boxNumber: after.boxNumber,
+              spec: after.productSize,
+              newQty: projectBox(next.movements, after.boxNumber).made + madeDelta,
+              note: `Bonding Line row edited \u2014 ${before.amountMade} to ${after.amountMade}`
+            });
+          }
+          const orderDelta = Number(after.onOrderQty || 0) - Number(before.onOrderQty || 0);
+          const orderId = after.workNumber || before.workNumber;
+          if (orderDelta && orderId && after.boxNumber) {
+            next = recordMovement(next, {
+              kind: orderDelta > 0 ? "allocated" : "unallocated",
+              boxNumber: after.boxNumber,
+              spec: after.productSize,
+              qty: Math.abs(orderDelta),
+              orderId,
+              source: "bonding",
+              sourceId: after.id,
+              note: `Bonding Line row edited \u2014 on order ${before.onOrderQty} to ${after.onOrderQty}`
+            });
+          }
+          if (before.workNumber && after.workNumber && before.workNumber !== after.workNumber && after.boxNumber) {
+            next = recordMovements(next, [
+              { kind: "unallocated", boxNumber: after.boxNumber, spec: after.productSize, qty: Number(before.onOrderQty || 0), orderId: before.workNumber, source: "bonding", note: `Row moved to ${after.workNumber}` },
+              { kind: "allocated", boxNumber: after.boxNumber, spec: after.productSize, qty: Number(after.onOrderQty || 0), orderId: after.workNumber, source: "bonding", note: `Row moved from ${before.workNumber}` }
+            ]);
+          }
+        }
         if (batchCode) {
           next = applyRowsWithLog(
             next,
