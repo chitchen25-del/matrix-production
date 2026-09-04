@@ -714,7 +714,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-03.25";
+  var APP_VERSION = "2026-09-04.2";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -2356,7 +2356,36 @@
     if (!m) return false;
     const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
     const n2 = (v) => (Number(v) || 0).toFixed(2);
-    const palletRows = (Array.isArray(m.pallets) ? m.pallets : []).map((p) => `<tr>
+    let pallets = Array.isArray(m.pallets) ? m.pallets : [];
+    if (!pallets.length) {
+      const assignments = liveMapEntries(order.palletAssignments || {});
+      const palletWeights = order.palletWeights || {};
+      const caseWeights = liveMapEntries(order.caseWeights || {});
+      const byLabel = /* @__PURE__ */ new Map();
+      for (const c of m.caseRows || []) {
+        const label = String(assignments[c.caseNum] || "").trim();
+        if (!label) continue;
+        if (!byLabel.has(label)) byLabel.set(label, { label, cases: [], goods: 0 });
+        const e = byLabel.get(label);
+        e.cases.push(c.caseNum);
+        e.goods += Number(c.weight) || Number(caseWeights[c.caseNum]) || 0;
+      }
+      pallets = [...byLabel.values()].sort((a, b) => String(a.label).localeCompare(String(b.label), void 0, { numeric: true })).map((e) => {
+        const tare = Number(palletWeights[e.label]) || 0;
+        const goods = Math.round(e.goods * 100) / 100;
+        return {
+          label: e.label,
+          cases: e.cases.slice().sort((x, y) => x - y),
+          goods,
+          tare,
+          gross: Math.round((goods + tare) * 100) / 100
+        };
+      });
+    }
+    const goodsTotal = pallets.length ? pallets.reduce((t, p) => t + (Number(p.goods) || 0), 0) : Number(m.goodsWeight) || Number(m.totalWeight) || 0;
+    const tareTotal = pallets.length ? pallets.reduce((t, p) => t + (Number(p.tare) || 0), 0) : Number(m.tareWeight) || 0;
+    const grossTotal = Math.round((goodsTotal + tareTotal) * 100) / 100;
+    const palletRows = pallets.map((p) => `<tr>
       <td class="l">${esc(p.label)}</td>
       <td class="l">${esc(caseRangeLabel(p.cases))}</td>
       <td class="r">${n2(p.goods)}</td>
@@ -2370,9 +2399,9 @@
       <tbody>${palletRows}</tbody>
       <tfoot><tr>
         <td class="l b">Total</td><td class="l">${m.caseRows.length} case${m.caseRows.length === 1 ? "" : "s"}</td>
-        <td class="r b">${n2(m.goodsWeight)}</td><td class="r b">${n2(m.tareWeight)}</td><td class="r b">${n2(m.grossWeight)}</td>
+        <td class="r b">${n2(goodsTotal)}</td><td class="r b">${n2(tareTotal)}</td><td class="r b">${n2(grossTotal)}</td>
       </tr></tfoot>
-    </table>` : `<p class="note">Not shipped on pallets &mdash; goods weight ${n2(m.totalWeight)} kg.</p>`;
+    </table>` : `<p class="note">No pallets recorded for this shipment &mdash; goods weight ${n2(goodsTotal)} kg.</p>`;
     const caseRows = m.caseRows.map((c) => {
       const rows = c.contributions || [];
       if (!rows.length) return "";
@@ -2426,7 +2455,7 @@
       <span>Order <b>${esc(order.id)}</b></span>
       ${order.customerRef ? `<span>Their ref <b>${esc(order.customerRef)}</b></span>` : ""}
       <span>Shipped <b>${esc(order.shippedDate || "")}</b></span>
-      <span>Gross <b>${n2(m.grossWeight ?? m.totalWeight)} kg</b></span>
+      <span>Gross <b>${n2(grossTotal)} kg</b></span>
     </div>
     ${palletBlock}
     <h2>Case contents &mdash; ${m.caseRows.length} case${m.caseRows.length === 1 ? "" : "s"}, ${totalQty} item${totalQty === 1 ? "" : "s"}</h2>
@@ -2577,7 +2606,8 @@
     const qty = dest.qty == null || dest.qty === "" ? have : Math.round(Number(dest.qty) || 0);
     if (qty <= 0) return { error: "Quantity must be above zero." };
     if (qty > have) return { error: `Only ${have} on this row \u2014 can't move ${qty}.` };
-    if (toOrder === fromOrder) return { error: fromOrder ? "It's already on that order." : "It's already on the shelf." };
+    const reCase = toOrder && toOrder === fromOrder && dest.caseNum != null && String(dest.caseNum).trim() !== "";
+    if (toOrder === fromOrder && !reCase) return { error: fromOrder ? "It's already on that order \u2014 pick a case to move it between cases." : "It's already on the shelf." };
     if (toOrder && !(data.orders || []).some((o) => o.id === toOrder && !o.deleted)) return { error: `Order ${toOrder} not found.` };
     if (!toOrder && !String(dest.location || row.location || "").trim()) return { error: "Pick a shelf location for boxes going back to stock." };
     const customer = toOrder ? (data.orders || []).find((o) => o.id === toOrder)?.customer || "" : "";
@@ -2593,7 +2623,9 @@
       movedFrom: row.id
     };
     let nextRuns;
-    if (qty === have) {
+    if (reCase) {
+      nextRuns = runs;
+    } else if (qty === have) {
       nextRuns = runs.map((r) => r.id === rowId ? { ...moved, id: r.id, movedFrom: void 0 } : r);
     } else {
       nextRuns = runs.map((r) => r.id === rowId ? {
@@ -2607,17 +2639,40 @@
     const spec = row.productSize;
     const box = row.boxNumber;
     const facts = [];
-    if (fromOrder) facts.push({ kind: "unallocated", boxNumber: box, spec, qty, orderId: fromOrder, source: "move", sourceId: row.id });
-    if (toOrder) facts.push({ kind: "allocated", boxNumber: box, spec, qty, orderId: toOrder, source: "move", sourceId: row.id });
+    if (!reCase) {
+      if (fromOrder) facts.push({ kind: "unallocated", boxNumber: box, spec, qty, orderId: fromOrder, source: "move", sourceId: row.id });
+      if (toOrder) facts.push({ kind: "allocated", boxNumber: box, spec, qty, orderId: toOrder, source: "move", sourceId: row.id });
+    }
     const chosenCase = toOrder && dest.caseNum != null && String(dest.caseNum).trim() !== "" ? Number(dest.caseNum) : null;
     if (chosenCase != null && !isNaN(chosenCase)) {
-      working = { ...working, orders: (working.orders || []).map((o) => o.id === toOrder ? { ...o, caseOverrides: { ...o.caseOverrides || {}, [box]: chosenCase } } : o) };
+      working = { ...working, orders: (working.orders || []).map((o) => {
+        if (o.id !== toOrder) return o;
+        const prev = (o.caseOverrides || {})[box];
+        let split;
+        if (prev != null && typeof prev === "object") split = { ...prev };
+        else if (typeof prev === "number") {
+          const already = (data.bondingRuns || []).filter((r) => !r.deleted && r.workNumber === toOrder && r.boxNumber === box && r.id !== row.id).reduce((t, r) => t + (Number(r.onOrderQty) || 0), 0);
+          split = already > 0 ? { [prev]: already } : {};
+        } else split = {};
+        if (reCase) {
+          let remaining = qty;
+          for (const n of Object.keys(split).map(Number).sort((x, y) => x - y)) {
+            if (remaining <= 0 || n === chosenCase) continue;
+            const take = Math.min(Number(split[n]) || 0, remaining);
+            split[n] = (Number(split[n]) || 0) - take;
+            remaining -= take;
+            if (split[n] <= 0) delete split[n];
+          }
+        }
+        split[chosenCase] = (Number(split[chosenCase]) || 0) + qty;
+        return { ...o, caseOverrides: { ...o.caseOverrides || {}, [box]: split } };
+      }) };
       facts.push({ kind: "placed", boxNumber: box, spec, qty, orderId: toOrder, caseNum: chosenCase, source: "move", sourceId: row.id });
     }
     working = recordMovements(working, facts);
     const fromLabel = fromOrder ? `order ${fromOrder}` : `shelf${row.location ? ` ${row.location}` : ""}`;
     const toLabel = toOrder ? `order ${toOrder}${chosenCase != null && !isNaN(chosenCase) ? `, case ${chosenCase}` : ""}` : `shelf ${moved.location}`;
-    const summary = `Moved ${qty} \xD7 ${box || row.id} from ${fromLabel} to ${toLabel}${qty < have ? ` (${have - qty} left where it was)` : ""}`;
+    const summary = reCase ? `Moved ${qty} \xD7 ${box || row.id} into case ${chosenCase} on ${toOrder}` : `Moved ${qty} \xD7 ${box || row.id} from ${fromLabel} to ${toLabel}${qty < have ? ` (${have - qty} left where it was)` : ""}`;
     working = { ...working, ...appendLog(working, {
       action: "stock_adjustment",
       entity: "bondingRun",
@@ -3447,9 +3502,12 @@ Here's the order:`;
   }
   function CaseMover({ boxNumber, caseNum, caseOverrides, setCaseOverrides, size = 30 }) {
     if (!boxNumber) return null;
-    const at = caseOverrides[boxNumber] ?? caseNum;
-    const moved = caseOverrides[boxNumber] != null;
+    const raw = caseOverrides[boxNumber];
+    const isSplit = raw != null && typeof raw === "object";
+    const at = isSplit ? caseNum : raw ?? caseNum;
+    const moved = raw != null;
     const move = (n) => {
+      if (isSplit) return;
       if (n >= 1) setCaseOverrides({ ...caseOverrides, [boxNumber]: n });
     };
     const btn = {
@@ -3465,7 +3523,7 @@ Here's the order:`;
       cursor: "pointer",
       padding: 0
     };
-    return /* @__PURE__ */ React.createElement("div", { className: "no-print", style: { display: "flex", alignItems: "center", gap: size > 36 ? 8 : 4, flexWrap: "wrap" } }, size > 36 && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, "In case"), /* @__PURE__ */ React.createElement("button", { onClick: () => move(at - 1), disabled: at <= 1, style: { ...btn, opacity: at <= 1 ? 0.35 : 1 }, title: "Move to the case before" }, "\u2212"), /* @__PURE__ */ React.createElement("span", { style: { minWidth: size > 36 ? 34 : 30, textAlign: "center", fontWeight: 800, fontSize: size > 36 ? 18 : 15, color: moved ? NAVY : INK } }, at), /* @__PURE__ */ React.createElement("button", { onClick: () => move(at + 1), style: btn, title: "Move to the case after" }, "+"), moved && /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement("div", { className: "no-print", style: { display: "flex", alignItems: "center", gap: size > 36 ? 8 : 4, flexWrap: "wrap" } }, size > 36 && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, "In case"), /* @__PURE__ */ React.createElement("button", { onClick: () => move(at - 1), disabled: isSplit || at <= 1, style: { ...btn, opacity: isSplit || at <= 1 ? 0.35 : 1 }, title: isSplit ? "This box is split across cases \u2014 put back to change it" : "Move to the case before" }, "\u2212"), /* @__PURE__ */ React.createElement("span", { style: { minWidth: size > 36 ? 34 : 30, textAlign: "center", fontWeight: 800, fontSize: size > 36 ? 18 : 15, color: moved ? NAVY : INK } }, at), /* @__PURE__ */ React.createElement("button", { onClick: () => move(at + 1), disabled: isSplit, style: { ...btn, opacity: isSplit ? 0.35 : 1 }, title: isSplit ? "This box is split across cases \u2014 put back to change it" : "Move to the case after" }, "+"), moved && /* @__PURE__ */ React.createElement(
       "button",
       {
         onClick: () => {
@@ -6587,10 +6645,21 @@ Here's the order:`;
     confirmedCases = confirmed;
     const explicit = {};
     for (const [n, v] of Object.entries(confirmedCases)) if (v && typeof v === "object" && v.boxes) explicit[Number(n)] = v.boxes;
-    const explicitBoxes = new Set(Object.values(explicit).flatMap((b) => Object.keys(b)));
+    const planned = {};
+    for (const [box, v] of Object.entries(caseOverrides)) {
+      if (!v || typeof v !== "object") continue;
+      for (const [n, q] of Object.entries(v)) {
+        if (!(Number(q) > 0)) continue;
+        (planned[Number(n)] = planned[Number(n)] || {})[box] = (planned[Number(n)][box] || 0) + Number(q);
+      }
+      delete caseOverrides[box];
+    }
+    const plannedBoxes = new Set(Object.values(planned).flatMap((b) => Object.keys(b)));
+    const explicitBoxes = /* @__PURE__ */ new Set([...Object.values(explicit).flatMap((b) => Object.keys(b)), ...plannedBoxes]);
     if (explicitBoxes.size) {
       const need = {};
       for (const boxes of Object.values(explicit)) for (const [b, q] of Object.entries(boxes)) need[b] = (need[b] || 0) + Number(q);
+      for (const boxes of Object.values(planned)) for (const [b, q] of Object.entries(boxes)) need[b] = (need[b] || 0) + Number(q);
       caseRows = caseRows.map((c) => ({ ...c, contributions: c.contributions.flatMap((row) => {
         if (!row.boxNumber || !(need[row.boxNumber] > 0)) return [row];
         const take = Math.min(Number(row.qty) || 0, need[row.boxNumber]);
@@ -6598,6 +6667,27 @@ Here's the order:`;
         const rest = (Number(row.qty) || 0) - take;
         return rest > 0 ? [{ ...row, qty: rest }] : [];
       }) }));
+    }
+    if (Object.keys(planned).length > 0) {
+      for (const n of Object.keys(planned).map(Number)) {
+        if (!caseRows.some((c) => c.caseNum === n)) caseRows.push({ caseNum: n, maxSize: CASE_MAX_SIZE_DEFAULT, contributions: [] });
+      }
+      caseRows = caseRows.map((c) => {
+        const here = planned[c.caseNum];
+        if (!here) return c;
+        const added = Object.entries(here).map(([box, qty]) => {
+          const run = bondingRuns.find((r) => !r.deleted && r.workNumber === orderId && r.boxNumber === box);
+          return {
+            spec: run ? run.productSize : box,
+            customerRef: null,
+            boxNumber: box,
+            batchCode: run ? run.baselineBatchCode || null : null,
+            qty: Number(qty) || 0,
+            moved: true
+          };
+        });
+        return { ...c, contributions: [...c.contributions, ...added] };
+      }).sort((a, b) => a.caseNum - b.caseNum);
     }
     if (Object.keys(caseOverrides).length > 0) {
       const capacityOf = new Map(caseRows.map((c) => [c.caseNum, Number(c.maxSize) || CASE_MAX_SIZE_DEFAULT]));
@@ -6622,7 +6712,7 @@ Here's the order:`;
           if (!r.boxNumber) plannedIdx.push(i);
         });
         c.contributions.forEach((r, i) => {
-          if (r.boxNumber && !r.confirmedQty && !r.offOrder && caseOverrides[r.boxNumber] !== c.caseNum) plannedIdx.push(i);
+          if (r.boxNumber && !r.confirmedQty && !r.offOrder && !r.moved && caseOverrides[r.boxNumber] !== c.caseNum) plannedIdx.push(i);
         });
         const drop = /* @__PURE__ */ new Set();
         for (let k = plannedIdx.length - 1; k >= 0 && total > cap; k--) {
@@ -6674,7 +6764,7 @@ Here's the order:`;
         if (!confirmedCases[c.caseNum]) return c;
         const kept = [], dropped = [];
         for (const row of c.contributions) {
-          const placedHere = row.boxNumber && !explicitBoxes.has(row.boxNumber) && (caseOverrides[row.boxNumber] === c.caseNum || row.offOrder);
+          const placedHere = row.moved || row.boxNumber && !explicitBoxes.has(row.boxNumber) && (caseOverrides[row.boxNumber] === c.caseNum || row.offOrder);
           (placedHere ? kept : dropped).push(row);
         }
         for (const row of dropped) (row.boxNumber ? displacedBoxes : displacedPlanned).push({ ...row, fromCase: c.caseNum, maxSize: c.maxSize });
@@ -7772,12 +7862,12 @@ This changes the order quantities. It is recorded in the change log and can be r
       const d = draftFor(r);
       const have = holds(r);
       if (have <= 0) return null;
-      const ranked = ordersNeedingSpec(data, r.productSize, r.workNumber ? [r.workNumber] : []);
+      const ranked = ordersNeedingSpec(data, r.productSize, []);
       const toShelf = d.to === "__shelf__";
       return /* @__PURE__ */ React.createElement("div", { key: r.id, className: "mb-3 pb-3", style: { borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline gap-2 flex-wrap mb-2", style: { fontSize: 14 } }, /* @__PURE__ */ React.createElement("b", null, have), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, have === 1 ? "box" : "boxes", " currently"), r.workNumber ? (() => {
         const inCases = casesHoldingBox(data, r.workNumber, r.boxNumber);
         return /* @__PURE__ */ React.createElement("span", null, "on ", /* @__PURE__ */ React.createElement("b", null, r.workNumber), orderName(r.workNumber) ? ` \u2014 ${orderName(r.workNumber)}` : "", inCases.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, ", ", /* @__PURE__ */ React.createElement("b", null, "case", inCases.length === 1 ? "" : "s", " ", caseRangeLabel(inCases))));
-      })() : /* @__PURE__ */ React.createElement("span", null, "on the shelf", r.location ? /* @__PURE__ */ React.createElement(React.Fragment, null, " at ", /* @__PURE__ */ React.createElement("b", null, r.location)) : /* @__PURE__ */ React.createElement("span", { style: { color: AMBER } }, " (no location recorded)"))), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 items-center flex-wrap" }, /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 220px", minWidth: 0 } }, /* @__PURE__ */ React.createElement(Select, { value: d.to, onChange: (e) => setDraft(r, { to: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Move to\u2026"), r.workNumber && /* @__PURE__ */ React.createElement("option", { value: "__shelf__" }, "Back to the shelf"), /* @__PURE__ */ React.createElement("option", { value: "__scrap__" }, "Scrap (damaged / unusable)"), ranked.needing.length > 0 && /* @__PURE__ */ React.createElement("optgroup", { label: "Orders needing this size" }, ranked.needing.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.orderId, value: o.orderId }, o.customer, " \xB7 ", o.orderId, " \u2014 needs ", o.needs, o.priority != null ? ` \xB7 P${o.priority}` : "", o.dueDate ? ` \xB7 due ${o.dueDate}` : ""))), /* @__PURE__ */ React.createElement("optgroup", { label: "Every other open order" }, ranked.others.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.orderId, value: o.orderId }, o.customer, " \xB7 ", o.orderId))))), /* @__PURE__ */ React.createElement("div", { style: { width: 80 } }, /* @__PURE__ */ React.createElement(
+      })() : /* @__PURE__ */ React.createElement("span", null, "on the shelf", r.location ? /* @__PURE__ */ React.createElement(React.Fragment, null, " at ", /* @__PURE__ */ React.createElement("b", null, r.location)) : /* @__PURE__ */ React.createElement("span", { style: { color: AMBER } }, " (no location recorded)"))), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 items-center flex-wrap" }, /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 220px", minWidth: 0 } }, /* @__PURE__ */ React.createElement(Select, { value: d.to, onChange: (e) => setDraft(r, { to: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Move to\u2026"), r.workNumber && /* @__PURE__ */ React.createElement("option", { value: r.workNumber }, "Move between cases on ", r.workNumber), r.workNumber && /* @__PURE__ */ React.createElement("option", { value: "__shelf__" }, "Back to the shelf"), /* @__PURE__ */ React.createElement("option", { value: "__scrap__" }, "Scrap (damaged / unusable)"), ranked.needing.filter((o) => o.orderId !== r.workNumber).length > 0 && /* @__PURE__ */ React.createElement("optgroup", { label: "Orders needing this size" }, ranked.needing.filter((o) => o.orderId !== r.workNumber).map((o) => /* @__PURE__ */ React.createElement("option", { key: o.orderId, value: o.orderId }, o.customer, " \xB7 ", o.orderId, " \u2014 needs ", o.needs, o.priority != null ? ` \xB7 P${o.priority}` : "", o.dueDate ? ` \xB7 due ${o.dueDate}` : ""))), /* @__PURE__ */ React.createElement("optgroup", { label: "Every other open order" }, ranked.others.filter((o) => o.orderId !== r.workNumber).map((o) => /* @__PURE__ */ React.createElement("option", { key: o.orderId, value: o.orderId }, o.customer, " \xB7 ", o.orderId))))), /* @__PURE__ */ React.createElement("div", { style: { width: 80 } }, /* @__PURE__ */ React.createElement(
         TextInput,
         {
           type: "number",
