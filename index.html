@@ -714,7 +714,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-04.2";
+  var APP_VERSION = "2026-09-04.3";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -6008,12 +6008,13 @@ Here's the order:`;
   }
   function CaseContentsEditor({ order, caseNum, rows, data, onSave, onCancel }) {
     const lines = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description) && !isSmallItem(li.description));
-    const [draft, setDraft] = useState(() => rows.map((r) => ({
-      key: r.boxNumber || `plan-${r.spec}`,
+    const [draft, setDraft] = useState(() => rows.map((r, i) => ({
+      key: `${r.boxNumber || `plan-${r.spec}`}#${i}`,
       spec: r.spec,
       boxNumber: r.boxNumber || "",
       qty: Number(r.qty) || 0
     })));
+    const nextKey = useRef(rows.length);
     const [spec, setSpec] = useState("");
     const [box, setBox] = useState("");
     const [qty, setQty] = useState("");
@@ -6054,7 +6055,7 @@ Here's the order:`;
     const isUnknown = manual && !!chosenCode && !options.some((o) => o.code === chosenCode);
     const add = () => {
       if (!spec || !chosenCode || !(Number(qty) > 0)) return;
-      setDraft((d) => [...d, { key: chosenCode + "-" + d.length, spec, boxNumber: chosenCode, qty: Number(qty), unknown: isUnknown }]);
+      setDraft((d) => [...d, { key: `${chosenCode}#new${nextKey.current++}`, spec, boxNumber: chosenCode, qty: Number(qty), unknown: isUnknown }]);
       setSpec("");
       setBox("");
       setQty("");
@@ -6487,7 +6488,15 @@ Here's the order:`;
              confirmed case is closed: its contents are exactly what was saved.
              The planner may not put planned demand into it any more — whatever
              it wanted here goes to new cases at the end instead. */
-          confirmedCases: { ...o.confirmedCases || {}, [caseNum]: { boxes: Object.fromEntries(rows.filter((r) => r.boxNumber && Number(r.qty) > 0).map((r) => [String(r.boxNumber).trim(), Number(r.qty)])) } },
+          /* `empty: true` when a person confirmed a case with nothing in it. That
+             is a real answer — "this case is empty, the product is not in it" —
+             and it has to be distinguishable from the mis-key that leaves a bare
+             `{boxes:{}}`, which is discarded. Without the flag, deleting every row
+             and confirming brought the planned rows straight back. */
+          confirmedCases: { ...o.confirmedCases || {}, [caseNum]: (() => {
+            const boxes = Object.fromEntries(rows.filter((r) => r.boxNumber && Number(r.qty) > 0).map((r) => [String(r.boxNumber).trim(), Number(r.qty)]));
+            return Object.keys(boxes).length ? { boxes } : { boxes, empty: true };
+          })() },
           updatedAt: stamp
         };
       })
@@ -6593,6 +6602,7 @@ Here's the order:`;
   function isCaseClosed(caseNum, { confirmedCases = {}, caseWeights = {}, palletAssignments = {}, fill = null, capacity = CASE_MAX_SIZE_DEFAULT } = {}) {
     if (String(caseWeights[caseNum] ?? "").trim() !== "" && Number(caseWeights[caseNum]) > 0) return true;
     if (String(palletAssignments[caseNum] ?? "").trim() !== "") return true;
+    if (confirmedCases[caseNum] && confirmedCases[caseNum].empty === true) return true;
     if (confirmedCases[caseNum] && fill != null && fill >= capacity) return true;
     return false;
   }
@@ -6625,6 +6635,10 @@ Here's the order:`;
     const seen = /* @__PURE__ */ new Map();
     for (const [n, v] of Object.entries(confirmedCases || {})) {
       if (v === true) {
+        confirmed[n] = v;
+        continue;
+      }
+      if (v && typeof v === "object" && v.empty === true) {
         confirmed[n] = v;
         continue;
       }
@@ -6776,17 +6790,18 @@ Here's the order:`;
         }
         return { ...c, contributions: kept, confirmed: true };
       });
+      const keepCase = (c) => c.contributions.length > 0 || confirmedCases[c.caseNum] && confirmedCases[c.caseNum].empty === true;
       if (displacedPlanned.length) {
-        caseRows = caseRows.filter((c) => c.contributions.length > 0);
+        caseRows = caseRows.filter(keepCase);
         caseRows = refillCases(
           caseRows,
           displacedPlanned.map((row) => ({ spec: row.spec, customerRef: row.customerRef || null, boxNumber: null, batchCode: null, qty: row.qty, maxSize: row.maxSize })),
           startingCaseNum,
           closed
         );
-        caseRows = caseRows.filter((c) => c.contributions.length > 0).sort((a, b) => a.caseNum - b.caseNum);
+        caseRows = caseRows.filter(keepCase).sort((a, b) => a.caseNum - b.caseNum);
       } else {
-        caseRows = caseRows.filter((c) => c.contributions.length > 0);
+        caseRows = caseRows.filter(keepCase);
       }
     }
     caseRows = caseRows.map((c) => {
@@ -6889,12 +6904,12 @@ This changes the order quantities. It is recorded in the change log and can be r
     const [sizeFilter, setSizeFilter] = useState("all");
     const [packView, setPackView] = useState("grid");
     const caseRecords = data.cases || [];
-    const caseWeights = new Proxy({}, { get: (_t, k) => caseWeightOf(caseRecords, order, k), has: () => true, ownKeys: () => Object.keys(order?.caseWeights || {}), getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true }) });
+    const caseWeights = new Proxy({}, { get: (_t, k) => typeof k === "symbol" ? void 0 : caseWeightOf(caseRecords, order, k), has: () => true, ownKeys: () => Object.keys(order?.caseWeights || {}), getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true }) });
     const smallCaseSizes = order?.smallCaseSizes || {};
     const caseRemovals = order?.caseRemovals || {};
     const confirmedCases = order?.confirmedCases || {};
     const caseOverrides = order?.caseOverrides || {};
-    const palletAssignments = new Proxy({}, { get: (_t, k) => casePalletOf(caseRecords, order, k), has: () => true, ownKeys: () => Object.keys(order?.palletAssignments || {}), getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true }) });
+    const palletAssignments = new Proxy({}, { get: (_t, k) => typeof k === "symbol" ? void 0 : casePalletOf(caseRecords, order, k), has: () => true, ownKeys: () => Object.keys(order?.palletAssignments || {}), getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true }) });
     const palletWeights = order?.palletWeights || {};
     const packedOutside = liveMapEntries(order?.packedOutside);
     const writeCaseField = (prevData, caseNum, patch) => {
