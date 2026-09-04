@@ -288,7 +288,11 @@
     .no-print { display: none !important; }
     /* The glue line make list is the one thing on that screen worth printing —
        the die tabs and the per-die table are for the screen. */
-    .print-only-block { break-inside: auto; }
+    /* Collapsed on screen must still print. The collapse sets an inline
+       display:none, which beats a plain rule — hence !important. Without it,
+       a panel somebody happened to have shut would print blank, which is the
+       exact class of fault the pick list had on real paper. */
+    .print-only-block { break-inside: auto; display: block !important; }
     /* Reasoning is collapsed on screen but always printed — paper has no tap. */
     .print-only { display: block !important; }
     /* The case map is a separate sheet: printed only via its own button, and
@@ -714,7 +718,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-04.3";
+  var APP_VERSION = "2026-09-04.6";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -766,9 +770,19 @@
         document.removeEventListener("visibilitychange", onVisible);
       };
     }, []);
+    const askedFor = (() => {
+      try {
+        return new URLSearchParams(location.search).get("v");
+      } catch {
+        return null;
+      }
+    })();
+    const staleOnServer = !!askedFor && VERSION_PATTERN.test(askedFor) && askedFor !== APP_VERSION;
     return {
       latest: state.latest,
-      updateReady: !!state.latest && Date.now() >= snoozedUntil,
+      staleOnServer,
+      staleWanted: askedFor,
+      updateReady: !staleOnServer && !!state.latest && Date.now() >= snoozedUntil,
       applyUpdate: () => {
         location.replace(location.pathname + "?v=" + encodeURIComponent(state.latest || String(Date.now())));
       },
@@ -3107,7 +3121,28 @@
         priority: r.priority ?? null,
         qty: r.stillToGlueLine,
         spec: r.spec,
-        reasons: [`${r.stillToGlueLine}m not yet covered by any reel`]
+        /* Chris, 4 Sep: made a reel, and the line still said "372m not yet
+                   covered by any reel" — which reads as though nothing had been done.
+                   It HAD counted it: the figure had come down from 912m. The number
+                   was right and the sentence was wrong.
+        
+                   Three different situations were all printed the same way, so a reel
+                   you had just made looked identical to a size nobody had started:
+        
+                     nothing made      → "Nothing made yet. Needs 912m."
+                     part made         → "540m made. Still needs 372m."
+                     made but unchecked→ "…and 540m is waiting to be checked."
+        
+                   Plain sentences, no jargon, and the amount you still have to make is
+                   always the last thing said, because that is the instruction. */
+        reasons: [(() => {
+          const made = Math.round(Number(r.glueLinedMeters) || 0);
+          const left = Math.round(Number(r.stillToGlueLine) || 0);
+          const unchecked = Math.round(Number(r.uncheckedMeters) || 0);
+          const head = made > 0 ? `${made}m made already. Still needs ${left}m.` : `Nothing made yet. Needs ${left}m.`;
+          if (unchecked <= 0) return head;
+          return unchecked >= made ? `${head} None of that has been checked yet \u2014 bonding can't use it until it is.` : `${head} ${unchecked}m of what's made still needs checking.`;
+        })()]
       });
     });
     const rank = (arr) => arr.sort((a, b) => b.score - a.score);
@@ -6220,7 +6255,30 @@ Here's the order:`;
     }).filter((r) => r.total > 0);
     const grand = rows.reduce((t, r) => t + r.total, 0);
     const short = (spec) => String(spec).replace(/^PX Plus\s*/i, "").replace(/^Ken PX\s*/i, "Ken ").replace(/\s*\(\d+(\.\d+)?m\)\s*$/, "").trim();
-    return /* @__PURE__ */ React.createElement("div", { className: "case-map-sheet" }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Georgia, serif", color: "#000" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 26, fontWeight: 700 } }, order.customer), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, marginBottom: 2 } }, "Order ", order.id, order.customerRef ? ` \xB7 their ref ${order.customerRef}` : ""), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, marginBottom: 14 } }, rows.length, " case", rows.length === 1 ? "" : "s", " \xB7 ", grand, " boxes altogether"), /* @__PURE__ */ React.createElement("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 15 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: { textAlign: "left", borderBottom: "2px solid #000", padding: "6px 8px", width: 62 } }, "Case"), /* @__PURE__ */ React.createElement("th", { style: { textAlign: "left", borderBottom: "2px solid #000", padding: "6px 8px" } }, "What goes in it"), /* @__PURE__ */ React.createElement("th", { style: { textAlign: "right", borderBottom: "2px solid #000", padding: "6px 8px", width: 70 } }, "Boxes"), /* @__PURE__ */ React.createElement("th", { style: { textAlign: "center", borderBottom: "2px solid #000", padding: "6px 8px", width: 60 } }, "Done"))), /* @__PURE__ */ React.createElement("tbody", null, rows.map((r) => /* @__PURE__ */ React.createElement("tr", { key: r.caseNum, style: { pageBreakInside: "avoid" } }, /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px", fontSize: 22, fontWeight: 700, verticalAlign: "top" } }, r.caseNum), /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px" } }, r.lines.map(([spec, qty], i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { lineHeight: 1.5 } }, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 17 } }, qty), " \xD7 ", short(spec)))), /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px", textAlign: "right", fontSize: 19, fontWeight: 700, verticalAlign: "top" } }, r.total), /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px", textAlign: "center", verticalAlign: "top" } }, /* @__PURE__ */ React.createElement("span", { style: { display: "inline-block", width: 22, height: 22, border: "2px solid #000" } })))))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, marginTop: 16 } }, "Printed ", (/* @__PURE__ */ new Date()).toLocaleString("en-GB", { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" }), ". If a case is different from this list, write on it \u2014 the sheet is the record.")));
+    const [open, setOpen] = useState(false);
+    return /* @__PURE__ */ React.createElement("div", { className: "case-map-sheet" }, /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => setOpen((v) => !v),
+        className: "no-print",
+        style: {
+          background: "none",
+          border: `1px solid ${BORDER}`,
+          borderRadius: 6,
+          cursor: "pointer",
+          padding: "8px 12px",
+          marginBottom: open ? 12 : 0,
+          width: "100%",
+          textAlign: "left",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8
+        }
+      },
+      /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: INK } }, "Printable packing list", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontWeight: 400 } }, " \u2014 ", rows.length, " case", rows.length === 1 ? "" : "s", ", ", grand, " boxes")),
+      /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 12 } }, open ? "hide" : "show")
+    ), /* @__PURE__ */ React.createElement("div", { className: open ? "" : "print-only-block", style: open ? void 0 : { display: "none" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Georgia, serif", color: "#000" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 26, fontWeight: 700 } }, order.customer), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, marginBottom: 2 } }, "Order ", order.id, order.customerRef ? ` \xB7 their ref ${order.customerRef}` : ""), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, marginBottom: 14 } }, rows.length, " case", rows.length === 1 ? "" : "s", " \xB7 ", grand, " boxes altogether"), /* @__PURE__ */ React.createElement("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 15 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: { textAlign: "left", borderBottom: "2px solid #000", padding: "6px 8px", width: 62 } }, "Case"), /* @__PURE__ */ React.createElement("th", { style: { textAlign: "left", borderBottom: "2px solid #000", padding: "6px 8px" } }, "What goes in it"), /* @__PURE__ */ React.createElement("th", { style: { textAlign: "right", borderBottom: "2px solid #000", padding: "6px 8px", width: 70 } }, "Boxes"), /* @__PURE__ */ React.createElement("th", { style: { textAlign: "center", borderBottom: "2px solid #000", padding: "6px 8px", width: 60 } }, "Done"))), /* @__PURE__ */ React.createElement("tbody", null, rows.map((r) => /* @__PURE__ */ React.createElement("tr", { key: r.caseNum, style: { pageBreakInside: "avoid" } }, /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px", fontSize: 22, fontWeight: 700, verticalAlign: "top" } }, r.caseNum), /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px" } }, r.lines.map(([spec, qty], i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { lineHeight: 1.5 } }, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 17 } }, qty), " \xD7 ", short(spec)))), /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px", textAlign: "right", fontSize: 19, fontWeight: 700, verticalAlign: "top" } }, r.total), /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px", textAlign: "center", verticalAlign: "top" } }, /* @__PURE__ */ React.createElement("span", { style: { display: "inline-block", width: 22, height: 22, border: "2px solid #000" } })))))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, marginTop: 16 } }, "Printed ", (/* @__PURE__ */ new Date()).toLocaleString("en-GB", { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" }), ". If a case is different from this list, write on it \u2014 the sheet is the record."))));
   }
   function CaseGrid({ cases, caseWeights, setCaseWeights, palletAssignments, setPalletAssignments, highlightBoxes = null, highlightKey = null, litCases = [], caseOverrides = {}, setCaseOverrides = null, onEditCase = null, editOrder = null, editData = null }) {
     const [editingCase, setEditingCase] = useState(null);
@@ -7424,6 +7482,215 @@ This changes the order quantities. It is recorded in the change log and can be r
     const Row = ({ label, value, sub }) => /* @__PURE__ */ React.createElement("div", { style: { ...row, padding: "6px 0", borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("span", null, label, sub && /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 12 } }, " ", sub)), /* @__PURE__ */ React.createElement("b", { style: { whiteSpace: "nowrap" } }, value));
     return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: INK_MUTED } }, "WHAT WE HAVE"), /* @__PURE__ */ React.createElement("div", { className: "text-lg font-semibold font-display mb-3" }, w.spec), /* @__PURE__ */ React.createElement(Row, { label: "On the shelf", value: w.onShelf, sub: "free to pick" }), /* @__PURE__ */ React.createElement(Row, { label: "Committed to orders", value: w.onOrders.reduce((t, o) => t + o.qty, 0) }), w.otherQty > 0 && /* @__PURE__ */ React.createElement(Row, { label: "Other Stock", value: w.otherQty }), /* @__PURE__ */ React.createElement(Row, { label: "Reels available to bond", value: `${Math.round(w.reelMetres)}m`, sub: `${w.reels.length} reel${w.reels.length === 1 ? "" : "s"}` }), /* @__PURE__ */ React.createElement(Row, { label: "Still ordered by customers", value: w.ordered }), w.scrapped > 0 && /* @__PURE__ */ React.createElement(Row, { label: "Scrapped", value: w.scrapped })), w.shelves.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "WHERE IT IS"), w.shelves.map((sh) => /* @__PURE__ */ React.createElement("div", { key: sh.location, className: "mb-2.5" }, /* @__PURE__ */ React.createElement("div", { style: { ...row, fontWeight: 600 } }, /* @__PURE__ */ React.createElement("span", { style: { color: sh.location.startsWith("(") ? AMBER : INK } }, sh.location), /* @__PURE__ */ React.createElement("span", { style: { whiteSpace: "nowrap" } }, sh.qty)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, sh.boxes.map((b) => `${b.boxNumber} (${b.qty})`).join(" \xB7 "))))), w.onOrders.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "WHO HAS CLAIMED IT"), w.onOrders.map((o) => /* @__PURE__ */ React.createElement("div", { key: o.orderId, className: "mb-2.5" }, /* @__PURE__ */ React.createElement("div", { style: { ...row, fontWeight: 600 } }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, o.orderId), " ", o.customer, o.dueDate ? /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontWeight: 400 } }, " \xB7 due ", o.dueDate) : null), /* @__PURE__ */ React.createElement("span", { style: { whiteSpace: "nowrap" } }, o.qty)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, o.boxes.map((b) => `${b.boxNumber} (${b.qty})`).join(" \xB7 "), o.inCases.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, " \u2014 in case", o.inCases.length === 1 ? "" : "s", " ", [...new Set(o.inCases.map((c) => c.caseNum))].sort((a, z) => a - z).join(", ")))))), w.other.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "OTHER STOCK"), w.other.map((o) => /* @__PURE__ */ React.createElement("div", { key: o.id, style: { ...row, padding: "4px 0" } }, /* @__PURE__ */ React.createElement("span", null, o.boxNumber || "(no code)", o.notes ? /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " \xB7 ", o.notes) : null), /* @__PURE__ */ React.createElement("b", { style: { whiteSpace: "nowrap" } }, o.qty)))), w.reels.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "REELS THAT COULD MAKE MORE"), w.reels.map((r) => /* @__PURE__ */ React.createElement("div", { key: r.batchNumber, style: { ...row, padding: "4px 0" } }, /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, r.batchNumber), /* @__PURE__ */ React.createElement("b", { style: { whiteSpace: "nowrap" } }, Math.round(r.remaining), "m")))));
   }
+  var DISCREPANCY_DISMISSALS_KEY = "matrixDiscrepancyDismissals";
+  function readDiscrepancyDismissals() {
+    try {
+      return JSON.parse(localStorage.getItem(DISCREPANCY_DISMISSALS_KEY) || "{}");
+    } catch {
+      return {};
+    }
+  }
+  function writeDiscrepancyDismissal(id, reason) {
+    try {
+      const all = readDiscrepancyDismissals();
+      all[id] = { at: (/* @__PURE__ */ new Date()).toISOString(), by: currentActor(), reason: String(reason || "").trim() };
+      localStorage.setItem(DISCREPANCY_DISMISSALS_KEY, JSON.stringify(all));
+    } catch {
+    }
+  }
+  function clearDiscrepancyDismissal(id) {
+    try {
+      const all = readDiscrepancyDismissals();
+      delete all[id];
+      localStorage.setItem(DISCREPANCY_DISMISSALS_KEY, JSON.stringify(all));
+    } catch {
+    }
+  }
+  function findDiscrepancies(data) {
+    const runs = (data.bondingRuns || []).filter((r) => !r.deleted);
+    const orders = new Map((data.orders || []).filter((o) => !o.deleted).map((o) => [o.id, o]));
+    const batchNums = new Set((data.glueLineBatches || []).filter((b) => !b.deleted).map((b) => String(b.batchNumber || "").trim().toUpperCase()).filter(Boolean));
+    const out = [];
+    const add = (o) => out.push(o);
+    const byBox = /* @__PURE__ */ new Map();
+    for (const r of runs) {
+      const code = String(r.boxNumber || "").trim().toUpperCase();
+      if (!code) continue;
+      if (!byBox.has(code)) byBox.set(code, /* @__PURE__ */ new Set());
+      byBox.get(code).add(String(r.productSize || "").trim());
+    }
+    for (const [code, specs] of byBox) {
+      if (specs.size < 2) continue;
+      add({
+        id: `dupspec:${code}:${[...specs].sort().join("|")}`,
+        kind: "Duplicate box code",
+        severity: "high",
+        what: `${code} describes ${specs.size} different products`,
+        detail: [...specs].join("  \xB7  "),
+        why: "Two physically different boxes were given the same code. Every screen that looks the code up gets one of them at random.",
+        todo: "Count them at the factory and give one a new code \u2014 it can't be settled from the records.",
+        fixHere: false,
+        ref: code
+      });
+    }
+    const missing = /* @__PURE__ */ new Map();
+    for (const r of runs) {
+      const b = String(r.baselineBatchCode || "").trim().toUpperCase();
+      if (!b || batchNums.has(b)) continue;
+      if (!missing.has(b)) missing.set(b, []);
+      missing.get(b).push(r.boxNumber || r.id);
+    }
+    for (const [b, boxes] of missing) {
+      add({
+        id: `nobatch:${b}`,
+        kind: "Missing batch",
+        severity: "high",
+        what: `${b} isn't a batch in the system`,
+        detail: `${boxes.length} box${boxes.length === 1 ? "" : "es"}: ${boxes.slice(0, 6).join(", ")}${boxes.length > 6 ? "\u2026" : ""}`,
+        why: "Traceability is broken for these boxes \u2014 there is no reel behind them.",
+        todo: "Check the paper record: either the batch was never logged, or the code was mistyped on the box.",
+        fixHere: false,
+        ref: boxes[0]
+      });
+    }
+    for (const r of runs) {
+      if (!r.workNumber || orders.has(r.workNumber)) continue;
+      add({
+        id: `ghostorder:${r.id}:${r.workNumber}`,
+        kind: "Order gone",
+        severity: "high",
+        what: `${r.boxNumber || r.id} is allocated to ${r.workNumber}, which no longer exists`,
+        detail: `${r.onOrderQty || 0} box${(r.onOrderQty || 0) === 1 ? "" : "es"} \xB7 ${r.productSize || ""}`,
+        why: "These boxes are committed to nothing. They don't show as stock and they can't be picked.",
+        todo: "Put them back on the shelf, or onto the order that replaced it.",
+        fixHere: true,
+        ref: r.boxNumber || r.id
+      });
+    }
+    for (const r of runs) {
+      const made = Number(r.amountMade) || 0, on = Number(r.onOrderQty) || 0, st = Number(r.toStock) || 0;
+      if (made === on + st) continue;
+      add({
+        id: `sums:${r.id}:${made}:${on}:${st}`,
+        kind: "Doesn't add up",
+        severity: "high",
+        what: `${r.boxNumber || r.id}: ${made} made, but ${on} on order + ${st} to stock = ${on + st}`,
+        detail: r.productSize || "",
+        why: `${Math.abs(made - (on + st))} box${Math.abs(made - (on + st)) === 1 ? "" : "es"} ${made > on + st ? "unaccounted for" : "counted twice"}.`,
+        todo: "Open the row in Bonding and correct whichever figure is wrong.",
+        fixHere: true,
+        ref: r.boxNumber || r.id
+      });
+    }
+    const noLoc = runs.filter((r) => (Number(r.toStock) || 0) > 0 && !String(r.location || "").trim());
+    if (noLoc.length) {
+      add({
+        id: `noloc:${noLoc.map((r) => r.id).sort().join(",")}`,
+        kind: "No location",
+        severity: "low",
+        what: `${noLoc.length} box${noLoc.length === 1 ? "" : "es"} on the shelf with no location`,
+        detail: noLoc.slice(0, 8).map((r) => r.boxNumber || r.id).join(", ") + (noLoc.length > 8 ? "\u2026" : ""),
+        why: "They count as stock but nobody can be told where to find them.",
+        todo: "Find them and set a location on History and movement.",
+        fixHere: true,
+        ref: noLoc[0].boxNumber || noLoc[0].id
+      });
+    }
+    const unchecked = runs.filter((r) => String(r.checked || "").toLowerCase() !== "yes" && (Number(r.amountMade) || 0) > 0);
+    if (unchecked.length) {
+      add({
+        id: `unchecked:${unchecked.map((r) => r.id).sort().join(",")}`,
+        kind: "Not checked",
+        severity: "low",
+        what: `${unchecked.length} box${unchecked.length === 1 ? "" : "es"} never marked checked`,
+        detail: unchecked.slice(0, 8).map((r) => `${r.boxNumber || r.id}${r.date ? ` (${r.date})` : ""}`).join(", ") + (unchecked.length > 8 ? "\u2026" : ""),
+        why: "An unchecked box counts toward nothing \u2014 not stock, not picking. It is made but invisible.",
+        todo: "Check them and set Checked to Yes, or say why they can't be.",
+        fixHere: true,
+        ref: unchecked[0].boxNumber || unchecked[0].id
+      });
+    }
+    for (const o of orders.values()) {
+      for (const [n, v] of Object.entries(o.confirmedCases || {})) {
+        if (!(v && typeof v === "object")) continue;
+        if (Object.keys(v.boxes || {}).length) continue;
+        if (v.empty === true) continue;
+        add({
+          id: `emptyconf:${o.id}:${n}`,
+          kind: "Empty confirmation",
+          severity: "low",
+          what: `${o.id} case ${n} was confirmed with nothing in it`,
+          detail: o.customer || "",
+          why: "Almost always a mis-key \u2014 the editor was opened and confirmed without entering anything. The app ignores it, so the case shows planned contents again.",
+          todo: "Open the case and either record what's in it, or confirm it empty on purpose.",
+          fixHere: true,
+          ref: o.id
+        });
+      }
+    }
+    for (const o of orders.values()) {
+      for (const [box, v] of Object.entries(o.caseOverrides || {})) {
+        const onOrder = runs.some((r) => r.boxNumber === box && r.workNumber === o.id);
+        if (onOrder) continue;
+        add({
+          id: `orphanplace:${o.id}:${box}`,
+          kind: "Placement with no box",
+          severity: "low",
+          what: `${o.id} says ${box} is in case ${typeof v === "object" ? Object.keys(v).join(", ") : v}, but that box isn't on the order`,
+          detail: o.customer || "",
+          why: "The box was moved away or deleted after being placed. The placement does nothing.",
+          todo: "Clear it from the Packing List, or put the box back on this order.",
+          fixHere: true,
+          ref: o.id
+        });
+      }
+    }
+    const rank = { high: 0, low: 1 };
+    out.sort((a, b) => rank[a.severity] - rank[b.severity] || a.kind.localeCompare(b.kind) || a.what.localeCompare(b.what));
+    return out;
+  }
+  function DiscrepanciesView({ data, onLookUp }) {
+    const [dismissals, setDismissals] = useState(() => readDiscrepancyDismissals());
+    const [showDismissed, setShowDismissed] = useState(false);
+    const all = useMemo(() => findDiscrepancies(data), [data]);
+    const live = all.filter((f) => !dismissals[f.id]);
+    const hidden = all.filter((f) => dismissals[f.id]);
+    const shown = showDismissed ? hidden : live;
+    const dismiss = (f) => {
+      const reason = window.prompt(`Set aside: ${f.what}
+
+Why is this alright? (kept with the date, and it comes back if the data changes)`);
+      if (reason === null) return;
+      writeDiscrepancyDismissal(f.id, reason);
+      setDismissals(readDiscrepancyDismissals());
+    };
+    const restore = (f) => {
+      clearDiscrepancyDismissal(f.id);
+      setDismissals(readDiscrepancyDismissals());
+    };
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Discrepancies", subtitle: "Problems the app can see in its own records. Worked out fresh every time \u2014 fix the thing and the line disappears on its own." }), live.length === 0 && !showDismissed && /* @__PURE__ */ React.createElement(Panel, { className: "p-5 text-sm", style: { color: INK_MUTED } }, "\u2713 Nothing to chase. Every box adds up, every batch exists, every order is real."), shown.map((f) => /* @__PURE__ */ React.createElement(Panel, { key: f.id, className: "p-4 mb-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-start justify-between gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0, flex: "1 1 320px" } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 flex-wrap mb-1" }, /* @__PURE__ */ React.createElement("span", { style: {
+      fontSize: 10.5,
+      letterSpacing: ".06em",
+      textTransform: "uppercase",
+      fontWeight: 700,
+      color: f.severity === "high" ? RED : INK_MUTED
+    } }, f.kind), /* @__PURE__ */ React.createElement("span", { style: {
+      fontSize: 10.5,
+      padding: "1px 7px",
+      borderRadius: 20,
+      background: f.fixHere ? "#EEF1F8" : "#FFF4E0",
+      color: f.fixHere ? NAVY : "#8A6D1F",
+      fontWeight: 600
+    } }, f.fixHere ? "fixable here" : "needs the factory")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, fontWeight: 600 } }, f.what), f.detail && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-0.5", style: { color: INK_MUTED } }, f.detail), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: INK_MUTED } }, f.why), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK } }, /* @__PURE__ */ React.createElement("b", null, "Do:"), " ", f.todo), dismissals[f.id] && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: INK_MUTED } }, "Set aside ", new Date(dismissals[f.id].at).toLocaleDateString(), dismissals[f.id].reason ? ` \u2014 ${dismissals[f.id].reason}` : "")), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 no-print" }, f.ref && onLookUp && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => onLookUp(f.ref) }, "Look up"), dismissals[f.id] ? /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => restore(f) }, "Put back") : /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => dismiss(f) }, "Set aside"))))), hidden.length > 0 && /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => setShowDismissed((v) => !v),
+        className: "text-xs no-print",
+        style: { background: "none", border: "none", color: NAVY, cursor: "pointer", padding: "6px 0", textDecoration: "underline" }
+      },
+      showDismissed ? `\u2190 Back to the ${live.length} still open` : `${hidden.length} set aside \u2014 show`
+    ));
+  }
   function LiveBoxStockView({ data }) {
     const [search, setSearch] = useState("");
     const [openSpec, setOpenSpec] = useState(null);
@@ -7543,12 +7810,18 @@ This changes the order quantities. It is recorded in the change log and can be r
     ))) : /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Only an admin can clear this, and only by recording what was done."))))), closed.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-6" }, /* @__PURE__ */ React.createElement("button", { onClick: () => setShowClosed(!showClosed), className: "text-sm font-semibold", style: { background: "none", border: "none", color: NAVY, cursor: "pointer", padding: 0 } }, showClosed ? "Hide" : "Show", " ", closed.length, " cleared"), showClosed && closed.map((i) => /* @__PURE__ */ React.createElement("div", { key: i.id, className: "mt-2 px-3 py-2", style: { border: `1px solid ${BORDER}`, borderRadius: 6, fontSize: 13 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("b", null, i.summary), " ", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\xB7 ", KIND[i.kind] || i.kind)), /* @__PURE__ */ React.createElement("div", { style: { color: GREEN } }, "\u2713 ", i.resolution, " ", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014 ", i.resolvedBy, ", ", when(i.resolvedAt)))))));
   }
   function StockSection({ data, setData, initialQuery }) {
-    const [tab, setTab] = useState(initialQuery ? "history" : "history");
+    const [tab, setTab] = useState("history");
+    const [lookUp, setLookUp] = useState(null);
     const TABS = [
       { key: "history", label: "History and movement" },
       { key: "boxes", label: "Live box stock" },
-      { key: "reels", label: "Live reel stock" }
+      { key: "reels", label: "Live reel stock" },
+      { key: "discrepancies", label: "Discrepancies" }
     ];
+    const openCount = useMemo(() => {
+      const dis = readDiscrepancyDismissals();
+      return findDiscrepancies(data).filter((f) => !dis[f.id]).length;
+    }, [data]);
     return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-4 flex-wrap no-print" }, TABS.map((t) => /* @__PURE__ */ React.createElement(
       "button",
       {
@@ -7557,8 +7830,20 @@ This changes the order quantities. It is recorded in the change log and can be r
         className: "px-3.5 py-1.5 rounded-full text-sm font-medium",
         style: { border: `1px solid ${tab === t.key ? NAVY : BORDER}`, background: tab === t.key ? NAVY : "#fff", color: tab === t.key ? "#fff" : INK }
       },
-      t.label
-    ))), tab === "history" && /* @__PURE__ */ React.createElement(BoxHistoryView, { data, setData, initialQuery }), tab === "boxes" && /* @__PURE__ */ React.createElement(LiveBoxStockView, { data }), tab === "reels" && /* @__PURE__ */ React.createElement(LiveReelStockView, { data }));
+      t.label,
+      t.key === "discrepancies" && openCount > 0 && /* @__PURE__ */ React.createElement("span", { style: {
+        marginLeft: 6,
+        padding: "0 6px",
+        borderRadius: 20,
+        fontSize: 11,
+        fontWeight: 700,
+        background: tab === t.key ? "rgba(255,255,255,0.25)" : "#FBEAEA",
+        color: tab === t.key ? "#fff" : RED
+      } }, openCount)
+    ))), tab === "history" && /* @__PURE__ */ React.createElement(BoxHistoryView, { data, setData, initialQuery: lookUp || initialQuery }), tab === "boxes" && /* @__PURE__ */ React.createElement(LiveBoxStockView, { data }), tab === "reels" && /* @__PURE__ */ React.createElement(LiveReelStockView, { data }), tab === "discrepancies" && /* @__PURE__ */ React.createElement(DiscrepanciesView, { data, onLookUp: (ref) => {
+      setLookUp(ref);
+      setTab("history");
+    } }));
   }
   function AddBoxOrReelChoice({ data, setData, query, onAdded }) {
     const [kind, setKind] = useState(null);
@@ -12461,7 +12746,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const flashRef = useRef(flash);
     flashRef.current = flash;
     const [pullState, setPullState] = useState({ pulling: false, distance: 0, refreshing: false });
-    const { latest: updateLatest, updateReady, applyUpdate, snoozeUpdate } = useUpdateCheck();
+    const { latest: updateLatest, updateReady, applyUpdate, snoozeUpdate, staleOnServer, staleWanted } = useUpdateCheck();
     useEffect(() => {
       const EDGE_ZONE = 24;
       const SWIPE_THRESHOLD = 70;
@@ -12786,7 +13071,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       letterSpacing: 0.2,
       overflow: "hidden",
       transition: pullState.refreshing ? "height 0.15s ease" : "none"
-    } }, pullState.refreshing ? "\u21BB Refreshing\u2026" : pullState.distance >= 70 ? "\u2191 Release to refresh" : "\u2193 Pull to refresh"), storageFailed && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: RED, color: "#fff", borderRadius: 5, fontWeight: 700, fontSize: 13, letterSpacing: 0.3 } }, "\u26A0 THIS DEVICE'S STORAGE IS FULL \u2014 changes typed here are NOT being saved. Get this device connected to Wi-Fi and Cloud Sync immediately, or free up space, before entering anything further."), testMode && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: ORANGE, color: "#fff", borderRadius: 5, fontWeight: 700, fontSize: 13, letterSpacing: 0.3 } }, "\u26A0 TEST MODE \u2014 this is practice data only. Nothing here is real, and none of it will sync to the live system."), updateReady && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5 flex flex-wrap items-center gap-3", style: { background: "#EEF1FA", border: `1px solid ${NAVY}`, borderRadius: 5, color: NAVY, fontSize: 13 } }, /* @__PURE__ */ React.createElement("span", { style: { flex: "1 1 260px" } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 700 } }, "New version available"), " \u2014 this device is on ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, APP_VERSION), ", latest is ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, updateLatest), ". Updating reloads the page, so finish anything you're part-way through typing first. Saved work is safe."), /* @__PURE__ */ React.createElement("button", { onClick: applyUpdate, className: "shrink-0 px-3", style: { height: 34, background: NAVY, color: "#fff", border: "none", borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: "pointer" } }, "Update now"), /* @__PURE__ */ React.createElement("button", { onClick: snoozeUpdate, className: "shrink-0 px-3", style: { height: 34, background: "none", color: NAVY, border: `1px solid ${NAVY}`, borderRadius: 6, fontSize: 13, cursor: "pointer" } }, "Later")), /* @__PURE__ */ React.createElement(ScreenErrorBoundary, { viewKey: view, key: view }, views[view]))), toast && /* @__PURE__ */ React.createElement("div", { className: "fixed bottom-5 right-5 px-4 py-2 rounded text-sm text-white shadow-lg", style: { background: NAVY } }, toast));
+    } }, pullState.refreshing ? "\u21BB Refreshing\u2026" : pullState.distance >= 70 ? "\u2191 Release to refresh" : "\u2193 Pull to refresh"), storageFailed && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: RED, color: "#fff", borderRadius: 5, fontWeight: 700, fontSize: 13, letterSpacing: 0.3 } }, "\u26A0 THIS DEVICE'S STORAGE IS FULL \u2014 changes typed here are NOT being saved. Get this device connected to Wi-Fi and Cloud Sync immediately, or free up space, before entering anything further."), testMode && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: ORANGE, color: "#fff", borderRadius: 5, fontWeight: 700, fontSize: 13, letterSpacing: 0.3 } }, "\u26A0 TEST MODE \u2014 this is practice data only. Nothing here is real, and none of it will sync to the live system."), staleOnServer && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: "#FFF4E0", border: `1px solid ${AMBER}`, borderRadius: 5, color: INK, fontSize: 13 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, marginBottom: 2 } }, "The update can't finish \u2014 index.html hasn't been published"), "This device asked the server for ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, staleWanted), " and got", " ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, APP_VERSION), " back. That isn't a cache on this device \u2014 it's a fresh address the server answered with the old file. ", /* @__PURE__ */ React.createElement("b", null, "version.txt was pushed to the site but index.html wasn't"), ", so every device keeps being told there's an update it can never get. Push index.html and this clears itself."), updateReady && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5 flex flex-wrap items-center gap-3", style: { background: "#EEF1FA", border: `1px solid ${NAVY}`, borderRadius: 5, color: NAVY, fontSize: 13 } }, /* @__PURE__ */ React.createElement("span", { style: { flex: "1 1 260px" } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 700 } }, "New version available"), " \u2014 this device is on ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, APP_VERSION), ", latest is ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, updateLatest), ". Updating reloads the page, so finish anything you're part-way through typing first. Saved work is safe."), /* @__PURE__ */ React.createElement("button", { onClick: applyUpdate, className: "shrink-0 px-3", style: { height: 34, background: NAVY, color: "#fff", border: "none", borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: "pointer" } }, "Update now"), /* @__PURE__ */ React.createElement("button", { onClick: snoozeUpdate, className: "shrink-0 px-3", style: { height: 34, background: "none", color: NAVY, border: `1px solid ${NAVY}`, borderRadius: 6, fontSize: 13, cursor: "pointer" } }, "Later")), /* @__PURE__ */ React.createElement(ScreenErrorBoundary, { viewKey: view, key: view }, views[view]))), toast && /* @__PURE__ */ React.createElement("div", { className: "fixed bottom-5 right-5 px-4 py-2 rounded text-sm text-white shadow-lg", style: { background: NAVY } }, toast));
   }
   ReactDOM.createRoot(document.getElementById("root")).render(/* @__PURE__ */ React.createElement(App, null));
 })();
