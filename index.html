@@ -804,7 +804,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-05.7";
+  var APP_VERSION = "2026-09-05.9";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -6383,9 +6383,10 @@ The reason is recorded. Leave blank to keep the line.`, "");
     const bySpec = /* @__PURE__ */ new Map();
     for (const r of c.contributions || []) {
       const k = shortCaseSpec(r.spec) || "(not recorded)";
-      bySpec.set(k, (bySpec.get(k) || 0) + (Number(r.qty) || 0));
+      const cur = bySpec.get(k) || { qty: 0, spec: r.spec || "" };
+      bySpec.set(k, { qty: cur.qty + (Number(r.qty) || 0), spec: cur.spec || r.spec || "" });
     }
-    return [...bySpec.entries()].filter(([, q]) => q > 0).map(([label, qty]) => ({ label, qty }));
+    return [...bySpec.entries()].filter(([, v]) => v.qty > 0).map(([label, v]) => ({ label, qty: v.qty, spec: v.spec }));
   }
   function printCaseIconSheet(order, caseRows, setData) {
     const esc = (v) => String(v ?? "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
@@ -6404,27 +6405,41 @@ The reason is recorded. Leave blank to keep the line.`, "");
     body { font-family: -apple-system, Arial, sans-serif; color: #000; margin: 0; }
     h1 { font-size: 18pt; margin: 0 0 1px; }
     .sub { font-size: 10.5pt; margin-bottom: 6mm; }
-    /* Chris, 5 Sep: "it falls off the right side of the printout paper."
-       Two causes, both here. A bare 1fr is shorthand for minmax(auto,1fr),
-       and a grid track sized auto refuses to shrink below its content \u2014 so a
-       long size line pushed its whole column wider than the page. And .lines
-       is a flex child, which likewise will not shrink below content unless it
-       is told it may. minmax(0,1fr) and min-width:0 let both give way, and a
-       wrapped long label now indents under itself rather than running off the
-       sheet. Nothing is clipped or hidden: everything on the plan reaches the
-       paper, which is the point of the sheet. */
-    .grid { display: grid; grid-template-columns: repeat(${cols}, minmax(0, 1fr)); gap: 4mm; }
-    .tile { border: 1.5px solid #000; border-radius: 2.5mm; padding: 3mm 4mm 2.5mm; min-height: 30mm;
-            display: flex; flex-direction: row; align-items: flex-start; gap: 4mm; break-inside: avoid; page-break-inside: avoid;
-            max-width: 100%; overflow: hidden; }
+    /* Chris, 5 Sep, twice.
+       First: "it falls off the right side of the printout paper." Then, from
+       his phone: five tall empty columns per page, five pages for one order.
+
+       Both came from the same mistake \u2014 sizing the sheet for a page I had
+       assumed. The CSS asked for A4 landscape; iPhones print US Letter portrait
+       and ignore the request, so a fixed five columns had to share about 190mm.
+       Each tile got 38mm, the number took 11, padding 8, and the size text was
+       left 7mm to wrap in \u2014 one character per line, clipped, and the tile
+       stretched to the page bottom to hold it.
+
+       So the sheet no longer assumes a page. Columns are however many 67mm
+       tiles fit the paper it is actually on: two portrait, three landscape.
+       67mm is MEASURED, not guessed \u2014 "120 \xD7 0.50 x 1.50 O/S 2-3pt", the
+       longest PX Plus label, at 10.5pt plus the case number is 66mm \u2014 so the
+       common case never wraps. A rarer long label (Smart Formes, Ultra SR
+       with a colour) wraps once at a word and hangs under itself; it is never
+       broken letter by letter and never clipped. A tile is the height of its
+       lines and nothing else. casemapprint_test.js checks both paper sizes.
+       The page-size request stays for printers that honour it. */
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(67mm, 1fr)); gap: 3.5mm; }
+    .tile { border: 1.5px solid #000; border-radius: 2.5mm; padding: 2.5mm 3mm 2mm; min-height: 20mm;
+            display: grid; grid-template-columns: 9mm 1fr; grid-template-rows: auto auto; column-gap: 2.5mm;
+            break-inside: avoid; page-break-inside: avoid; min-width: 0; }
     .tile.reel { border-style: dashed; }
-    .num { font-size: 24pt; font-weight: 800; line-height: 1; letter-spacing: -0.02em; min-width: 11mm; text-align: center; }
-    .lines { font-size: ${cols === 4 ? "12pt" : "11pt"}; line-height: 1.5; flex: 1; min-width: 0;
-             font-variant-numeric: tabular-nums; }
-    .lines > div { padding-left: 3.6em; text-indent: -3.6em; overflow-wrap: anywhere; }
-    .lines b { display: inline-block; min-width: 2.2em; text-align: right; font-size: 1.1em; }
-    .lines .x { display: inline-block; width: 1.4em; text-align: center; color: #555; }
-    .total { font-size: 9pt; color: #333; align-self: flex-end; white-space: nowrap; }
+    .num { grid-row: 1 / span 2; font-size: 20pt; font-weight: 800; line-height: 1; letter-spacing: -0.02em; text-align: center; }
+    .lines { font-size: 10.5pt; line-height: 1.45; min-width: 0; font-variant-numeric: tabular-nums; }
+    /* A label longer than the tile wraps at a WORD and hangs under itself \u2014
+       never letter by letter (that was the tall empty column), never clipped. */
+    .lines > div { padding-left: 3.4em; text-indent: -3.4em; white-space: normal; overflow-wrap: normal; word-break: normal; }
+    .lines b { display: inline-block; min-width: 2em; text-align: right; font-size: 1.1em; }
+    .lines .x { display: inline-block; width: 1.2em; text-align: center; color: #555; }
+    /* The total sits UNDER the lines, not beside them: beside, it cost every
+       tile 15mm of width it did not have on a phone-sized page. */
+    .total { font-size: 8.5pt; color: #333; white-space: nowrap; margin-top: 1mm; }
     .foot { margin-top: 6mm; font-size: 9.5pt; }
   </style></head><body>
     <h1>${esc(order.customer || "")}</h1>
@@ -6526,7 +6541,15 @@ The reason is recorded. Leave blank to keep the line.`, "");
       c.pallet && /* @__PURE__ */ React.createElement("span", { style: { position: "absolute", bottom: 4, right: 5, fontSize: 9, fontWeight: 800, color: INK_MUTED } }, c.pallet)
     ), !c.packedOutside && sizeLines.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10.5, lineHeight: 1.35, color: INK, padding: "0 2px" } }, sizeLines.map((l, i) => {
       const { size, pt } = shortSize(l.label);
-      return /* @__PURE__ */ React.createElement("div", { key: i }, /* @__PURE__ */ React.createElement("b", { style: { fontVariantNumeric: "tabular-nums" } }, l.qty), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " \xD7 "), size, pt && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 8.5, color: INK_MUTED, marginLeft: 3 } }, pt));
+      const col = productColourFor(l.spec);
+      return /* @__PURE__ */ React.createElement("div", { key: i, style: { display: "flex", alignItems: "center", gap: 5 } }, /* @__PURE__ */ React.createElement("span", { title: col ? col.name : "", style: {
+        width: 6,
+        height: 12,
+        borderRadius: 1.5,
+        flexShrink: 0,
+        background: col?.hex || "transparent",
+        border: col ? "1px solid rgba(0,0,0,.22)" : `1px dashed ${BORDER}`
+      } }), /* @__PURE__ */ React.createElement("span", { style: { minWidth: 0 } }, /* @__PURE__ */ React.createElement("b", { style: { fontVariantNumeric: "tabular-nums" } }, l.qty), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " \xD7 "), size, pt && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 8.5, color: INK_MUTED, marginLeft: 3 } }, pt)));
     })));
   }
   function CaseAnnouncement({ cases, boxes, fireKey }) {
@@ -7713,7 +7736,7 @@ This changes the order quantities. It is recorded in the change log and can be r
     const showGrid = packView === "grid" && !tooMany;
     const litCases = litCaseNums;
     const sectionTitle = (label, right = null) => /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between gap-3 mb-2 mt-6 flex-wrap" }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Georgia, serif", fontWeight: 700, fontSize: 18, color: INK } }, label), right);
-    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "no-print" }, onBack && /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement("div", { className: "mx-plex" }, /* @__PURE__ */ React.createElement("div", { className: "no-print" }, onBack && /* @__PURE__ */ React.createElement(
       "button",
       {
         onClick: onBack,
@@ -7722,13 +7745,7 @@ This changes the order quantities. It is recorded in the change log and can be r
       },
       "\u2190 Back to ",
       order.id
-    ), /* @__PURE__ */ React.createElement(
-      SectionHeader,
-      {
-        title: "\u{1F4E6} Packing",
-        subtitle: `${order.customer} \xB7 ${totalItems} boxes \xB7 ${caseRows.length} case${caseRows.length === 1 ? "" : "s"}${manualCount ? ` (+${manualCount} packed before the app)` : ""} \xB7 ${order.caseLayout === "as_entered" ? "cases in the order the lines were entered" : "cases laid out by size"}`
-      }
-    ), String(order.notes || "").trim() && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-4", style: { borderLeft: `4px solid ${NAVY}`, background: "#FAFAF8" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1.5", style: { color: INK_MUTED } }, "NOTES ON THIS ORDER"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK, lineHeight: 1.5, whiteSpace: "pre-wrap" } }, order.notes)), (() => {
+    ), /* @__PURE__ */ React.createElement("header", { style: { marginBottom: 18 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED, marginBottom: 2 } }, "Packing ", /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { color: NAVY, fontWeight: 500 } }, order.id)), /* @__PURE__ */ React.createElement("h1", { style: { fontSize: 30, lineHeight: 1.08, letterSpacing: "-0.02em", fontWeight: 600, margin: 0, color: INK } }, order.customer), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6, fontSize: 15, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, totalItems), " boxes in ", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, caseRows.length), " case", caseRows.length === 1 ? "" : "s", manualCount ? `, plus ${manualCount} packed before the app` : "", ".", " ", order.caseLayout === "as_entered" ? "Cases follow the order the lines were entered." : "Cases are laid out by size.")), String(order.notes || "").trim() && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-4", style: { borderLeft: `4px solid ${NAVY}`, background: "#FAFAF8" } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-1", style: { color: INK_MUTED } }, "Notes on this order"), /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: INK, lineHeight: 1.5, whiteSpace: "pre-wrap" } }, order.notes)), (() => {
       const startNum = Number(order.startingCaseNum) || 0;
       if (startNum === 0) return null;
       const packedItems = allItems.reduce((t, li) => t + (Number(packedOutside[li.description]) || 0), 0);
