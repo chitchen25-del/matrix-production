@@ -480,6 +480,73 @@
     var n = document.getElementById('mx-boot-fallback');
     if (n) n.style.display = 'block';
   }, 3000);
+
+  /* THE SERVICE WORKER, AND THE WAY OUT OF IT.
+
+     Registered last and deliberately late — after load, so it never competes
+     with the app for the network on a slow morning.
+
+     ?sw=off is the escape hatch and it comes FIRST, before any registration.
+     A worker serving a broken build could otherwise brick a device that
+     nobody can reach except by walking over to it: every reload would be
+     answered by the same broken copy. With this, one URL clears the caches,
+     unregisters, and reloads clean. It is the difference between a bad deploy
+     being an inconvenience and being a trip to the factory. */
+  (function () {
+    if (!('serviceWorker' in navigator)) return;
+    var OFF_KEY = 'matrixSWDisabled';
+    var flag = null;
+    try { flag = localStorage.getItem(OFF_KEY); } catch (e) {}
+
+    /* OFF MEANS OFF, AND STAYS OFF.
+       The first cut unregistered and reloaded — and the reload ran this same
+       block, which registered the worker straight back. It looked like it had
+       worked: the caches really were cleared, and the registration count was
+       back to one a second later. Caught by sw_test.js, which is the only
+       reason it is not on an iPad now.
+       If a worker is serving a broken build, the device has to STAY clean
+       until someone says otherwise, so the choice is remembered here. ?sw=on
+       turns it back on. */
+    if (/[?&]sw=off\b/.test(location.search)) {
+      try { localStorage.setItem(OFF_KEY, '1'); } catch (e) {}
+      navigator.serviceWorker.getRegistrations().then(function (rs) {
+        return Promise.all(rs.map(function (r) { return r.unregister(); }));
+      }).then(function () {
+        return (window.caches && caches.keys().then(function (ks) {
+          return Promise.all(ks.map(function (k) { return caches.delete(k); }));
+        })) || null;
+      }).then(function () { location.replace(location.pathname); });
+      return;
+    }
+    if (/[?&]sw=on\b/.test(location.search)) {
+      try { localStorage.removeItem(OFF_KEY); } catch (e) {}
+      location.replace(location.pathname);
+      return;
+    }
+    if (flag) {
+      /* Clear on EVERY load while disabled, not just once at the moment of
+         switching off. unregister() does not stop the active worker there and
+         then — it keeps controlling the page until the last client unloads —
+         so it was still answering fetches and re-filling its cache between
+         the clear and the reload. One pass left a cache behind every time. */
+      if (window.caches) {
+        caches.keys().then(function (ks) {
+          return Promise.all(ks.map(function (k) {
+            return k.indexOf('matrix-sync-') === 0 ? caches.delete(k) : null;
+          }));
+        }).catch(function () {});
+      }
+      return;   // deliberately off on this device
+    }
+
+    window.addEventListener('load', function () {
+      // Relative, so the scope is /matrix-production/ on Pages rather than
+      // the domain root, which it has no business claiming.
+      var base = location.pathname.replace(/[^/]*$/, '');
+      navigator.serviceWorker.register(base + 'sw.js', { scope: base })
+        .catch(function () { /* no worker is the old behaviour, not a failure */ });
+    });
+  })();
 </script>
 <script>
 (() => {
