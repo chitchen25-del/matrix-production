@@ -289,6 +289,10 @@
   [data-panel] { box-shadow: none !important; border-left-width: 1px !important; border-top-width: 1px !important;
                  border-color: #E4E4E0 !important; border-radius: 4px !important; }
   summary::-webkit-details-marker { display: none; }
+  /* The Bonding entry: one column on a phone, the work on the left and the
+     record on the right on the work PC. */
+  .mx-bond-steps { grid-template-columns: 1fr; }
+  @media (min-width: 1000px) { .mx-bond-steps { grid-template-columns: 1fr 1fr; } }
 
   body.floor-mode { font-size: 17px; }
   body.floor-mode .text-xs { font-size: 13.5px !important; }
@@ -819,7 +823,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-05.17";
+  var APP_VERSION = "2026-09-05.20";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -10782,6 +10786,320 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
   function FieldGroup({ label, children }) {
     return /* @__PURE__ */ React.createElement("div", { style: { width: "100%" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1.5", style: { color: INK_MUTED, opacity: 0.75 } }, label), /* @__PURE__ */ React.createElement("div", { className: "form-fields flex flex-wrap gap-2 items-end mb-3" }, children));
   }
+  var METRES_PER_BOX_DEFAULT = (spec) => {
+    const s = String(spec || "");
+    if (/\bD\d+(\.\d+)?\b/i.test(s)) return 18;
+    if (isOffCentre(s) || /\bmini\b/i.test(s)) return 21;
+    const cls = classifySize(s);
+    if (cls === "12mm") return /\b(4\.0|4\.5|5\.0)0?\s*mm/i.test(s) ? 15 : 20.25;
+    return 24;
+  };
+  function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRuns = [], existingBoxCodes = [], orders = [], lineItems = [], data, materials = [], onUnknownBatch, onSubmit, submitLabel, error, warnings = [], children, renderFullForm }) {
+    const [reelQuery, setReelQuery] = useState("");
+    const [escapeOpen, setEscapeOpen] = useState(false);
+    const [everyField, setEveryField] = useState(false);
+    const [extraOrderPick, setExtraOrderPick] = useState("");
+    const spec = form.range === "Custom" ? String(form.size || "").trim() : `${form.range} ${String(form.size || "").trim()}`.trim();
+    const reel = form.baselineBatchCode ? availableBatches.find((b) => b.batchNumber === form.baselineBatchCode) : null;
+    const made = Number(form.amountMade) || 0;
+    const mpb = Number(form.metersPerBox) || 0;
+    const lastRun = useMemo(() => [...allBondingRuns || []].filter((r) => !r.deleted && !r.packingOnly).sort((a, b) => `${b.date || ""} ${b.timeOfDay || ""}`.localeCompare(`${a.date || ""} ${a.timeOfDay || ""}`))[0] || null, [allBondingRuns]);
+    useEffect(() => {
+      if (!lastRun) return;
+      setForm((f) => {
+        const n = { ...f };
+        if (!String(f.evaCode || "").trim() && lastRun.evaCode) n.evaCode = lastRun.evaCode;
+        if (!String(f.tapeCode || "").trim() && lastRun.tapeCode) n.tapeCode = lastRun.tapeCode;
+        return n;
+      });
+    }, [lastRun && lastRun.id]);
+    const specRef = useRef(spec);
+    useEffect(() => {
+      if (specRef.current === spec) return;
+      specRef.current = spec;
+      if (spec) setForm((f) => ({ ...f, metersPerBox: METRES_PER_BOX_DEFAULT(spec) }));
+    }, [spec]);
+    const needing = useMemo(() => spec && data ? ordersNeedingSpec(data, spec).needing : [], [spec, data, lineItems]);
+    const allocs = form.allocations || [];
+    const allocFor = (id) => allocs.find((a) => a.orderId === id);
+    const allocated = allocs.reduce((s, a) => s + (Number(a.qty) || 0), 0);
+    const toShelf = Math.max(0, made - allocated);
+    const over = allocated > made && made > 0;
+    useEffect(() => {
+      if (String(form.location || "").trim() || toShelf <= 0) return;
+      const runs = [...allBondingRuns || []].filter((r) => !r.deleted && r.location).sort((a, b) => `${b.date || ""} ${b.timeOfDay || ""}`.localeCompare(`${a.date || ""} ${a.timeOfDay || ""}`));
+      const same = runs.find((r) => spec && looseSpecMatch(r.productSize, spec));
+      const pick = (same || runs[0] || {}).location;
+      if (pick) setForm((f) => ({ ...f, location: pick }));
+    }, [toShelf > 0, spec]);
+    const boxTypeFor = (orderId, desc) => {
+      const o = orders.find((x) => x.id === orderId);
+      return orderBoxTypeFor(o, desc || spec);
+    };
+    const touchedRef = useRef(false);
+    useEffect(() => {
+      if (touchedRef.current || made <= 0 || needing.length === 0) return;
+      let left = made;
+      const next = [];
+      for (const n of needing) {
+        if (left <= 0) break;
+        const q = Math.min(n.needs, left);
+        next.push({ orderId: n.orderId, qty: q, boxTypeId: boxTypeIdForName(materials, boxTypeFor(n.orderId)) });
+        left -= q;
+      }
+      setForm((f) => ({ ...f, allocations: next }));
+    }, [made, spec, needing.length]);
+    const setAlloc = (orderId, qty) => {
+      touchedRef.current = true;
+      const q = Math.max(0, Number(qty) || 0);
+      setForm((f) => {
+        const rest = (f.allocations || []).filter((a) => a.orderId !== orderId);
+        return { ...f, allocations: q > 0 ? [...rest, { orderId, qty: q, boxTypeId: boxTypeIdForName(materials, boxTypeFor(orderId)) }] : rest };
+      });
+    };
+    const rowsShown = [
+      ...needing.map((n) => ({ ...n, qty: allocFor(n.orderId)?.qty ?? 0 })),
+      ...allocs.filter((a) => !needing.some((n) => n.orderId === a.orderId)).map((a) => {
+        const o = orders.find((x) => x.id === a.orderId);
+        return { orderId: a.orderId, customer: o?.customer || "", needs: 0, qty: a.qty, extra: true };
+      })
+    ];
+    const recentSuffix = (() => {
+      for (const c of [...existingBoxCodes].reverse()) {
+        const m = String(c || "").trim().toUpperCase().match(/^[A-L]\d\d{2}\d{2}([A-Z]+)$/);
+        if (m) return m[1];
+      }
+      return "";
+    })();
+    const suggestedBox = nextBatchCode(form.date, existingBoxCodes, { suffix: recentSuffix });
+    const Step = ({ n, q, hint, children: children2 }) => /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "26px 1fr", gap: "0 12px", padding: "16px 0", borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { style: { width: 26, height: 26, borderRadius: 13, background: INK, color: "#fff", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center" } }, n), /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 500, marginBottom: 8, color: INK } }, q), children2, hint && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 6, lineHeight: 1.45 } }, hint)));
+    const Field = ({ children: children2, big, style }) => /* @__PURE__ */ React.createElement("div", { style: {
+      border: `1px solid #CFCFCA`,
+      borderRadius: 4,
+      background: "#fff",
+      padding: big ? "8px 12px" : "10px 12px",
+      minHeight: 44,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 10,
+      fontSize: big ? 26 : 16,
+      fontWeight: big ? 600 : 400,
+      fontFamily: big ? "IBM Plex Mono, ui-monospace, monospace" : void 0,
+      ...style
+    } }, children2);
+    const Row = ({ label, sub, children: children2 }) => /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr auto", gap: "8px 12px", alignItems: "center", padding: "9px 0", borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, color: INK } }, label, sub && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED, marginTop: 1 } }, sub)), /* @__PURE__ */ React.createElement("div", null, children2));
+    const Toggle = ({ value, options, onChange }) => /* @__PURE__ */ React.createElement("div", { style: { display: "inline-flex", border: `1px solid #CFCFCA`, borderRadius: 4, overflow: "hidden" } }, options.map((o) => /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        key: o,
+        type: "button",
+        onClick: () => onChange(o),
+        style: {
+          font: "inherit",
+          padding: "8px 14px",
+          fontSize: 14,
+          fontWeight: 500,
+          border: 0,
+          cursor: "pointer",
+          background: value === o ? INK : "#fff",
+          color: value === o ? "#fff" : INK_MUTED
+        }
+      },
+      o
+    )));
+    const CodeInput = ({ value, onChange, width = 150 }) => /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        value: value || "",
+        onChange: (e) => onChange(e.target.value.toUpperCase()),
+        autoCorrect: "off",
+        autoCapitalize: "off",
+        spellCheck: "false",
+        className: "font-mono",
+        style: { width, minHeight: 40, fontSize: 16, fontWeight: 600, textAlign: "center", border: `1px solid #CFCFCA`, borderRadius: 4, background: "#fff", color: INK }
+      }
+    );
+    const reelMatches = availableBatches.filter((b) => !reelQuery || String(b.batchNumber || "").toUpperCase().includes(reelQuery.toUpperCase()) || looseSpecMatch(b.productSize, reelQuery)).slice(0, 12);
+    const pickReel = (b) => {
+      const dims = specDimensions(b.productSize);
+      const m = String(b.productSize || "").match(/^(PX Plus|PX|Smart Formes|Phoenix XL|Ken|Ultra SR)\s+(.*)$/i);
+      setForm((f) => ({
+        ...f,
+        baselineBatchCode: b.batchNumber,
+        range: m ? m[1] : dims.length >= 2 ? "PX Plus" : "Custom",
+        size: m ? m[2] : b.productSize,
+        pt: ptOf(b.productSize) || f.pt
+      }));
+      setReelQuery("");
+      setEscapeOpen(false);
+    };
+    const boxesLeftOnReel = reel && mpb > 0 ? Math.floor((Number(reel.remaining) || 0) / mpb) : null;
+    return /* @__PURE__ */ React.createElement("div", { className: "mx-bond-steps", style: { display: "grid", gap: "0 56px" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-bond-col" }, /* @__PURE__ */ React.createElement(
+      Step,
+      {
+        n: 1,
+        q: "Which reel did you bond?",
+        hint: reel ? `${Math.round(Number(reel.remaining) || 0)} m left on this one${boxesLeftOnReel != null ? ` \u2014 about ${boxesLeftOnReel} boxes` : ""}.` : "Type the batch code off the reel. Only reels that are checked and on the rack are offered."
+      },
+      reel ? /* @__PURE__ */ React.createElement(Field, null, /* @__PURE__ */ React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: 8, minWidth: 0 } }, /* @__PURE__ */ React.createElement(Spec, { s: reel.productSize, size: 13 }), /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { fontWeight: 600 } }, reel.batchNumber)), /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => setForm((f) => ({ ...f, baselineBatchCode: "" })), style: { font: "inherit", background: "none", border: 0, color: NAVY, cursor: "pointer", fontSize: 14 } }, "change")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(
+        "input",
+        {
+          value: reelQuery,
+          onChange: (e) => setReelQuery(e.target.value),
+          placeholder: "Batch code, e.g. PBLI60402",
+          autoCorrect: "off",
+          autoCapitalize: "off",
+          spellCheck: "false",
+          className: "font-mono",
+          style: { width: "100%", minHeight: 44, fontSize: 16, padding: "0 12px", border: `1px solid #CFCFCA`, borderRadius: 4, background: "#fff" }
+        }
+      ), reelMatches.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { border: `1px solid ${BORDER}`, borderTop: 0, borderRadius: "0 0 4px 4px", background: "#fff", maxHeight: 260, overflowY: "auto" } }, reelMatches.map((b) => /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          key: b.batchNumber,
+          type: "button",
+          onClick: () => pickReel(b),
+          style: { font: "inherit", display: "flex", width: "100%", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "10px 12px", background: "none", border: 0, borderTop: `1px solid ${BORDER}`, cursor: "pointer", textAlign: "left", color: INK }
+        },
+        /* @__PURE__ */ React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: 8, minWidth: 0 } }, /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { fontWeight: 600 } }, b.batchNumber), /* @__PURE__ */ React.createElement(Spec, { s: b.productSize, size: 12 })),
+        /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: INK_MUTED, whiteSpace: "nowrap" } }, Math.round(Number(b.remaining) || 0), " m")
+      ))), reelQuery.trim().length >= 4 && !availableBatches.some((b) => String(b.batchNumber).toUpperCase() === reelQuery.trim().toUpperCase()) && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10, padding: "10px 12px", border: `1px dashed #CFCFCA`, borderRadius: 4 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 500 } }, "Reel not in the system yet? Enter it here and carry on."), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement(BondingSpecFields, { values: form, setValues: setForm, listId: "size-catalog-bonding" }), /* @__PURE__ */ React.createElement(
+        Button,
+        {
+          variant: "ghost",
+          onClick: () => {
+            const code = reelQuery.trim().toUpperCase();
+            setForm((f) => ({ ...f, baselineBatchCode: code }));
+            onUnknownBatch && onUnknownBatch(code, spec);
+            setReelQuery("");
+          },
+          disabled: !String(form.size || "").trim()
+        },
+        "Use ",
+        reelQuery.trim().toUpperCase(),
+        " with this size"
+      )), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 6 } }, "Same escape as before: the reel is created with its code and its metres, so it's traceable from here on.")))
+    ), /* @__PURE__ */ React.createElement(
+      Step,
+      {
+        n: 2,
+        q: "How many boxes came off?",
+        hint: made > 0 && mpb > 0 ? `${Math.round(made * mpb * 10) / 10} m used \u2014 boxes \xD7 metres per box. Metres per box is in the record (step 7).` : "Boxes for a box run, reels for a reel run."
+      },
+      /* @__PURE__ */ React.createElement(Field, { big: true }, /* @__PURE__ */ React.createElement(
+        "input",
+        {
+          type: "number",
+          inputMode: "numeric",
+          value: form.amountMade,
+          onChange: (e) => setForm((f) => ({ ...f, amountMade: e.target.value })),
+          style: { font: "inherit", border: 0, outline: "none", width: "100%", background: "transparent", color: INK }
+        }
+      ), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 400, fontFamily: "inherit", color: INK_MUTED, whiteSpace: "nowrap" } }, form.packageType === "Reel" ? "reels" : "boxes"))
+    ), /* @__PURE__ */ React.createElement(
+      Step,
+      {
+        n: 3,
+        q: "Where do they go?",
+        hint: /* @__PURE__ */ React.createElement(React.Fragment, null, "Every order needing this size, most urgent first, filled in already. ", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, "Type over a number to change where they go"), " \u2014 the shelf takes what's left. The box comes from the order.")
+      },
+      !spec && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED } }, "Pick the reel first."),
+      spec && rowsShown.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED } }, "No open order needs this size. Everything goes to the shelf."),
+      rowsShown.map((r, i) => {
+        const late = r.dueDate && planDaysUntil && planDaysUntil(r.dueDate, todayISO()) < 0;
+        const bt = boxTypeFor(r.orderId);
+        return /* @__PURE__ */ React.createElement("div", { key: r.orderId, style: { display: "grid", gridTemplateColumns: "1fr 76px", gap: 12, alignItems: "center", padding: "9px 0", borderTop: i ? `1px solid ${BORDER}` : 0 } }, /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0 } }, /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: {
+          display: "inline-block",
+          fontSize: 12.5,
+          fontWeight: 500,
+          borderRadius: 3,
+          padding: "1px 5px",
+          marginRight: 6,
+          color: late ? "#fff" : NAVY,
+          background: late ? RED : "rgba(42,55,123,.07)"
+        } }, r.orderId), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15 } }, r.customer), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 3, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(BoxTypeMark, { type: bt }), r.needs > 0 && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: INK_MUTED } }, "needs ", r.needs), r.extra && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: INK_MUTED } }, "doesn't need this size"))), /* @__PURE__ */ React.createElement(
+          "input",
+          {
+            type: "number",
+            inputMode: "numeric",
+            value: r.qty || "",
+            onChange: (e) => setAlloc(r.orderId, e.target.value),
+            className: "font-mono",
+            style: { width: 76, minHeight: 44, fontSize: 20, fontWeight: 600, textAlign: "center", border: `1px solid #CFCFCA`, borderRadius: 4, background: "#fff" }
+          }
+        ));
+      }),
+      spec && made > 0 && /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 76px", gap: 12, alignItems: "center", padding: "9px 0", borderTop: rowsShown.length ? `1px solid ${BORDER}` : 0, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("div", null, "To the shelf", /* @__PURE__ */ React.createElement("div", { style: { marginTop: 3 } }, /* @__PURE__ */ React.createElement(BoxTypeMark, { type: boxTypeNameOf(form.boxTypeId) || DEFAULT_BOX_TYPE }))), /* @__PURE__ */ React.createElement("div", { className: "font-mono", style: { fontSize: 20, fontWeight: 600, textAlign: "center", color: over ? RED : INK_MUTED } }, over ? "\u2014" : toShelf)),
+      over && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: RED, marginTop: 6 } }, "That's ", allocated, " allocated from ", made, " made \u2014 take ", allocated - made, " off somewhere."),
+      spec && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(Select, { value: extraOrderPick, onChange: (e) => setExtraOrderPick(e.target.value), style: { maxWidth: 260 } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Send some to another order\u2026"), orders.filter((o) => !o.deleted && !["Shipped", "Cancelled", "Completed"].includes(o.stage) && !rowsShown.some((r) => r.orderId === o.id)).map((o) => /* @__PURE__ */ React.createElement("option", { key: o.id, value: o.id }, o.id, " \u2014 ", o.customer))), extraOrderPick && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => {
+        setAlloc(extraOrderPick, 1);
+        setExtraOrderPick("");
+      } }, "Add"))
+    ), /* @__PURE__ */ React.createElement(Step, { n: 4, q: "Box code", hint: "Offered, not filled in. Tap to accept or type the one on the label." }, /* @__PURE__ */ React.createElement(Field, { big: true }, /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        value: form.boxNumber || "",
+        onChange: (e) => setForm((f) => ({ ...f, boxNumber: e.target.value.toUpperCase() })),
+        placeholder: suggestedBox || "",
+        autoCorrect: "off",
+        autoCapitalize: "off",
+        spellCheck: "false",
+        style: { font: "inherit", border: 0, outline: "none", width: "100%", background: "transparent", color: INK }
+      }
+    ), suggestedBox && String(form.boxNumber || "").trim().toUpperCase() !== suggestedBox && /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        type: "button",
+        onClick: () => setForm((f) => ({ ...f, boxNumber: suggestedBox })),
+        style: { font: "inherit", fontFamily: "IBM Plex Sans, sans-serif", fontSize: 13, fontWeight: 500, color: NAVY, background: "none", border: 0, cursor: "pointer", whiteSpace: "nowrap" }
+      },
+      "Use ",
+      suggestedBox
+    ))), /* @__PURE__ */ React.createElement(Step, { n: 5, q: "Have you checked it?", hint: "Unchecked boxes are made, not stock. They won't be picked." }, /* @__PURE__ */ React.createElement(Toggle, { value: form.checked === "Yes" ? "Checked" : "Not yet", options: ["Not yet", "Checked"], onChange: (v) => setForm((f) => ({ ...f, checked: v === "Checked" ? "Yes" : "No" })) }))), /* @__PURE__ */ React.createElement("div", { className: "mx-bond-col" }, /* @__PURE__ */ React.createElement(
+      Step,
+      {
+        n: 6,
+        q: "What did you bond it with?",
+        hint: "Carried over from the previous run. Change a code when the EVA or tape changes; leave it when it hasn't. Baseline batch comes from the reel."
+      },
+      /* @__PURE__ */ React.createElement(Row, { label: "EVA code", sub: "as last run \xB7 type to change" }, /* @__PURE__ */ React.createElement(CodeInput, { value: form.evaCode, onChange: (v) => setForm((f) => ({ ...f, evaCode: v })) })),
+      /* @__PURE__ */ React.createElement(Row, { label: "Tape code", sub: "as last run \xB7 type to change" }, /* @__PURE__ */ React.createElement(CodeInput, { value: form.tapeCode, onChange: (v) => setForm((f) => ({ ...f, tapeCode: v })) })),
+      /* @__PURE__ */ React.createElement(Row, { label: "Baseline batch", sub: "from the reel in step 1" }, /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { fontSize: 16, fontWeight: 600, color: form.baselineBatchCode ? INK : INK_MUTED } }, form.baselineBatchCode || "\u2014")),
+      /* @__PURE__ */ React.createElement(Row, { label: "Pt", sub: "the locator profile" }, /* @__PURE__ */ React.createElement(Toggle, { value: form.pt || "2-3pt", options: ["2-3pt", "3-4pt", "6pt"], onChange: (v) => setForm((f) => ({ ...f, pt: v })) }))
+    ), /* @__PURE__ */ React.createElement(Step, { n: 7, q: "The record", hint: "Every field the run carries, none hidden. Most are already right; change only what isn't." }, /* @__PURE__ */ React.createElement(Row, { label: "Packaging" }, /* @__PURE__ */ React.createElement(Toggle, { value: form.packageType || "Box", options: ["Box", "Reel"], onChange: (v) => setForm((f) => ({ ...f, packageType: v })) })), /* @__PURE__ */ React.createElement(Row, { label: `Metres per ${form.packageType === "Reel" ? "reel" : "box"}`, sub: `${METRES_PER_BOX_DEFAULT(spec)} for this size \xB7 type to change` }, /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        type: "number",
+        step: "0.25",
+        value: form.metersPerBox,
+        onChange: (e) => setForm((f) => ({ ...f, metersPerBox: e.target.value })),
+        className: "font-mono",
+        style: { width: 90, minHeight: 40, fontSize: 16, fontWeight: 600, textAlign: "center", border: `1px solid #CFCFCA`, borderRadius: 4, background: "#fff" }
+      }
+    )), /* @__PURE__ */ React.createElement(Row, { label: "Date" }, /* @__PURE__ */ React.createElement("input", { type: "date", value: form.date || "", onChange: (e) => setForm((f) => ({ ...f, date: e.target.value })), style: { font: "inherit", minHeight: 40, padding: "0 8px", border: `1px solid #CFCFCA`, borderRadius: 4 } })), /* @__PURE__ */ React.createElement(Row, { label: "Time of day" }, /* @__PURE__ */ React.createElement("input", { type: "time", value: form.timeOfDay || "", onChange: (e) => setForm((f) => ({ ...f, timeOfDay: e.target.value })), style: { font: "inherit", minHeight: 40, padding: "0 8px", border: `1px solid #CFCFCA`, borderRadius: 4 } })), /* @__PURE__ */ React.createElement(Row, { label: "Shelf location", sub: toShelf > 0 ? `for the ${toShelf} going to stock` : "if any go to stock" }, /* @__PURE__ */ React.createElement(Select, { value: form.location || "", onChange: (e) => setForm((f) => ({ ...f, location: e.target.value })), style: { width: 90 } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014"), BOX_LOCATIONS.map((l) => /* @__PURE__ */ React.createElement("option", { key: l, value: l }, l)))), /* @__PURE__ */ React.createElement(Row, { label: "Reel cleared", sub: form.baselineBatchCode ? `nothing left on ${form.baselineBatchCode}` : "" }, /* @__PURE__ */ React.createElement(Toggle, { value: form.reelCleared === "Yes" ? "Yes" : "No", options: ["No", "Yes"], onChange: (v) => setForm((f) => ({ ...f, reelCleared: v })) })), /* @__PURE__ */ React.createElement(Row, { label: "EVA ran out during the run" }, /* @__PURE__ */ React.createElement(Toggle, { value: form.evaCleared === "Yes" ? "Yes" : "No", options: ["No", "Yes"], onChange: (v) => setForm((f) => ({ ...f, evaCleared: v })) })), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement(
+      "textarea",
+      {
+        value: form.comments || "",
+        onChange: (e) => setForm((f) => ({ ...f, comments: e.target.value })),
+        placeholder: "Comments",
+        style: { font: "inherit", width: "100%", minHeight: 56, padding: "10px 12px", border: `1px solid #CFCFCA`, borderRadius: 4, background: "#fff", fontSize: 15 }
+      }
+    )))), /* @__PURE__ */ React.createElement("div", { style: { gridColumn: "1 / -1" } }, warnings.map((w, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { fontSize: 13, marginTop: 8, padding: "8px 12px", background: "#FFF4E0", border: `1px solid ${AMBER}`, borderRadius: 4 } }, "\u26A0 ", w)), children, error && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: RED, marginTop: 10 } }, "\u26A0 ", error), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        type: "button",
+        onClick: onSubmit,
+        disabled: over || made <= 0,
+        style: { font: "inherit", display: "block", width: "100%", maxWidth: 360, marginTop: 18, background: ORANGE, color: "#fff", border: 0, borderRadius: 4, fontSize: 17, fontWeight: 600, padding: "14px", cursor: "pointer", opacity: over || made <= 0 ? 0.45 : 1 }
+      },
+      submitLabel || (made > 0 ? `Log ${made} ${form.packageType === "Reel" ? made === 1 ? "reel" : "reels" : made === 1 ? "box" : "boxes"}` : "Log")
+    ), /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => setEveryField((v) => !v), style: { font: "inherit", background: "none", border: 0, color: INK_MUTED, cursor: "pointer", padding: "14px 0 0", fontSize: 13.5 } }, everyField ? "Hide the full form" : "Show every field as a form"), everyField && renderFullForm && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 12, paddingTop: 12, borderTop: `1px solid ${BORDER}` } }, renderFullForm())));
+  }
+  function boxTypeIdForName(materials, name) {
+    const m = (materials || []).find((x) => x.category === "boxes" && x.name === name);
+    return m ? m.id : "";
+  }
   function BondingSpecFields({ values, setValues, listId }) {
     return /* @__PURE__ */ React.createElement(FieldGroup, { label: "PRODUCT" }, /* @__PURE__ */ React.createElement("div", { style: { width: 130 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Range"), /* @__PURE__ */ React.createElement(Select, { value: values.range, onChange: (e) => setValues({ ...values, range: e.target.value, size: "" }) }, Object.keys(PRODUCT_RANGES).map((r) => /* @__PURE__ */ React.createElement("option", { key: r, value: r }, r)), /* @__PURE__ */ React.createElement("option", { value: "Custom" }, "Custom / other"))), /* @__PURE__ */ React.createElement("div", { style: { width: 210 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Size"), values.range === "Custom" ? /* @__PURE__ */ React.createElement(
       TextInput,
@@ -11736,16 +12054,36 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         style: { background: addOpen ? "none" : ORANGE, color: addOpen ? INK_MUTED : "#fff", border: addOpen ? `1px solid ${BORDER}` : "none", borderRadius: 5, padding: "10px 12px", fontSize: 13, fontWeight: 600, cursor: "pointer" }
       },
       addOpen ? "\u25BE Hide entry form" : "+ Log a new box"
-    ), /* @__PURE__ */ React.createElement("div", { className: "phone-collapsible" + (addOpen ? " open" : "") }, /* @__PURE__ */ React.createElement(BondingSpecFields, { values: form, setValues: setForm, listId: "size-catalog-bonding" }), /* @__PURE__ */ React.createElement(BondingRestFields, { values: form, setValues: setForm, orderOptions, availableBatches, existingBoxCodes: bondingRuns.map((r) => r.boxNumber).filter(Boolean), allBondingRuns: bondingRuns, knownBatchCodes, onUnknownBatch: handleUnknownBatch, materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, lineItems: data.lineItems, evaRuns: data.evaRuns, fullData: data }), entryWarnings.map((w, wi) => /* @__PURE__ */ React.createElement("div", { key: wi, className: "text-xs mb-2 px-3 py-2", style: { background: "#FFF4E0", border: `1px solid ${AMBER}`, borderRadius: 5, color: INK } }, "\u26A0 ", w)), /* @__PURE__ */ React.createElement(DraftRestoredBanner, { show: draftRestored, onDiscard: discardDraft }), /* @__PURE__ */ React.createElement(
-      DraftRestoredBanner,
+    ), /* @__PURE__ */ React.createElement("div", { className: "phone-collapsible" + (addOpen ? " open" : "") }, /* @__PURE__ */ React.createElement(
+      BondingEntrySteps,
       {
-        persist: false,
-        show: editRestored,
-        onDiscard: discardEdit,
-        message: "Unfinished edit restored \u2014 a row below is still open with unsaved changes.",
-        action: "Discard edit"
-      }
-    ), addError && /* @__PURE__ */ React.createElement("div", { className: "text-sm mb-2", style: { color: RED } }, "\u26A0 ", addError), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: addRow }, "+ Add"))), selectedForRemoval.size > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-3", style: { borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement("span", { className: "text-sm font-semibold" }, selectedForRemoval.size, " box", selectedForRemoval.size === 1 ? "" : "es", " selected"), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => setRemovalPrompt(true) }, "Move off stock"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setSelectedForRemoval(/* @__PURE__ */ new Set()) }, "Clear selection"))), removalPrompt && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-3", style: { borderLeft: `4px solid ${RED}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1" }, "Move ", selectedForRemoval.size, " box", selectedForRemoval.size === 1 ? "" : "es", " off stock"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, "For stock that's genuinely already gone \u2014 picked by hand, shipped direct, whatever the reason. This clears To Stock to 0 and logs why, so it's accounted for rather than just a discrepancy later. Amount Made stays as the true production record."), /* @__PURE__ */ React.createElement(TextInput, { value: removalReason, onChange: (e) => setRemovalReason(e.target.value), placeholder: "Reason (e.g. Picked from shelf without going through the system)" }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mt-2" }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: confirmMoveOffStock }, "Confirm \u2014 move off stock"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => {
+        form,
+        setForm,
+        availableBatches,
+        allBondingRuns: bondingRuns,
+        existingBoxCodes: bondingRuns.map((r) => r.boxNumber).filter(Boolean),
+        orders,
+        lineItems: data.lineItems,
+        data,
+        materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS,
+        onUnknownBatch: handleUnknownBatch,
+        onSubmit: addRow,
+        error: addError,
+        warnings: entryWarnings,
+        renderFullForm: () => /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(BondingSpecFields, { values: form, setValues: setForm, listId: "size-catalog-bonding" }), /* @__PURE__ */ React.createElement(BondingRestFields, { values: form, setValues: setForm, orderOptions, availableBatches, existingBoxCodes: bondingRuns.map((r) => r.boxNumber).filter(Boolean), allBondingRuns: bondingRuns, knownBatchCodes, onUnknownBatch: handleUnknownBatch, materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, lineItems: data.lineItems, evaRuns: data.evaRuns, fullData: data }))
+      },
+      /* @__PURE__ */ React.createElement(DraftRestoredBanner, { show: draftRestored, onDiscard: discardDraft }),
+      /* @__PURE__ */ React.createElement(
+        DraftRestoredBanner,
+        {
+          persist: false,
+          show: editRestored,
+          onDiscard: discardEdit,
+          message: "Unfinished edit restored \u2014 a row below is still open with unsaved changes.",
+          action: "Discard edit"
+        }
+      )
+    ))), selectedForRemoval.size > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-3", style: { borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement("span", { className: "text-sm font-semibold" }, selectedForRemoval.size, " box", selectedForRemoval.size === 1 ? "" : "es", " selected"), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => setRemovalPrompt(true) }, "Move off stock"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setSelectedForRemoval(/* @__PURE__ */ new Set()) }, "Clear selection"))), removalPrompt && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-3", style: { borderLeft: `4px solid ${RED}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1" }, "Move ", selectedForRemoval.size, " box", selectedForRemoval.size === 1 ? "" : "es", " off stock"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, "For stock that's genuinely already gone \u2014 picked by hand, shipped direct, whatever the reason. This clears To Stock to 0 and logs why, so it's accounted for rather than just a discrepancy later. Amount Made stays as the true production record."), /* @__PURE__ */ React.createElement(TextInput, { value: removalReason, onChange: (e) => setRemovalReason(e.target.value), placeholder: "Reason (e.g. Picked from shelf without going through the system)" }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mt-2" }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: confirmMoveOffStock }, "Confirm \u2014 move off stock"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => {
       setRemovalPrompt(false);
       setRemovalReason("");
     } }, "Cancel"))), /* @__PURE__ */ React.createElement("div", { className: "desktop-only" }, /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement("th", { style: { width: 34 } }, /* @__PURE__ */ React.createElement(
