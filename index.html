@@ -929,7 +929,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-06.3";
+  var APP_VERSION = "2026-09-06.4";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1042,8 +1042,10 @@
       evaCleared: "eva_cleared",
       tapeCode: "tape_code",
       amountMade: "amount_made",
-      onOrderQty: "on_order_qty",
-      toStock: "to_stock",
+      /* onOrderQty and toStock are NOT here: the columns were dropped from
+         bonding_runs on 6 Sep. Both are derived from the movements ledger by
+         ledgerCorrectedRuns on every read. Putting either back in this map would
+         make every upsert fail against a column that no longer exists. */
       customerName: "customer_name",
       workNumber: "work_number",
       metersPerBox: "meters_per_box",
@@ -1112,6 +1114,7 @@
   function syncSnakeToCamel(s) {
     return s.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
   }
+  var DERIVED_BONDING_FIELDS = ["toStock", "onOrderQty"];
   function syncToSnakeRow(obj, colMap) {
     const out = { deleted: false };
     for (const [k, v] of Object.entries(obj)) {
@@ -1119,6 +1122,7 @@
         out.id = v;
         continue;
       }
+      if (DERIVED_BONDING_FIELDS.includes(k)) continue;
       out[colMap[k] || syncCamelToSnake(k)] = v === "" ? null : v;
     }
     if (!out.updated_at) out.updated_at = (/* @__PURE__ */ new Date()).toISOString();
@@ -10864,6 +10868,30 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         }));
         setAddedCount(newRuns.length);
         if (newRuns.length === 0) return prevData;
+        const recoveryMoves = [];
+        for (const r of newRuns) {
+          recoveryMoves.push({
+            kind: "made",
+            boxNumber: r.boxNumber,
+            spec: r.productSize,
+            qty: Number(r.amountMade) || 0,
+            reelCode: r.baselineBatchCode || null,
+            source: "recovery",
+            note: "Recovered \u2014 missing after 22 Aug sync incident"
+          });
+          if (r.workNumber && Number(r.onOrderQty) > 0) {
+            recoveryMoves.push({
+              kind: "allocated",
+              boxNumber: r.boxNumber,
+              spec: r.productSize,
+              qty: Number(r.onOrderQty),
+              orderId: r.workNumber,
+              source: "recovery",
+              note: "Recovered \u2014 allocation restored with the box"
+            });
+          }
+        }
+        prevData = recordMovements(prevData, recoveryMoves);
         return {
           ...prevData,
           bondingRuns: [...prevData.bondingRuns, ...newRuns],
@@ -15154,7 +15182,10 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     useEffect(() => {
       const fixes = reconcileLedgerToStored(data.bondingRuns, data.movements);
       if (!fixes.length) return;
-      setData((prev) => recordMovements(prev, fixes));
+      console.warn(
+        "[ledger] stored columns disagree with the ledger on " + new Set(fixes.map((f) => f.boxNumber)).size + " box(es):",
+        fixes.map((f) => `${f.boxNumber} ${f.kind} ${f.qty}`).join(", ")
+      );
     }, [data.bondingRuns, data.movements]);
     useEffect(() => {
       const flush = () => {
