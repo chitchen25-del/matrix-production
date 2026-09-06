@@ -936,7 +936,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-06.11";
+  var APP_VERSION = "2026-09-06.12";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -8385,7 +8385,7 @@ The reason is recorded. Leave blank to keep the line.`, "");
     if (confirmedCases[caseNum] && fill != null && fill >= capacity) return true;
     return false;
   }
-  function arrangeCases({ caseRows, orphaned, caseOverrides: caseOverridesIn = {}, caseRemovals: caseRemovalsIn = {}, confirmedCases: confirmedCasesIn = {}, caseWeights: caseWeightsIn = {}, palletAssignments: palletAssignmentsIn = {}, startingCaseNum = 0, bondingRuns = [], orderId }) {
+  function arrangeCases({ caseRows, orphaned, caseOverrides: caseOverridesIn = {}, caseRemovals: caseRemovalsIn = {}, confirmedCases: confirmedCasesIn = {}, caseWeights: caseWeightsIn = {}, palletAssignments: palletAssignmentsIn = {}, startingCaseNum = 0, bondingRuns = [], orderId, caseRecords = null }) {
     const caseOverrides = liveMapEntries(caseOverridesIn);
     const caseRemovals = liveMapEntries(caseRemovalsIn);
     let confirmedCases = liveMapEntries(confirmedCasesIn);
@@ -8592,6 +8592,38 @@ The reason is recorded. Leave blank to keep the line.`, "");
       }
       return { ...c, contributions: merged };
     });
+    if (Array.isArray(caseRecords) && caseRecords.length) {
+      const exact = new Map(caseRecords.filter((c) => c && !c.deleted && c.contents != null).map((c) => [Number(c.caseNum), c]));
+      if (exact.size) {
+        caseRows = caseRows.map((c) => {
+          const rec = exact.get(Number(c.caseNum));
+          if (!rec) return c;
+          const want = Object.fromEntries(Object.entries(rec.contents).filter(([b, q]) => b && Number(q) > 0).map(([b, q]) => [String(b).trim(), Number(q)]));
+          const kept = [];
+          for (const row of c.contributions) {
+            const box = row.boxNumber ? String(row.boxNumber).trim() : "";
+            if (!box) {
+              kept.push(row);
+              continue;
+            }
+            if (want[box] == null) {
+              displacedBoxes.push({ boxNumber: box, qty: Number(row.qty) || 0 });
+              continue;
+            }
+            const q = want[box];
+            const had = Number(row.qty) || 0;
+            if (had > q) displacedBoxes.push({ boxNumber: box, qty: had - q });
+            kept.push({ ...row, qty: q });
+            delete want[box];
+          }
+          for (const [box, q] of Object.entries(want)) {
+            const tmpl = c.contributions.find((r) => r.boxNumber && String(r.boxNumber).trim() === box) || c.contributions[0] || {};
+            kept.push({ ...tmpl, boxNumber: box, qty: q });
+          }
+          return { ...c, contributions: kept };
+        }).filter((c) => c.contributions.length > 0);
+      }
+    }
     const portionByBox = /* @__PURE__ */ new Map();
     for (const p of removedPortions) portionByBox.set(p.boxNumber, (portionByBox.get(p.boxNumber) || 0) + p.qty);
     const removedRuns = bondingRuns.filter((r) => !r.deleted && r.workNumber === orderId && r.boxNumber && portionByBox.has(r.boxNumber) && !orphaned.some((x) => x.id === r.id)).map((r) => ({ ...r, unplacedQty: portionByBox.get(r.boxNumber) }));
