@@ -936,7 +936,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-06.10";
+  var APP_VERSION = "2026-09-06.11";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -3172,6 +3172,51 @@
       if (typeof console !== "undefined" && console.warn) console.warn("arrangedCasesForOrder failed for " + orderId, e);
       return { order, caseRows: [] };
     }
+  }
+  function backfillPlannedCases(data) {
+    const orders = (data.orders || []).filter((o) => !o.deleted);
+    const existing = new Set((data.cases || []).filter((c) => !c.deleted).map((c) => `${c.orderId}#${Number(c.caseNum)}`));
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    const added = [];
+    for (const o of orders) {
+      const decided = /* @__PURE__ */ new Set();
+      for (const [box, v] of Object.entries(o.caseOverrides || {})) {
+        if (v && typeof v === "object") for (const cn of Object.keys(v)) decided.add(Number(cn));
+        else if (v != null) decided.add(Number(v));
+      }
+      for (const cns of Object.values(o.caseRemovals || {})) for (const cn of cns || []) decided.add(Number(cn));
+      if (!decided.size) continue;
+      const { caseRows } = arrangedCasesForOrder(data, o.id);
+      for (const c of caseRows) {
+        if (!decided.has(Number(c.caseNum))) continue;
+        const key = `${o.id}#${Number(c.caseNum)}`;
+        if (existing.has(key)) continue;
+        const contents = {};
+        for (const r of c.contributions || []) {
+          const box = String(r.boxNumber || "").trim();
+          if (box && Number(r.qty) > 0) contents[box] = (contents[box] || 0) + Number(r.qty);
+        }
+        if (!Object.keys(contents).length) continue;
+        added.push({
+          id: uid("case"),
+          orderId: o.id,
+          caseNum: Number(c.caseNum),
+          contents,
+          confirmed: false,
+          weight: "",
+          pallet: "",
+          packedOutside: false,
+          notes: null,
+          deleted: false,
+          deletedAt: null,
+          updatedAt: stamp,
+          updatedBy: "backfill (planned case from caseOverrides)"
+        });
+        existing.add(key);
+      }
+    }
+    if (!added.length) return data;
+    return { ...data, cases: [...data.cases || [], ...added] };
   }
   function casesHoldingBox(data, orderId, boxNumber) {
     const want = String(boxNumber || "").trim().toUpperCase();
@@ -15285,6 +15330,13 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       () => ({ ...storedData, bondingRuns: ledgerCorrectedRuns(storedData.bondingRuns || [], storedData.movements || []) }),
       [storedData]
     );
+    useEffect(() => {
+      const out = backfillPlannedCases(data);
+      if (out === data) return;
+      const added = out.cases.slice((data.cases || []).length);
+      if (!added.length) return;
+      setDataRaw((prev) => ({ ...prev, cases: [...prev.cases || [], ...added] }));
+    }, [data]);
     useEffect(() => {
       const customs = data.customSizes || [];
       for (const range of Object.keys(DEFAULT_PRODUCT_RANGES)) {
