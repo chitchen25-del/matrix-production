@@ -936,7 +936,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-06.9";
+  var APP_VERSION = "2026-09-06.10";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -4624,7 +4624,32 @@ Here's the order:`;
       sourceId: m.sourceId || null,
       updatedAt: stamp
     };
-    return { ...prev, movements: [...prev.movements || [], row] };
+    const next = { ...prev, movements: [...prev.movements || [], row] };
+    if (m.kind === "counted" && row.boxNumber) {
+      const p = projectBox(next.movements, row.boxNumber);
+      const diff = row.qty - p.onShelf;
+      if (diff !== 0) {
+        const adj = {
+          id: uid("mv"),
+          at: stamp,
+          actor: row.actor,
+          device: row.device,
+          kind: "adjusted",
+          boxNumber: row.boxNumber,
+          spec: row.spec,
+          qty: diff,
+          orderId: null,
+          caseNum: null,
+          reelCode: null,
+          source: row.source,
+          sourceId: row.sourceId,
+          note: `Count wins: counted ${row.qty}, shelf projected ${p.onShelf}${m.note ? " \u2014 " + m.note : ""}`,
+          updatedAt: stamp
+        };
+        return { ...next, movements: [...next.movements, adj] };
+      }
+    }
+    return next;
   }
   function recordMovements(prev, list) {
     return (list || []).reduce((acc, m) => recordMovement(acc, m), prev);
@@ -9269,6 +9294,22 @@ This changes the order quantities. It is recorded in the change log and can be r
         todo: "Open the row in Bonding and correct whichever figure is wrong.",
         fixHere: true,
         ref: r.boxNumber || r.id
+      });
+    }
+    for (const box of new Set(runs.map((r) => r.boxNumber).filter(Boolean))) {
+      const p = projectBox(data.movements || [], box);
+      if (p.onShelf >= 0) continue;
+      const tmpl = runs.find((r) => r.boxNumber === box) || {};
+      add({
+        id: `negshelf:${box}:${p.onShelf}`,
+        kind: "Ledger below zero",
+        severity: "high",
+        what: `${box} projects ${p.onShelf} on the shelf \u2014 more taken out than was ever put in`,
+        detail: `${p.made} made, ${p.allocated} allocated, ${p.scrapped} scrapped \xB7 ${tmpl.productSize || ""}`,
+        why: "A box cannot hold less than nothing. Some movement against this box is wrong \u2014 usually a correction written twice, or a count that was filed as a movement and then acted on.",
+        todo: "Open the box's history in Stock and find the movement that does not match what happened. Write an adjustment with the reason; never edit the ledger.",
+        fixHere: false,
+        ref: box
       });
     }
     const noLoc = runs.filter((r) => (Number(r.toStock) || 0) > 0 && !String(r.location || "").trim());
@@ -15239,6 +15280,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       });
     };
     setLedgerMovements(storedData.movements || []);
+    setBoxMaterials(storedData.materials);
     const data = useMemo(
       () => ({ ...storedData, bondingRuns: ledgerCorrectedRuns(storedData.bondingRuns || [], storedData.movements || []) }),
       [storedData]
@@ -15379,9 +15421,6 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     useEffect(() => {
       setStorageFailed(!saveData(storedData));
     }, [storedData]);
-    useEffect(() => {
-      setBoxMaterials(data.materials);
-    }, [data.materials]);
     useEffect(() => {
       const fixes = reconcileLedgerToStored(data.bondingRuns, data.movements);
       if (!fixes.length) return;
