@@ -929,7 +929,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-06.4";
+  var APP_VERSION = "2026-09-06.5";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -7238,6 +7238,170 @@ The reason is recorded. Leave blank to keep the line.`, "");
     printInFrame("case-map-print-frame", html);
     return html;
   }
+  function CaseMapPrintChooser({ order, caseRows, setData }) {
+    const [open, setOpen] = React.useState(false);
+    if (!open) return /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setOpen(true) }, "\u{1F5FA} Print case map");
+    const pick = (fn) => {
+      setOpen(false);
+      fn(order, caseRows, setData);
+    };
+    return /* @__PURE__ */ React.createElement("span", { className: "inline-flex items-center gap-2 flex-wrap" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => pick(printCaseMapGrid) }, "\u{1F5FA} Grid \u2014 one row per case"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => pick(printCaseIconSheet) }, "\u{1F5FA} Tiles \u2014 one box per case"), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => setOpen(false),
+        style: { background: "none", border: "none", cursor: "pointer", color: INK_MUTED, fontSize: 12, padding: "4px 2px" }
+      },
+      "cancel"
+    ));
+  }
+  function printCaseMapGrid(order, caseRows, setData) {
+    const esc = pEsc;
+    const rows = [...caseRows || []].filter((c) => !c.packedOutside).sort((a, b) => a.caseNum - b.caseNum).map((c) => {
+      const cells = /* @__PURE__ */ new Map();
+      for (const l of caseContentLines(c)) cells.set(l.label, (cells.get(l.label) || 0) + l.qty);
+      return {
+        caseNum: c.caseNum,
+        cells,
+        total: [...cells.values()].reduce((t, q) => t + q, 0),
+        reel: Number(c.maxSize) === 10
+      };
+    }).filter((c) => c.cells.size > 0);
+    const PALLET_CAP = { box: 32, reel: 14 };
+    let pal = 0, onPallet = 0, palKind = null;
+    for (const c of rows) {
+      const kind = c.reel ? "reel" : "box";
+      if (palKind === null || kind !== palKind || onPallet >= PALLET_CAP[kind]) {
+        pal++;
+        onPallet = 0;
+      }
+      palKind = kind;
+      onPallet++;
+      c.pallet = pal;
+    }
+    const seen = /* @__PURE__ */ new Set();
+    const specs = [];
+    for (const li of order.lines || []) {
+      const k = shortCaseSpec(li.spec);
+      if (k && !seen.has(k)) {
+        seen.add(k);
+        specs.push(k);
+      }
+    }
+    for (const c of rows) for (const k of c.cells.keys()) if (!seen.has(k)) {
+      seen.add(k);
+      specs.push(k);
+    }
+    const MAX_SIZE_COLS = 10;
+    const blocks = [];
+    for (let i = 0; i < specs.length; i += MAX_SIZE_COLS) blocks.push(specs.slice(i, i + MAX_SIZE_COLS));
+    const runHead = (blockSpecs, bi) => `<tr><th class="runhead" colspan="${MAX_SIZE_COLS + 5}">${esc(order.id)}${order.customer ? " &middot; " + esc(order.customer) : ""}${blocks.length > 1 ? ` &middot; sizes ${bi * MAX_SIZE_COLS + 1}&ndash;${bi * MAX_SIZE_COLS + blockSpecs.length}` : ""}</th></tr>`;
+    const renderBlock = (blockSpecs, bi) => {
+      const pad = MAX_SIZE_COLS - blockSpecs.length;
+      const inBlock = rows.filter((c) => blockSpecs.some((s) => c.cells.get(s)));
+      const colTotal = (s) => inBlock.reduce((t, c) => t + (c.cells.get(s) || 0), 0);
+      let lastPallet = null;
+      const body = inBlock.map((c) => {
+        let band = "";
+        if (c.pallet !== lastPallet) {
+          lastPallet = c.pallet;
+          band = `<tr class="pallet"><td colspan="${MAX_SIZE_COLS + 5}">Pallet ${esc(c.pallet)}${c.reel ? " &middot; reels" : ""}</td></tr>`;
+        }
+        const cells = blockSpecs.map((s) => {
+          const q = c.cells.get(s);
+          return `<td class="q${q ? " has" : ""}">${q ? esc(q) : ""}</td>`;
+        }).join("") + `<td class="q pad"></td>`.repeat(pad);
+        return band + `<tr><td class="cn">${esc(c.caseNum)}</td>${cells}<td class="tot">${esc(c.total)}</td><td class="wr"></td><td class="wr"></td><td class="wr"></td></tr>`;
+      }).join("");
+      const szHead = (spec) => String(spec).split(/\s+/).filter(Boolean).map((t) => `<span class="tk">${esc(t)}</span>`).join(" ");
+      const heads = blockSpecs.map((s) => `<th class="sz">${szHead(s)}</th>`).join("") + `<th class="sz pad"></th>`.repeat(pad);
+      const foots = blockSpecs.map((s) => `<td class="q b">${esc(colTotal(s))}</td>`).join("") + `<td class="q pad"></td>`.repeat(pad);
+      const grand = inBlock.reduce((t, c) => t + blockSpecs.reduce((u, s) => u + (c.cells.get(s) || 0), 0), 0);
+      return `${blocks.length > 1 ? `<div class="blockhead">Sizes ${bi * MAX_SIZE_COLS + 1}&ndash;${bi * MAX_SIZE_COLS + blockSpecs.length} of ${specs.length}</div>` : ""}
+      <table class="cm">
+        <thead><tr><th class="cn">Case</th>${heads}<th class="tot">Total</th><th class="wr">Weight</th><th class="wr">Packed</th><th class="wr">Checked</th></tr>${runHead(blockSpecs, bi)}</thead>
+        <tbody>${body}</tbody>
+        <tfoot><tr><td class="cn">All</td>${foots}<td class="tot b">${esc(grand)}</td><td class="wr"></td><td class="wr"></td><td class="wr"></td></tr></tfoot>
+      </table>`;
+    };
+    const totalBoxes = rows.reduce((t, c) => t + c.total, 0);
+    const pallets = new Set(rows.map((c) => c.pallet)).size;
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Case map ${esc(order.id)}</title>
+  <style>${PAPER_CSS}
+    @page { size: A4 landscape; margin: 12mm; }
+    .blockhead { font-size:7.5pt; text-transform:uppercase; letter-spacing:.1em; color:#4A4A4A; margin:9mm 0 2mm; }
+    table.cm { border-collapse:collapse; width:100%; table-layout:fixed; margin-top:5mm; }
+    table.cm, table.cm td, table.cm th { box-sizing:border-box; }
+    /* White ground, NOT the black header band the other documents use. Across
+       the full width this header is a solid block on every page: on the office
+       mono laser that is a heavy load of toner and it ghosts through onto the
+       back of the sheet. Black type under a heavy rule reads better and costs
+       nothing. */
+    table.cm th { background:#fff; color:#000; text-transform:none; border-bottom:1.5pt solid #000;
+                  vertical-align:bottom; padding:0 1mm 1.6mm; letter-spacing:0; }
+    /* keep-all, because "0.80 x 2.30 2-3pt" broke at the HYPHEN and printed
+       "2-" over "3pt" \u2014 a size split across two lines at a character that is
+       part of the size. It may still wrap at a space, which is where the
+       O/S and pt tails are meant to go. */
+    th.sz { width:20mm; font-size:8.5pt; font-weight:700; text-align:center;
+            border-left:.5pt solid #9A9A9A; hyphens:none; }
+    th.sz .tk { white-space:nowrap; }
+    /* 6.5pt untracked. "CHECKED" tracked out at 7.5pt is wider than the column
+       it names and ran off the right edge of the page. */
+    /* table.cm th above is (0,1,2) and out-specifies a bare th.cn at (0,1,1),
+       so its text-transform:none silently won and these five labels printed
+       mixed case by accident. Qualified so the choice is the one written
+       down rather than whichever selector happened to be heavier. */
+    table.cm th.cn, table.cm th.tot, table.cm th.wr { font-size:6.5pt; font-weight:700; text-transform:uppercase; text-align:center; }
+    th.cn { width:11mm; } th.tot { width:10mm; } th.wr { width:13mm; }
+    table.cm td { border:.5pt solid #9A9A9A; padding:1.4mm .5mm; text-align:center; font-size:9.5pt; height:5.8mm;
+                  vertical-align:middle; word-break:normal; }
+    td.cn { font-weight:700; font-size:11pt; }
+    td.q.has { font-weight:600; }
+    td.tot { color:#4A4A4A; font-size:8.5pt; }
+    th.sz.pad, td.q.pad { border-left:.5pt solid #D8D8D8; border-right:.5pt solid #D8D8D8; }
+    /* A BAND, not a column: the pallet is a property of a RUN of cases, and a
+       repeated number down a column reads as data about each case rather than
+       as the boundary it actually is. A rule and a label, no fill \u2014 a grey
+       fill turns to mud at 300dpi on the mono printer. */
+    tr.pallet td { border:none; border-top:1.5pt solid #000; text-align:left; font-size:8pt; font-weight:700;
+                   text-transform:uppercase; letter-spacing:.12em; padding:3mm 0 1.2mm; height:auto; }
+    /* Repeats at the top of every page: a sheet that breaks mid-order
+       otherwise arrives at the bench saying nothing about what it belongs to. */
+    th.runhead { font-size:7pt; font-weight:400; color:#4A4A4A; letter-spacing:.08em; text-transform:uppercase;
+                 text-align:left; padding:2mm 0 1mm; border-bottom:.5pt solid #B4B4B4; background:#fff; }
+    /* NOT table-footer-group. Chrome repeats a footer group on every page, so
+       the "All" row printed a PARTIAL column total at the foot of each sheet
+       that read exactly like the order total. */
+    tfoot { display: table-row-group; }
+    /* The "All" row must not start a page on its own. Found by rendering the
+       real output: the second block's totals landed alone on page 3 under a
+       repeated header, with its case rows back on page 2 \u2014 a page of totals
+       belonging to cases that are not on it. */
+    tfoot tr { break-before: avoid; page-break-before: avoid; }
+    tfoot td { border-top:1.5pt solid #000; font-size:9pt; }
+    tfoot td.cn { font-size:6.5pt; text-transform:uppercase; font-weight:700; color:#4A4A4A; }
+    .foot { margin-top:6mm; font-size:9pt; padding-bottom:6mm; }
+  </style></head><body>
+    ${paperHead("Case map", order, [
+      order.customer ? esc(order.customer) : "",
+      order.customerRef ? `Their ref &nbsp;<b>${esc(order.customerRef)}</b>` : "",
+      `<b>${rows.length}</b> case${rows.length === 1 ? "" : "s"} &nbsp;&middot;&nbsp; <b>${totalBoxes}</b> boxes &nbsp;&middot;&nbsp; <b>${pallets}</b> pallet${pallets === 1 ? "" : "s"}`
+    ])}
+    ${blocks.map((b, i) => renderBlock(b, i)).join("")}
+    <div class="foot">If a case is packed differently from this sheet, write it on the sheet &mdash; the sheet is the record.</div>
+    ${paperFoot(order)}
+  </body></html>`;
+    if (typeof setData === "function") {
+      setData((prev) => ({ ...prev, ...appendLog(prev, {
+        action: "print",
+        entity: "order",
+        entityId: order.id,
+        summary: `Printed case map (grid) for ${order.id} (${order.customer}) \u2014 ${rows.length} cases, ${totalBoxes} boxes`
+      }) }));
+    }
+    printInFrame("case-map-grid-print-frame", html);
+    return html;
+  }
   var CASE_FILL_PARTIAL = "#FFF0A6";
   var CASE_FILL_CONFIRMED = "#BFE6CE";
   var CASE_FILL_FULL = "#D3EFDD";
@@ -8792,7 +8956,7 @@ This changes the order quantities. It is recorded in the change log and can be r
       },
       /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: INK } }, "Paper & adjustments", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontWeight: 400 } }, " \u2014 print the list or the case map, packing override", manualCount || Object.keys(caseOverrides).length ? `, ${[manualCount ? `${manualCount} cases packed before the app` : null, Object.keys(caseOverrides).length ? `${Object.keys(caseOverrides).length} box${Object.keys(caseOverrides).length === 1 ? "" : "es"} moved by hand` : null].filter(Boolean).join(", ")}` : "")),
       /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 12 } }, toolsOpen ? "hide" : "show")
-    ), toolsOpen && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-4 flex-wrap" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => printPackingList(order, caseRows, setData) }, "\u{1F5A8} Print packing list"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => printCaseIconSheet(order, caseRows, setData) }, "\u{1F5FA} Print case map"), !overrideOn ? /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => requireAdmin(() => setOverrideOn(true)) }, "\u{1F512} Packing override") : /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setOverrideOn(false) }, "Turn override off")), /* @__PURE__ */ React.createElement(CaseMapPrint, { order, cases: caseRows }), overrideOn ? /* @__PURE__ */ React.createElement("div", { className: "mt-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Corrections \u2014 orders packed before the app"), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-4 flex-wrap text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("label", { htmlFor: "starting-case-num" }, "Already picked and packed outside the app up to case #"), /* @__PURE__ */ React.createElement(
+    ), toolsOpen && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-4 flex-wrap" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => printPackingList(order, caseRows, setData) }, "\u{1F5A8} Print packing list"), /* @__PURE__ */ React.createElement(CaseMapPrintChooser, { order, caseRows, setData }), !overrideOn ? /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => requireAdmin(() => setOverrideOn(true)) }, "\u{1F512} Packing override") : /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setOverrideOn(false) }, "Turn override off")), /* @__PURE__ */ React.createElement(CaseMapPrint, { order, cases: caseRows }), overrideOn ? /* @__PURE__ */ React.createElement("div", { className: "mt-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Corrections \u2014 orders packed before the app"), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-4 flex-wrap text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("label", { htmlFor: "starting-case-num" }, "Already picked and packed outside the app up to case #"), /* @__PURE__ */ React.createElement(
       "input",
       {
         id: "starting-case-num",
