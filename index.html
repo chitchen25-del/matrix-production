@@ -916,7 +916,14 @@
       return DEFAULT_DATA;
     }
   }
+  function storableData(d) {
+    if (!d || !Array.isArray(d.bondingRuns)) return d;
+    const clean = d.bondingRuns.filter((r) => !r || !r._synth);
+    if (clean.length === d.bondingRuns.length) return d;
+    return { ...d, bondingRuns: clean };
+  }
   function saveData(data) {
+    data = storableData(data);
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
       window.__matrixStorageFailed = false;
@@ -1329,6 +1336,8 @@
     return (localStorage.getItem("matrixSyncEmail") || "").trim().toLowerCase() || null;
   }
   async function pushSyncChanges(client, prevData, nextData, opts = {}) {
+    prevData = storableData(prevData);
+    nextData = storableData(nextData);
     const skip = new Set(opts.skipTables || []);
     const okTables = [];
     const warnings = [];
@@ -1395,6 +1404,7 @@
     return count;
   }
   function downloadBackup(data) {
+    data = storableData(data);
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -15221,13 +15231,18 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     ), syncError && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: "#F3A6A6" } }, syncError), /* @__PURE__ */ React.createElement("button", { onClick: () => connectSync(email, password), className: "w-full text-left text-xs px-3 py-1.5", style: { background: ORANGE, color: "#fff", borderRadius: 5 } }, "Connect")));
   }
   function App() {
-    const [data, setDataRaw] = useState(loadData);
+    const [storedData, setDataRaw] = useState(loadData);
     const setData = (updater) => {
       setDataRaw((prevData) => {
         const nextData = typeof updater === "function" ? updater(prevData) : updater;
         return stampUpdatedAt(prevData, nextData);
       });
     };
+    setLedgerMovements(storedData.movements || []);
+    const data = useMemo(
+      () => ({ ...storedData, bondingRuns: ledgerCorrectedRuns(storedData.bondingRuns || [], storedData.movements || []) }),
+      [storedData]
+    );
     useEffect(() => {
       const customs = data.customSizes || [];
       for (const range of Object.keys(DEFAULT_PRODUCT_RANGES)) {
@@ -15362,9 +15377,8 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     };
     const [storageFailed, setStorageFailed] = useState(false);
     useEffect(() => {
-      setStorageFailed(!saveData(data));
-    }, [data]);
-    setLedgerMovements(data.movements || []);
+      setStorageFailed(!saveData(storedData));
+    }, [storedData]);
     useEffect(() => {
       setBoxMaterials(data.materials);
     }, [data.materials]);
@@ -15380,7 +15394,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       const flush = () => {
         if (syncStatus === "connected" && syncClientRef.current) {
           const prev = prevDataRef.current;
-          pushSyncChanges(syncClientRef.current, prev, data).then((res) => {
+          pushSyncChanges(syncClientRef.current, prev, storedData).then((res) => {
             prevDataRef.current = advancePrevForTables(prev, data, res.okTables);
           }).catch((err) => {
             if (err && err.okTables) prevDataRef.current = advancePrevForTables(prev, data, err.okTables);
@@ -15464,7 +15478,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       };
       setPendingCount(countPendingChanges(prev, data));
       setSyncStatus("saving");
-      pushSyncChanges(syncClientRef.current, prev, data).then((res) => {
+      pushSyncChanges(syncClientRef.current, prev, storedData).then((res) => {
         prevDataRef.current = data;
         setSyncStatus("connected");
         setPendingCount(0);
@@ -15821,7 +15835,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     };
     const [backupAge, setBackupAge] = useState(() => backupAgeInfo());
     const handleBackup = () => {
-      downloadBackup(data);
+      downloadBackup(storedData);
       setBackupAge(backupAgeInfo());
       flash("Backup file downloaded");
     };
