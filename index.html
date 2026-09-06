@@ -936,7 +936,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-06.15";
+  var APP_VERSION = "2026-09-06.16";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1922,45 +1922,6 @@
   function otherStockBalance(otherStock, lineItems, spec) {
     const added = otherStock.filter((o) => o.productSpec === spec).reduce((s, o) => s + Number(o.qty || 0), 0);
     return added - otherStockUsed(lineItems, spec);
-  }
-  function reconcileLedgerToStored(bondingRuns, movements) {
-    const out = [];
-    const byBox = /* @__PURE__ */ new Map();
-    for (const r of bondingRuns || []) {
-      if (!r.deleted && r.boxNumber) (byBox.get(r.boxNumber) || byBox.set(r.boxNumber, []).get(r.boxNumber)).push(r);
-    }
-    const known = new Set((movements || []).filter((m) => !m.deleted && m.boxNumber).map((m) => m.boxNumber));
-    for (const [box, rows] of byBox) {
-      if (!known.has(box)) continue;
-      const p = projectBox(movements, box);
-      const spec = (rows.find((r) => r.productSize) || {}).productSize || null;
-      const sMade = rows.reduce((t, r) => t + Number(r.amountMade || 0), 0);
-      const sByOrder = {};
-      for (const r of rows) if (r.workNumber) sByOrder[r.workNumber] = (sByOrder[r.workNumber] || 0) + Number(r.onOrderQty || 0);
-      if (sMade !== p.made) out.push({
-        kind: "adjusted",
-        boxNumber: box,
-        spec,
-        qty: sMade - p.made,
-        source: "reconcile",
-        note: `Brought in line with stored columns (made ${p.made} \u2192 ${sMade}) \u2014 changed on a device without the ledger`
-      });
-      const orders = /* @__PURE__ */ new Set([...Object.keys(sByOrder), ...Object.keys(p.byOrder)]);
-      for (const orderId of orders) {
-        const want = Number(sByOrder[orderId] || 0), have = Number(p.byOrder[orderId] || 0);
-        if (want === have) continue;
-        out.push({
-          kind: want > have ? "allocated" : "unallocated",
-          boxNumber: box,
-          spec,
-          qty: Math.abs(want - have),
-          orderId,
-          source: "reconcile",
-          note: `Brought in line with stored columns (${orderId} ${have} \u2192 ${want}) \u2014 changed on a device without the ledger`
-        });
-      }
-    }
-    return out;
   }
   function ledgerCorrectedRuns(bondingRuns, movements = LEDGER_MOVEMENTS) {
     if (!movements || !movements.length) return bondingRuns;
@@ -15709,14 +15670,6 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     useEffect(() => {
       setStorageFailed(!saveData(storedData));
     }, [storedData]);
-    useEffect(() => {
-      const fixes = reconcileLedgerToStored(data.bondingRuns, data.movements);
-      if (!fixes.length) return;
-      console.warn(
-        "[ledger] stored columns disagree with the ledger on " + new Set(fixes.map((f) => f.boxNumber)).size + " box(es):",
-        fixes.map((f) => `${f.boxNumber} ${f.kind} ${f.qty}`).join(", ")
-      );
-    }, [data.bondingRuns, data.movements]);
     useEffect(() => {
       const flush = () => {
         if (syncStatus === "connected" && syncClientRef.current) {
