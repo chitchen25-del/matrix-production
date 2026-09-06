@@ -936,7 +936,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-06.13";
+  var APP_VERSION = "2026-09-06.14";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -3148,6 +3148,147 @@
     others.sort((a, b) => a.orderId.localeCompare(b.orderId));
     return { needing, others };
   }
+  function patchMapsFromCaseRecords(records, plannedCaseRows) {
+    const confirmedCases = {}, caseOverrides = {}, caseRemovals = {};
+    const rows = (records || []).filter((c) => c && !c.deleted);
+    const withContents = rows.filter((c) => c.contents != null);
+    const byNum = new Map(withContents.map((c) => [Number(c.caseNum), c]));
+    const plannedIn = /* @__PURE__ */ new Map();
+    const plannedTotal = /* @__PURE__ */ new Map();
+    for (const pc of plannedCaseRows || []) for (const r of pc.contributions || []) {
+      const box = String(r.boxNumber || "").trim();
+      if (!box) continue;
+      if (!plannedIn.has(box)) plannedIn.set(box, /* @__PURE__ */ new Set());
+      plannedIn.get(box).add(Number(pc.caseNum));
+      plannedTotal.set(box, (plannedTotal.get(box) || 0) + (Number(r.qty) || 0));
+    }
+    const heldIn = /* @__PURE__ */ new Map();
+    for (const c of withContents) {
+      const n = Number(c.caseNum);
+      const contents = Object.fromEntries(Object.entries(c.contents).filter(([b, q]) => b && Number(q) > 0).map(([b, q]) => [String(b).trim(), Number(q)]));
+      if (c.confirmed) {
+        confirmedCases[String(n)] = { boxes: contents };
+        continue;
+      }
+      for (const [box, q] of Object.entries(contents)) {
+        if (!heldIn.has(box)) heldIn.set(box, []);
+        heldIn.get(box).push([n, q]);
+      }
+    }
+    for (const [box, places] of heldIn) {
+      const total = plannedTotal.get(box) || 0;
+      if (places.length === 1 && total > 0 && places[0][1] >= total) caseOverrides[box] = places[0][0];
+      else caseOverrides[box] = Object.fromEntries(places.map(([n, q]) => [String(n), q]));
+    }
+    for (const pc of plannedCaseRows || []) {
+      const n = Number(pc.caseNum);
+      const rec = byNum.get(n);
+      if (!rec || rec.confirmed) continue;
+      const held = rec.contents || {};
+      const incoming = Object.keys(held).some((b) => Number(held[b]) > 0 && !(plannedIn.get(String(b).trim()) || /* @__PURE__ */ new Set()).has(n));
+      if (incoming) continue;
+      for (const r of pc.contributions || []) {
+        const box = String(r.boxNumber || "").trim();
+        if (box && !(Number(held[box]) > 0) && !caseOverrides[box]) {
+          const list = caseRemovals[box] || [];
+          if (!list.includes(n)) caseRemovals[box] = [...list, n];
+        }
+      }
+    }
+    return { confirmedCases, caseOverrides, caseRemovals };
+  }
+  function applyPatchMapsToCases(data, orderId, maps) {
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    const rows = [...data.cases || []];
+    const idxOf = (n) => rows.findIndex((c) => !c.deleted && c.orderId === orderId && Number(c.caseNum) === Number(n));
+    let seedCache = null;
+    const seedFor = (n) => {
+      if (seedCache === null) {
+        seedCache = /* @__PURE__ */ new Map();
+        try {
+          for (const c of arrangedCasesForOrder(data, orderId).caseRows || []) {
+            const contents = {};
+            for (const r of c.contributions || []) {
+              const b = String(r.boxNumber || "").trim();
+              if (b && Number(r.qty) > 0) contents[b] = (contents[b] || 0) + Number(r.qty);
+            }
+            seedCache.set(Number(c.caseNum), contents);
+          }
+        } catch (e) {
+          if (typeof console !== "undefined" && console.warn) console.warn("case seed failed for " + orderId, e);
+        }
+      }
+      return { ...seedCache.get(Number(n)) || {} };
+    };
+    const ensure = (n) => {
+      let i = idxOf(n);
+      if (i < 0) {
+        rows.push({
+          id: uid("case"),
+          orderId,
+          caseNum: Number(n),
+          contents: seedFor(n),
+          confirmed: false,
+          weight: "",
+          pallet: "",
+          packedOutside: false,
+          notes: null,
+          deleted: false,
+          deletedAt: null,
+          updatedAt: stamp,
+          updatedBy: currentActor()
+        });
+        i = rows.length - 1;
+      }
+      return i;
+    };
+    const setContents = (i, next) => {
+      rows[i] = { ...rows[i], contents: next, updatedAt: stamp, updatedBy: currentActor() };
+    };
+    if (maps.confirmedCases) {
+      for (const [n, v] of Object.entries(maps.confirmedCases)) {
+        if (v == null) continue;
+        const i = ensure(n);
+        const boxes = v === true ? rows[i].contents || {} : Object.fromEntries(Object.entries(v && v.boxes || {}).filter(([b, q]) => b && Number(q) > 0).map(([b, q]) => [String(b).trim(), Number(q)]));
+        rows[i] = { ...rows[i], contents: boxes, confirmed: true, updatedAt: stamp, updatedBy: currentActor() };
+      }
+    }
+    if (maps.caseOverrides) {
+      for (const [box, v] of Object.entries(maps.caseOverrides)) {
+        const code = String(box).trim();
+        const whole = (data.bondingRuns || []).filter((r) => !r.deleted && r.workNumber === orderId && String(r.boxNumber || "").trim() === code).reduce((t, r) => t + (Number(r.onOrderQty) || 0), 0);
+        const want = v == null ? {} : typeof v === "object" ? Object.fromEntries(Object.entries(v).filter(([, q]) => Number(q) > 0).map(([n, q]) => [Number(n), Number(q)])) : { [Number(v)]: whole };
+        rows.forEach((c, i) => {
+          if (c.deleted || c.orderId !== orderId || c.confirmed || c.contents == null) return;
+          if (c.contents[code] == null || want[Number(c.caseNum)] !== void 0) return;
+          const next = { ...c.contents };
+          delete next[code];
+          setContents(i, next);
+        });
+        for (const [n, q] of Object.entries(want)) {
+          const i = ensure(n);
+          if (rows[i].confirmed) continue;
+          const cur = rows[i].contents || {};
+          if (!(Number(q) > 0)) continue;
+          setContents(i, { ...cur, [code]: Number(q) });
+        }
+      }
+    }
+    if (maps.caseRemovals) {
+      for (const [box, list] of Object.entries(maps.caseRemovals)) {
+        const code = String(box).trim();
+        const nums = list === true ? rows.filter((c) => !c.deleted && c.orderId === orderId).map((c) => Number(c.caseNum)) : (list || []).map(Number);
+        for (const n of nums) {
+          const i = idxOf(n);
+          if (i < 0 || rows[i].confirmed || rows[i].contents == null) continue;
+          const next = { ...rows[i].contents };
+          delete next[code];
+          setContents(i, next);
+        }
+      }
+    }
+    return { ...data, cases: rows };
+  }
   function arrangedCasesForOrder(data, orderId) {
     const order = (data.orders || []).find((o) => o.id === orderId && !o.deleted);
     if (!order) return { order: null, caseRows: [] };
@@ -3299,9 +3440,10 @@
     }
     const chosenCase = toOrder && dest.caseNum != null && String(dest.caseNum).trim() !== "" ? Number(dest.caseNum) : null;
     if (chosenCase != null && !isNaN(chosenCase)) {
+      let splitOut = null;
       working = { ...working, orders: (working.orders || []).map((o) => {
         if (o.id !== toOrder) return o;
-        const prev = (o.caseOverrides || {})[box];
+        const prev = (patchMapsFromCaseRecords((data.cases || []).filter((c) => !c.deleted && c.orderId === toOrder), []).caseOverrides || {})[box];
         let split;
         if (prev != null && typeof prev === "object") split = { ...prev };
         else if (typeof prev === "number") {
@@ -3319,9 +3461,12 @@
           }
         }
         split[chosenCase] = (Number(split[chosenCase]) || 0) + qty;
-        return { ...o, caseOverrides: { ...o.caseOverrides || {}, [box]: split } };
+        splitOut = split;
+        return o;
       }) };
+      if (splitOut) working = applyPatchMapsToCases(working, toOrder, { caseOverrides: { [box]: splitOut } });
       facts.push({ kind: "placed", boxNumber: box, spec, qty, orderId: toOrder, caseNum: chosenCase, source: "move", sourceId: row.id });
+      let confirmedWrite = null;
       working = { ...working, orders: (working.orders || []).map((o) => {
         if (o.id !== toOrder) return o;
         const cc = o.confirmedCases || {};
@@ -3341,8 +3486,10 @@
         }
         const boxes = { ...entry.boxes, [box]: (Number(entry.boxes[box]) || 0) + qty };
         next[chosenCase] = { boxes };
-        return { ...o, confirmedCases: next };
+        confirmedWrite = next;
+        return o;
       }) };
+      if (confirmedWrite) working = applyPatchMapsToCases(working, toOrder, { confirmedCases: confirmedWrite });
       const already = (working.cases || []).find((c) => !c.deleted && c.orderId === toOrder && Number(c.caseNum) === Number(chosenCase));
       if (already && already.confirmed) {
         const contents = { ...already.contents || {}, [box]: (Number((already.contents || {})[box]) || 0) + qty };
@@ -5908,11 +6055,8 @@ The reason is recorded. Leave blank to keep the line.`, "");
             moves.push({ kind: "unplaced", boxNumber: box, spec, qty: short, orderId: order.id, caseNum: Number(c.newCase), source: "amend", note: `Short against sheet ${sheet.ref}` });
           }
         }
-        let result = {
-          ...prevData,
-          bondingRuns: runs,
-          orders: prevData.orders.map((o) => o.id === order.id ? { ...o, caseOverrides: overrides } : o)
-        };
+        let result = { ...prevData, bondingRuns: runs, orders: prevData.orders };
+        result = applyPatchMapsToCases(result, order.id, { caseOverrides: overrides });
         result = recordMovements(result, moves);
         result = reconcilePickSheet(result, sheet.id, `Amended: ${summary.join("; ")}`);
         return { ...result, ...appendLog(result, {
@@ -5941,11 +6085,8 @@ The reason is recorded. Leave blank to keep the line.`, "");
           }
           delete overrides[l.boxNumber];
         }
-        let result = {
-          ...prevData,
-          bondingRuns: runs,
-          orders: prevData.orders.map((o) => o.id === order.id ? { ...o, caseOverrides: overrides } : o)
-        };
+        let result = { ...prevData, bondingRuns: runs, orders: prevData.orders };
+        result = applyPatchMapsToCases(result, order.id, { caseOverrides: overrides });
         result = recordMovements(result, moves);
         result = reconcilePickSheet(result, sheet.id, "Cancelled \u2014 everything put back");
         return { ...result, ...appendLog(result, {
@@ -6061,7 +6202,8 @@ The reason is recorded. Leave blank to keep the line.`, "");
         let result = {
           ...prevData,
           bondingRuns: runsAfterNewAdditions,
-          orders: prevData.orders.map((o) => o.id === order.id ? { ...o, caseOverrides: newOverrides } : o),
+          orders: prevData.orders,
+          // placements live in the cases table now
           stockPicks: [...prevData.stockPicks || [], ...newDamagedPicks],
           ...appendLog(prevData, {
             action: "stock_adjustment",
@@ -8235,8 +8377,7 @@ The reason is recorded. Leave blank to keep the line.`, "");
         }
         return {
           ...o,
-          caseOverrides: { ...prevOverrides, ...overrides },
-          caseRemovals: nextRemovals,
+          // caseOverrides/caseRemovals are derived from the cases table; written below.
           caseFlags: { ...o.caseFlags || {}, [caseNum]: allFlags.length ? allFlags : void 0 },
           /* Chris, 2 Sep: "When I confirm case it should be the end of it." A
              confirmed case is closed: its contents are exactly what was saved.
@@ -8751,7 +8892,7 @@ This changes the order quantities. It is recorded in the change log and can be r
       return out;
     });
     const setSmallCaseSizes = (next) => setData((prevData) => ({ ...prevData, orders: prevData.orders.map((o) => o.id === orderId ? { ...o, smallCaseSizes: next } : o) }));
-    const setCaseOverrides = (next) => setData((prevData) => ({ ...prevData, orders: prevData.orders.map((o) => o.id === orderId ? { ...o, caseOverrides: next } : o) }));
+    const setCaseOverrides = (next) => setData((prevData) => applyPatchMapsToCases(prevData, orderId, { caseOverrides: next }));
     const setPalletAssignments = (next) => setData((prevData) => {
       let out = { ...prevData, orders: prevData.orders.map((o) => o.id === orderId ? { ...o, palletAssignments: next } : o) };
       const before = prevData.orders.find((o) => o.id === orderId)?.palletAssignments || {};
@@ -15358,16 +15499,39 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     };
     setLedgerMovements(storedData.movements || []);
     setBoxMaterials(storedData.materials);
-    const data = useMemo(
-      () => ({ ...storedData, bondingRuns: ledgerCorrectedRuns(storedData.bondingRuns || [], storedData.movements || []) }),
-      [storedData]
-    );
+    const data = useMemo(() => {
+      const runs = ledgerCorrectedRuns(storedData.bondingRuns || [], storedData.movements || []);
+      const base = { ...storedData, bondingRuns: runs };
+      const cases = (base.cases || []).filter((c) => c && !c.deleted);
+      if (!cases.length) return base;
+      const byOrder = /* @__PURE__ */ new Map();
+      for (const c of cases) {
+        if (!byOrder.has(c.orderId)) byOrder.set(c.orderId, []);
+        byOrder.get(c.orderId).push(c);
+      }
+      return { ...base, orders: (base.orders || []).map((o) => {
+        const recs = byOrder.get(o.id);
+        if (!recs) return { ...o, caseOverrides: {}, caseRemovals: {}, confirmedCases: {} };
+        const pre = patchMapsFromCaseRecords(recs, []);
+        let planned = [];
+        try {
+          const items = orderLineItems(base.lineItems, o.id).filter((li) => !isDelivery(li.description));
+          const sub = subtractConfirmed(items, runs, pre.confirmedCases, o.id);
+          const g = groupAssignedRunsByLineItem(sub.runs, o.id, sub.items);
+          planned = buildCombinedCases(g.byLineItem, (Number(o.startingCaseNum) || 0) + 1, packedOutsideSpecs(o, base.lineItems), o.caseLayout);
+        } catch (e) {
+          if (typeof console !== "undefined" && console.warn) console.warn("patch map derivation failed for " + o.id, e);
+          return o;
+        }
+        return { ...o, ...patchMapsFromCaseRecords(recs, planned) };
+      }) };
+    }, [storedData]);
     useEffect(() => {
       const out = backfillPlannedCases(data);
       if (out === data) return;
       const added = out.cases.slice((data.cases || []).length);
       if (!added.length) return;
-      setDataRaw((prev) => ({ ...prev, cases: [...prev.cases || [], ...added] }));
+      setData((prev) => ({ ...prev, cases: [...prev.cases || [], ...added] }));
     }, [data]);
     useEffect(() => {
       const customs = data.customSizes || [];
