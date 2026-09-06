@@ -936,7 +936,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-06.14";
+  var APP_VERSION = "2026-09-06.15";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -3326,6 +3326,17 @@
         else if (v != null) decided.add(Number(v));
       }
       for (const cns of Object.values(o.caseRemovals || {})) for (const cn of cns || []) decided.add(Number(cn));
+      const scalars = /* @__PURE__ */ new Map();
+      for (const [cn, v] of Object.entries(o.caseWeights || {})) {
+        if (v == null || String(v).trim() === "") continue;
+        decided.add(Number(cn));
+        scalars.set(Number(cn), { ...scalars.get(Number(cn)) || {}, weight: String(v) });
+      }
+      for (const [cn, v] of Object.entries(o.palletAssignments || {})) {
+        if (v == null || String(v).trim() === "") continue;
+        decided.add(Number(cn));
+        scalars.set(Number(cn), { ...scalars.get(Number(cn)) || {}, pallet: String(v) });
+      }
       if (!decided.size) continue;
       const { caseRows } = arrangedCasesForOrder(data, o.id);
       for (const c of caseRows) {
@@ -3337,21 +3348,42 @@
           const box = String(r.boxNumber || "").trim();
           if (box && Number(r.qty) > 0) contents[box] = (contents[box] || 0) + Number(r.qty);
         }
-        if (!Object.keys(contents).length) continue;
+        const sc = scalars.get(Number(c.caseNum)) || {};
+        if (!Object.keys(contents).length && !sc.weight && !sc.pallet) continue;
         added.push({
           id: uid("case"),
           orderId: o.id,
           caseNum: Number(c.caseNum),
-          contents,
+          contents: Object.keys(contents).length ? contents : null,
           confirmed: false,
-          weight: "",
-          pallet: "",
+          weight: sc.weight || "",
+          pallet: sc.pallet || "",
           packedOutside: false,
           notes: null,
           deleted: false,
           deletedAt: null,
           updatedAt: stamp,
-          updatedBy: "backfill (planned case from caseOverrides)"
+          updatedBy: "backfill (decided case)"
+        });
+        existing.add(key);
+      }
+      for (const [cn, sc] of scalars) {
+        const key = `${o.id}#${cn}`;
+        if (existing.has(key)) continue;
+        added.push({
+          id: uid("case"),
+          orderId: o.id,
+          caseNum: cn,
+          contents: null,
+          confirmed: false,
+          weight: sc.weight || "",
+          pallet: sc.pallet || "",
+          packedOutside: false,
+          notes: null,
+          deleted: false,
+          deletedAt: null,
+          updatedAt: stamp,
+          updatedBy: "backfill (weighed case)"
         });
         existing.add(key);
       }
@@ -8886,16 +8918,18 @@ This changes the order quantities. It is recorded in the change log and can be r
       return { ...prevData, cases };
     };
     const setCaseWeights = (next) => setData((prevData) => {
-      let out = { ...prevData, orders: prevData.orders.map((o) => o.id === orderId ? { ...o, caseWeights: next } : o) };
-      const before = prevData.orders.find((o) => o.id === orderId)?.caseWeights || {};
+      let out = prevData;
+      const rowsFor = (prevData.cases || []).filter((c) => !c.deleted && c.orderId === orderId);
+      const before = Object.fromEntries(rowsFor.map((c) => [String(c.caseNum), String(c.weight ?? "")]));
       for (const [n, v] of Object.entries(next)) if (String(v ?? "") !== String(before[n] ?? "")) out = writeCaseField(out, n, { weight: String(v ?? "") });
       return out;
     });
     const setSmallCaseSizes = (next) => setData((prevData) => ({ ...prevData, orders: prevData.orders.map((o) => o.id === orderId ? { ...o, smallCaseSizes: next } : o) }));
     const setCaseOverrides = (next) => setData((prevData) => applyPatchMapsToCases(prevData, orderId, { caseOverrides: next }));
     const setPalletAssignments = (next) => setData((prevData) => {
-      let out = { ...prevData, orders: prevData.orders.map((o) => o.id === orderId ? { ...o, palletAssignments: next } : o) };
-      const before = prevData.orders.find((o) => o.id === orderId)?.palletAssignments || {};
+      let out = prevData;
+      const rowsFor = (prevData.cases || []).filter((c) => !c.deleted && c.orderId === orderId);
+      const before = Object.fromEntries(rowsFor.map((c) => [String(c.caseNum), String(c.pallet ?? "")]));
       for (const [n, v] of Object.entries(next)) if (String(v ?? "") !== String(before[n] ?? "")) out = writeCaseField(out, n, { pallet: String(v ?? "") });
       return out;
     });
@@ -15511,7 +15545,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       }
       return { ...base, orders: (base.orders || []).map((o) => {
         const recs = byOrder.get(o.id);
-        if (!recs) return { ...o, caseOverrides: {}, caseRemovals: {}, confirmedCases: {} };
+        if (!recs) return { ...o, caseOverrides: {}, caseRemovals: {}, confirmedCases: {}, caseWeights: {}, palletAssignments: {} };
         const pre = patchMapsFromCaseRecords(recs, []);
         let planned = [];
         try {
@@ -15523,7 +15557,12 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           if (typeof console !== "undefined" && console.warn) console.warn("patch map derivation failed for " + o.id, e);
           return o;
         }
-        return { ...o, ...patchMapsFromCaseRecords(recs, planned) };
+        const caseWeights = {}, palletAssignments = {};
+        for (const c of recs) {
+          if (c.weight != null && String(c.weight).trim() !== "") caseWeights[String(c.caseNum)] = String(c.weight);
+          if (c.pallet != null && String(c.pallet).trim() !== "") palletAssignments[String(c.caseNum)] = String(c.pallet);
+        }
+        return { ...o, ...patchMapsFromCaseRecords(recs, planned), caseWeights, palletAssignments };
       }) };
     }, [storedData]);
     useEffect(() => {
