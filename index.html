@@ -909,7 +909,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-06.1";
+  var APP_VERSION = "2026-09-06.2";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -2858,6 +2858,53 @@
       iframe.contentWindow.print();
     }, 150);
     return iframe;
+  }
+  function pickSheetDoc(order, sheet) {
+    const lines = sheet.lines || [];
+    const caseText = (c) => c == null ? "&mdash;" : Array.isArray(c) ? c.map((x) => `${pEsc(x.qty)}&rarr;#${pEsc(x.caseNum)}`).join(", ") : pEsc(c);
+    const rows = lines.map((l, i) => {
+      const newGroup = i === 0 || lines[i - 1].spec !== l.spec;
+      return `${newGroup ? `<tr><td colspan="7" class="grp">${pEsc(l.spec)}</td></tr>` : ""}
+      <tr>
+        <td>${pEsc(l.location || "\u2014")}</td>
+        <td class="mono">${pEsc(l.boxNumber)}</td>
+        <td>${pEsc(l.spec)}</td>
+        <td class="r b">${pEsc(l.qty)}</td>
+        <td class="write"></td>
+        <td class="c"><span class="tick"></span></td>
+        <td class="c b">${caseText(l.caseNum)}</td>
+      </tr>`;
+    }).join("");
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Pick sheet ${pEsc(sheet.ref)}</title>
+  <style>${PAPER_CSS}
+    td { font-size:10.5pt; padding:7px 6px; }
+    td.write { border:.75pt solid #B4B4B4; min-width:44px; }
+    .tick { display:inline-block; width:18px; height:18px; border:1.25pt solid #000; }
+    .grp { background:#EFEFEA; font-weight:700; font-size:8.5pt; text-transform:uppercase;
+           letter-spacing:.06em; border-top:1.5pt solid #000; padding:4px 6px; }
+    .reprint { font-size:10pt; font-weight:700; border:1.5pt solid #000; padding:3px 8px;
+               display:inline-block; margin-top:7px; }
+  </style></head><body>
+    ${paperHead("Pick sheet", order, [
+      order.customer ? pEsc(order.customer) : "",
+      `<b>${pEsc(sheet.ref)}</b>`,
+      sheet.printedBy ? `Printed by ${pEsc(sheet.printedBy)}` : ""
+    ])}
+    ${sheet.isReprint ? `<div class="reprint">REPRINT ${pEsc(Number(sheet.reprintCount) || 1)} &middot; same sheet, same boxes &middot; destroy any earlier copy</div>` : ""}
+    <p class="p-note">This stock is <b>allocated to the order as of printing</b>. Write the real count in
+      <b>Found</b>, tick <b>Damaged</b> if unusable, and put each box in the <b>Case #</b> shown.
+      If what you find differs from this sheet, bring it back and use <b>Amend pick sheet</b> on the order.</p>
+    <table>
+      <colgroup><col style="width:8%"><col style="width:15%"><col><col style="width:8%"><col style="width:11%"><col style="width:9%"><col style="width:10%"></colgroup>
+      <thead>${paperRunHead(order, 7)}<tr><th>Loc</th><th>Box</th><th>Product</th><th class="r">Qty</th><th>Found</th><th class="c">Dmg</th><th class="c">Case #</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="p-sign">
+      <div class="p-sigbox"><div class="p-sigline"></div><div class="p-sigcap">Picked by</div></div>
+      <div class="p-sigbox" style="flex:.55"><div class="p-sigline"></div><div class="p-sigcap">Date</div></div>
+    </div>
+    ${paperFoot(order)}
+  </body></html>`;
   }
   function printShippingManifest(order, setData) {
     const m = order && order.shippingManifest;
@@ -5181,6 +5228,7 @@ ${line}` : line;
     const [checkStockFor, setCheckStockFor] = useState(null);
     const [printIntent, setPrintIntent] = useState(null);
     const [pickNothing, setPickNothing] = useState(null);
+    const [pendingPrint, setPendingPrint] = useState(null);
     const [walk, setWalk] = useDraftState("palletWalk", null, null);
     const startWalk = (order) => ({
       orderId: order.id,
@@ -5627,17 +5675,27 @@ The reason is recorded. Leave blank to keep the line.`, "");
         reprintCount: 0,
         isReprint: false
       };
-      setData((prev) => recordPickSheet(prev, order.id, lines).data);
-      confirmPickAndAllocate(order, items, { receipt: false });
-      setPrintingSheet(sheet);
+      setPendingPrint({ order, items, sheet, lines });
+      setPrintingSheet({ sheet, order });
       return true;
+    };
+    const confirmPrinted = () => {
+      const p = pendingPrint;
+      if (!p) return;
+      setPendingPrint(null);
+      setData((prev) => recordPickSheet(prev, p.order.id, p.lines).data);
+      confirmPickAndAllocate(p.order, p.items, { receipt: false });
+    };
+    const discardPrint = () => {
+      setPendingPrint(null);
+      cancelPendingPick();
     };
     const printPickSheet = (order) => {
       setPickNothing(null);
       const existing = openPickSheets(data.pickSheets, order.id)[0];
       if (existing) {
         setData((prev) => recordPickSheet(prev, order.id, existing.lines).data);
-        setPrintingSheet({ ...existing, reprintCount: (Number(existing.reprintCount) || 0) + 1, isReprint: true });
+        setPrintingSheet({ sheet: { ...existing, reprintCount: (Number(existing.reprintCount) || 0) + 1, isReprint: true }, order });
         return;
       }
       if (!pickOrderInstantly(order)) {
@@ -6053,14 +6111,14 @@ The reason is recorded. Leave blank to keep the line.`, "");
     }, [printJob]);
     useEffect(() => {
       if (!printingSheet) return;
+      const { sheet, order } = printingSheet;
+      if (order && sheet) printInFrame("pick-sheet-print-frame", pickSheetDoc(order, sheet));
       const done = () => setPrintingSheet(null);
       window.addEventListener("afterprint", done);
       const fallback = setTimeout(done, 6e4);
-      const t = setTimeout(() => window.print(), 80);
       return () => {
         window.removeEventListener("afterprint", done);
         clearTimeout(fallback);
-        clearTimeout(t);
       };
     }, [printingSheet]);
     useEffect(() => {
@@ -6163,7 +6221,7 @@ The reason is recorded. Leave blank to keep the line.`, "");
           return { spec: li.description, available };
         }).filter((r) => r.available > 0);
         return /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-3" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-2" }, "On the shelf now"), shelfBySpec.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Nothing matching this order in general stock right now.") : shelfBySpec.map((r, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "flex items-center justify-between text-sm py-1", style: { borderTop: i ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement(Spec, { s: r.spec })), /* @__PURE__ */ React.createElement("span", { className: "font-semibold" }, r.available))));
-      })(), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, "Nothing is allocated until you print a sheet or commit a phone pick."), (() => {
+      })(), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, "Nothing is allocated until you print a sheet or commit a phone pick."), pendingPrint && pendingPrint.order.id === o.id && /* @__PURE__ */ React.createElement("div", { className: "mb-3 p-3 rounded", style: { background: "#FDF6EC", borderLeft: `4px solid ${ORANGE}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold", style: { color: INK } }, "Did ", pendingPrint.sheet.ref, " come out of the printer?"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1 mb-2.5", style: { color: INK_MUTED } }, (pendingPrint.lines || []).length, " line", (pendingPrint.lines || []).length === 1 ? "" : "s", ",", " ", (pendingPrint.lines || []).reduce((t, l) => t + (Number(l.qty) || 0), 0), " boxes. Nothing is allocated until you say so \u2014 if you cancelled the print, nothing has changed."), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: confirmPrinted }, "Yes \u2014 it's on the floor"), " ", /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: discardPrint }, "No \u2014 throw it away")), (() => {
         const sheet = openPickSheets(data.pickSheets, o.id)[0];
         if (!sheet) return null;
         return /* @__PURE__ */ React.createElement("div", { className: "mb-3 p-2.5 rounded", style: { background: "#FDF6EC", borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold", style: { color: AMBER } }, "Pick sheet ", sheet.ref, " is out on the floor"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, "Printed by ", sheet.printedBy || "\u2014", " on ", sheet.printedAt ? new Date(sheet.printedAt).toLocaleString("en-GB", { weekday: "long", hour: "2-digit", minute: "2-digit" }) : "\u2014", Number(sheet.reprintCount) > 0 ? ` \xB7 reprinted ${sheet.reprintCount}\xD7` : "", " \xB7 ", (sheet.lines || []).length, " line", (sheet.lines || []).length === 1 ? "" : "s", ", stock already allocated.", " ", "Press Print pick sheet again to reprint this same sheet."));
@@ -10068,7 +10126,8 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
             patch = { bondingRuns: [...prevData.bondingRuns, before] };
           } else if (action === "stock_adjustment" && before) {
             if (Array.isArray(before.boxes)) {
-              const availById = Object.fromEntries(before.boxes.map((b) => [b.id, Number(b.available) || 0]));
+              const boxQty = (b) => Number(b.confirmedQty ?? b.proposedQty ?? b.available) || 0;
+              const availById = Object.fromEntries(before.boxes.map((b) => [b.id, boxQty(b)]));
               patch = { bondingRuns: prevData.bondingRuns.map((r) => availById[r.id] !== void 0 ? {
                 ...r,
                 workNumber: null,
@@ -10106,6 +10165,67 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         case "stockPick":
           if (before) patch = { stockPicks: [...prevData.stockPicks || [], before] };
           break;
+        /* PICK SHEETS WERE NOT REVERTABLE AT ALL, AND SAID THEY WERE.
+           Chris, 6 Sep: "I tried to revert it in the admin page and it says it
+           reverted but the banner is still there."
+           `pickSheet` had no entry in EDIT_ENTITY_KEYS and no case here, so an
+           amendment revert fell through the edit branch with an undefined key,
+           patched nothing, and still stamped undoneAt — reporting success and
+           changing nothing. A revert that lies is worse than one that refuses,
+           because the person walks away believing the stock is back.
+           Reverting an amendment puts the sheet back to open with its recorded
+           lines; reverting the print removes the sheet entirely, which is what
+           clears it off the order card. */
+        case "pickSheet":
+          if (before && Array.isArray(before.lines)) {
+            patch = { pickSheets: (prevData.pickSheets || []).map((p) => p.id === entityId ? { ...p, lines: before.lines, reconciledAt: null, reconciledBy: null, notes: "" } : p) };
+          } else if (action === "print") {
+            const gone = (prevData.pickSheets || []).find((p) => p.id === entityId);
+            let runs = prevData.bondingRuns || [];
+            const moves = [];
+            for (const l of gone && gone.lines || []) {
+              let left = Number(l.qty) || 0;
+              if (left <= 0) continue;
+              runs = runs.map((r) => {
+                if (left <= 0 || r.boxNumber !== l.boxNumber || r.workNumber !== gone.orderId) return r;
+                const take = Math.min(left, Number(r.onOrderQty || 0));
+                if (take <= 0) return r;
+                left -= take;
+                return {
+                  ...r,
+                  onOrderQty: Number(r.onOrderQty || 0) - take,
+                  toStock: Number(r.toStock || 0) + take,
+                  workNumber: Number(r.onOrderQty || 0) - take <= 0 ? "" : r.workNumber
+                };
+              });
+              moves.push({
+                kind: "unallocated",
+                boxNumber: l.boxNumber,
+                spec: l.spec,
+                qty: Number(l.qty) || 0,
+                orderId: gone.orderId,
+                source: "revert",
+                note: `Print of ${gone.ref} reverted`
+              });
+            }
+            const base = {
+              ...prevData,
+              bondingRuns: runs,
+              pickSheets: (prevData.pickSheets || []).filter((p) => p.id !== entityId)
+            };
+            const withMoves = moves.length ? recordMovements(base, moves) : base;
+            const at = (/* @__PURE__ */ new Date()).toISOString();
+            const pairedFrom = gone && gone.printedAt || "";
+            return {
+              ...withMoves,
+              changeLog: (withMoves.changeLog || []).map((e) => {
+                if (e.id === entry.id) return { ...e, undoneAt: at };
+                const paired = e.action === "stock_adjustment" && e.entity === "bondingRun" && e.entityId === (gone && gone.orderId) && !e.undoneAt && (!pairedFrom || String(e.at || "") >= pairedFrom);
+                return paired ? { ...e, undoneAt: at } : e;
+              })
+            };
+          }
+          break;
         default:
           break;
       }
@@ -10117,6 +10237,10 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     });
   }
   var EDIT_ENTITY_KEYS = {
+    /* pickSheet is deliberately NOT here: its revert is not a field merge (the
+       sheet has to be reopened or removed outright), so it is handled by its own
+       case in the switch. Adding it here would send it down the generic edit
+       path, which is where it silently did nothing before 6 Sep. */
     bondingRun: "bondingRuns",
     glueLineBatch: "glueLineBatches",
     evaRun: "evaRuns",
@@ -10882,8 +11006,13 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       return /* @__PURE__ */ React.createElement("div", { key: entry.id }, showDay && /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mt-3 mb-1.5", style: { color: INK_MUTED } }, day), /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-1.5", style: {
         opacity: entry.undoneAt ? 0.5 : 1,
         borderLeft: codeQuery && code && code.includes(codeQuery) ? `3px solid ${colour}` : void 0
-      } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap", marginBottom: 5 } }, /* @__PURE__ */ React.createElement(Badge, { color: colour, solid: true }, ACTION_LABELS[entry.action] || entry.action), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 11.5 } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 600 } }, entry.actor), " \xB7 ", changeAgo(entry.at, nowMs)), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 10.5, marginLeft: "auto" } }, entry.device || "\u2014")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, lineHeight: 1.4 } }, entry.summary), fields.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 7, paddingTop: 7, borderTop: `1px solid ${BORDER}` } }, fields.map((f) => /* @__PURE__ */ React.createElement("div", { key: f, style: { display: "flex", alignItems: "baseline", gap: 6, fontSize: 12.5, padding: "2px 0" } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, minWidth: 88, flex: "0 0 auto" } }, changeFieldLabel(f)), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, textDecoration: "line-through" } }, changeFieldValue(entry.before && entry.before[f])), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2192"), /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 600 } }, changeFieldValue(entry.after && entry.after[f]))))), entry.action === "print" ? (
-        // A print changed nothing, so there is nothing to put back.
+      } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap", marginBottom: 5 } }, /* @__PURE__ */ React.createElement(Badge, { color: colour, solid: true }, ACTION_LABELS[entry.action] || entry.action), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 11.5 } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 600 } }, entry.actor), " \xB7 ", changeAgo(entry.at, nowMs)), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 10.5, marginLeft: "auto" } }, entry.device || "\u2014")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, lineHeight: 1.4 } }, entry.summary), fields.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 7, paddingTop: 7, borderTop: `1px solid ${BORDER}` } }, fields.map((f) => /* @__PURE__ */ React.createElement("div", { key: f, style: { display: "flex", alignItems: "baseline", gap: 6, fontSize: 12.5, padding: "2px 0" } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, minWidth: 88, flex: "0 0 auto" } }, changeFieldLabel(f)), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, textDecoration: "line-through" } }, changeFieldValue(entry.before && entry.before[f])), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2192"), /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 600 } }, changeFieldValue(entry.after && entry.after[f]))))), entry.action === "print" && entry.entity !== "pickSheet" ? (
+        /* A print changed nothing, so there is nothing to put back —
+           true of the manifest, the case map, the weights sheet.
+           NOT true of a pick sheet: printing one creates the sheet AND
+           allocates the stock to the order. It was being shown as
+           "record only" and so could not be reverted at all, while the
+           stock stayed allocated (Chris, 6 Sep). */
         /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1.5", style: { color: INK_MUTED } }, "\u{1F5A8} Record only \u2014 nothing to revert")
       ) : entry.undoneAt ? /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1.5", style: { color: GREEN } }, "\u2713 Reverted ", changeAgo(entry.undoneAt, nowMs)) : /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, marginTop: 9 } }, /* @__PURE__ */ React.createElement(
         "button",
@@ -15649,19 +15778,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         style: { background: "none", border: "none", padding: 6, width: 36, display: "flex", alignItems: "center", justifyContent: "center", color: NAVY }
       },
       /* @__PURE__ */ React.createElement("svg", { width: "22", height: "22", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" }, /* @__PURE__ */ React.createElement("path", { d: "M15 18l-6-6 6-6" }))
-    ) : /* @__PURE__ */ React.createElement("div", { style: { width: 36 } })), (() => {
-      const out = openPickSheets(data.pickSheets);
-      if (!out.length) return null;
-      return /* @__PURE__ */ React.createElement("div", { className: "no-print", style: { background: "#FFF4D6", borderBottom: `1px solid ${BORDER}`, padding: "6px 12px", fontSize: 13 } }, /* @__PURE__ */ React.createElement("b", null, out.length, " pick sheet", out.length === 1 ? "" : "s", " out on the floor"), " \u2014 printed but not yet recorded:", " ", out.map((p, i) => /* @__PURE__ */ React.createElement("span", { key: p.id }, i > 0 && " \xB7 ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, p.ref), " ", /* @__PURE__ */ React.createElement(
-        "button",
-        {
-          type: "button",
-          onClick: () => jumpToOrder(p.orderId),
-          style: { background: "none", border: "none", color: NAVY, cursor: "pointer", padding: 0, fontSize: 12, fontWeight: 700, textDecoration: "underline" }
-        },
-        "enter what was found"
-      ))));
-    })(), syncEnabled && syncStatus !== "offline" && syncFailureDetail && syncFailureDetail.length > 0 && (syncFailureDetail.some(isUpdateRequiredFailure) ? /* @__PURE__ */ React.createElement("div", { className: "no-print", onClick: applyUpdate, role: "button", style: {
+    ) : /* @__PURE__ */ React.createElement("div", { style: { width: 36 } })), syncEnabled && syncStatus !== "offline" && syncFailureDetail && syncFailureDetail.length > 0 && (syncFailureDetail.some(isUpdateRequiredFailure) ? /* @__PURE__ */ React.createElement("div", { className: "no-print", onClick: applyUpdate, role: "button", style: {
       background: RED,
       color: "#fff",
       cursor: "pointer",
