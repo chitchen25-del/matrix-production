@@ -936,7 +936,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-07.14";
+  var APP_VERSION = "2026-09-07.15";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -7547,30 +7547,39 @@ The reason is recorded. Leave blank to keep the line.`, "");
       specs.push(k);
     }
     const szHead = (sp) => String(sp).split(/\s+/).filter(Boolean).map((t) => `<span class="tk">${esc(t)}</span>`).join(" ");
-    const sizeW = (100 - 4.5 - 4 - 7) / Math.max(1, specs.length);
-    const cols = specs.length + 3;
-    const runHead = `<tr><th class="runhead" colspan="${cols}">${esc(order.id)}${order.customer ? " &middot; " + esc(order.customer) : ""}</th></tr>`;
-    const colTotal = (sp) => rows.reduce((t, c) => t + (c.cells.get(sp) || 0), 0);
+    const CASES_PER_SHEET = 15;
+    const chunks = [];
+    for (let i = 0; i < rows.length; i += CASES_PER_SHEET) chunks.push(rows.slice(i, i + CASES_PER_SHEET));
     let lastPallet = null;
-    const body = rows.map((c) => {
-      let band = "";
-      if (c.pallet !== lastPallet) {
-        lastPallet = c.pallet;
-        band = `<tr class="pallet"><td colspan="${cols}">Pallet ${esc(c.pallet)}${c.reel ? " &middot; reels" : ""}</td></tr>`;
-      }
-      const cells = specs.map((sp) => {
-        const q = c.cells.get(sp);
-        return `<td class="q${q ? " has" : ""}">${q ? esc(q) : ""}</td>`;
+    const sheets = chunks.map((chunk, idx) => {
+      const used = /* @__PURE__ */ new Set();
+      for (const c of chunk) for (const k of c.cells.keys()) used.add(k);
+      const mySpecs = specs.filter((k) => used.has(k));
+      const cols = mySpecs.length + 3;
+      const sizeW = (100 - 4.5 - 4 - 7) / Math.max(1, mySpecs.length);
+      const runHead = `<tr><th class="runhead" colspan="${cols}">${esc(order.id)}${order.customer ? " &middot; " + esc(order.customer) : ""} &nbsp;&middot;&nbsp; sheet ${idx + 1} of ${chunks.length}</th></tr>`;
+      const body = chunk.map((c) => {
+        let band = "";
+        if (c.pallet !== lastPallet) {
+          lastPallet = c.pallet;
+          band = `<tr class="pallet"><td colspan="${cols}">Pallet ${esc(c.pallet)}${c.reel ? " &middot; reels" : ""}</td></tr>`;
+        }
+        const cells = mySpecs.map((sp) => {
+          const q = c.cells.get(sp);
+          return `<td class="q${q ? " has" : ""}">${q ? esc(q) : ""}</td>`;
+        }).join("");
+        return band + `<tr><td class="cn">${esc(c.caseNum)}</td>${cells}<td class="tot">${esc(c.total)}</td><td class="wr"></td></tr>`;
       }).join("");
-      return band + `<tr><td class="cn">${esc(c.caseNum)}</td>${cells}<td class="tot">${esc(c.total)}</td><td class="wr"></td></tr>`;
-    }).join("");
-    const heads = specs.map((sp) => `<th class="sz">${szHead(sp)}</th>`).join("");
-    const foots = specs.map((sp) => `<td class="q b">${esc(colTotal(sp))}</td>`).join("");
-    const table = `<table class="cm">
+      const heads = mySpecs.map((sp) => `<th class="sz" style="width:${sizeW.toFixed(3)}%">${szHead(sp)}</th>`).join("");
+      const foots = mySpecs.map((sp) => `<td class="q b">${esc(chunk.reduce((t, c) => t + (c.cells.get(sp) || 0), 0))}</td>`).join("");
+      const sheetTotal = chunk.reduce((t, c) => t + c.total, 0);
+      return `<div class="sheet${idx < chunks.length - 1 ? " brk" : ""}"><table class="cm">
       <thead><tr><th class="cn">Case</th>${heads}<th class="tot">Total</th><th class="wr">Weight</th></tr>${runHead}</thead>
       <tbody>${body}</tbody>
-      <tfoot><tr><td class="cn">All</td>${foots}<td class="tot b">${esc(rows.reduce((t, c) => t + c.total, 0))}</td><td class="wr"></td></tr></tfoot>
-    </table>`;
+      <tfoot><tr><td class="cn">This sheet</td>${foots}<td class="tot b">${esc(sheetTotal)}</td><td class="wr"></td></tr></tfoot>
+    </table></div>`;
+    }).join("");
+    const table = sheets;
     const totalBoxes = rows.reduce((t, c) => t + c.total, 0);
     const pallets = new Set(rows.map((c) => c.pallet)).size;
     const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Case map ${esc(order.id)}</title>
@@ -7619,7 +7628,13 @@ The reason is recorded. Leave blank to keep the line.`, "");
        page it was clipped to "CHECKE" \u2014 a column label has to fit the column
        it names, which is the same lesson as the 7.5pt tracking earlier. */
     th.cn { width:4.5%; } th.tot { width:4%; } th.wr { width:7%; }
-    th.sz { width:${sizeW.toFixed(3)}%; }
+    /* th.sz width is set per sheet inline: each sheet has its own column set,
+       so a single shared rule here would be wrong for all but one of them. */
+    /* One page per sheet block. break-after on the block, not inside the
+       table, so a table is never split and no header has to repeat. */
+    .sheet { break-after: page; page-break-after: always; }
+    .sheet:last-of-type, .sheet:not(.brk) { break-after: auto; page-break-after: auto; }
+    table.cm { break-inside: avoid; page-break-inside: avoid; }
     /* .75pt, NOT .5pt. Chris printed this from his phone on 6 Sep and the grid
        came out with no cell lines at all \u2014 every heavy rule (the header
        underline, the pallet band, the totals rule, all 1.5pt) rendered, and
@@ -7628,7 +7643,11 @@ The reason is recorded. Leave blank to keep the line.`, "");
        PAPER_CSS has always used for the other documents' table rules, which
        is why none of them ever showed this. A grid with no grid is not a
        grid. */
-    table.cm td { border:.75pt solid #8A8A8A; padding:1.0mm .5mm; text-align:center; font-size:9.5pt; height:4.8mm;
+    /* 8.4mm, not 4.8mm. Fifteen rows at 4.8mm used a third of the sheet and
+       left the rest white \u2014 the grid is written in by hand at the bench, so
+       the row wants to be big enough to write a figure in. Fifteen rows plus
+       header, pallet bands and the totals rule fill an A4 landscape sheet. */
+    table.cm td { border:.75pt solid #8A8A8A; padding:1.0mm .5mm; text-align:center; font-size:9.5pt; height:8.4mm;
                   vertical-align:middle; word-break:normal; }
     td.cn { font-weight:700; font-size:11pt; }
     td.q.has { font-weight:600; }
