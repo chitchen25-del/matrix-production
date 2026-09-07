@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-07.36";
+  var APP_VERSION = "2026-09-07.37";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -2044,7 +2044,12 @@
     if (totalOutstanding <= 0) return 100;
     return Math.round(totalCoverable / totalOutstanding * 100);
   }
-  function orderCaseCount(order, lineItems, bondingRuns) {
+  function orderCaseCount(order, lineItems, bondingRuns, cases = null) {
+    const planned = (cases || []).filter((c) => c && !c.deleted && c.orderId === order.id && String(c.plannedSpec || "").trim());
+    if (planned.length) {
+      const withBoxes = (cases || []).filter((c) => c && !c.deleted && c.orderId === order.id && Object.keys(c.contents || {}).length);
+      return new Set([...planned, ...withBoxes].map((c) => Number(c.caseNum))).size;
+    }
     const items = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description));
     const { byLineItem } = groupAssignedRunsByLineItem(bondingRuns, order.id, items);
     return buildCombinedCases(byLineItem, 1, {}, order?.caseLayout).length;
@@ -3611,15 +3616,27 @@
     kept.sort((a, b) => Number(a.caseNum) - Number(b.caseNum));
     return kept;
   }
-  function arrangedCasesForOrder(data, orderId) {
+  function arrangedCasesForOrder(data, orderId, opts = {}) {
     const order = (data.orders || []).find((o) => o.id === orderId && !o.deleted);
-    if (!order) return { order: null, caseRows: [] };
+    if (!order) return { order: null, caseRows: [], smallRows: [], otherAssigned: [] };
     try {
-      const items = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description));
+      const items = opts.items || orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description));
       const planned = plannedCasesFor(data, order.id);
       const placed = placedBoxesByCase(data, order.id);
       const sub = subtractConfirmed(subtractPlanned(items, planned), data.bondingRuns, placed, order.id);
       const g = groupAssignedRunsByLineItem(sub.runs, order.id, sub.items);
+      const smallRows = [];
+      for (const { li, runs: runsForSpec } of g.byLineItem) {
+        if (!isSmallItem(li.description)) continue;
+        const details = allocateCaseDetails(runsForSpec, [Number(li.qty)]);
+        smallRows.push({
+          id: li.id,
+          spec: li.description,
+          qty: Number(li.qty),
+          boxNumbers: details[0].boxNumbers,
+          batchCodes: details[0].batchCodes
+        });
+      }
       const arranged = arrangeCases({
         caseRows: buildCombinedCases(g.byLineItem, (Number(order.startingCaseNum) || 0) + 1, packedOutsideSpecs(order, data.lineItems), order.caseLayout),
         orphaned: g.orphaned,
@@ -3632,10 +3649,15 @@
         bondingRuns: data.bondingRuns,
         orderId: order.id
       });
-      return { order, caseRows: mergePlannedRows(arranged.caseRows || [], planned) };
+      return {
+        order,
+        caseRows: mergePlannedRows(arranged.caseRows || [], planned),
+        smallRows,
+        otherAssigned: arranged.otherAssigned || []
+      };
     } catch (e) {
       if (typeof console !== "undefined" && console.warn) console.warn("arrangedCasesForOrder failed for " + orderId, e);
-      return { order, caseRows: [] };
+      return { order, caseRows: [], smallRows: [], otherAssigned: [] };
     }
   }
   function backfillPlannedCases(data) {
@@ -4676,7 +4698,7 @@
       outstanding: orderOutstanding(lineItems, bondingRuns, o.id),
       pct: orderPctComplete(lineItems, bondingRuns, o.id),
       pickablePct: orderPickablePercent(o, lineItems, bondingRuns, data.stockPicks, reservations),
-      caseCount: orderCaseCount(o, lineItems, bondingRuns),
+      caseCount: orderCaseCount(o, lineItems, bondingRuns, data.cases),
       boxTypes: orderBoxTypes(o, lineItems),
       openSheet: openPickSheets(data.pickSheets, o.id)[0] || null
     }));
@@ -7820,7 +7842,7 @@ The reason is recorded. Leave blank to keep the line.`, "");
       ...o,
       totalItems: orderTotalItems(data.lineItems, o.id),
       made: orderMadeQty(data.bondingRuns, data.lineItems, o.id),
-      caseCount: orderCaseCount(o, data.lineItems, data.bondingRuns),
+      caseCount: orderCaseCount(o, data.lineItems, data.bondingRuns, data.cases),
       boxTypes: orderBoxTypes(o, data.lineItems)
     })).sort((a, b) => (b.made > 0) - (a.made > 0) || (a.priority ?? 99) - (b.priority ?? 99) || String(a.dueDate || "9999").localeCompare(String(b.dueDate || "9999")));
     return /* @__PURE__ */ React.createElement("div", { className: "mx-plex" }, /* @__PURE__ */ React.createElement(
@@ -9529,38 +9551,10 @@ This changes the order quantities. It is recorded in the change log and can be r
     const allItems = orderLineItems(lineItems, orderId).filter((li) => !isDelivery(li.description));
     const items = sizeFilter === "all" ? allItems : allItems.filter((li) => classifySize(li.description) === sizeFilter);
     const sizeCounts = Object.fromEntries(["7mm", "10mm", "12mm"].map((k) => [k, allItems.filter((li) => classifySize(li.description) === k).length]));
-    const { caseRows, smallRows, otherAssigned } = useMemo(() => {
-      const smallRows2 = [];
-      const planned = plannedCasesFor({ cases: caseRecords }, orderId);
-      const placed = placedBoxesByCase({ cases: caseRecords }, orderId);
-      const { items: openItems, runs: openRuns } = subtractConfirmed(
-        subtractPlanned(items, planned),
-        bondingRuns,
-        Object.keys(placed).length ? placed : confirmedCases,
-        orderId
-      );
-      const { byLineItem, orphaned } = groupAssignedRunsByLineItem(openRuns, orderId, openItems);
-      for (const { li, runs: runsForSpec } of byLineItem) {
-        if (isSmallItem(li.description)) {
-          const details = allocateCaseDetails(runsForSpec, [Number(li.qty)]);
-          smallRows2.push({ id: li.id, spec: li.description, qty: Number(li.qty), boxNumbers: details[0].boxNumbers, batchCodes: details[0].batchCodes });
-        }
-      }
-      let caseRows2 = buildCombinedCases(byLineItem, (Number(order?.startingCaseNum) || 0) + 1, packedOutside, order?.caseLayout);
-      const arranged = arrangeCases({
-        caseRows: caseRows2,
-        orphaned,
-        caseOverrides,
-        caseRemovals,
-        confirmedCases,
-        caseWeights: order?.caseWeights || {},
-        palletAssignments: order?.palletAssignments || {},
-        startingCaseNum: order?.startingCaseNum,
-        bondingRuns,
-        orderId
-      });
-      return { caseRows: mergePlannedRows(arranged.caseRows, planned), smallRows: smallRows2, otherAssigned: arranged.otherAssigned };
-    }, [orderId, items, bondingRuns, caseOverrides, caseRemovals, confirmedCases, caseRecords, order?.startingCaseNum, order?.caseLayout]);
+    const { caseRows, smallRows, otherAssigned } = useMemo(
+      () => arrangedCasesForOrder(data, orderId, { items }),
+      [data, orderId, items]
+    );
     const saveCaseContents = (caseNum, rows, flags, removed) => setData((prev) => applyCaseContents(prev, order, caseNum, rows, flags, removed));
     const litCaseNums = useMemo(() => {
       if (!highlightBoxes || !highlightBoxes.length) return [];
@@ -10816,21 +10810,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       if (!orderId) return [];
       const order = openOrders.find((o) => o.id === orderId);
       if (!order) return [];
-      const items = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description));
-      const sub = subtractConfirmed(items, data.bondingRuns, order.confirmedCases || {}, order.id);
-      const g = groupAssignedRunsByLineItem(sub.runs, order.id, sub.items);
-      const arranged = arrangeCases({
-        caseRows: buildCombinedCases(g.byLineItem, (Number(order.startingCaseNum) || 0) + 1, packedOutsideSpecs(order, data.lineItems), order.caseLayout),
-        orphaned: g.orphaned,
-        caseOverrides: order.caseOverrides || {},
-        caseRemovals: order.caseRemovals || {},
-        confirmedCases: order.confirmedCases || {},
-        caseWeights: order.caseWeights || {},
-        palletAssignments: order.palletAssignments || {},
-        startingCaseNum: order.startingCaseNum,
-        bondingRuns: data.bondingRuns,
-        orderId: order.id
-      });
+      const arranged = arrangedCasesForOrder(data, order.id);
       const rows = arranged.caseRows.filter((c) => !isCaseClosed(c.caseNum, {
         confirmedCases: order.confirmedCases || {},
         caseWeights: order.caseWeights || {},
