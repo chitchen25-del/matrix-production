@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-07.34";
+  var APP_VERSION = "2026-09-07.36";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -3343,7 +3343,8 @@
     const items = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description));
     const orderedTotal = items.reduce((t, li) => t + (Number(li.qty) || 0), 0);
     const plannedTotal = planned.reduce((t, c) => t + (Number(c.plannedQty) || 0), 0);
-    const shortfall = orderedTotal - plannedTotal;
+    const packedOutsidePlan = (cases || []).filter((c) => !c.deleted && c.orderId === order.id && !String(c.plannedSpec || "").trim()).reduce((t, c) => t + Object.values(c.contents || {}).reduce((n, v) => n + (Number(v) || 0), 0), 0);
+    const shortfall = orderedTotal - plannedTotal - packedOutsidePlan;
     if (!planned.length) return null;
     const batches = /* @__PURE__ */ new Map();
     for (const c of planned) {
@@ -3366,7 +3367,7 @@
       return out.join(", ");
     };
     const rounds = [...batches.values()].sort((a, b) => Math.min(...a.nums) - Math.min(...b.nums));
-    return /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-4 no-print", style: { borderLeft: `4px solid ${shortfall > 0 ? AMBER : NAVY}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, "Packing plan \u2014 what was added when"), rounds.map((r) => /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-4 no-print", style: { borderLeft: `4px solid ${shortfall > 0 ? AMBER : NAVY}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, "Packing plan \u2014 what was added when"), packedOutsidePlan > 0 && /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline justify-between gap-3 py-1" }, /* @__PURE__ */ React.createElement("span", { className: "text-sm", style: { fontWeight: 600, color: INK_MUTED } }, "Packed before planning"), /* @__PURE__ */ React.createElement("span", { className: "text-xs font-mono", style: { color: INK_MUTED } }, packedOutsidePlan, " boxes")), rounds.map((r) => /* @__PURE__ */ React.createElement(
       "div",
       {
         key: r.label,
@@ -3574,19 +3575,49 @@
       return { ...li, qty };
     }).filter((li) => (Number(li.qty) || 0) > 0);
   }
+  function placedBoxesByCase(data, orderId) {
+    const placed = {};
+    for (const c of data.cases || []) {
+      if (!c || c.deleted || c.orderId !== orderId) continue;
+      const boxes = c.contents || {};
+      if (!Object.keys(boxes).length) continue;
+      placed[String(c.caseNum)] = { boxes };
+    }
+    return placed;
+  }
+  function mergePlannedRows(rows, planned) {
+    const plannedNums = new Set(planned.map((p) => p.caseNum));
+    const kept = (rows || []).filter((r) => !plannedNums.has(Number(r.caseNum)) || (r.contributions || []).length > 0);
+    const byNum = new Map(kept.map((r) => [Number(r.caseNum), r]));
+    for (const p of planned) {
+      const existing = byNum.get(p.caseNum);
+      if (existing) {
+        existing.plannedSpec = p.spec;
+        existing.plannedQty = p.qty;
+        existing.plannedOutstanding = p.outstanding;
+        continue;
+      }
+      kept.push({
+        caseNum: p.caseNum,
+        maxSize: CASE_MAX_SIZE_DEFAULT,
+        contributions: [],
+        remaining: p.outstanding,
+        plannedSpec: p.spec,
+        plannedQty: p.qty,
+        plannedOutstanding: p.outstanding,
+        planned: true
+      });
+    }
+    kept.sort((a, b) => Number(a.caseNum) - Number(b.caseNum));
+    return kept;
+  }
   function arrangedCasesForOrder(data, orderId) {
     const order = (data.orders || []).find((o) => o.id === orderId && !o.deleted);
     if (!order) return { order: null, caseRows: [] };
     try {
       const items = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description));
       const planned = plannedCasesFor(data, order.id);
-      const placed = {};
-      for (const c of data.cases || []) {
-        if (!c || c.deleted || c.orderId !== order.id) continue;
-        const boxes = c.contents || {};
-        if (!Object.keys(boxes).length) continue;
-        placed[String(c.caseNum)] = { boxes };
-      }
+      const placed = placedBoxesByCase(data, order.id);
       const sub = subtractConfirmed(subtractPlanned(items, planned), data.bondingRuns, placed, order.id);
       const g = groupAssignedRunsByLineItem(sub.runs, order.id, sub.items);
       const arranged = arrangeCases({
@@ -3601,32 +3632,7 @@
         bondingRuns: data.bondingRuns,
         orderId: order.id
       });
-      const plannedNums = new Set(planned.map((p) => p.caseNum));
-      const rows = (arranged.caseRows || []).filter((r) => !plannedNums.has(Number(r.caseNum)) || (r.contributions || []).length > 0);
-      const byNum = new Map(rows.map((r) => [Number(r.caseNum), r]));
-      for (const p of planned) {
-        const existing = byNum.get(p.caseNum);
-        const inCase = existing ? (existing.contributions || []).reduce((t, c) => t + (Number(c.qty) || 0), 0) : 0;
-        const outstanding = p.outstanding;
-        if (existing) {
-          existing.plannedSpec = p.spec;
-          existing.plannedQty = p.qty;
-          existing.plannedOutstanding = p.outstanding;
-          continue;
-        }
-        rows.push({
-          caseNum: p.caseNum,
-          maxSize: CASE_MAX_SIZE_DEFAULT,
-          contributions: [],
-          remaining: p.outstanding,
-          plannedSpec: p.spec,
-          plannedQty: p.qty,
-          plannedOutstanding: outstanding,
-          planned: true
-        });
-      }
-      rows.sort((a, b) => Number(a.caseNum) - Number(b.caseNum));
-      return { order, caseRows: rows };
+      return { order, caseRows: mergePlannedRows(arranged.caseRows || [], planned) };
     } catch (e) {
       if (typeof console !== "undefined" && console.warn) console.warn("arrangedCasesForOrder failed for " + orderId, e);
       return { order, caseRows: [] };
@@ -9525,7 +9531,14 @@ This changes the order quantities. It is recorded in the change log and can be r
     const sizeCounts = Object.fromEntries(["7mm", "10mm", "12mm"].map((k) => [k, allItems.filter((li) => classifySize(li.description) === k).length]));
     const { caseRows, smallRows, otherAssigned } = useMemo(() => {
       const smallRows2 = [];
-      const { items: openItems, runs: openRuns } = subtractConfirmed(items, bondingRuns, confirmedCases, orderId);
+      const planned = plannedCasesFor({ cases: caseRecords }, orderId);
+      const placed = placedBoxesByCase({ cases: caseRecords }, orderId);
+      const { items: openItems, runs: openRuns } = subtractConfirmed(
+        subtractPlanned(items, planned),
+        bondingRuns,
+        Object.keys(placed).length ? placed : confirmedCases,
+        orderId
+      );
       const { byLineItem, orphaned } = groupAssignedRunsByLineItem(openRuns, orderId, openItems);
       for (const { li, runs: runsForSpec } of byLineItem) {
         if (isSmallItem(li.description)) {
@@ -9546,8 +9559,8 @@ This changes the order quantities. It is recorded in the change log and can be r
         bondingRuns,
         orderId
       });
-      return { caseRows: arranged.caseRows, smallRows: smallRows2, otherAssigned: arranged.otherAssigned };
-    }, [orderId, items, bondingRuns, caseOverrides, caseRemovals, confirmedCases, order?.startingCaseNum, order?.caseLayout]);
+      return { caseRows: mergePlannedRows(arranged.caseRows, planned), smallRows: smallRows2, otherAssigned: arranged.otherAssigned };
+    }, [orderId, items, bondingRuns, caseOverrides, caseRemovals, confirmedCases, caseRecords, order?.startingCaseNum, order?.caseLayout]);
     const saveCaseContents = (caseNum, rows, flags, removed) => setData((prev) => applyCaseContents(prev, order, caseNum, rows, flags, removed));
     const litCaseNums = useMemo(() => {
       if (!highlightBoxes || !highlightBoxes.length) return [];
