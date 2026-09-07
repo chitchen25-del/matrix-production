@@ -936,7 +936,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-07.10";
+  var APP_VERSION = "2026-09-07.12";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -3283,40 +3283,6 @@
       if (typeof console !== "undefined" && console.warn) console.warn("arrangedCasesForOrder failed for " + orderId, e);
       return { order, caseRows: [] };
     }
-  }
-  function dedupeCaseRows(data) {
-    const rows = data.cases || [];
-    const live = rows.filter((c) => !c.deleted);
-    const groups = /* @__PURE__ */ new Map();
-    for (const c of live) {
-      const k = `${c.orderId}|${Number(c.caseNum)}`;
-      if (!groups.has(k)) groups.set(k, []);
-      groups.get(k).push(c);
-    }
-    const dupes = [...groups.values()].filter((g) => g.length > 1);
-    if (!dupes.length) return data;
-    const stamp = (/* @__PURE__ */ new Date()).toISOString();
-    const merged = /* @__PURE__ */ new Map();
-    const losers = /* @__PURE__ */ new Set();
-    for (const g of dupes) {
-      const sorted = g.slice().sort((a, z) => String(a.id).localeCompare(String(z.id)));
-      const keep = { ...sorted[0] };
-      for (const other of sorted.slice(1)) {
-        losers.add(other.id);
-        if (other.confirmed && !keep.confirmed) {
-          keep.confirmed = true;
-          keep.contents = other.contents ?? keep.contents;
-          keep.notes = other.notes ?? keep.notes;
-        } else if (keep.contents == null && other.contents != null) {
-          keep.contents = other.contents;
-        }
-        if (keep.weight == null || keep.weight === "") keep.weight = other.weight;
-        if (keep.pallet == null || keep.pallet === "") keep.pallet = other.pallet;
-      }
-      keep.updatedAt = stamp;
-      merged.set(keep.id, keep);
-    }
-    return { ...data, cases: rows.map((c) => merged.has(c.id) ? merged.get(c.id) : losers.has(c.id) ? { ...c, deleted: true, deletedAt: stamp, updatedAt: stamp } : c) };
   }
   function backfillPlannedCases(data) {
     const orders = (data.orders || []).filter((o) => !o.deleted);
@@ -13929,7 +13895,31 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         }
       },
       metres > 0 ? `Log ${metres.toLocaleString("en-GB")} m` : "Log this reel"
-    ), /* @__PURE__ */ React.createElement(
+    ), !openRun && /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        type: "button",
+        onClick: onStartRun,
+        disabled: !String(form.size || "").trim(),
+        style: {
+          font: "inherit",
+          display: "block",
+          width: "100%",
+          maxWidth: 360,
+          marginTop: 10,
+          background: "#fff",
+          color: NAVY,
+          border: `2px solid ${NAVY}`,
+          borderRadius: 4,
+          fontSize: 17,
+          fontWeight: 600,
+          padding: 13,
+          cursor: "pointer",
+          opacity: String(form.size || "").trim() ? 1 : 0.45
+        }
+      },
+      "Start run"
+    ), !openRun && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 7, maxWidth: 360, lineHeight: 1.45 } }, "Making several reels off this setup? Start the run and you won't be asked for the size or the settings again. The reel you've just filled in stays on the screen \u2014 press Log next and it goes onto the run."), /* @__PURE__ */ React.createElement(
       "button",
       {
         type: "button",
@@ -14640,7 +14630,16 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         comments: form.comments || ""
       };
       setData((prev) => ({ ...prev, glueRuns: [...prev.glueRuns || [], run] }));
-      setForm((f) => ({ ...blank, range: f.range, size: f.size, direct: f.direct, date: f.date }));
+      setForm((f) => ({
+        ...blank,
+        range: f.range,
+        size: f.size,
+        direct: f.direct,
+        date: f.date,
+        meterage: f.meterage,
+        batchNumber: f.batchNumber,
+        checked: f.checked
+      }));
     };
     const saveRunSettings = () => {
       if (!openRun) return;
@@ -15600,11 +15599,6 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       }) };
     }, [storedData]);
     useEffect(() => {
-      const deduped = dedupeCaseRows(storedData);
-      if (deduped !== storedData) {
-        setData((prev) => ({ ...prev, cases: dedupeCaseRows(prev).cases }));
-        return;
-      }
       const source = { ...storedData, bondingRuns: data.bondingRuns };
       const out = backfillPlannedCases(source);
       if (out === source) return;
