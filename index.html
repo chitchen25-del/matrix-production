@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-07.42";
+  var APP_VERSION = "2026-09-07.43";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -2710,10 +2710,12 @@
     }).filter((r) => r.stillToExtrude > 0);
     return { waiting, toExtrude };
   }
-  function glueLineScheduleRows(orders, lineItems, glueLineBatches, bondingRuns = [], stockPicks = [], ncrs = []) {
-    return glueLineScheduleRowsStored(orders, lineItems, glueLineBatches, ledgerCorrectedRuns(bondingRuns), stockPicks, ncrs);
+  function glueLineScheduleRows(orders, lineItems, glueLineBatches, bondingRuns = [], stockPicks = [], ncrs = [], glueRuns = []) {
+    return glueLineScheduleRowsStored(orders, lineItems, glueLineBatches, ledgerCorrectedRuns(bondingRuns), stockPicks, ncrs, glueRuns);
   }
-  function glueLineScheduleRowsStored(orders, lineItems, glueLineBatches, bondingRuns = [], stockPicks = [], ncrs = []) {
+  function glueLineScheduleRowsStored(orders, lineItems, glueLineBatches, bondingRuns = [], stockPicks = [], ncrs = [], glueRuns = []) {
+    const resolved = (glueLineBatches || []).map((b) => glueSettingsFor(b, glueRuns));
+    glueLineBatches = resolved;
     const demand = productionOutstandingRows(orders, lineItems, bondingRuns, stockPicks).filter((d) => classifySize(d.spec) !== "boughtin");
     const scrappedBatches = new Set((ncrs || []).map((n) => n.batchNumber));
     return demand.map((d) => {
@@ -4374,7 +4376,7 @@
         ]
       });
     });
-    const glue = glueLineScheduleRows(orders, lineItems, glueLineBatches, bondingRuns, data.stockPicks || [], data.ncrs || []).filter((r) => r.stillToGlueLine > 0).map((r) => {
+    const glue = glueLineScheduleRows(orders, lineItems, glueLineBatches, bondingRuns, data.stockPicks || [], data.ncrs || [], data.glueRuns || []).filter((r) => r.stillToGlueLine > 0).map((r) => {
       const daysUntil = planDaysUntil(r.earliestDueDate, todayStr);
       return finish({
         lane: "glue",
@@ -4555,6 +4557,18 @@
     const [showAllExtrude, setShowAllExtrude] = useState(false);
     const [showAllWaiting, setShowAllWaiting] = useState(false);
     const allRows = productionOutstandingRows(data.orders, data.lineItems, data.bondingRuns, data.stockPicks);
+    const reelReadiness2 = React.useMemo(() => {
+      const scrapped = new Set((data.ncrs || []).map((n) => n.batchNumber));
+      const reels = (data.glueLineBatches || []).map((b) => glueSettingsFor(b, data.glueRuns || [])).filter((g) => !g.deleted && g.cleared !== "Yes" && !scrapped.has(g.batchNumber));
+      return (spec) => {
+        const mine = reels.filter((g) => looseSpecMatch(g.productSize, spec));
+        const left = (g) => Math.max(0, Number(g.meterage || 0) - batchMeterageUsed(data.bondingRuns, g.batchNumber));
+        const ready = mine.filter((g) => g.checked === "Yes").reduce((t, g) => t + left(g), 0);
+        const unchecked = mine.filter((g) => g.checked !== "Yes").reduce((t, g) => t + left(g), 0);
+        const running = mine.some((g) => g.startedAt && !g.endedAt);
+        return { ready, unchecked, running, reels: mine.filter((g) => left(g) > 0).length };
+      };
+    }, [data.glueLineBatches, data.glueRuns, data.bondingRuns, data.ncrs]);
     const dueRows = dueDateRows(data.orders, data.lineItems, data.bondingRuns);
     const byCategory = SIZE_CATEGORIES.map((c) => {
       const rows = allRows.filter((r) => classifySize(r.spec) === c.key);
@@ -4562,7 +4576,7 @@
       const urgent = [...rows].sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99) || b.qty - a.qty).slice(0, 3);
       return { ...c, rows, totalQty, urgent };
     }).filter((c) => c.rows.length > 0);
-    const glueLineNeeds = glueLineScheduleRows(data.orders, data.lineItems, data.glueLineBatches, data.bondingRuns, data.stockPicks, data.ncrs || []).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99) || b.stillToGlueLine - a.stillToGlueLine);
+    const glueLineNeeds = glueLineScheduleRows(data.orders, data.lineItems, data.glueLineBatches, data.bondingRuns, data.stockPicks, data.ncrs || [], data.glueRuns || []).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99) || b.stillToGlueLine - a.stillToGlueLine);
     const bondingReady = batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || [], data.stockPicks || []).filter((r) => r.available && r.qtyNeeded > 0).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99) || b.qtyNeeded - a.qtyNeeded);
     const extrusion = extrusionScheduleRows(data.extrusion1, data.extrusion2, data.glueLineBatches, glueLineNeeds);
     const evaYield = evaYieldByDie(data.bondingRuns);
@@ -7487,7 +7501,34 @@ The reason is recorded. Leave blank to keep the line.`, "");
           style: { borderTop: `1px solid ${BORDER}` }
         },
         /* @__PURE__ */ React.createElement("td", { className: "px-2 text-center", style: { color: INK_MUTED } }),
-        /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 no-wrap" }, /* @__PURE__ */ React.createElement(Spec, { s: r.spec })),
+        /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 no-wrap" }, /* @__PURE__ */ React.createElement(Spec, { s: r.spec }), (() => {
+          const s = reelReadiness(r.spec);
+          if (s.ready > 0) return /* @__PURE__ */ React.createElement(
+            "span",
+            {
+              title: `${Math.round(s.ready)} m glued and checked, across ${s.reels} reel${s.reels === 1 ? "" : "s"} \u2014 ready to bond`,
+              style: { marginLeft: 8, fontSize: 11, fontWeight: 700, color: GREEN, whiteSpace: "nowrap" }
+            },
+            "\u25CF reel ready"
+          );
+          if (s.unchecked > 0) return /* @__PURE__ */ React.createElement(
+            "span",
+            {
+              title: `${Math.round(s.unchecked)} m glued but not checked \u2014 bonding will not offer it until somebody checks it`,
+              style: { marginLeft: 8, fontSize: 11, fontWeight: 700, color: AMBER, whiteSpace: "nowrap" }
+            },
+            "\u25CF needs checking"
+          );
+          if (s.running) return /* @__PURE__ */ React.createElement(
+            "span",
+            {
+              title: "A reel of this size is on the wheel now",
+              style: { marginLeft: 8, fontSize: 11, fontWeight: 700, color: NAVY, whiteSpace: "nowrap" }
+            },
+            "\u25CF on the wheel"
+          );
+          return null;
+        })()),
         /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.qty),
         /* @__PURE__ */ React.createElement("td", { className: "text-right px-3", style: { color: INK_MUTED } }, r.orderIds.size),
         /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.priority != null ? /* @__PURE__ */ React.createElement(Badge, { color: r.priority <= 2 ? RED : INK_MUTED, solid: r.priority <= 2 }, "P", r.priority) : /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014"))
@@ -7603,7 +7644,7 @@ The reason is recorded. Leave blank to keep the line.`, "");
       if (!whatIf) return data.orders;
       return data.orders.map((o) => Object.prototype.hasOwnProperty.call(whatIf, o.id) ? { ...o, priority: whatIf[o.id] } : { ...o, priority: null });
     }, [data.orders, whatIf]);
-    const needRows = glueLineScheduleRows(effectiveOrders, data.lineItems, data.glueLineBatches, data.bondingRuns, data.stockPicks, data.ncrs || []);
+    const needRows = glueLineScheduleRows(effectiveOrders, data.lineItems, data.glueLineBatches, data.bondingRuns, data.stockPicks, data.ncrs || [], data.glueRuns || []);
     const reelMetres = learnedReelMetres(data.glueLineBatches);
     const todayCapacity = glueCapacityForDate(/* @__PURE__ */ new Date(todayISO() + "T00:00:00"));
     const unrankable = unrankableOrders(effectiveOrders, data.lineItems, data.bondingRuns, data.stockPicks);
