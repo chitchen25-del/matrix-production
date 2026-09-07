@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-07.33";
+  var APP_VERSION = "2026-09-07.34";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1038,7 +1038,8 @@
       caseNum: "case_num",
       packedOutside: "packed_outside",
       plannedSpec: "planned_spec",
-      plannedQty: "planned_qty"
+      plannedQty: "planned_qty",
+      planBatch: "plan_batch"
     } },
     /* A printed pick sheet, so paper picking has a front door. A sheet used to
        leave the building with no identity: nothing knew it was out, when it came
@@ -3320,6 +3321,61 @@
       }
     }
     return plan;
+  }
+  function planAmendment(items, existingPlan, opts = {}) {
+    const perCase = Number(opts.perCase) || CASE_MAX_SIZE_DEFAULT;
+    const promised = /* @__PURE__ */ new Map();
+    for (const p of existingPlan || []) promised.set(p.spec, (promised.get(p.spec) || 0) + (Number(p.qty) || 0));
+    const extra = [];
+    for (const li of items || []) {
+      if (!li || isDelivery(li.description)) continue;
+      const spec = String(li.description).trim();
+      const want = Number(li.qty) || 0;
+      const have = promised.get(spec) || 0;
+      if (want > have) extra.push({ description: spec, qty: want - have });
+    }
+    if (!extra.length) return [];
+    const highest = (existingPlan || []).reduce((m, p) => Math.max(m, Number(p.caseNum) || 0), 0);
+    return buildPackingPlan(extra, { perCase, startAt: highest + 1 });
+  }
+  function PlanAmendmentRecord({ order, lineItems, cases, onAppend }) {
+    const planned = (cases || []).filter((c) => !c.deleted && c.orderId === order.id && String(c.plannedSpec || "").trim());
+    const items = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description));
+    const orderedTotal = items.reduce((t, li) => t + (Number(li.qty) || 0), 0);
+    const plannedTotal = planned.reduce((t, c) => t + (Number(c.plannedQty) || 0), 0);
+    const shortfall = orderedTotal - plannedTotal;
+    if (!planned.length) return null;
+    const batches = /* @__PURE__ */ new Map();
+    for (const c of planned) {
+      const k = String(c.planBatch || "Original");
+      if (!batches.has(k)) batches.set(k, { label: k, nums: [], boxes: 0 });
+      const b = batches.get(k);
+      b.nums.push(Number(c.caseNum));
+      b.boxes += Number(c.plannedQty) || 0;
+    }
+    const asRanges = (nums) => {
+      const s = [...nums].sort((a, b) => a - b);
+      const out = [];
+      let i = 0;
+      while (i < s.length) {
+        let j = i;
+        while (j + 1 < s.length && s[j + 1] === s[j] + 1) j++;
+        out.push(i === j ? `${s[i]}` : `${s[i]}\u2013${s[j]}`);
+        i = j + 1;
+      }
+      return out.join(", ");
+    };
+    const rounds = [...batches.values()].sort((a, b) => Math.min(...a.nums) - Math.min(...b.nums));
+    return /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-4 no-print", style: { borderLeft: `4px solid ${shortfall > 0 ? AMBER : NAVY}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, "Packing plan \u2014 what was added when"), rounds.map((r) => /* @__PURE__ */ React.createElement(
+      "div",
+      {
+        key: r.label,
+        className: "flex items-baseline justify-between gap-3 py-1",
+        style: { borderTop: r === rounds[0] ? "none" : `1px solid #F0F0EC` }
+      },
+      /* @__PURE__ */ React.createElement("span", { className: "text-sm", style: { fontWeight: 600, color: INK } }, r.label),
+      /* @__PURE__ */ React.createElement("span", { className: "text-xs font-mono", style: { color: INK_MUTED, textAlign: "right" } }, r.nums.length, " case", r.nums.length === 1 ? "" : "s", " \xB7 ", r.boxes, " boxes", /* @__PURE__ */ React.createElement("br", null), "cases ", asRanges(r.nums))
+    )), shortfall > 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-3 pt-3", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: AMBER, fontWeight: 600 } }, "Order has grown by ", shortfall, " box", shortfall === 1 ? "" : "es", " since it was planned"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1 mb-2", style: { color: INK_MUTED } }, "Nothing already planned or packed changes \u2014 the extra goes into new cases on the end, which is what Steve builds and labels next."), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: onAppend }, "Add ", Math.ceil(shortfall / CASE_MAX_SIZE_DEFAULT), " case", Math.ceil(shortfall / CASE_MAX_SIZE_DEFAULT) === 1 ? "" : "s", " to the end")), shortfall < 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-3 pt-3 text-xs", style: { borderTop: `1px solid ${BORDER}`, color: RED } }, "The plan promises ", -shortfall, " more box", -shortfall === 1 ? "" : "es", " than the order asks for. Something was reduced after planning \u2014 worth a look before this ships."));
   }
   function PackingPlanner({ order, lineItems, existingCases, onSave, onClose }) {
     const plan = React.useMemo(() => {
@@ -9632,6 +9688,7 @@ This changes the order quantities. It is recorded in the change log and can be r
                 deleted: false,
                 plannedSpec: p.spec,
                 plannedQty: p.qty,
+                planBatch: was && was.planBatch || "Original",
                 updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
                 updatedBy: currentActor()
               };
@@ -9709,7 +9766,43 @@ This changes the order quantities. It is recorded in the change log and can be r
       },
       c.label,
       c.key !== "all" && /* @__PURE__ */ React.createElement("span", { style: { opacity: 0.7 } }, " (", sizeCounts[c.key], ")")
-    )))) : (manualCount > 0 || Object.keys(caseOverrides).length > 0) && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-3", style: { color: INK_MUTED } }, manualCount > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, "Cases 1\u2013", manualCount, " were packed before the app. "), Object.keys(caseOverrides).length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, Object.keys(caseOverrides).length, " box", Object.keys(caseOverrides).length === 1 ? "" : "es", " moved to a different case by hand. "), "Turn on the packing override to change either."))), /* @__PURE__ */ React.createElement(CaseAnnouncement, { cases: litCases, boxes: highlightBoxes, fireKey: highlightKey }), adminModal, /* @__PURE__ */ React.createElement("div", { className: "no-print" }, overrideOn && /* @__PURE__ */ React.createElement(
+    )))) : (manualCount > 0 || Object.keys(caseOverrides).length > 0) && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-3", style: { color: INK_MUTED } }, manualCount > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, "Cases 1\u2013", manualCount, " were packed before the app. "), Object.keys(caseOverrides).length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, Object.keys(caseOverrides).length, " box", Object.keys(caseOverrides).length === 1 ? "" : "es", " moved to a different case by hand. "), "Turn on the packing override to change either."))), /* @__PURE__ */ React.createElement(
+      PlanAmendmentRecord,
+      {
+        order,
+        lineItems: data.lineItems,
+        cases: data.cases,
+        onAppend: () => {
+          const items2 = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description));
+          const existing = (data.cases || []).filter((c) => !c.deleted && c.orderId === order.id && String(c.plannedSpec || "").trim()).map((c) => ({ caseNum: Number(c.caseNum), spec: String(c.plannedSpec).trim(), qty: Number(c.plannedQty) || 0 }));
+          const extra = planAmendment(items2, existing);
+          if (!extra.length) return;
+          const label = `Amendment ${(/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
+          setData((prev) => ({
+            ...prev,
+            cases: [...prev.cases || [], ...extra.map((p) => ({
+              id: caseRowId(order.id, p.caseNum),
+              orderId: order.id,
+              caseNum: p.caseNum,
+              contents: {},
+              confirmed: false,
+              deleted: false,
+              plannedSpec: p.spec,
+              plannedQty: p.qty,
+              planBatch: label,
+              updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+              updatedBy: currentActor()
+            }))],
+            ...appendLog(prev, {
+              action: "packing_plan_appended",
+              entity: "order",
+              entityId: order.id,
+              summary: `${label}: ${extra.length} cases added to ${order.id} (cases ${extra[0].caseNum}\u2013${extra[extra.length - 1].caseNum}), ${extra.reduce((t, p) => t + p.qty, 0)} boxes`
+            })
+          }));
+        }
+      }
+    ), /* @__PURE__ */ React.createElement(CaseAnnouncement, { cases: litCases, boxes: highlightBoxes, fireKey: highlightKey }), adminModal, /* @__PURE__ */ React.createElement("div", { className: "no-print" }, overrideOn && /* @__PURE__ */ React.createElement(
       "div",
       {
         className: "px-3 py-2.5 flex items-center justify-between flex-wrap gap-2 mb-3",
