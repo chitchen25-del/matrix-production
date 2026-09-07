@@ -936,7 +936,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-07.18";
+  var APP_VERSION = "2026-09-07.19";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -5929,8 +5929,26 @@ The reason is recorded. Leave blank to keep the line.`, "");
           if (!row.boxNumber) continue;
           const finalCaseNum = existingOverrides[row.boxNumber] ?? caseNum;
           if (!boxToCases[row.boxNumber]) boxToCases[row.boxNumber] = [];
-          boxToCases[row.boxNumber].push({ caseNum: finalCaseNum, qty: row.qty });
+          const already = boxToCases[row.boxNumber].find((e) => e.caseNum === finalCaseNum);
+          if (already) already.qty += row.qty;
+          else boxToCases[row.boxNumber].push({ caseNum: finalCaseNum, qty: row.qty });
         }
+      }
+      const pickedQty = /* @__PURE__ */ new Map();
+      for (const it of pendingPickItems) {
+        if (it.damaged || !it.boxNumber) continue;
+        pickedQty.set(it.boxNumber, (pickedQty.get(it.boxNumber) || 0) + Math.max(0, Number(it.confirmedQty) || 0));
+      }
+      for (const [box, places] of Object.entries(boxToCases)) {
+        let left = pickedQty.has(box) ? pickedQty.get(box) : places.reduce((t, p) => t + p.qty, 0);
+        places.sort((a, b) => a.caseNum - b.caseNum);
+        for (const p of places) {
+          const take = Math.min(p.qty, left);
+          p.qty = take;
+          left -= take;
+        }
+        boxToCases[box] = places.filter((p) => p.qty > 0);
+        if (!boxToCases[box].length) delete boxToCases[box];
       }
       return boxToCases;
     }, [pendingPickFor, pendingPickItems, data.bondingRuns, data.lineItems, data.orders]);
