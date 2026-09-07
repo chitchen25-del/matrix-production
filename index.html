@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-07.31";
+  var APP_VERSION = "2026-09-07.32";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -8171,6 +8171,44 @@ The reason is recorded. Leave blank to keep the line.`, "");
   var CASE_FILL_PARTIAL = "#FFF0A6";
   var CASE_FILL_CONFIRMED = "#BFE6CE";
   var CASE_FILL_FULL = "#D3EFDD";
+  function CaseFilterChips({ cases, value, onChange }) {
+    const counts = React.useMemo(() => {
+      const c = { all: cases.length, topack: 0, part: 0, done: 0 };
+      for (const x of cases) {
+        const inCase = (x.contributions || []).reduce((t, r) => t + (Number(r.qty) || 0), 0);
+        const cap = Number(x.maxSize) || CASE_MAX_SIZE_DEFAULT;
+        const k = x.packedOutside ? "done" : !inCase ? "topack" : inCase < cap ? "part" : x.confirmed ? "done" : "part";
+        c[k]++;
+      }
+      return c;
+    }, [cases]);
+    const chips = [["topack", "To pack"], ["part", "Part packed"], ["done", "Done"], ["all", "All"]];
+    return /* @__PURE__ */ React.createElement("div", { className: "flex gap-1.5 mb-2.5 flex-wrap" }, chips.map(([k, label]) => {
+      const on = value === k;
+      return /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          key: k,
+          onClick: () => onChange(k),
+          style: {
+            font: "inherit",
+            fontSize: 12,
+            fontWeight: on ? 700 : 500,
+            padding: "5px 10px",
+            borderRadius: 999,
+            cursor: "pointer",
+            whiteSpace: "nowrap",
+            border: `1px solid ${on ? NAVY : BORDER}`,
+            background: on ? NAVY : "#fff",
+            color: on ? "#fff" : INK_MUTED
+          }
+        },
+        label,
+        " ",
+        /* @__PURE__ */ React.createElement("span", { style: { opacity: on ? 0.75 : 0.6 } }, counts[k])
+      );
+    }));
+  }
   function CaseTile({ c, selected, onSelect, lit = false }) {
     const st = caseState(c);
     const edge = CASE_STATE_COLOURS[st.key];
@@ -8199,8 +8237,11 @@ The reason is recorded. Leave blank to keep the line.`, "");
         className: lit ? "mx-case-lit" : "",
         "data-fill": fill ? fill.complete ? "full" : fill.allocated > 0 ? Math.round(fill.fraction * 100) : "0" : "outside",
         style: {
+          /* Tightened 7 Sep: 76px and a 26px numeral made twenty rows of tile on
+             a phone. The number still reads from across the bench at 21px and
+             the tile lost a third of its height. */
           position: "relative",
-          minHeight: 76,
+          minHeight: 54,
           border: `1px solid ${selected ? "#1E2A5E" : BORDER}`,
           borderRadius: 5,
           background,
@@ -8210,7 +8251,7 @@ The reason is recorded. Leave blank to keep the line.`, "");
           alignItems: "center",
           justifyContent: "center",
           cursor: "pointer",
-          padding: "12px 5px 16px",
+          padding: "8px 5px 9px",
           outline: selected ? `2px solid #1E2A5E` : "none",
           outlineOffset: 1
         }
@@ -8225,13 +8266,13 @@ The reason is recorded. Leave blank to keep the line.`, "");
         background: st.key === "notMade" ? "repeating-linear-gradient(45deg,#B9BBC2 0 3px,#EDEDEA 3px 6px)" : edge
       } }),
       /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: {
-        fontSize: 26,
+        fontSize: 21,
         fontWeight: 800,
         letterSpacing: "-0.03em",
         lineHeight: 1,
         color: c.packedOutside ? "#9A9CA3" : INK
       } }, c.caseNum),
-      !c.packedOutside && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 10, color: fill && fill.allocated > 0 ? "#6B6E76" : "#9A9CA3", marginTop: 5, fontWeight: 600 } }, c.confirmed ? `${fill.allocated}/${fill.capacity} \xB7 confirmed` : fill.full || fill.allocated === 0 ? `${fill.planned} items` : `${fill.allocated}/${fill.capacity} in`),
+      !c.packedOutside && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 9.5, color: fill && fill.allocated > 0 ? "#6B6E76" : "#9A9CA3", marginTop: 3, fontWeight: 600 } }, c.confirmed ? `${fill.allocated}/${fill.capacity} \u2713` : fill.full || fill.allocated === 0 ? `${fill.planned}` : `${fill.allocated}/${fill.capacity}`),
       Number(c.weight) > 0 && /* @__PURE__ */ React.createElement("span", { style: { position: "absolute", bottom: 4, left: 5, fontSize: 9, fontWeight: 700, color: "#2E8B57" } }, c.weight, "kg"),
       c.pallet && /* @__PURE__ */ React.createElement("span", { style: { position: "absolute", bottom: 4, right: 5, fontSize: 9, fontWeight: 800, color: INK_MUTED } }, c.pallet)
     ), !c.packedOutside && sizeLines.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10.5, lineHeight: 1.35, color: INK, padding: "0 2px" } }, sizeLines.map((l, i) => {
@@ -8669,6 +8710,20 @@ The reason is recorded. Leave blank to keep the line.`, "");
       const t = setTimeout(() => setPulse(false), 6e3);
       return () => clearTimeout(t);
     }, [highlightKey, litCases.join(",")]);
+    const caseWork = React.useCallback((c) => {
+      if (c.packedOutside) return "done";
+      const inCase = (c.contributions || []).reduce((t, r) => t + (Number(r.qty) || 0), 0);
+      const cap = Number(c.maxSize) || CASE_MAX_SIZE_DEFAULT;
+      if (!inCase) return "topack";
+      if (inCase < cap) return "part";
+      return c.confirmed ? "done" : "part";
+    }, []);
+    const [caseFilter, setCaseFilter] = React.useState("topack");
+    const visibleCases = React.useMemo(() => {
+      if (caseFilter === "all") return cases;
+      const hit = cases.filter((c) => caseWork(c) === caseFilter);
+      return hit.length ? hit : caseFilter === "topack" ? cases : hit;
+    }, [cases, caseFilter, caseWork]);
     const legend = [
       ["done", "Weighed and on a pallet"],
       ["noPallet", "Weighed, no pallet yet"],
@@ -8685,7 +8740,7 @@ The reason is recorded. Leave blank to keep the line.`, "");
       verticalAlign: -1,
       background: k === "notMade" ? "repeating-linear-gradient(45deg,#B9BBC2 0 3px,#EDEDEA 3px 6px)" : CASE_STATE_COLOURS[k],
       border: k === "packedOutside" ? "1px dashed #C9C9C4" : "none"
-    } }), label))), /* @__PURE__ */ React.createElement("div", { className: "grid gap-2", style: { gridTemplateColumns: "repeat(auto-fill, minmax(124px, 1fr))" } }, cases.map((c) => /* @__PURE__ */ React.createElement(
+    } }), label))), /* @__PURE__ */ React.createElement(CaseFilterChips, { cases, value: caseFilter, onChange: setCaseFilter }), /* @__PURE__ */ React.createElement("div", { className: "grid gap-2", style: { gridTemplateColumns: "repeat(auto-fill, minmax(112px, 1fr))" } }, visibleCases.map((c) => /* @__PURE__ */ React.createElement(
       CaseTile,
       {
         key: c.caseNum,
@@ -8694,7 +8749,7 @@ The reason is recorded. Leave blank to keep the line.`, "");
         onSelect: setSel,
         lit: pulse && litCases.includes(c.caseNum)
       }
-    ))), chosen && /* @__PURE__ */ React.createElement(Panel, { className: "mt-4", style: { padding: 0, overflow: "hidden" } }, /* @__PURE__ */ React.createElement(
+    ))), !visibleCases.length && /* @__PURE__ */ React.createElement("div", { className: "text-sm py-6 text-center", style: { color: INK_MUTED } }, "No cases in this view."), chosen && /* @__PURE__ */ React.createElement(Panel, { className: "mt-4", style: { padding: 0, overflow: "hidden" } }, /* @__PURE__ */ React.createElement(
       "div",
       {
         className: "flex items-center justify-between px-4 py-2.5",
@@ -9386,6 +9441,8 @@ This changes the order quantities. It is recorded in the change log and can be r
     const [sizeFilter, setSizeFilter] = useState("all");
     const [packView, setPackView] = useState("grid");
     const [toolsOpen, setToolsOpen] = useState(false);
+    const [otherOpen, setOtherOpen] = useState(false);
+    const [notesOpen, setNotesOpen] = useState(false);
     const [planning, setPlanning] = useState(null);
     const caseRecords = data.cases || [];
     const caseWeights = new Proxy({}, { get: (_t, k) => typeof k === "symbol" ? void 0 : caseWeightOf(caseRecords, order, k), has: () => true, ownKeys: () => Object.keys(order?.caseWeights || {}), getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true }) });
@@ -9524,7 +9581,35 @@ This changes the order quantities. It is recorded in the change log and can be r
       },
       "\u2190 Back to ",
       order.id
-    ), /* @__PURE__ */ React.createElement("header", { style: { marginBottom: 18 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED, marginBottom: 2, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", null, "Packing ", /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { color: NAVY, fontWeight: 500 } }, order.id)), order.boxType && /* @__PURE__ */ React.createElement(BoxTypeMark, { type: order.boxType })), /* @__PURE__ */ React.createElement("h1", { style: { fontSize: 30, lineHeight: 1.08, letterSpacing: "-0.02em", fontWeight: 600, margin: 0, color: NAVY_DEEP } }, order.customer), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6, fontSize: 15, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, totalItems), " boxes in ", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, caseRows.length), " case", caseRows.length === 1 ? "" : "s", manualCount ? `, plus ${manualCount} packed before the app` : "", ".", " ", order.caseLayout === "as_entered" ? "Cases follow the order the lines were entered." : "Cases are laid out by size.")), String(order.notes || "").trim() && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-4", style: { borderLeft: `4px solid ${NAVY}`, background: "#FAFAF8" } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-1", style: { color: INK_MUTED } }, "Notes on this order"), /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: INK, lineHeight: 1.5, whiteSpace: "pre-wrap" } }, order.notes)), (() => {
+    ), /* @__PURE__ */ React.createElement("header", { style: { marginBottom: 18 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED, marginBottom: 2, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", null, "Packing ", /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { color: NAVY, fontWeight: 500 } }, order.id)), order.boxType && /* @__PURE__ */ React.createElement(BoxTypeMark, { type: order.boxType })), /* @__PURE__ */ React.createElement("h1", { style: { fontSize: 30, lineHeight: 1.08, letterSpacing: "-0.02em", fontWeight: 600, margin: 0, color: NAVY_DEEP } }, order.customer), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6, fontSize: 15, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, totalItems), " boxes in ", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, caseRows.length), " case", caseRows.length === 1 ? "" : "s", manualCount ? `, plus ${manualCount} packed before the app` : "", ".", " ", order.caseLayout === "as_entered" ? "Cases follow the order the lines were entered." : "Cases are laid out by size.")), String(order.notes || "").trim() && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-4", style: { borderLeft: `4px solid ${NAVY}`, background: "#FAFAF8" } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-1 flex items-center justify-between gap-3" }, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Notes on this order"), String(order.notes).length > 150 && /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => setNotesOpen((v) => !v),
+        style: {
+          font: "inherit",
+          fontSize: 12,
+          fontWeight: 600,
+          color: NAVY,
+          background: "none",
+          border: 0,
+          padding: 0,
+          cursor: "pointer",
+          whiteSpace: "nowrap"
+        }
+      },
+      notesOpen ? "less" : "more"
+    )), /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: {
+      color: INK,
+      lineHeight: 1.5,
+      whiteSpace: "pre-wrap",
+      ...notesOpen || String(order.notes).length <= 150 ? {} : {
+        display: "-webkit-box",
+        WebkitLineClamp: 3,
+        WebkitBoxOrient: "vertical",
+        overflow: "hidden",
+        textOverflow: "ellipsis"
+      }
+    } }, order.notes)), (() => {
       const startNum = Number(order.startingCaseNum) || 0;
       if (startNum === 0) return null;
       const packedItems = allItems.reduce((t, li) => t + (Number(packedOutside[li.description]) || 0), 0);
@@ -9536,7 +9621,126 @@ This changes the order quantities. It is recorded in the change log and can be r
         (c, ci) => c.contributions.map((row, ri) => /* @__PURE__ */ React.createElement("tr", { key: `p-${c.caseNum}-${ri}`, style: { borderTop: ri === 0 ? `1.5px solid ${NAVY}` : `1px solid #ddd` } }, /* @__PURE__ */ React.createElement("td", { style: { padding: "5px 10px", fontWeight: 600 } }, ri === 0 ? c.caseNum : ""), /* @__PURE__ */ React.createElement("td", { style: { padding: "5px 10px" } }, /* @__PURE__ */ React.createElement(Spec, { s: row.spec })), /* @__PURE__ */ React.createElement("td", { style: { padding: "5px 10px", fontFamily: "monospace" } }, row.boxNumber || "not run yet"), /* @__PURE__ */ React.createElement("td", { style: { padding: "5px 10px", textAlign: "right" } }, row.qty)))
       ), smallRows.map((r) => /* @__PURE__ */ React.createElement("tr", { key: `p-small-${r.id}`, style: { borderTop: `1.5px solid ${NAVY}` } }, /* @__PURE__ */ React.createElement("td", { style: { padding: "5px 10px" } }, "\u2014"), /* @__PURE__ */ React.createElement("td", { style: { padding: "5px 10px" } }, r.spec), /* @__PURE__ */ React.createElement("td", { style: { padding: "5px 10px", fontFamily: "monospace" } }, r.boxNumbers || "not run yet"), /* @__PURE__ */ React.createElement("td", { style: { padding: "5px 10px", textAlign: "right" } }, r.qty)))))),
       document.getElementById("print-portal-root") || document.body
-    ), /* @__PURE__ */ React.createElement(CaseAnnouncement, { cases: litCases, boxes: highlightBoxes, fireKey: highlightKey }), adminModal, /* @__PURE__ */ React.createElement("div", { className: "no-print" }, overrideOn && /* @__PURE__ */ React.createElement(
+    ), /* @__PURE__ */ React.createElement("div", { className: "no-print" }, /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => setToolsOpen((v) => !v),
+        style: {
+          background: "none",
+          border: `1px solid ${BORDER}`,
+          borderRadius: 6,
+          cursor: "pointer",
+          padding: "8px 12px",
+          width: "100%",
+          textAlign: "left",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+          marginBottom: toolsOpen ? 12 : 0
+        }
+      },
+      /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: INK } }, "Paper & adjustments", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontWeight: 400 } }, " \u2014 print the list or the case map, packing override", manualCount || Object.keys(caseOverrides).length ? `, ${[manualCount ? `${manualCount} cases packed before the app` : null, Object.keys(caseOverrides).length ? `${Object.keys(caseOverrides).length} box${Object.keys(caseOverrides).length === 1 ? "" : "es"} moved by hand` : null].filter(Boolean).join(", ")}` : "")),
+      /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 12 } }, toolsOpen ? "hide" : "show")
+    ), toolsOpen && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-4 flex-wrap" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setPlanning(order) }, "\u{1F5C2} Plan packing"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => printPackingList(order, caseRows, setData) }, "\u{1F5A8} Print packing list"), /* @__PURE__ */ React.createElement(CaseMapPrintChooser, { order, caseRows, setData }), planning && /* @__PURE__ */ React.createElement(
+      PackingPlanner,
+      {
+        order: planning,
+        lineItems: data.lineItems,
+        existingCases: (data.cases || []).filter((c) => !c.deleted && c.orderId === planning.id),
+        onClose: () => setPlanning(null),
+        onSave: (plan) => {
+          setData((prev) => {
+            const others = (prev.cases || []).filter((c) => !(c.orderId === planning.id && !c.deleted && !Object.keys(c.contents || {}).length));
+            const rows = plan.map((p) => {
+              const was = (prev.cases || []).find((c) => c.orderId === planning.id && !c.deleted && Number(c.caseNum) === p.caseNum);
+              return {
+                id: was ? was.id : caseRowId(planning.id, p.caseNum),
+                orderId: planning.id,
+                caseNum: p.caseNum,
+                contents: was && was.contents || {},
+                confirmed: !!(was && was.confirmed),
+                deleted: false,
+                plannedSpec: p.spec,
+                plannedQty: p.qty,
+                updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+                updatedBy: currentActor()
+              };
+            });
+            const merged = [...others.filter((c) => !rows.some((r) => r.id === c.id)), ...rows];
+            return {
+              ...prev,
+              cases: merged,
+              ...appendLog(prev, {
+                action: "packing_planned",
+                entity: "order",
+                entityId: planning.id,
+                summary: `Packing plan written for ${planning.id} \u2014 ${rows.length} cases, ${rows.reduce((t, r) => t + r.plannedQty, 0)} boxes`
+              })
+            };
+          });
+          setPlanning(null);
+        }
+      }
+    ), !overrideOn ? /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => requireAdmin(() => setOverrideOn(true)) }, "\u{1F512} Packing override") : /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setOverrideOn(false) }, "Turn override off")), /* @__PURE__ */ React.createElement(CaseMapPrint, { order, cases: caseRows }), overrideOn ? /* @__PURE__ */ React.createElement("div", { className: "mt-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Corrections \u2014 orders packed before the app"), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-4 flex-wrap text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("label", { htmlFor: "starting-case-num" }, "Already picked and packed outside the app up to case #"), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        id: "starting-case-num",
+        type: "number",
+        min: "0",
+        value: order.startingCaseNum || "",
+        placeholder: "0",
+        title: "Cases already physically packed before this \u2014 new case numbers continue after this one instead of starting fresh at 1",
+        onChange: (e) => setStartingCaseNum(e.target.value === "" ? null : Number(e.target.value)),
+        style: { width: 60, textAlign: "center", padding: "3px 4px", borderRadius: 5, border: `1px solid ${BORDER}` }
+      }
+    ), /* @__PURE__ */ React.createElement("span", null, "\u2014 new cases below start from #", (Number(order.startingCaseNum) || 0) + 1)), (Number(order.startingCaseNum) || 0) > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5 no-print", style: { borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1" }, "What went into cases 1\u2013", Number(order.startingCaseNum), "?"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED } }, "Enter how much of each size is already packed in those cases. Anything recorded here is left out of the list below, so the remaining cases cover what's actually still to pack. Leave a size blank if none of it went in."), /* @__PURE__ */ React.createElement("div", { className: "grid gap-2", style: { gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))" } }, allItems.map((li) => {
+      const done = Number(packedOutside[li.description]) || 0;
+      const left = Math.max(0, (Number(li.qty) || 0) - done);
+      return /* @__PURE__ */ React.createElement("div", { key: li.id, className: "flex items-center gap-2 p-2 rounded", style: { background: "#FAFAF8", border: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("span", { className: "text-xs flex-1", style: { color: INK, minWidth: 0 } }, li.description), /* @__PURE__ */ React.createElement(
+        "input",
+        {
+          type: "number",
+          min: "0",
+          max: li.qty,
+          value: packedOutside[li.description] ?? "",
+          placeholder: "0",
+          onChange: (e) => {
+            const v = e.target.value === "" ? void 0 : Math.max(0, Math.min(Number(li.qty), Number(e.target.value)));
+            const next = { ...packedOutside };
+            if (v === void 0) delete next[li.description];
+            else next[li.description] = v;
+            setPackedOutside(next);
+          },
+          className: "text-right px-1.5 py-0.5 rounded text-sm",
+          style: { width: 58, border: `1px solid ${BORDER}` }
+        }
+      ), /* @__PURE__ */ React.createElement("span", { className: "text-xs font-mono shrink-0", style: { color: left === 0 ? GREEN : INK_MUTED, width: 62, textAlign: "right" } }, left === 0 ? "all packed" : `${left} left`));
+    })), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-3", style: { color: INK_MUTED } }, (() => {
+      const packed = allItems.reduce((t, li) => t + (Number(packedOutside[li.description]) || 0), 0);
+      const total = allItems.reduce((t, li) => t + (Number(li.qty) || 0), 0);
+      return `${packed} of ${total} items recorded as already packed \u2014 ${total - packed} still to pack below.`;
+    })())), order && Object.keys(caseOverrides).length > 0 && /* @__PURE__ */ React.createElement("div", { className: "no-print text-xs mb-3", style: { color: INK_MUTED } }, Object.keys(caseOverrides).length, " box", Object.keys(caseOverrides).length === 1 ? "" : "es", " manually moved to a different case.", /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => {
+          if (window.confirm("Reset all manual case moves back to the automatic packing for this order?")) setCaseOverrides({});
+        },
+        className: "ml-2 underline",
+        style: { color: NAVY }
+      },
+      "Reset to automatic"
+    )), /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2 mt-3", style: { color: INK_MUTED } }, "Show only one size band"), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-5 flex-wrap" }, [{ key: "all", label: "All" }, { key: "7mm", label: "7mm" }, { key: "10mm", label: "10mm" }, { key: "12mm", label: "12mm" }].map((c) => /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        key: c.key,
+        onClick: () => setSizeFilter(c.key),
+        className: "px-3.5 py-1.5 rounded-full text-sm font-medium",
+        style: { border: `1px solid ${sizeFilter === c.key ? NAVY : BORDER}`, background: sizeFilter === c.key ? NAVY : "#fff", color: sizeFilter === c.key ? "#fff" : INK }
+      },
+      c.label,
+      c.key !== "all" && /* @__PURE__ */ React.createElement("span", { style: { opacity: 0.7 } }, " (", sizeCounts[c.key], ")")
+    )))) : (manualCount > 0 || Object.keys(caseOverrides).length > 0) && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-3", style: { color: INK_MUTED } }, manualCount > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, "Cases 1\u2013", manualCount, " were packed before the app. "), Object.keys(caseOverrides).length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, Object.keys(caseOverrides).length, " box", Object.keys(caseOverrides).length === 1 ? "" : "es", " moved to a different case by hand. "), "Turn on the packing override to change either."))), /* @__PURE__ */ React.createElement(CaseAnnouncement, { cases: litCases, boxes: highlightBoxes, fireKey: highlightKey }), adminModal, /* @__PURE__ */ React.createElement("div", { className: "no-print" }, overrideOn && /* @__PURE__ */ React.createElement(
       "div",
       {
         className: "px-3 py-2.5 flex items-center justify-between flex-wrap gap-2 mb-3",
@@ -9735,10 +9939,10 @@ This changes the order quantities. It is recorded in the change log and can be r
         ));
         return /* @__PURE__ */ React.createElement("div", { className: "mt-1.5", style: { fontSize: 12, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between gap-2 flex-wrap" }, /* @__PURE__ */ React.createElement("span", { title: "Measure the built pallet \u2014 height including the pallet base, then width and depth. Printed on the manifest." }, "Size, cm ", complete ? /* @__PURE__ */ React.createElement("span", { style: { color: GREEN } }, "\u2713") : /* @__PURE__ */ React.createElement("span", { style: { color: AMBER } }, "\xB7 measure it")), /* @__PURE__ */ React.createElement("span", { className: "flex items-center gap-2" }, dimInput("h", "H"), dimInput("w", "W"), dimInput("d", "D"))));
       })(), /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline justify-between mt-1.5 pt-1.5", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("span", { className: "text-xs font-semibold" }, "Total"), /* @__PURE__ */ React.createElement("span", { className: "font-mono font-semibold" }, g.total > 0 ? `${Math.round(g.total * 100) / 100} kg` : "\u2014")));
-    })))), otherAssigned.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "no-print" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-2 mt-5 font-display", style: { color: AMBER } }, "Other assigned stock"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, "Assigned to this order, but the spec doesn't match any line item at all \u2014 check these are meant for this order before packing."), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, { w: 140 }, "Box / reel number"), /* @__PURE__ */ React.createElement(Th, null, "Product size"), /* @__PURE__ */ React.createElement(Th, { w: 140 }, "Batch code"), /* @__PURE__ */ React.createElement(ThR, { w: 80 }, "Qty"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Date"))), /* @__PURE__ */ React.createElement("tbody", null, otherAssigned.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.boxNumber || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Spec, { s: r.productSize })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.baselineBatchCode || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.onOrderQty), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, manufactureDateLabel(r.boxNumber, "") || r.date || "\u2014")))))))), /* @__PURE__ */ React.createElement(ShortShipPanel, { order, data, setData }), /* @__PURE__ */ React.createElement("div", { className: "no-print" }, /* @__PURE__ */ React.createElement(
+    })))), otherAssigned.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "no-print mt-5" }, /* @__PURE__ */ React.createElement(
       "button",
       {
-        onClick: () => setToolsOpen((v) => !v),
+        onClick: () => setOtherOpen((v) => !v),
         style: {
           background: "none",
           border: `1px solid ${BORDER}`,
@@ -9751,110 +9955,12 @@ This changes the order quantities. It is recorded in the change log and can be r
           alignItems: "center",
           justifyContent: "space-between",
           gap: 8,
-          marginBottom: toolsOpen ? 12 : 0
+          marginBottom: otherOpen ? 10 : 0
         }
       },
-      /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: INK } }, "Paper & adjustments", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontWeight: 400 } }, " \u2014 print the list or the case map, packing override", manualCount || Object.keys(caseOverrides).length ? `, ${[manualCount ? `${manualCount} cases packed before the app` : null, Object.keys(caseOverrides).length ? `${Object.keys(caseOverrides).length} box${Object.keys(caseOverrides).length === 1 ? "" : "es"} moved by hand` : null].filter(Boolean).join(", ")}` : "")),
-      /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 12 } }, toolsOpen ? "hide" : "show")
-    ), toolsOpen && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-4 flex-wrap" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setPlanning(order) }, "\u{1F5C2} Plan packing"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => printPackingList(order, caseRows, setData) }, "\u{1F5A8} Print packing list"), /* @__PURE__ */ React.createElement(CaseMapPrintChooser, { order, caseRows, setData }), planning && /* @__PURE__ */ React.createElement(
-      PackingPlanner,
-      {
-        order: planning,
-        lineItems: data.lineItems,
-        existingCases: (data.cases || []).filter((c) => !c.deleted && c.orderId === planning.id),
-        onClose: () => setPlanning(null),
-        onSave: (plan) => {
-          setData((prev) => {
-            const others = (prev.cases || []).filter((c) => !(c.orderId === planning.id && !c.deleted && !Object.keys(c.contents || {}).length));
-            const rows = plan.map((p) => {
-              const was = (prev.cases || []).find((c) => c.orderId === planning.id && !c.deleted && Number(c.caseNum) === p.caseNum);
-              return {
-                id: was ? was.id : caseRowId(planning.id, p.caseNum),
-                orderId: planning.id,
-                caseNum: p.caseNum,
-                contents: was && was.contents || {},
-                confirmed: !!(was && was.confirmed),
-                deleted: false,
-                plannedSpec: p.spec,
-                plannedQty: p.qty,
-                updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-                updatedBy: currentActor()
-              };
-            });
-            const merged = [...others.filter((c) => !rows.some((r) => r.id === c.id)), ...rows];
-            return {
-              ...prev,
-              cases: merged,
-              ...appendLog(prev, {
-                action: "packing_planned",
-                entity: "order",
-                entityId: planning.id,
-                summary: `Packing plan written for ${planning.id} \u2014 ${rows.length} cases, ${rows.reduce((t, r) => t + r.plannedQty, 0)} boxes`
-              })
-            };
-          });
-          setPlanning(null);
-        }
-      }
-    ), !overrideOn ? /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => requireAdmin(() => setOverrideOn(true)) }, "\u{1F512} Packing override") : /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setOverrideOn(false) }, "Turn override off")), /* @__PURE__ */ React.createElement(CaseMapPrint, { order, cases: caseRows }), overrideOn ? /* @__PURE__ */ React.createElement("div", { className: "mt-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Corrections \u2014 orders packed before the app"), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-4 flex-wrap text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("label", { htmlFor: "starting-case-num" }, "Already picked and packed outside the app up to case #"), /* @__PURE__ */ React.createElement(
-      "input",
-      {
-        id: "starting-case-num",
-        type: "number",
-        min: "0",
-        value: order.startingCaseNum || "",
-        placeholder: "0",
-        title: "Cases already physically packed before this \u2014 new case numbers continue after this one instead of starting fresh at 1",
-        onChange: (e) => setStartingCaseNum(e.target.value === "" ? null : Number(e.target.value)),
-        style: { width: 60, textAlign: "center", padding: "3px 4px", borderRadius: 5, border: `1px solid ${BORDER}` }
-      }
-    ), /* @__PURE__ */ React.createElement("span", null, "\u2014 new cases below start from #", (Number(order.startingCaseNum) || 0) + 1)), (Number(order.startingCaseNum) || 0) > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5 no-print", style: { borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1" }, "What went into cases 1\u2013", Number(order.startingCaseNum), "?"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED } }, "Enter how much of each size is already packed in those cases. Anything recorded here is left out of the list below, so the remaining cases cover what's actually still to pack. Leave a size blank if none of it went in."), /* @__PURE__ */ React.createElement("div", { className: "grid gap-2", style: { gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))" } }, allItems.map((li) => {
-      const done = Number(packedOutside[li.description]) || 0;
-      const left = Math.max(0, (Number(li.qty) || 0) - done);
-      return /* @__PURE__ */ React.createElement("div", { key: li.id, className: "flex items-center gap-2 p-2 rounded", style: { background: "#FAFAF8", border: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("span", { className: "text-xs flex-1", style: { color: INK, minWidth: 0 } }, li.description), /* @__PURE__ */ React.createElement(
-        "input",
-        {
-          type: "number",
-          min: "0",
-          max: li.qty,
-          value: packedOutside[li.description] ?? "",
-          placeholder: "0",
-          onChange: (e) => {
-            const v = e.target.value === "" ? void 0 : Math.max(0, Math.min(Number(li.qty), Number(e.target.value)));
-            const next = { ...packedOutside };
-            if (v === void 0) delete next[li.description];
-            else next[li.description] = v;
-            setPackedOutside(next);
-          },
-          className: "text-right px-1.5 py-0.5 rounded text-sm",
-          style: { width: 58, border: `1px solid ${BORDER}` }
-        }
-      ), /* @__PURE__ */ React.createElement("span", { className: "text-xs font-mono shrink-0", style: { color: left === 0 ? GREEN : INK_MUTED, width: 62, textAlign: "right" } }, left === 0 ? "all packed" : `${left} left`));
-    })), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-3", style: { color: INK_MUTED } }, (() => {
-      const packed = allItems.reduce((t, li) => t + (Number(packedOutside[li.description]) || 0), 0);
-      const total = allItems.reduce((t, li) => t + (Number(li.qty) || 0), 0);
-      return `${packed} of ${total} items recorded as already packed \u2014 ${total - packed} still to pack below.`;
-    })())), order && Object.keys(caseOverrides).length > 0 && /* @__PURE__ */ React.createElement("div", { className: "no-print text-xs mb-3", style: { color: INK_MUTED } }, Object.keys(caseOverrides).length, " box", Object.keys(caseOverrides).length === 1 ? "" : "es", " manually moved to a different case.", /* @__PURE__ */ React.createElement(
-      "button",
-      {
-        onClick: () => {
-          if (window.confirm("Reset all manual case moves back to the automatic packing for this order?")) setCaseOverrides({});
-        },
-        className: "ml-2 underline",
-        style: { color: NAVY }
-      },
-      "Reset to automatic"
-    )), /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2 mt-3", style: { color: INK_MUTED } }, "Show only one size band"), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-5 flex-wrap" }, [{ key: "all", label: "All" }, { key: "7mm", label: "7mm" }, { key: "10mm", label: "10mm" }, { key: "12mm", label: "12mm" }].map((c) => /* @__PURE__ */ React.createElement(
-      "button",
-      {
-        key: c.key,
-        onClick: () => setSizeFilter(c.key),
-        className: "px-3.5 py-1.5 rounded-full text-sm font-medium",
-        style: { border: `1px solid ${sizeFilter === c.key ? NAVY : BORDER}`, background: sizeFilter === c.key ? NAVY : "#fff", color: sizeFilter === c.key ? "#fff" : INK }
-      },
-      c.label,
-      c.key !== "all" && /* @__PURE__ */ React.createElement("span", { style: { opacity: 0.7 } }, " (", sizeCounts[c.key], ")")
-    )))) : (manualCount > 0 || Object.keys(caseOverrides).length > 0) && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-3", style: { color: INK_MUTED } }, manualCount > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, "Cases 1\u2013", manualCount, " were packed before the app. "), Object.keys(caseOverrides).length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, Object.keys(caseOverrides).length, " box", Object.keys(caseOverrides).length === 1 ? "" : "es", " moved to a different case by hand. "), "Turn on the packing override to change either."))));
+      /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: AMBER } }, "Other assigned stock", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontWeight: 400 } }, " \u2014 ", otherAssigned.length, " item", otherAssigned.length === 1 ? "" : "s", " whose spec matches no line")),
+      /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 12 } }, otherOpen ? "hide" : "show")
+    ), otherOpen && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2 mt-2", style: { color: INK_MUTED } }, "Assigned to this order, but the spec doesn't match any line item at all \u2014 check these are meant for this order before packing."), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, { w: 140 }, "Box / reel number"), /* @__PURE__ */ React.createElement(Th, null, "Product size"), /* @__PURE__ */ React.createElement(Th, { w: 140 }, "Batch code"), /* @__PURE__ */ React.createElement(ThR, { w: 80 }, "Qty"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Date"))), /* @__PURE__ */ React.createElement("tbody", null, otherAssigned.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.boxNumber || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Spec, { s: r.productSize })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.baselineBatchCode || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.onOrderQty), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, manufactureDateLabel(r.boxNumber, "") || r.date || "\u2014"))))))))), /* @__PURE__ */ React.createElement(ShortShipPanel, { order, data, setData }));
   }
   function DetailGrid({ items, showEmpty }) {
     const isBlank = (v) => v === void 0 || v === null || v === "";
