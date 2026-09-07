@@ -936,7 +936,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-07.8";
+  var APP_VERSION = "2026-09-07.9";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -3189,7 +3189,7 @@
       let i = idxOf(n);
       if (i < 0) {
         rows.push({
-          id: uid("case"),
+          id: caseRowId(orderId, n),
           orderId,
           caseNum: Number(n),
           contents: seedFor(n),
@@ -3256,6 +3256,9 @@
     }
     return { ...data, cases: rows };
   }
+  function caseRowId(orderId, caseNum) {
+    return `case-${String(orderId)}-${Number(caseNum)}`;
+  }
   function arrangedCasesForOrder(data, orderId) {
     const order = (data.orders || []).find((o) => o.id === orderId && !o.deleted);
     if (!order) return { order: null, caseRows: [] };
@@ -3280,6 +3283,40 @@
       if (typeof console !== "undefined" && console.warn) console.warn("arrangedCasesForOrder failed for " + orderId, e);
       return { order, caseRows: [] };
     }
+  }
+  function dedupeCaseRows(data) {
+    const rows = data.cases || [];
+    const live = rows.filter((c) => !c.deleted);
+    const groups = /* @__PURE__ */ new Map();
+    for (const c of live) {
+      const k = `${c.orderId}|${Number(c.caseNum)}`;
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(c);
+    }
+    const dupes = [...groups.values()].filter((g) => g.length > 1);
+    if (!dupes.length) return data;
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    const merged = /* @__PURE__ */ new Map();
+    const losers = /* @__PURE__ */ new Set();
+    for (const g of dupes) {
+      const sorted = g.slice().sort((a, z) => String(a.id).localeCompare(String(z.id)));
+      const keep = { ...sorted[0] };
+      for (const other of sorted.slice(1)) {
+        losers.add(other.id);
+        if (other.confirmed && !keep.confirmed) {
+          keep.confirmed = true;
+          keep.contents = other.contents ?? keep.contents;
+          keep.notes = other.notes ?? keep.notes;
+        } else if (keep.contents == null && other.contents != null) {
+          keep.contents = other.contents;
+        }
+        if (keep.weight == null || keep.weight === "") keep.weight = other.weight;
+        if (keep.pallet == null || keep.pallet === "") keep.pallet = other.pallet;
+      }
+      keep.updatedAt = stamp;
+      merged.set(keep.id, keep);
+    }
+    return { ...data, cases: rows.map((c) => merged.has(c.id) ? merged.get(c.id) : losers.has(c.id) ? { ...c, deleted: true, deletedAt: stamp, updatedAt: stamp } : c) };
   }
   function backfillPlannedCases(data) {
     const orders = (data.orders || []).filter((o) => !o.deleted);
@@ -3318,7 +3355,7 @@
         const sc = scalars.get(Number(c.caseNum)) || {};
         if (!Object.keys(contents).length && !sc.weight && !sc.pallet) continue;
         added.push({
-          id: uid("case"),
+          id: caseRowId(o.id, c.caseNum),
           orderId: o.id,
           caseNum: Number(c.caseNum),
           contents: Object.keys(contents).length ? contents : null,
@@ -3338,7 +3375,7 @@
         const key = `${o.id}#${cn}`;
         if (existing.has(key)) continue;
         added.push({
-          id: uid("case"),
+          id: caseRowId(o.id, cn),
           orderId: o.id,
           caseNum: cn,
           contents: null,
@@ -8439,7 +8476,7 @@ The reason is recorded. Leave blank to keep the line.`, "");
       const existing = (next.cases || []).find((c) => !c.deleted && c.orderId === order.id && Number(c.caseNum) === Number(caseNum));
       const patch = Object.keys(contents).length ? { contents, confirmed: true, updatedAt: stamp } : { contents, confirmed: true, notes: EMPTY_ON_PURPOSE, updatedAt: stamp };
       next = { ...next, cases: existing ? (next.cases || []).map((c) => c.id === existing.id ? { ...c, ...patch } : c) : [...next.cases || [], {
-        id: uid("case"),
+        id: caseRowId(order.id, caseNum),
         orderId: order.id,
         caseNum: Number(caseNum),
         weight: "",
@@ -8908,7 +8945,7 @@ This changes the order quantities. It is recorded in the change log and can be r
     const writeCaseField = (prevData, caseNum, patch) => {
       const stamp = (/* @__PURE__ */ new Date()).toISOString();
       const existing = (prevData.cases || []).find((c) => !c.deleted && c.orderId === orderId && Number(c.caseNum) === Number(caseNum));
-      const cases = existing ? (prevData.cases || []).map((c) => c.id === existing.id ? { ...c, ...patch, updatedAt: stamp } : c) : [...prevData.cases || [], { id: uid("case"), orderId, caseNum: Number(caseNum), contents: null, confirmed: false, weight: "", pallet: "", packedOutside: false, ...patch, updatedAt: stamp }];
+      const cases = existing ? (prevData.cases || []).map((c) => c.id === existing.id ? { ...c, ...patch, updatedAt: stamp } : c) : [...prevData.cases || [], { id: caseRowId(orderId, caseNum), orderId, caseNum: Number(caseNum), contents: null, confirmed: false, weight: "", pallet: "", packedOutside: false, ...patch, updatedAt: stamp }];
       return { ...prevData, cases };
     };
     const setCaseWeights = (next) => setData((prevData) => {
@@ -15560,6 +15597,11 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       }) };
     }, [storedData]);
     useEffect(() => {
+      const deduped = dedupeCaseRows(storedData);
+      if (deduped !== storedData) {
+        setData((prev) => ({ ...prev, cases: dedupeCaseRows(prev).cases }));
+        return;
+      }
       const source = { ...storedData, bondingRuns: data.bondingRuns };
       const out = backfillPlannedCases(source);
       if (out === source) return;
