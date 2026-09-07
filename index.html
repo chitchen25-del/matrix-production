@@ -936,7 +936,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-07.20";
+  var APP_VERSION = "2026-09-07.24";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -2872,16 +2872,23 @@
   }
   function pickSheetDoc(order, sheet) {
     const lines = sheet.lines || [];
-    const caseText = (c) => c == null ? "&mdash;" : Array.isArray(c) ? c.map((x) => `${pEsc(x.qty)}&rarr;#${pEsc(x.caseNum)}`).join(", ") : pEsc(c);
+    const caseText = (c) => c == null || Array.isArray(c) && !c.length ? "Surplus &mdash; to stock" : Array.isArray(c) ? c.map((x) => `${pEsc(x.qty)}&rarr;#${pEsc(x.caseNum)}`).join(", ") : pEsc(c);
+    const neededFor = (spec) => {
+      const li = (order.lines || []).find((l) => looseSpecMatch(spec, l.description));
+      return li ? Number(li.qty) || 0 : null;
+    };
     const rows = lines.map((l, i) => {
       const newGroup = i === 0 || lines[i - 1].spec !== l.spec;
-      return `${newGroup ? `<tr><td colspan="7" class="grp">${pEsc(l.spec)}</td></tr>` : ""}
+      const need = newGroup ? neededFor(l.spec) : null;
+      const onSheet = newGroup ? lines.filter((x) => x.spec === l.spec).reduce((t, x) => t + (Number(x.qty) || 0), 0) : 0;
+      return `${newGroup ? `<tr><td colspan="8" class="grp">${pEsc(l.spec)}` + (need != null ? `<span class="need">Order needs ${pEsc(need)} &middot; on this sheet ${pEsc(onSheet)}</span>` : "") + `</td></tr>` : ""}
       <tr>
         <td>${pEsc(l.location || "\u2014")}</td>
         <td class="mono">${pEsc(l.boxNumber)}</td>
         <td>${pEsc(l.spec)}</td>
         <td class="r b">${pEsc(l.qty)}</td>
         <td class="write"></td>
+        <td class="c"><span class="tick"></span></td>
         <td class="c"><span class="tick"></span></td>
         <td class="c b">${caseText(l.caseNum)}</td>
       </tr>`;
@@ -2893,6 +2900,10 @@
     .tick { display:inline-block; width:18px; height:18px; border:1.25pt solid #000; }
     .grp { background:#EFEFEA; font-weight:700; font-size:8.5pt; text-transform:uppercase;
            letter-spacing:.06em; border-top:1.5pt solid #000; padding:4px 6px; }
+    /* Not uppercase and not bold \u2014 it is a note against the size, not part of
+       the heading, and it has to be told apart at a glance from the size it
+       sits next to. */
+    .grp .need { float:right; font-weight:400; font-size:8pt; text-transform:none; letter-spacing:0; color:#4A4A4A; }
     .reprint { font-size:10pt; font-weight:700; border:1.5pt solid #000; padding:3px 8px;
                display:inline-block; margin-top:7px; }
   </style></head><body>
@@ -2903,11 +2914,13 @@
     ])}
     ${sheet.isReprint ? `<div class="reprint">REPRINT ${pEsc(Number(sheet.reprintCount) || 1)} &middot; same sheet, same boxes &middot; destroy any earlier copy</div>` : ""}
     <p class="p-note">This stock is <b>allocated to the order as of printing</b>. Write the real count in
-      <b>Found</b>, tick <b>Damaged</b> if unusable, and put each box in the <b>Case #</b> shown.
-      If what you find differs from this sheet, bring it back and use <b>Amend pick sheet</b> on the order.</p>
+      <b>Found</b>, and put each box in the <b>Case #</b> shown.
+      Tick <b>Not there</b> if the box is not on the shelf at all &mdash; that takes it off stock so nobody is sent for it again.
+      Tick <b>Damaged</b> only if the box is there but unusable.
+      Bring the sheet back and use <b>Amend pick sheet</b> on the order to enter it.</p>
     <table>
-      <colgroup><col style="width:8%"><col style="width:15%"><col><col style="width:8%"><col style="width:11%"><col style="width:9%"><col style="width:10%"></colgroup>
-      <thead>${paperRunHead(order, 7)}<tr><th>Loc</th><th>Box</th><th>Product</th><th class="r">Qty</th><th>Found</th><th class="c">Dmg</th><th class="c">Case #</th></tr></thead>
+      <colgroup><col style="width:7%"><col style="width:14%"><col><col style="width:7%"><col style="width:10%"><col style="width:8%"><col style="width:8%"><col style="width:10%"></colgroup>
+      <thead>${paperRunHead(order, 8)}<tr><th>Loc</th><th>Box</th><th>Product</th><th class="r">Qty</th><th>Found</th><th class="c">Not&nbsp;there</th><th class="c">Dmg</th><th class="c">Case #</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
     <div class="p-sign">
@@ -5914,20 +5927,26 @@ The reason is recorded. Leave blank to keep the line.`, "");
         const outstanding = Math.max(0, Number(g.li.qty) - (assignedQty - pickingNow));
         return { ...g, li: { ...g.li, qty: outstanding } };
       }).filter((g) => g.li.qty > 0);
-      const highestExisting = Math.max(
-        Object.values(existingOverrides).reduce((m, n) => Math.max(m, Number(n) || 0), 0),
-        Number(order.startingCaseNum) || 0
-      );
-      let nextFreeNum = highestExisting + 1;
+      const orderCaseRows = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === order.id);
+      const confirmedNums = new Set(orderCaseRows.filter((c) => c.confirmed).map((c) => Number(c.caseNum)));
+      const takenNums = new Set(orderCaseRows.map((c) => Number(c.caseNum)));
+      for (const n of Object.values(existingOverrides)) if (n != null) takenNums.add(Number(n));
+      let nextFreeNum = (Number(order.startingCaseNum) || 0) + 1;
+      const takeNextFree = () => {
+        while (takenNums.has(nextFreeNum)) nextFreeNum++;
+        takenNums.add(nextFreeNum);
+        return nextFreeNum++;
+      };
       const boxToCases = {};
       const pickedBoxNumbers = new Set(pendingPickItems.filter((it) => !it.damaged).map((it) => it.boxNumber));
       for (const c of buildCombinedCases(byLineItem, 1, packedOutsideSpecs(order, lineItems), order.caseLayout)) {
         if (!c.contributions.some((row) => row.boxNumber && pickedBoxNumbers.has(row.boxNumber))) continue;
         const knownNum = c.contributions.map((row) => row.boxNumber && existingOverrides[row.boxNumber]).find((n) => n != null);
-        const caseNum = knownNum != null ? knownNum : nextFreeNum++;
+        const caseNum = knownNum != null && !confirmedNums.has(Number(knownNum)) ? knownNum : takeNextFree();
         for (const row of c.contributions) {
           if (!row.boxNumber) continue;
-          const finalCaseNum = existingOverrides[row.boxNumber] ?? caseNum;
+          const ovr = existingOverrides[row.boxNumber];
+          const finalCaseNum = ovr != null && !confirmedNums.has(Number(ovr)) ? ovr : caseNum;
           if (!boxToCases[row.boxNumber]) boxToCases[row.boxNumber] = [];
           const already = boxToCases[row.boxNumber].find((e) => e.caseNum === finalCaseNum);
           if (already) already.qty += row.qty;
@@ -5951,7 +5970,7 @@ The reason is recorded. Leave blank to keep the line.`, "");
         if (!boxToCases[box].length) delete boxToCases[box];
       }
       return boxToCases;
-    }, [pendingPickFor, pendingPickItems, data.bondingRuns, data.lineItems, data.orders]);
+    }, [pendingPickFor, pendingPickItems, data.bondingRuns, data.lineItems, data.orders, data.cases]);
     useEffect(() => {
       if (!printIntent) return;
       if (pendingPickFor !== printIntent || !pendingPickItems.length) return;
@@ -5985,7 +6004,7 @@ The reason is recorded. Leave blank to keep the line.`, "");
         isReprint: false
       };
       setPendingPrint({ order, items, sheet, lines });
-      setPrintingSheet({ sheet, order });
+      setPrintingSheet({ sheet, order: { ...order, lines: orderLineItems(lineItems, order.id) } });
       return true;
     };
     const confirmPrinted = () => {
@@ -6004,7 +6023,10 @@ The reason is recorded. Leave blank to keep the line.`, "");
       const existing = openPickSheets(data.pickSheets, order.id)[0];
       if (existing) {
         setData((prev) => recordPickSheet(prev, order.id, existing.lines).data);
-        setPrintingSheet({ sheet: { ...existing, reprintCount: (Number(existing.reprintCount) || 0) + 1, isReprint: true }, order });
+        setPrintingSheet({
+          sheet: { ...existing, reprintCount: (Number(existing.reprintCount) || 0) + 1, isReprint: true },
+          order: { ...order, lines: orderLineItems(lineItems, order.id) }
+        });
         return;
       }
       if (!pickOrderInstantly(order)) {
@@ -6022,6 +6044,7 @@ The reason is recorded. Leave blank to keep the line.`, "");
         lines[l.boxNumber] = {
           found: Number(l.qty) || 0,
           damaged: false,
+          notFound: false,
           caseNum: Array.isArray(l.caseNum) ? null : l.caseNum ?? null
         };
       }
@@ -6058,16 +6081,17 @@ The reason is recorded. Leave blank to keep the line.`, "");
       for (const l of sheet.lines || []) {
         const d = draft[l.boxNumber] || {};
         const printed = Number(l.qty) || 0;
-        const found = d.damaged ? 0 : Math.max(0, Math.min(Number(d.found ?? printed) || 0, printed));
+        const found = d.damaged || d.notFound ? 0 : Math.max(0, Math.min(Number(d.found ?? printed) || 0, printed));
         const printedCase = Array.isArray(l.caseNum) ? null : l.caseNum ?? null;
         const newCase = d.caseNum ?? printedCase;
         const caseMoved = printedCase != null && newCase != null && Number(newCase) !== Number(printedCase);
-        if (found === printed && !d.damaged && !caseMoved) continue;
+        if (found === printed && !d.damaged && !d.notFound && !caseMoved) continue;
         changes.push({
           line: l,
           printed,
           found,
           damaged: !!d.damaged,
+          notFound: !!d.notFound,
           printedCase,
           newCase,
           caseMoved
@@ -6092,6 +6116,29 @@ The reason is recorded. Leave blank to keep the line.`, "");
             moves.push({ kind: "scrapped", boxNumber: box, spec, qty: c.printed, source: "amend", note: `Damaged, found while picking ${sheet.ref}` });
             delete overrides[box];
             summary.push(`${box} damaged \u2014 ${c.printed} written off`);
+            continue;
+          }
+          if (c.notFound) {
+            runs = scrapFromOrder(runs, box, order.id, c.printed);
+            moves.push({
+              kind: "unallocated",
+              boxNumber: box,
+              spec,
+              qty: c.printed,
+              orderId: order.id,
+              source: "amend",
+              note: `Not on the shelf when picked against sheet ${sheet.ref}`
+            });
+            moves.push({
+              kind: "adjusted",
+              boxNumber: box,
+              spec,
+              qty: -c.printed,
+              source: "count",
+              note: `Counted while picking ${sheet.ref} for ${order.id} \u2014 the box was not on the shelf. Stock reduced to match. Not damaged, not scrapped.`
+            });
+            delete overrides[box];
+            summary.push(`${box} not on the shelf \u2014 ${c.printed} taken off stock`);
             continue;
           }
           const short = c.printed - c.found;
@@ -6402,6 +6449,42 @@ The reason is recorded. Leave blank to keep the line.`, "");
         };
       });
     };
+    const markBoxNotFound = (order, box) => {
+      const qty = Number(box.onOrderQty || 0);
+      setData((prevData) => {
+        const withMoves = recordMovements(prevData, [
+          {
+            kind: "unallocated",
+            boxNumber: box.boxNumber,
+            spec: box.productSize,
+            qty,
+            orderId: order.id,
+            source: "count",
+            note: `Not on the shelf when picked for ${order.id}`
+          },
+          {
+            kind: "adjusted",
+            boxNumber: box.boxNumber,
+            spec: box.productSize,
+            qty: -qty,
+            source: "count",
+            note: `Counted while picking ${order.id} \u2014 the box was not on the shelf. Stock reduced to match what is physically there. Not damaged, not scrapped.`
+          }
+        ]);
+        return {
+          ...withMoves,
+          bondingRuns: prevData.bondingRuns.map((r) => r.id === box.id ? { ...r, workNumber: null, onOrderQty: 0, amountMade: 0 } : r),
+          ...appendLog(prevData, {
+            action: "stock_adjustment",
+            entity: "bondingRun",
+            entityId: box.id,
+            summary: `Box ${box.boxNumber || box.id} not found on the shelf while picking ${order.id} \u2014 ${qty} \xD7 ${box.productSize || "?"} taken off stock as a count correction`,
+            before: { workNumber: order.id, onOrderQty: box.onOrderQty },
+            after: { workNumber: null, onOrderQty: 0, notFound: true }
+          })
+        };
+      });
+    };
     useEffect(() => {
       if (!printJob) return;
       const t = setTimeout(() => printAndLog(
@@ -6558,7 +6641,7 @@ The reason is recorded. Leave blank to keep the line.`, "");
         const diffs = lines.filter((l) => {
           const d = draft[l.boxNumber] || {};
           const printedCase = Array.isArray(l.caseNum) ? null : l.caseNum ?? null;
-          return d.damaged || Number(d.found ?? l.qty) !== Number(l.qty) || printedCase != null && d.caseNum != null && Number(d.caseNum) !== Number(printedCase);
+          return d.damaged || d.notFound || Number(d.found ?? l.qty) !== Number(l.qty) || printedCase != null && d.caseNum != null && Number(d.caseNum) !== Number(printedCase);
         }).length;
         return /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mt-3", style: { borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement(
           DraftRestoredBanner,
@@ -6567,7 +6650,7 @@ The reason is recorded. Leave blank to keep the line.`, "");
             onDiscard: discardAmend,
             message: "Your amendment was restored \u2014 what you'd already typed against the sheet is still here. Nothing was committed."
           }
-        ), /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1" }, "Amend pick sheet ", sheet.ref), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED } }, "This is what the paper said. Change only the lines where what you found was different \u2014 leave the rest alone. Committing puts anything short back on the shelf and marks the sheet as recorded."), lines.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: AMBER } }, "This sheet has no recorded lines \u2014 it was printed by a build before sheets recorded what was on them. There is nothing to compare against, so cancel it and pick again."), lines.map((l, i) => {
+        ), /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1" }, "Amend pick sheet ", sheet.ref), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED } }, "This is what the paper said. Change only the lines where what you found was different \u2014 leave the rest alone. A short count goes back on the shelf; tick ", /* @__PURE__ */ React.createElement("b", null, "Not there"), " if the box wasn't on the shelf at all, and it comes off stock so it isn't offered again."), lines.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: AMBER } }, "This sheet has no recorded lines \u2014 it was printed by a build before sheets recorded what was on them. There is nothing to compare against, so cancel it and pick again."), lines.map((l, i) => {
           const d = draft[l.boxNumber] || {};
           const printedCase = Array.isArray(l.caseNum) ? null : l.caseNum ?? null;
           const found = Number(d.found ?? l.qty);
@@ -6590,10 +6673,19 @@ The reason is recorded. Leave blank to keep the line.`, "");
             "input",
             {
               type: "checkbox",
+              checked: !!d.notFound,
+              disabled: !!d.damaged,
+              onChange: (e) => setAmendLine(l.boxNumber, { notFound: e.target.checked })
+            }
+          ), "Not there"), /* @__PURE__ */ React.createElement("label", { className: "text-sm flex items-center gap-2 pb-2" }, /* @__PURE__ */ React.createElement(
+            "input",
+            {
+              type: "checkbox",
               checked: !!d.damaged,
+              disabled: !!d.notFound,
               onChange: (e) => setAmendLine(l.boxNumber, { damaged: e.target.checked })
             }
-          ), "Damaged"), d.damaged && /* @__PURE__ */ React.createElement("span", { className: "text-xs pb-2", style: { color: RED } }, "Written off \u2014 off the order and out of stock"), !d.damaged && found < Number(l.qty) && /* @__PURE__ */ React.createElement("span", { className: "text-xs pb-2", style: { color: AMBER } }, Number(l.qty) - found, " going back on the shelf")));
+          ), "Damaged"), d.notFound && /* @__PURE__ */ React.createElement("span", { className: "text-xs pb-2", style: { color: RED } }, "Taken off stock \u2014 the shelf record was wrong, so it won't be offered again"), d.damaged && /* @__PURE__ */ React.createElement("span", { className: "text-xs pb-2", style: { color: RED } }, "Written off \u2014 off the order and out of stock"), !d.damaged && !d.notFound && found < Number(l.qty) && /* @__PURE__ */ React.createElement("span", { className: "text-xs pb-2", style: { color: AMBER } }, Number(l.qty) - found, ` going back on the shelf \u2014 tick "Not there" instead if the box isn't on the shelf at all`)));
         }), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-3 mb-3", style: { color: INK_MUTED } }, "Took a different box than the sheet named? Amend this sheet first, then print a fresh one for what's still outstanding."), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => commitSheetAmendment(o, sheet) }, diffs === 0 ? "Everything as printed \u2014 record it" : `Commit ${diffs} change${diffs === 1 ? "" : "s"}`), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => {
           if (window.confirm(`Cancel pick sheet ${sheet.ref}? Everything on it goes back on the shelf.`)) cancelPickSheet(o, sheet);
         } }, "Cancel sheet \u2014 put it all back"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: closeAmendment }, "Leave it for now")));
@@ -6700,14 +6792,16 @@ The reason is recorded. Leave blank to keep the line.`, "");
             const action = e.target.value;
             if (action === "back") returnBoxToStock(o, b);
             else if (action === "damaged") markBoxDamaged(o, b);
-          } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014"), /* @__PURE__ */ React.createElement("option", { value: "back" }, "Back to stock"), /* @__PURE__ */ React.createElement("option", { value: "damaged" }, "Damaged"))))))));
+            else if (action === "notfound") markBoxNotFound(o, b);
+          } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014"), /* @__PURE__ */ React.createElement("option", { value: "back" }, "Back to stock"), /* @__PURE__ */ React.createElement("option", { value: "notfound" }, "Not there \u2014 take off stock"), /* @__PURE__ */ React.createElement("option", { value: "damaged" }, "Damaged"))))))));
         }), (() => {
           if (unmatched.length === 0) return null;
           return /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-3", style: { borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1" }, "Other assigned stock"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, "Assigned to this order, but the box's product spec doesn't text-match a line item \u2014 worth double-checking it's the right product."), /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement(Th, null, "Box code"), /* @__PURE__ */ React.createElement(Th, null, "Product size"), /* @__PURE__ */ React.createElement(ThR, { w: 80 }, "Qty"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Date"), /* @__PURE__ */ React.createElement(Th, { w: 170 }, "Action"))), /* @__PURE__ */ React.createElement("tbody", null, unmatched.map((b) => /* @__PURE__ */ React.createElement("tr", { key: b.id, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-2 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, b.boxNumber)), /* @__PURE__ */ React.createElement("td", { className: "px-2 py-1.5" }, /* @__PURE__ */ React.createElement(Spec, { s: b.productSize })), /* @__PURE__ */ React.createElement("td", { className: "text-right px-2" }, b.onOrderQty), /* @__PURE__ */ React.createElement("td", { className: "px-2" }, manufactureDateLabel(b.boxNumber, "") || b.date || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-2" }, /* @__PURE__ */ React.createElement(Select, { defaultValue: "", onChange: (e) => {
             const action = e.target.value;
             if (action === "back") returnBoxToStock(o, b);
             else if (action === "damaged") markBoxDamaged(o, b);
-          } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014"), /* @__PURE__ */ React.createElement("option", { value: "back" }, "Back to stock"), /* @__PURE__ */ React.createElement("option", { value: "damaged" }, "Damaged"))))))));
+            else if (action === "notfound") markBoxNotFound(o, b);
+          } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014"), /* @__PURE__ */ React.createElement("option", { value: "back" }, "Back to stock"), /* @__PURE__ */ React.createElement("option", { value: "notfound" }, "Not there \u2014 take off stock"), /* @__PURE__ */ React.createElement("option", { value: "damaged" }, "Damaged"))))))));
         })());
       })(), checkStockFor === o.id && (() => {
         const boxes = assignedBoxesFor(o);
