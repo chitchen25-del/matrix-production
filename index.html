@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-08.12";
+  var APP_VERSION = "2026-09-08.13";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1039,7 +1039,8 @@
       packedOutside: "packed_outside",
       plannedSpec: "planned_spec",
       plannedQty: "planned_qty",
-      planBatch: "plan_batch"
+      planBatch: "plan_batch",
+      planned: "planned"
     } },
     /* A printed pick sheet, so paper picking has a front door. A sheet used to
        leave the building with no identity: nothing knew it was out, when it came
@@ -3614,17 +3615,27 @@
     }))));
   }
   function plannedCasesFor(data, orderId) {
-    return (data.cases || []).filter((c) => c && !c.deleted && c.orderId === orderId && String(c.plannedSpec || "").trim()).map((c) => {
+    const out = [];
+    for (const c of data.cases || []) {
+      if (!c || c.deleted || c.orderId !== orderId) continue;
       const inCase = Object.values(c.contents || {}).reduce((t, n) => t + (Number(n) || 0), 0);
-      const qty = Math.max(0, Number(c.plannedQty) || 0);
-      return {
-        caseNum: Number(c.caseNum),
-        spec: String(c.plannedSpec).trim(),
-        qty,
-        inCase,
-        outstanding: Math.max(0, qty - inCase)
-      };
-    }).sort((a, b) => a.caseNum - b.caseNum);
+      const map = c.planned && typeof c.planned === "object" && Object.keys(c.planned).length ? c.planned : String(c.plannedSpec || "").trim() ? { [String(c.plannedSpec).trim()]: Number(c.plannedQty) || 0 } : null;
+      if (!map) continue;
+      let filled = inCase;
+      for (const [spec, q] of Object.entries(map)) {
+        const qty = Math.max(0, Number(q) || 0);
+        const taken = Math.min(filled, qty);
+        filled -= taken;
+        out.push({
+          caseNum: Number(c.caseNum),
+          spec: String(spec).trim(),
+          qty,
+          inCase: taken,
+          outstanding: Math.max(0, qty - taken)
+        });
+      }
+    }
+    return out.sort((a, b) => a.caseNum - b.caseNum);
   }
   function subtractPlanned(items, planned) {
     if (!planned.length) return items;
@@ -3653,6 +3664,20 @@
     return placed;
   }
   function mergePlannedRows(rows, planned) {
+    const byCase = /* @__PURE__ */ new Map();
+    for (const p of planned) {
+      const cur = byCase.get(p.caseNum) || { caseNum: p.caseNum, specs: [], qty: 0, outstanding: 0 };
+      cur.specs.push(p.spec);
+      cur.qty += p.qty;
+      cur.outstanding += p.outstanding;
+      byCase.set(p.caseNum, cur);
+    }
+    planned = [...byCase.values()].map((c) => ({
+      caseNum: c.caseNum,
+      spec: c.specs.length === 1 ? c.specs[0] : c.specs.join(" + "),
+      qty: c.qty,
+      outstanding: c.outstanding
+    }));
     const plannedNums = new Set(planned.map((p) => p.caseNum));
     const kept = (rows || []).filter((r) => !plannedNums.has(Number(r.caseNum)) || (r.contributions || []).length > 0);
     const byNum = new Map(kept.map((r) => [Number(r.caseNum), r]));
@@ -6325,7 +6350,7 @@ The reason is recorded. Leave blank to keep the line.`, "");
         }
         let remaining = Number(li.qty) - placed;
         if (remaining <= 0) continue;
-        const matchingCandidates = candidates.filter((c) => !usedIds.has(c.id) && looseSpecMatch(c.productSize, li.description) && stockFormMatchesLine(c, li.description)).filter((c) => !allocatedElsewhere(c.boxNumber, order.id)).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+        const matchingCandidates = candidates.filter((c) => !usedIds.has(c.id) && looseSpecMatch(c.productSize, li.description) && stockFormMatchesLine(c, li.description)).filter((c) => !allocatedElsewhere(c.boxNumber, order.id)).filter((c) => !c.boxTypeIssue).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
         for (const c of matchingCandidates) {
           if (remaining <= 0) break;
           if (c.boxTypeIssue) continue;
