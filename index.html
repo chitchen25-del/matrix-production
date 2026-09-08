@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-08.4";
+  var APP_VERSION = "2026-09-08.5";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -6198,10 +6198,40 @@ The reason is recorded. Leave blank to keep the line.`, "");
       const orderLines = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description));
       const orderSpecs = new Set(orderLines.map((li) => normalizeSpec(li.description)));
       const withBoxTypeFlag = (b) => ({ ...b, boxTypeIssue: boxTypeMismatch(b, order) });
-      const exact = boxedStock.filter((b) => orderSpecs.has(normalizeSpec(b.productSize))).map(withBoxTypeFlag);
+      const placedByBox = {};
+      for (const c of data.cases || []) {
+        if (!c || c.deleted || c.orderId !== order.id) continue;
+        for (const [box, q] of Object.entries(c.contents || {})) placedByBox[box] = (placedByBox[box] || 0) + (Number(q) || 0);
+      }
+      const promised = [];
+      const seenBox = /* @__PURE__ */ new Set();
+      for (const r of data.bondingRuns || []) {
+        if (!r || r.deleted || !r.boxNumber || r.checked !== "Yes" || seenBox.has(r.boxNumber)) continue;
+        seenBox.add(r.boxNumber);
+        const p = projectBox(LEDGER_MOVEMENTS, r.boxNumber);
+        const mine = Number((p.byOrder || {})[order.id] || 0) - (placedByBox[r.boxNumber] || 0);
+        if (mine <= 0) continue;
+        if (!orderLines.some((li) => looseSpecMatch(r.productSize, li.description))) continue;
+        promised.push(withBoxTypeFlag({
+          id: r.id,
+          boxNumber: r.boxNumber,
+          productSize: r.productSize,
+          date: r.date || "",
+          location: r.location || "",
+          available: mine,
+          boxTypeId: r.boxTypeId || null,
+          baselineBatchCode: r.baselineBatchCode || "",
+          packageType: r.packageType || null,
+          metersPerBox: Number(r.metersPerBox) || null,
+          promisedToOrder: true
+        }));
+      }
+      const promisedIds = new Set(promised.map((b) => b.id));
+      const free = boxedStock.filter((b) => !promisedIds.has(b.id));
+      const exact = free.filter((b) => orderSpecs.has(normalizeSpec(b.productSize))).map(withBoxTypeFlag);
       const exactIds = new Set(exact.map((b) => b.id));
-      const loose = boxedStock.filter((b) => !exactIds.has(b.id) && orderLines.some((li) => looseSpecMatch(b.productSize, li.description) && stockFormMatchesLine(b, li.description))).map((b) => ({ ...withBoxTypeFlag(b), approxMatch: true }));
-      return [...exact, ...loose];
+      const loose = free.filter((b) => !exactIds.has(b.id) && orderLines.some((li) => looseSpecMatch(b.productSize, li.description) && stockFormMatchesLine(b, li.description))).map((b) => ({ ...withBoxTypeFlag(b), approxMatch: true }));
+      return [...promised, ...exact, ...loose];
     };
     const openPickListFor = (order, selected) => {
       if (selected.length === 0) return false;
