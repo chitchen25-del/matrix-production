@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-08.13";
+  var APP_VERSION = "2026-09-08.14";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -3666,17 +3666,19 @@
   function mergePlannedRows(rows, planned) {
     const byCase = /* @__PURE__ */ new Map();
     for (const p of planned) {
-      const cur = byCase.get(p.caseNum) || { caseNum: p.caseNum, specs: [], qty: 0, outstanding: 0 };
+      const cur = byCase.get(p.caseNum) || { caseNum: p.caseNum, specs: [], qty: 0, outstanding: 0, map: {} };
       cur.specs.push(p.spec);
       cur.qty += p.qty;
       cur.outstanding += p.outstanding;
+      cur.map[p.spec] = (cur.map[p.spec] || 0) + p.qty;
       byCase.set(p.caseNum, cur);
     }
     planned = [...byCase.values()].map((c) => ({
       caseNum: c.caseNum,
       spec: c.specs.length === 1 ? c.specs[0] : c.specs.join(" + "),
       qty: c.qty,
-      outstanding: c.outstanding
+      outstanding: c.outstanding,
+      map: c.map
     }));
     const plannedNums = new Set(planned.map((p) => p.caseNum));
     const kept = (rows || []).filter((r) => !plannedNums.has(Number(r.caseNum)) || (r.contributions || []).length > 0);
@@ -3687,6 +3689,7 @@
         existing.plannedSpec = p.spec;
         existing.plannedQty = p.qty;
         existing.plannedOutstanding = p.outstanding;
+        existing.plannedMap = p.map;
         continue;
       }
       kept.push({
@@ -3697,6 +3700,7 @@
         plannedSpec: p.spec,
         plannedQty: p.qty,
         plannedOutstanding: p.outstanding,
+        plannedMap: p.map,
         planned: true
       });
     }
@@ -8259,9 +8263,12 @@ The reason is recorded. Leave blank to keep the line.`, "");
       const cells = /* @__PURE__ */ new Map();
       for (const l of caseContentLines(c)) cells.set(l.label, (cells.get(l.label) || 0) + l.qty);
       const awaited = /* @__PURE__ */ new Map();
-      const pSpec = String(c.plannedSpec || "").trim();
-      const toCome = pSpec ? Math.max(0, (Number(c.plannedQty) || 0) - [...cells.values()].reduce((t, q) => t + q, 0)) : 0;
-      if (toCome > 0) awaited.set(shortCaseSpec(pSpec) || pSpec, toCome);
+      const pMap = c.plannedMap && typeof c.plannedMap === "object" && Object.keys(c.plannedMap).length ? c.plannedMap : String(c.plannedSpec || "").trim() ? { [String(c.plannedSpec).trim()]: Number(c.plannedQty) || 0 } : null;
+      for (const [pSpec, pQty] of Object.entries(pMap || {})) {
+        const k = shortCaseSpec(pSpec) || pSpec;
+        const toCome = Math.max(0, (Number(pQty) || 0) - (cells.get(k) || 0));
+        if (toCome > 0) awaited.set(k, (awaited.get(k) || 0) + toCome);
+      }
       return {
         caseNum: c.caseNum,
         cells,
@@ -8300,20 +8307,34 @@ The reason is recorded. Leave blank to keep the line.`, "");
       specs.push(k);
     }
     const szHead = (sp) => String(sp).split(/\s+/).filter(Boolean).map((t) => `<span class="tk">${esc(t)}</span>`).join(" ");
-    const CASES_PER_SHEET = 15;
+    const SIZES_PER_SHEET = 13;
+    const CASES_PER_SHEET = specs.length > SIZES_PER_SHEET ? 20 : 15;
     const chunks = [];
     for (let i = 0; i < rows.length; i += CASES_PER_SHEET) chunks.push(rows.slice(i, i + CASES_PER_SHEET));
-    let lastPallet = null;
-    const sheets = chunks.map((chunk, idx) => {
+    const pages = [];
+    for (const chunk of chunks) {
       const used = /* @__PURE__ */ new Set();
       for (const c of chunk) {
         for (const k of c.cells.keys()) used.add(k);
         for (const k of c.awaited.keys()) used.add(k);
       }
-      const mySpecs = specs.filter((k) => used.has(k));
+      const chunkSpecs = specs.filter((k) => used.has(k));
+      for (let i = 0; i < chunkSpecs.length; i += SIZES_PER_SHEET) {
+        pages.push({
+          chunk,
+          specs: chunkSpecs.slice(i, i + SIZES_PER_SHEET),
+          ofChunk: Math.ceil(chunkSpecs.length / SIZES_PER_SHEET)
+        });
+      }
+      if (!chunkSpecs.length) pages.push({ chunk, specs: [], ofChunk: 1 });
+    }
+    const sheets = pages.map((page, idx) => {
+      const chunk = page.chunk;
+      let lastPallet = null;
+      const mySpecs = page.specs;
       const cols = mySpecs.length + 3;
       const sizeW = (100 - 4.5 - 4 - 7) / Math.max(1, mySpecs.length);
-      const runHead = `<tr><th class="runhead" colspan="${cols}">${esc(order.id)}${order.customer ? " &middot; " + esc(order.customer) : ""} &nbsp;&middot;&nbsp; sheet ${idx + 1} of ${chunks.length}</th></tr>`;
+      const runHead = `<tr><th class="runhead" colspan="${cols}">${esc(order.id)}${order.customer ? " &middot; " + esc(order.customer) : ""} &nbsp;&middot;&nbsp; sheet ${idx + 1} of ${pages.length}` + (page.ofChunk > 1 ? ` &nbsp;&middot;&nbsp; ${mySpecs.length} of the sizes on these cases &mdash; every case is on every sheet` : "") + `</th></tr>`;
       const body = chunk.map((c) => {
         let band = "";
         if (c.pallet !== lastPallet) {
@@ -8327,12 +8348,13 @@ The reason is recorded. Leave blank to keep the line.`, "");
           if (a) return `<td class="q"><span class="await">(${esc(a)})</span></td>`;
           return `<td class="q${q ? " has" : ""}">${q ? esc(q) : ""}</td>`;
         }).join("");
-        return band + `<tr><td class="cn">${esc(c.caseNum)}</td>${cells}<td class="tot">${esc(c.total)}</td><td class="wr"></td></tr>`;
+        const rowTotal = mySpecs.reduce((t, sp) => t + (c.cells.get(sp) || 0), 0);
+        return band + `<tr><td class="cn">${esc(c.caseNum)}</td>${cells}<td class="tot">${esc(rowTotal)}</td><td class="wr"></td></tr>`;
       }).join("");
       const heads = mySpecs.map((sp) => `<th class="sz" style="width:${sizeW.toFixed(3)}%">${szHead(sp)}</th>`).join("");
       const foots = mySpecs.map((sp) => `<td class="q b">${esc(chunk.reduce((t, c) => t + (c.cells.get(sp) || 0), 0))}</td>`).join("");
       const sheetTotal = chunk.reduce((t, c) => t + c.total, 0);
-      return `<div class="sheet${idx < chunks.length - 1 ? " brk" : ""}"><table class="cm">
+      return `<div class="sheet${idx < pages.length - 1 ? " brk" : ""}"><table class="cm">
       <thead><tr><th class="cn">Case</th>${heads}<th class="tot">Total</th><th class="wr">Weight</th></tr>${runHead}</thead>
       <tbody>${body}</tbody>
       <tfoot><tr><td class="cn">This sheet</td>${foots}<td class="tot b">${esc(sheetTotal)}</td><td class="wr"></td></tr></tfoot>
