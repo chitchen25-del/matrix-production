@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-08.20";
+  var APP_VERSION = "2026-09-08.26";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1037,8 +1037,6 @@
       orderId: "order_id",
       caseNum: "case_num",
       packedOutside: "packed_outside",
-      plannedSpec: "planned_spec",
-      plannedQty: "planned_qty",
       planBatch: "plan_batch",
       planned: "planned"
     } },
@@ -1059,7 +1057,13 @@
       unitPrice: "unit_price",
       fromOtherStock: "from_other_stock",
       customerRef: "customer_ref",
-      amendmentLabel: "amendment_label"
+      amendmentLabel: "amendment_label",
+      /* How many of this line were packed before the app knew about them. Held
+         until 8 Sep 2026 in orders.packedOutside, keyed by SPEC TEXT — so it
+         could not survive a product being renamed, and it duplicated a fact that
+         belongs to the line. The line item is the owner. */
+      packedOutside: "packed_outside",
+      packedOutsideQty: "packed_outside_qty"
     } },
     bondingRuns: { table: "bonding_runs", cols: {
       productSize: "product_size",
@@ -1104,6 +1108,27 @@
     ncrs: { table: "ncrs", cols: { batchNumber: "batch_number" } },
     changeLog: { table: "change_log", cols: { entityId: "entity_id", undoneAt: "undone_at" } },
     customSizes: { table: "custom_sizes", cols: {} },
+    /* THE PRODUCT CATALOGUE — one record per product, and every spelling ever
+       seen pointing at it.
+       Until 8 Sep a product was a free-text string retyped in four places: the
+       order line, the bonding run, the case plan and the label. Four copies of
+       one fact, and every one could be typed differently — which is how
+       "PX Plus 0.40 x 1.40mm" with no pt reached an order, matched no case plan,
+       and left 32 boxes with nowhere to go. The catalogue is the one owner.
+       `products` is the strip: family, size, pt, variant (O/S, D3-D5).
+       `productForms` is Box or Reel and its metreage — a reel is the SAME
+       product in a continuous length, never a different one.
+       `productAliases` is what intake searches, so an old or customer wording
+       still finds the right product instead of quietly creating a new one. */
+    products: { table: "products", cols: {
+      displayName: "display_name",
+      needsReview: "needs_review",
+      createdAt: "created_at",
+      updatedAt: "updated_at",
+      updatedBy: "updated_by"
+    } },
+    productForms: { table: "product_forms", cols: { productId: "product_id", createdAt: "created_at" } },
+    productAliases: { table: "product_aliases", cols: { productId: "product_id", createdAt: "created_at" } },
     productionRates: { table: "production_rates", cols: { metersPerMin: "meters_per_min" } },
     materials: { table: "materials", cols: { currentStock: "current_stock", lastStockTakeDate: "last_stock_take_date", batchCode: "batch_code" } },
     materialMovements: { table: "material_movements", cols: { materialId: "material_id", sourceType: "source_type", sourceId: "source_id" } },
@@ -1146,7 +1171,18 @@
   function syncSnakeToCamel(s) {
     return s.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
   }
-  var DERIVED_BONDING_FIELDS = ["toStock", "onOrderQty"];
+  var DERIVED_BONDING_FIELDS = [
+    "toStock",
+    "onOrderQty",
+    "caseOverrides",
+    "caseRemovals",
+    "confirmedCases",
+    "packedOutside",
+    "plannedSpec",
+    "plannedQty",
+    "plannedOutstanding",
+    "plannedItems"
+  ];
   function syncToSnakeRow(obj, colMap) {
     const out = { deleted: false };
     for (const [k, v] of Object.entries(obj)) {
@@ -1580,6 +1616,42 @@
         return found.map((e) => e.row);
       }
     };
+  }
+  function productKey(text) {
+    return String(text || "").toUpperCase().replace(/\((\d+(\.\d+)?)M\)/g, "").replace(/\bREELS?\b/g, "").replace(/[^A-Z0-9.]/g, "");
+  }
+  function productParts(text) {
+    const t = String(text || "");
+    const dims = t.match(/(\d+(?:\.\d+)?)\s*[xX]\s*(\d+(?:\.\d+)?)\s*mm/);
+    const single = t.match(/(\d+(?:\.\d+)?)\s*mm/);
+    return {
+      thickness: dims ? Number(dims[1]) : null,
+      gos: dims ? Number(dims[2]) : single ? Number(single[1]) : null,
+      pt: (t.match(/(2-3pt|3-4pt|6pt)/i) || [null])[0],
+      variant: /O\/S/i.test(t) ? "O/S" : (t.match(/\b(D\d+(?:\.\d+)?)\b/) || [null, null])[1],
+      reel: /reel/i.test(t)
+    };
+  }
+  function resolveProduct(data, text) {
+    const products = (data && data.products || []).filter((p) => !p.deleted);
+    const aliases = (data && data.productAliases || []).filter((a) => !a.deleted);
+    const raw = String(text || "").trim();
+    if (!raw) return { status: "none", candidates: [] };
+    const byId = new Map(products.map((p) => [p.id, p]));
+    const hit = aliases.find((a) => a.alias === raw) || aliases.find((a) => productKey(a.alias) === productKey(raw));
+    if (hit && byId.get(hit.productId)) return { status: "exact", product: byId.get(hit.productId), candidates: [] };
+    const self = products.find((p) => productKey(p.displayName) === productKey(raw));
+    if (self) return { status: "exact", product: self, candidates: [] };
+    const q = productParts(raw);
+    const famWords = raw.replace(/[\d].*$/, "").trim().toUpperCase();
+    const candidates = products.filter((p) => {
+      if (q.gos == null) return false;
+      if (Number(p.gos) !== q.gos) return false;
+      if (q.thickness != null && p.thickness != null && Number(p.thickness) !== q.thickness) return false;
+      if (famWords && p.family && !p.family.toUpperCase().startsWith(famWords.split(" ")[0])) return false;
+      return true;
+    }).sort((a, b) => String(a.displayName).localeCompare(String(b.displayName)));
+    return { status: candidates.length ? "candidates" : "none", candidates, typed: raw };
   }
   function looseSpecMatch(specA, specB) {
     const a = specDimensions(specA), b = specDimensions(specB);
@@ -2073,7 +2145,7 @@
     return Math.round(totalCoverable / totalOutstanding * 100);
   }
   function orderCaseCount(order, lineItems, bondingRuns, cases = null) {
-    const planned = (cases || []).filter((c) => c && !c.deleted && c.orderId === order.id && String(c.plannedSpec || "").trim());
+    const planned = (cases || []).filter((c) => c && !c.deleted && c.orderId === order.id && hasCasePlan(c));
     if (planned.length) {
       const withBoxes = (cases || []).filter((c) => c && !c.deleted && c.orderId === order.id && Object.keys(c.contents || {}).length);
       return new Set([...planned, ...withBoxes].map((c) => Number(c.caseNum))).size;
@@ -3391,11 +3463,11 @@
     return buildPackingPlan(extra, { perCase, startAt: highest + 1 });
   }
   function PlanAmendmentRecord({ order, lineItems, cases, onAppend }) {
-    const planned = (cases || []).filter((c) => !c.deleted && c.orderId === order.id && String(c.plannedSpec || "").trim());
+    const planned = (cases || []).filter((c) => !c.deleted && c.orderId === order.id && hasCasePlan(c));
     const items = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description));
     const orderedTotal = items.reduce((t, li) => t + (Number(li.qty) || 0), 0);
-    const plannedTotal = planned.reduce((t, c) => t + (Number(c.plannedQty) || 0), 0);
-    const packedOutsidePlan = (cases || []).filter((c) => !c.deleted && c.orderId === order.id && !String(c.plannedSpec || "").trim()).reduce((t, c) => t + Object.values(c.contents || {}).reduce((n, v) => n + (Number(v) || 0), 0), 0);
+    const plannedTotal = planned.reduce((t, c) => t + Object.values(casePlanned(c)).reduce((n, q) => n + (Number(q) || 0), 0), 0);
+    const packedOutsidePlan = (cases || []).filter((c) => !c.deleted && c.orderId === order.id && !hasCasePlan(c)).reduce((t, c) => t + Object.values(c.contents || {}).reduce((n, v) => n + (Number(v) || 0), 0), 0);
     const shortfall = orderedTotal - plannedTotal - packedOutsidePlan;
     if (!planned.length) return null;
     const batches = /* @__PURE__ */ new Map();
@@ -3404,7 +3476,7 @@
       if (!batches.has(k)) batches.set(k, { label: k, nums: [], boxes: 0 });
       const b = batches.get(k);
       b.nums.push(Number(c.caseNum));
-      b.boxes += Number(c.plannedQty) || 0;
+      b.boxes += Object.values(casePlanned(c)).reduce((n, q) => n + (Number(q) || 0), 0);
     }
     const asRanges = (nums) => {
       const s = [...nums].sort((a, b) => a - b);
@@ -3433,19 +3505,19 @@
   function PackingPlanner({ order, lineItems, existingCases, bondingRuns = [], onSave, onClose }) {
     const plan = React.useMemo(() => {
       const items = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description));
-      const alreadyPlanned = (existingCases || []).filter((c) => String(c.plannedSpec || "").trim());
+      const alreadyPlanned = (existingCases || []).filter((c) => hasCasePlan(c));
       if (alreadyPlanned.length) {
-        const rows = (existingCases || []).map((c) => {
+        const rows = (existingCases || []).flatMap((c) => {
           const inCase = Object.values(c.contents || {}).reduce((t, n) => t + (Number(n) || 0), 0);
-          const spec = String(c.plannedSpec || "").trim();
-          if (inCase && !spec) return { caseNum: Number(c.caseNum), spec: "(packed)", qty: inCase, band: "locked", locked: true };
-          return {
+          const entries = Object.entries(casePlanned(c));
+          if (!entries.length) return [{ caseNum: Number(c.caseNum), spec: "(packed)", qty: inCase, band: "locked", locked: true }];
+          return entries.map(([spec, qty]) => ({
             caseNum: Number(c.caseNum),
-            spec: spec || "(packed)",
-            qty: Number(c.plannedQty) || inCase,
-            band: spec ? planBandFor(spec) : "locked",
+            spec,
+            qty: Number(qty) || 0,
+            band: planBandFor(spec),
             locked: !!inCase
-          };
+          }));
         });
         return rows.sort((a, b) => a.caseNum - b.caseNum);
       }
@@ -3619,8 +3691,8 @@
     for (const c of data.cases || []) {
       if (!c || c.deleted || c.orderId !== orderId) continue;
       const inCase = Object.values(c.contents || {}).reduce((t, n) => t + (Number(n) || 0), 0);
-      const map = c.planned && typeof c.planned === "object" && Object.keys(c.planned).length ? c.planned : String(c.plannedSpec || "").trim() ? { [String(c.plannedSpec).trim()]: Number(c.plannedQty) || 0 } : null;
-      if (!map) continue;
+      const map = casePlanned(c);
+      if (!Object.keys(map).length) continue;
       const byBox = Object.entries(c.contents || {});
       const specOf = (box) => {
         const run = (data.bondingRuns || []).find((r) => r && !r.deleted && r.boxNumber === box);
@@ -3653,6 +3725,16 @@
       }
     }
     return out.sort((a, b) => a.caseNum - b.caseNum);
+  }
+  function casePlanned(row) {
+    if (!row) return {};
+    const m = row.planned;
+    if (m && typeof m === "object" && Object.keys(m).length) return m;
+    const spec = String(row.plannedSpec || "").trim();
+    return spec ? { [spec]: Number(row.plannedQty) || 0 } : {};
+  }
+  function hasCasePlan(row) {
+    return Object.keys(casePlanned(row)).length > 0;
   }
   function subtractPlanned(items, planned) {
     if (!planned.length) return items;
@@ -3706,13 +3788,17 @@
     for (const p of planned) {
       const existing = byNum.get(p.caseNum);
       if (existing) {
-        existing.plannedSpec = p.spec;
-        existing.plannedQty = p.qty;
+        existing.planned = { ...existing.planned || {}, [p.spec]: Number(p.qty) || 0 };
         existing.plannedOutstanding = p.outstanding;
         existing.plannedItems = p.items || [];
         continue;
       }
       kept.push({
+        /* IN-MEMORY ARRANGEMENT ROW, never persisted — note `planned: true` here
+           is a BOOLEAN meaning "this case came from the plan", not the {spec:qty}
+           column of the same name on a database row. casePlanned() tolerates it
+           (a boolean is not an object, so it falls through), but the collision is
+           a trap: anything reading `.planned` must know which shape it holds. */
         caseNum: p.caseNum,
         maxSize: CASE_MAX_SIZE_DEFAULT,
         contributions: [],
@@ -5154,6 +5240,37 @@ Here's the order:`;
     if (!/(mm|\dpt|\(\d+(\.\d+)?m\))/i.test(tail)) return { customerRef: null, description: t };
     return { customerRef: head, description: tail };
   }
+  function ProductGateLine({ data, value, onResolved }) {
+    const res = resolveProduct(data, value);
+    if (!String(value || "").trim()) return null;
+    if (res.status === "exact") {
+      const differs = res.product.displayName !== String(value).trim();
+      return /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: differs ? NAVY : "#2E8B57", marginTop: 2 } }, differs ? `\u2192 ${res.product.displayName}` : "\u2713 known product");
+    }
+    if (res.status === "candidates") {
+      return /* @__PURE__ */ React.createElement("div", { style: { marginTop: 3, padding: "6px 8px", borderRadius: 5, background: "#FFF6E5", border: "1px solid #E8C77A" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: "#8A6100" } }, "Which product is this? Pick one \u2014 the order stores the catalogue name."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 5, marginTop: 5 } }, res.candidates.slice(0, 6).map((p) => /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          key: p.id,
+          onClick: () => onResolved(p.displayName),
+          style: {
+            fontSize: 11,
+            padding: "3px 7px",
+            borderRadius: 4,
+            cursor: "pointer",
+            border: `1px solid ${BORDER}`,
+            background: "#fff",
+            color: INK
+          }
+        },
+        p.displayName
+      ))));
+    }
+    return /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: RED, marginTop: 2 } }, "Not in the product catalogue. Check the spelling, or add it as a new product before ordering it.");
+  }
+  function unresolvedLines(data, lines) {
+    return (lines || []).filter((li) => resolveProduct(data, li.description).status !== "exact");
+  }
   function PasteOrderPanel({ data, setData }) {
     const [open, setOpen] = useState(false);
     const [raw, setRaw, rawRestored, discardRaw] = useDraftState("pasteOrder", "", "");
@@ -5184,6 +5301,7 @@ Here's the order:`;
     };
     const handleConfirm = () => {
       if (!parsed || !boxType) return;
+      if (unresolvedLines(data, parsed.lineItems).length) return;
       setData((prevData) => {
         const id = nextOrderId(prevData.orders);
         const newOrder = {
@@ -5246,7 +5364,7 @@ Here's the order:`;
       setRaw("");
       setParsed(null);
       setError("");
-    } }, "Clear")), error && /* @__PURE__ */ React.createElement("div", { className: "text-sm mt-2", style: { color: RED } }, error), parsed && /* @__PURE__ */ React.createElement("div", { className: "mt-3 p-3 rounded", style: { background: "#F2F2F0" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "CHECK & EDIT BEFORE ADDING \u2014 this is where to fix anything Claude got wrong"), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-2 mb-2" }, /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 160px" } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Customer"), /* @__PURE__ */ React.createElement(TextInput, { value: parsed.customer, onChange: (e) => setParsed({ ...parsed, customer: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 130 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Reference"), /* @__PURE__ */ React.createElement(TextInput, { value: parsed.reference || "", onChange: (e) => setParsed({ ...parsed, reference: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 90 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Currency"), /* @__PURE__ */ React.createElement(TextInput, { value: parsed.currency || "GBP", onChange: (e) => setParsed({ ...parsed, currency: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Due date"), /* @__PURE__ */ React.createElement(TextInput, { type: "date", value: parsed.dueDate || "", onChange: (e) => setParsed({ ...parsed, dueDate: e.target.value }) }))), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, parsed.lineItems.length, " line", parsed.lineItems.length === 1 ? "" : "s", " \xB7 ", parsed.currency || "GBP", " ", total.toFixed(2)), /* @__PURE__ */ React.createElement("div", { className: "mb-2", style: { maxHeight: 220, overflowY: "auto" } }, parsed.lineItems.map((li, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "flex gap-1.5 items-center mb-1.5" }, /* @__PURE__ */ React.createElement(
+    } }, "Clear")), error && /* @__PURE__ */ React.createElement("div", { className: "text-sm mt-2", style: { color: RED } }, error), parsed && /* @__PURE__ */ React.createElement("div", { className: "mt-3 p-3 rounded", style: { background: "#F2F2F0" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "CHECK & EDIT BEFORE ADDING \u2014 this is where to fix anything Claude got wrong"), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-2 mb-2" }, /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 160px" } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Customer"), /* @__PURE__ */ React.createElement(TextInput, { value: parsed.customer, onChange: (e) => setParsed({ ...parsed, customer: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 130 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Reference"), /* @__PURE__ */ React.createElement(TextInput, { value: parsed.reference || "", onChange: (e) => setParsed({ ...parsed, reference: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 90 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Currency"), /* @__PURE__ */ React.createElement(TextInput, { value: parsed.currency || "GBP", onChange: (e) => setParsed({ ...parsed, currency: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Due date"), /* @__PURE__ */ React.createElement(TextInput, { type: "date", value: parsed.dueDate || "", onChange: (e) => setParsed({ ...parsed, dueDate: e.target.value }) }))), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, parsed.lineItems.length, " line", parsed.lineItems.length === 1 ? "" : "s", " \xB7 ", parsed.currency || "GBP", " ", total.toFixed(2)), /* @__PURE__ */ React.createElement("div", { className: "mb-2", style: { maxHeight: 220, overflowY: "auto" } }, parsed.lineItems.map((li, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "mb-1.5" }, /* @__PURE__ */ React.createElement("div", { className: "flex gap-1.5 items-center" }, /* @__PURE__ */ React.createElement(
       TextInput,
       {
         value: li.description,
@@ -5294,6 +5412,17 @@ Here's the order:`;
         style: { background: "none", border: "none", cursor: "pointer" }
       },
       "\u2715"
+    )), /* @__PURE__ */ React.createElement(
+      ProductGateLine,
+      {
+        data,
+        value: li.description,
+        onResolved: (name) => {
+          const next = [...parsed.lineItems];
+          next[i] = { ...next[i], description: name };
+          setParsed({ ...parsed, lineItems: next });
+        }
+      }
     )))), /* @__PURE__ */ React.createElement(
       "button",
       {
@@ -5302,7 +5431,15 @@ Here's the order:`;
         style: { background: "none", border: "none", cursor: "pointer", color: NAVY }
       },
       "+ Add a line"
-    ), /* @__PURE__ */ React.createElement("div", { className: "mb-3", style: { maxWidth: 180 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Box type"), /* @__PURE__ */ React.createElement(Select, { value: boxType, onChange: (e) => setBoxType(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose\u2026"), BOX_TYPES.map((b) => /* @__PURE__ */ React.createElement("option", { key: b, value: b }, b)))), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: handleConfirm, disabled: !parsed.customer.trim() || parsed.lineItems.length === 0 || !boxType }, "+ Add this order"), !boxType && parsed.customer.trim() && parsed.lineItems.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: INK_MUTED } }, "Choose a box type to add this order."))));
+    ), /* @__PURE__ */ React.createElement("div", { className: "mb-3", style: { maxWidth: 180 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Box type"), /* @__PURE__ */ React.createElement(Select, { value: boxType, onChange: (e) => setBoxType(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose\u2026"), BOX_TYPES.map((b) => /* @__PURE__ */ React.createElement("option", { key: b, value: b }, b)))), /* @__PURE__ */ React.createElement(
+      Button,
+      {
+        variant: "accent",
+        onClick: handleConfirm,
+        disabled: !parsed.customer.trim() || parsed.lineItems.length === 0 || !boxType || unresolvedLines(data, parsed.lineItems).length > 0
+      },
+      "+ Add this order"
+    ), !boxType && parsed.customer.trim() && parsed.lineItems.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: INK_MUTED } }, "Choose a box type to add this order."), unresolvedLines(data, parsed.lineItems).length > 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: "#8A6100" } }, unresolvedLines(data, parsed.lineItems).length, " line", unresolvedLines(data, parsed.lineItems).length === 1 ? " does" : "s do", " not match a product in the catalogue. Pick the right product on each highlighted line above, then add the order."))));
   }
   var ORDER_PASSWORD_KEY = "matrixOrderActionPassword";
   var ADMIN_PASSWORD_KEY = "matrixAdminPassword";
@@ -6193,6 +6330,32 @@ ${line}` : line;
       let description = newLine.range === "Custom" ? newLine.size.trim() : `${newLine.range} ${newLine.size.trim()}`;
       if (newLine.pt && !description.includes(newLine.pt)) description += ` ${newLine.pt}`;
       if (newLine.amount && !description.includes(`(${newLine.amount}m)`)) description += ` (${newLine.amount}m)`;
+      const res = resolveProduct(data, description);
+      if (res.status === "exact") {
+        description = res.product.displayName;
+      } else if (res.status === "candidates") {
+        const list = res.candidates.slice(0, 6).map((p, i) => `  ${i + 1}. ${p.displayName}`).join("\n");
+        const pick = window.prompt(
+          `"${description}" is not exactly a product we make.
+
+Which one is it? Type the number:
+
+${list}
+
+To clear this: pick a number, or Cancel and correct the line \u2014 most often the pt (2-3pt, 3-4pt or 6pt) is missing.`,
+          "1"
+        );
+        const chosen = res.candidates[Number(pick) - 1];
+        if (!chosen) return;
+        description = chosen.displayName;
+      } else {
+        window.alert(
+          `"${description}" is not in the product catalogue.
+
+To clear this: check the size and the pt, or add it as a new product before ordering it. Nothing is added to the order.`
+        );
+        return;
+      }
       setLineItems((prevLineItems) => [...prevLineItems, {
         id: uid("li"),
         orderId,
@@ -8976,8 +9139,9 @@ The reason is recorded. Leave blank to keep the line.`, "");
     }
     const total = [...bySpec.values()].reduce((t, q) => t + q, 0);
     const items = Array.isArray(row && row.plannedItems) ? row.plannedItems : null;
-    const pSpec = String(row && row.plannedSpec || "").trim();
-    const pQty = Math.max(0, Number(row && row.plannedQty) || 0);
+    const legacy = Object.entries(casePlanned(row));
+    const pSpec = legacy.length === 1 ? legacy[0][0] : "";
+    const pQty = legacy.length === 1 ? Math.max(0, Number(legacy[0][1]) || 0) : 0;
     const plan = items && items.length ? items.map((it) => ({
       spec: it.spec,
       qty: Number(it.qty) || 0,
@@ -9347,23 +9511,6 @@ The reason is recorded. Leave blank to keep the line.`, "");
       otherStock: other,
       orders: prev.orders.map((o) => {
         if (o.id !== order.id) return o;
-        const prevOverrides = { ...o.caseOverrides || {} };
-        for (const code of Object.keys(removals)) if (prevOverrides[code] === caseNum) delete prevOverrides[code];
-        const nextRemovals = { ...o.caseRemovals || {} };
-        const asList = (v) => v === true ? null : Array.isArray(v) ? v : [];
-        for (const code of Object.keys(overrides)) {
-          const cur = asList(nextRemovals[code]);
-          if (cur === null) delete nextRemovals[code];
-          else {
-            const left = cur.filter((n) => n !== caseNum);
-            if (left.length) nextRemovals[code] = left;
-            else delete nextRemovals[code];
-          }
-        }
-        for (const code of Object.keys(removals)) {
-          const cur = asList(nextRemovals[code]);
-          nextRemovals[code] = cur === null ? [caseNum] : [.../* @__PURE__ */ new Set([...cur, caseNum])];
-        }
         return {
           ...o,
           // caseOverrides/caseRemovals are derived from the cases table; written below.
@@ -9372,15 +9519,16 @@ The reason is recorded. Leave blank to keep the line.`, "");
              confirmed case is closed: its contents are exactly what was saved.
              The planner may not put planned demand into it any more — whatever
              it wanted here goes to new cases at the end instead. */
-          /* `empty: true` when a person confirmed a case with nothing in it. That
-             is a real answer — "this case is empty, the product is not in it" —
-             and it has to be distinguishable from the mis-key that leaves a bare
-             `{boxes:{}}`, which is discarded. Without the flag, deleting every row
-             and confirming brought the planned rows straight back. */
-          confirmedCases: { ...o.confirmedCases || {}, [caseNum]: (() => {
-            const boxes = Object.fromEntries(rows.filter((r) => r.boxNumber && Number(r.qty) > 0).map((r) => [String(r.boxNumber).trim(), Number(r.qty)]));
-            return Object.keys(boxes).length ? { boxes } : { boxes, empty: true };
-          })() },
+          /* confirmedCases IS NO LONGER WRITTEN (8 Sep 2026).
+             The case row below is the only record of a confirmation now. It has
+             been dual-written since the cases table existed, and patchfields_gate2
+             proved against a live pull that every entry still in the field is
+             superseded by that row or by the ledger — 212 entries, none at risk.
+             `empty: true` survives as EMPTY_ON_PURPOSE in the row's notes, which
+             is where it was already being written.
+             The field still READS: patchMapsFromCaseRecords derives it from the
+             rows on load, so nothing downstream changed. It is derived now, not
+             stored, which is the whole point. */
           updatedAt: stamp
         };
       })
@@ -9466,10 +9614,12 @@ The reason is recorded. Leave blank to keep the line.`, "");
   function packedOutsideSpecs(order, lineItems) {
     const out = {};
     for (const li of orderLineItems(lineItems, order?.id)) {
-      if (li.packedOutside) out[li.description] = true;
+      const q = Number(li.packedOutsideQty);
+      if (Number.isFinite(q) && q > 0) out[li.description] = q;
+      else if (li.packedOutside) out[li.description] = true;
     }
     for (const [k, v] of Object.entries(order?.packedOutside || {})) {
-      if (v !== null && v !== void 0) out[k] = v;
+      if (v !== null && v !== void 0 && out[k] === void 0) out[k] = v;
     }
     return out;
   }
@@ -9895,7 +10045,15 @@ This changes the order quantities. It is recorded in the change log and can be r
     });
     const setPalletWeights = (next) => setData((prevData) => ({ ...prevData, orders: prevData.orders.map((o) => o.id === orderId ? { ...o, palletWeights: next } : o) }));
     const setPalletDim = (label, key, value) => setData((prevData) => ({ ...prevData, orders: prevData.orders.map((o) => o.id === orderId ? { ...o, palletDims: { ...o.palletDims || {}, [label]: { ...(o.palletDims || {})[label] || {}, [key]: value === "" ? "" : Number(value) || 0 } } } : o) }));
-    const setPackedOutside = (next) => setData((prevData) => ({ ...prevData, orders: prevData.orders.map((o) => o.id === orderId ? { ...o, packedOutside: next } : o) }));
+    const setPackedOutside = (next) => setData((prevData) => ({
+      ...prevData,
+      lineItems: (prevData.lineItems || []).map((li) => {
+        if (li.orderId !== orderId) return li;
+        const v = next[li.description];
+        const qty = v === true ? Number(li.qty) || 0 : Number(v);
+        return { ...li, packedOutsideQty: Number.isFinite(qty) && qty > 0 ? qty : null };
+      })
+    }));
     const setStartingCaseNum = (next) => setData((prevData) => {
       const before = prevData.orders.find((o) => o.id === orderId)?.startingCaseNum ?? null;
       if (before === next) return prevData;
@@ -10058,8 +10216,7 @@ This changes the order quantities. It is recorded in the change log and can be r
                 contents: was && was.contents || {},
                 confirmed: !!(was && was.confirmed),
                 deleted: false,
-                plannedSpec: p.spec,
-                plannedQty: p.qty,
+                planned: { [p.spec]: Number(p.qty) || 0 },
                 planBatch: was && was.planBatch || "Original",
                 updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
                 updatedBy: currentActor()
@@ -10146,7 +10303,7 @@ This changes the order quantities. It is recorded in the change log and can be r
         cases: data.cases,
         onAppend: () => {
           const items2 = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description));
-          const existing = (data.cases || []).filter((c) => !c.deleted && c.orderId === order.id && String(c.plannedSpec || "").trim()).map((c) => ({ caseNum: Number(c.caseNum), spec: String(c.plannedSpec).trim(), qty: Number(c.plannedQty) || 0 }));
+          const existing = (data.cases || []).filter((c) => !c.deleted && c.orderId === order.id && hasCasePlan(c)).flatMap((c) => Object.entries(casePlanned(c)).map(([spec, qty]) => ({ caseNum: Number(c.caseNum), spec, qty: Number(qty) || 0 })));
           const extra = planAmendment(items2, existing);
           if (!extra.length) return;
           const label = `Amendment ${(/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
@@ -10159,8 +10316,7 @@ This changes the order quantities. It is recorded in the change log and can be r
               contents: {},
               confirmed: false,
               deleted: false,
-              plannedSpec: p.spec,
-              plannedQty: p.qty,
+              planned: { [p.spec]: Number(p.qty) || 0 },
               planBatch: label,
               updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
               updatedBy: currentActor()
@@ -14106,6 +14262,45 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       }
       return "";
     };
+    const gateProduct = (f) => {
+      const spec = buildSpec(f);
+      const res = resolveProduct(data, spec);
+      if (res.status === "exact") return "";
+      const cands = res.candidates || [];
+      if (!f.pt && cands.some((p) => p.pt)) {
+        return "Can't accept this entry as you haven't told me what pt it is. To clear it: pick " + [...new Set(cands.map((p) => p.pt).filter(Boolean))].join(" or ") + " in the pt field.";
+      }
+      if (res.status === "candidates") {
+        return "Can't accept " + spec + " \u2014 it isn't exactly a product we make. To clear it: pick one of " + cands.slice(0, 3).map((p) => p.displayName).join("  /  ") + (cands.length > 3 ? "  /  \u2026" : "") + ".";
+      }
+      return "Can't accept " + spec + " \u2014 no such product in the catalogue. To clear it: check the size and the pt, or add the product before making it.";
+    };
+    const gateBatchTotal = (f) => {
+      const code = String(f.boxNumber || "").trim().toUpperCase();
+      if (!code) return "";
+      const made = Number(f.amountMade) || 0;
+      const allocs = (f.allocations || []).filter((a) => a.orderId && Number(a.qty) > 0);
+      const now = allocs.length ? allocs.reduce((t, a) => t + Number(a.qty), 0) : Number(f.onOrderQty) || 0;
+      const ledger = (kind) => (data.movements || []).filter((m) => !m.deleted && m.kind === kind && String(m.boxNumber || "").trim().toUpperCase() === code).reduce((t, m) => t + (Number(m.qty) || 0), 0);
+      const promised = now + ledger("allocated");
+      const total = made + ledger("made");
+      if (promised > total) {
+        return "Can't accept this entry as allocations to customers exceed the batch amount made. " + code + " would be promised " + promised + " against " + total + " made. To clear it: reduce an allocation by " + (promised - total) + ", or correct how many were made.";
+      }
+      return "";
+    };
+    const gateCasePlan = (f) => {
+      const allocs = (f.allocations || []).filter((a) => a.orderId && Number(a.qty) > 0);
+      const ids = allocs.length ? allocs.map((a) => a.orderId) : f.workNumber ? [f.workNumber] : [];
+      for (const id of ids) {
+        const planned = (data.cases || []).some((c) => !c.deleted && c.orderId === id && hasCasePlan(c));
+        if (!planned) {
+          const o = (data.orders || []).find((x) => x.id === id);
+          return "Can't allocate to " + id + (o ? " (" + o.customer + ")" : "") + " because the case plan hasn't been agreed yet \u2014 there is nowhere for these boxes to go. To clear it: press \u{1F5C2} Plan packing on that order, then log this entry again.";
+        }
+      }
+      return "";
+    };
     const buildSpec = (f) => {
       let spec = f.range === "Custom" ? f.size.trim() : `${f.range} ${f.size.trim()}`;
       if (f.pt && !spec.includes(f.pt)) spec += ` ${f.pt}`;
@@ -14245,7 +14440,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         setAddError(String(form.amountMade || "").trim() ? `"${form.amountMade}" isn't a number of boxes \u2014 retype how many were made.` : "Enter how many boxes were made.");
         return;
       }
-      const err = validateBatchAndBox(form, null) || validateAllocations(form);
+      const err = validateBatchAndBox(form, null) || validateAllocations(form) || gateProduct(form) || gateBatchTotal(form) || gateCasePlan(form);
       if (err) {
         setAddError(err);
         return;
