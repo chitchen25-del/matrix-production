@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-08.16";
+  var APP_VERSION = "2026-09-08.18";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -3685,7 +3685,7 @@
     for (const p of planned) {
       const cur = byCase.get(p.caseNum) || { caseNum: p.caseNum, specs: [], items: [], qty: 0, outstanding: 0 };
       cur.specs.push(p.spec);
-      if (p.outstanding > 0) cur.items.push({ spec: p.spec, outstanding: p.outstanding });
+      cur.items.push({ spec: p.spec, qty: p.qty, inCase: p.inCase, outstanding: p.outstanding });
       cur.qty += p.qty;
       cur.outstanding += p.outstanding;
       byCase.set(p.caseNum, cur);
@@ -8181,10 +8181,10 @@ The reason is recorded. Leave blank to keep the line.`, "");
   var EMPTY_ON_PURPOSE = "Confirmed empty on purpose";
   function caseContentLines(c) {
     const bySpec = /* @__PURE__ */ new Map();
-    for (const r of c.contributions || []) {
-      const k = shortCaseSpec(r.spec) || "(not recorded)";
-      const cur = bySpec.get(k) || { qty: 0, spec: r.spec || "" };
-      bySpec.set(k, { qty: cur.qty + (Number(r.qty) || 0), spec: cur.spec || r.spec || "" });
+    for (const x of caseView(c).contents) {
+      const k = shortCaseSpec(x.spec) || "(not recorded)";
+      const cur = bySpec.get(k) || { qty: 0, spec: x.spec || "" };
+      bySpec.set(k, { qty: cur.qty + (Number(x.qty) || 0), spec: cur.spec || x.spec || "" });
     }
     return [...bySpec.entries()].filter(([, v]) => v.qty > 0).map(([label, v]) => ({ label, qty: v.qty, spec: v.spec }));
   }
@@ -8299,27 +8299,25 @@ The reason is recorded. Leave blank to keep the line.`, "");
   function printCaseMapGrid(order, caseRows, setData) {
     const esc = pEsc;
     const rows = [...caseRows || []].filter((c) => !c.packedOutside).sort((a, b) => a.caseNum - b.caseNum).map((c) => {
+      const v = caseView(c);
       const cells = /* @__PURE__ */ new Map();
       for (const l of caseContentLines(c)) cells.set(l.label, (cells.get(l.label) || 0) + l.qty);
       const awaited = /* @__PURE__ */ new Map();
-      if (Array.isArray(c.plannedItems) && c.plannedItems.length) {
-        for (const it of c.plannedItems) {
-          const k = shortCaseSpec(it.spec) || it.spec;
-          if (it.outstanding > 0) awaited.set(k, (awaited.get(k) || 0) + it.outstanding);
-        }
-      } else {
-        const pSpec = String(c.plannedSpec || "").trim();
-        const toCome = pSpec ? Math.max(0, (Number(c.plannedQty) || 0) - [...cells.values()].reduce((t, q) => t + q, 0)) : 0;
-        if (toCome > 0) awaited.set(shortCaseSpec(pSpec) || pSpec, toCome);
+      const planMap = /* @__PURE__ */ new Map();
+      for (const p of v.plan) {
+        const k = shortCaseSpec(p.spec) || p.spec;
+        if (p.qty > 0) planMap.set(k, (planMap.get(k) || 0) + p.qty);
+        if (p.outstanding > 0) awaited.set(k, (awaited.get(k) || 0) + p.outstanding);
       }
       return {
-        caseNum: c.caseNum,
+        caseNum: v.caseNum,
         cells,
         awaited,
-        total: [...cells.values()].reduce((t, q) => t + q, 0),
+        planMap,
+        total: v.total,
         reel: isReelCase(c.maxSize)
       };
-    }).filter((c) => c.cells.size > 0 || c.awaited.size > 0);
+    }).filter((c) => c.cells.size > 0 || c.planMap.size > 0);
     const PALLET_CAP = { box: 32, reel: 14 };
     let pal = 0, onPallet = 0, palKind = null;
     for (const c of rows) {
@@ -8349,6 +8347,10 @@ The reason is recorded. Leave blank to keep the line.`, "");
       seen.add(k);
       specs.push(k);
     }
+    for (const c of rows) for (const k of c.planMap.keys()) if (!seen.has(k)) {
+      seen.add(k);
+      specs.push(k);
+    }
     const szHead = (sp) => String(sp).split(/\s+/).filter(Boolean).map((t) => `<span class="tk">${esc(t)}</span>`).join(" ");
     const CASES_PER_SHEET = 15;
     const chunks = [];
@@ -8359,6 +8361,7 @@ The reason is recorded. Leave blank to keep the line.`, "");
       for (const c of chunk) {
         for (const k of c.cells.keys()) used.add(k);
         for (const k of c.awaited.keys()) used.add(k);
+        for (const k of c.planMap.keys()) used.add(k);
       }
       const mySpecs = specs.filter((k) => used.has(k));
       const cols = mySpecs.length + 3;
@@ -8380,20 +8383,20 @@ The reason is recorded. Leave blank to keep the line.`, "");
       const heads = mySpecs.map((sp) => `<th class="sz" style="width:${sizeW.toFixed(3)}%">${szHead(sp)}</th>`).join("");
       const foots = mySpecs.map((sp) => `<td class="q b">${esc(chunk.reduce((t, c) => t + (c.cells.get(sp) || 0), 0))}</td>`).join("");
       const sheetTotal = chunk.reduce((t, c) => t + c.total, 0);
-      const awaitRows = chunk.filter((c) => c.awaited && c.awaited.size > 0).map((c) => {
+      const awaitRows = chunk.filter((c) => c.planMap && c.planMap.size > 0).map((c) => {
         const cells = mySpecs.map((sp) => {
-          const a = c.awaited.get(sp);
+          const a = c.planMap.get(sp);
           return `<td class="q${a ? " await-has" : ""}">${a ? esc(a) : ""}</td>`;
         }).join("");
-        const n = [...c.awaited.values()].reduce((t, q) => t + q, 0);
+        const n = [...c.planMap.values()].reduce((t, q) => t + q, 0);
         return `<tr><td class="cn">${esc(c.caseNum)}</td>${cells}<td class="tot">${esc(n)}</td><td class="wr"></td></tr>`;
       }).join("");
-      const awaitFoot = mySpecs.map((sp) => `<td class="q b">${esc(chunk.reduce((t, c) => t + (c.awaited && c.awaited.get(sp) || 0), 0))}</td>`).join("");
-      const awaitTotal = chunk.reduce((t, c) => t + (c.awaited ? [...c.awaited.values()].reduce((a, q) => a + q, 0) : 0), 0);
+      const awaitFoot = mySpecs.map((sp) => `<td class="q b">${esc(chunk.reduce((t, c) => t + (c.planMap && c.planMap.get(sp) || 0), 0))}</td>`).join("");
+      const awaitTotal = chunk.reduce((t, c) => t + (c.planMap ? [...c.planMap.values()].reduce((a, q) => a + q, 0) : 0), 0);
       const awaitTable = awaitRows ? `<div class="awaitblock">
-      <div class="awaithead">Still to come &mdash; planned, not yet in the case</div>
+      <div class="awaithead">The plan &mdash; what each case is for</div>
       <table class="cm await">
-        <thead><tr><th class="cn">Case</th>${heads}<th class="tot">To come</th><th class="wr"></th></tr></thead>
+        <thead><tr><th class="cn">Case</th>${heads}<th class="tot">Planned</th><th class="wr"></th></tr></thead>
         <tbody>${awaitRows}</tbody>
         <tfoot><tr><td class="cn">This sheet</td>${awaitFoot}<td class="tot b">${esc(awaitTotal)}</td><td class="wr"></td></tr></tfoot>
       </table></div>` : "";
@@ -8954,26 +8957,50 @@ The reason is recorded. Leave blank to keep the line.`, "");
       } }, "Try this screen again"), " ", /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => window.location.reload() }, "Reload the app"));
     }
   };
+  function caseView(row) {
+    const bySpec = /* @__PURE__ */ new Map();
+    for (const r of row && row.contributions || []) {
+      const k = r.spec || "(not recorded)";
+      bySpec.set(k, (bySpec.get(k) || 0) + (Number(r.qty) || 0));
+    }
+    const total = [...bySpec.values()].reduce((t, q) => t + q, 0);
+    const items = Array.isArray(row && row.plannedItems) ? row.plannedItems : null;
+    const pSpec = String(row && row.plannedSpec || "").trim();
+    const pQty = Math.max(0, Number(row && row.plannedQty) || 0);
+    const plan = items && items.length ? items.map((it) => ({
+      spec: it.spec,
+      qty: Number(it.qty) || 0,
+      inCase: Number(it.inCase) || 0,
+      outstanding: Number(it.outstanding) || 0
+    })) : pSpec ? [{
+      spec: pSpec,
+      qty: pQty,
+      inCase: Math.min(total, pQty),
+      outstanding: Math.max(0, pQty - total)
+    }] : [];
+    return {
+      caseNum: Number(row && row.caseNum),
+      contents: [...bySpec.entries()].map(([spec, qty]) => ({ spec, qty })),
+      total,
+      plan,
+      planTotal: plan.reduce((t, p) => t + p.qty, 0),
+      toCome: plan.reduce((t, p) => t + p.outstanding, 0),
+      confirmed: !!(row && row.confirmed)
+    };
+  }
   function packingListRows(cases) {
     const rows = [...cases || []].sort((a, b) => a.caseNum - b.caseNum).map((c) => {
-      const bySpec = /* @__PURE__ */ new Map();
-      for (const r of c.contributions || []) {
-        const k = r.spec || "(not recorded)";
-        bySpec.set(k, (bySpec.get(k) || 0) + (Number(r.qty) || 0));
-      }
-      const total = [...bySpec.values()].reduce((t, q) => t + q, 0);
-      const plannedSpec = String(c.plannedSpec || "").trim();
-      const plannedQty = Math.max(0, Number(c.plannedQty) || 0);
-      const toCome = plannedSpec ? Math.max(0, plannedQty - total) : 0;
+      const v = caseView(c);
       return {
-        caseNum: c.caseNum,
-        total,
-        lines: [...bySpec.entries()],
-        plannedSpec,
-        plannedQty,
-        toCome
+        caseNum: v.caseNum,
+        total: v.total,
+        lines: v.contents.map((x) => [x.spec, x.qty]),
+        plan: v.plan.map((p) => [p.spec, p.qty, p.inCase, p.outstanding]),
+        toCome: v.toCome,
+        plannedSpec: c.plannedSpec,
+        plannedQty: c.plannedQty
       };
-    }).filter((r) => r.total > 0 || r.plannedSpec);
+    }).filter((r) => r.total > 0 || r.plan.length);
     return { rows, grand: rows.reduce((t, r) => t + r.total, 0) };
   }
   var packingShort = (spec) => String(spec).replace(/^PX Plus\s*/i, "").replace(/^Ken PX\s*/i, "Ken ").replace(/\s*\(\d+(\.\d+)?m\)\s*$/, "").trim();
@@ -8984,7 +9011,7 @@ The reason is recorded. Leave blank to keep the line.`, "");
       <td>${r.lines.map(([spec, qty]) => `<div class="pl-line"><b>${pEsc(qty)}</b><span class="x">&times;</span>${pEsc(packingShort(spec))}</div>`).join("")}${/* What the case is still promised. Printed lighter than what is in it,
        so a picker reading down the page can tell at a glance what is done
        from what is still to come without reading a word. */
-    r.toCome > 0 ? `<div class="pl-line pl-await"><b>${pEsc(r.toCome)}</b><span class="x">&times;</span>${pEsc(packingShort(r.plannedSpec))} <i>&mdash; to come</i></div>` : ""}</td>
+    (r.plan || []).map((p) => `<div class="pl-line pl-await"><b>${pEsc(p[1])}</b><span class="x">&times;</span>${pEsc(packingShort(p[0]))}${p[3] > 0 ? ` <i>&mdash; ${pEsc(p[3])} to come</i>` : " <i>&mdash; done</i>"}</div>`).join("")}</td>
       <td class="r b">${pEsc(r.total)}${r.toCome > 0 ? `<span class="pl-of"> / ${pEsc(r.total + r.toCome)}</span>` : ""}</td>
       <td class="c"><span class="tick"></span></td>
     </tr>`).join("");
@@ -9053,7 +9080,7 @@ The reason is recorded. Leave blank to keep the line.`, "");
       },
       /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: INK } }, "Printable packing list", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontWeight: 400 } }, " \u2014 ", rows.length, " case", rows.length === 1 ? "" : "s", ", ", grand, " boxes")),
       /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 12 } }, open ? "hide" : "show")
-    ), /* @__PURE__ */ React.createElement("div", { style: open ? void 0 : { display: "none" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Georgia, serif", color: "#000" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 26, fontWeight: 700 } }, order.customer), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, marginBottom: 2 } }, "Order ", order.id, order.customerRef ? ` \xB7 their ref ${order.customerRef}` : ""), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, marginBottom: 14 } }, rows.length, " case", rows.length === 1 ? "" : "s", " \xB7 ", grand, " boxes altogether"), /* @__PURE__ */ React.createElement("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 15 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: { textAlign: "left", borderBottom: "2px solid #000", padding: "6px 8px", width: 62 } }, "Case"), /* @__PURE__ */ React.createElement("th", { style: { textAlign: "left", borderBottom: "2px solid #000", padding: "6px 8px" } }, "What goes in it"), /* @__PURE__ */ React.createElement("th", { style: { textAlign: "right", borderBottom: "2px solid #000", padding: "6px 8px", width: 70 } }, "Boxes"), /* @__PURE__ */ React.createElement("th", { style: { textAlign: "center", borderBottom: "2px solid #000", padding: "6px 8px", width: 60 } }, "Done"))), /* @__PURE__ */ React.createElement("tbody", null, rows.map((r) => /* @__PURE__ */ React.createElement("tr", { key: r.caseNum, style: { pageBreakInside: "avoid" } }, /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px", fontSize: 22, fontWeight: 700, verticalAlign: "top" } }, r.caseNum), /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px" } }, r.lines.map(([spec, qty], i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { lineHeight: 1.5 } }, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 17 } }, qty), " \xD7 ", short(spec))), r.toCome > 0 && /* @__PURE__ */ React.createElement("div", { style: { lineHeight: 1.5, color: "#666" } }, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 17 } }, r.toCome), " \xD7 ", short(r.plannedSpec), " ", /* @__PURE__ */ React.createElement("i", null, "\u2014 to come"))), /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px", textAlign: "right", fontSize: 19, fontWeight: 700, verticalAlign: "top" } }, r.total, r.toCome > 0 && /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 400, color: "#666" } }, " / ", r.total + r.toCome)), /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px", textAlign: "center", verticalAlign: "top" } }, /* @__PURE__ */ React.createElement("span", { style: { display: "inline-block", width: 22, height: 22, border: "2px solid #000" } })))))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, marginTop: 16 } }, "Printed ", (/* @__PURE__ */ new Date()).toLocaleString("en-GB", { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" }), ". If a case is different from this list, write on it \u2014 the sheet is the record."))));
+    ), /* @__PURE__ */ React.createElement("div", { style: open ? void 0 : { display: "none" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Georgia, serif", color: "#000" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 26, fontWeight: 700 } }, order.customer), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, marginBottom: 2 } }, "Order ", order.id, order.customerRef ? ` \xB7 their ref ${order.customerRef}` : ""), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, marginBottom: 14 } }, rows.length, " case", rows.length === 1 ? "" : "s", " \xB7 ", grand, " boxes altogether"), /* @__PURE__ */ React.createElement("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 15 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: { textAlign: "left", borderBottom: "2px solid #000", padding: "6px 8px", width: 62 } }, "Case"), /* @__PURE__ */ React.createElement("th", { style: { textAlign: "left", borderBottom: "2px solid #000", padding: "6px 8px" } }, "What goes in it"), /* @__PURE__ */ React.createElement("th", { style: { textAlign: "right", borderBottom: "2px solid #000", padding: "6px 8px", width: 70 } }, "Boxes"), /* @__PURE__ */ React.createElement("th", { style: { textAlign: "center", borderBottom: "2px solid #000", padding: "6px 8px", width: 60 } }, "Done"))), /* @__PURE__ */ React.createElement("tbody", null, rows.map((r) => /* @__PURE__ */ React.createElement("tr", { key: r.caseNum, style: { pageBreakInside: "avoid" } }, /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px", fontSize: 22, fontWeight: 700, verticalAlign: "top" } }, r.caseNum), /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px" } }, r.lines.map(([spec, qty], i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { lineHeight: 1.5 } }, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 17 } }, qty), " \xD7 ", short(spec))), (r.plan || []).map((p, i) => /* @__PURE__ */ React.createElement("div", { key: "a" + i, style: { lineHeight: 1.5, color: "#666" } }, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 17 } }, p[1]), " \xD7 ", short(p[0]), " ", /* @__PURE__ */ React.createElement("i", null, p[3] > 0 ? `\u2014 ${p[3]} to come` : "\u2014 done")))), /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px", textAlign: "right", fontSize: 19, fontWeight: 700, verticalAlign: "top" } }, r.total, r.toCome > 0 && /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 400, color: "#666" } }, " / ", r.total + r.toCome)), /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px", textAlign: "center", verticalAlign: "top" } }, /* @__PURE__ */ React.createElement("span", { style: { display: "inline-block", width: 22, height: 22, border: "2px solid #000" } })))))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, marginTop: 16 } }, "Printed ", (/* @__PURE__ */ new Date()).toLocaleString("en-GB", { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" }), ". If a case is different from this list, write on it \u2014 the sheet is the record."))));
   }
   function CaseGrid({ cases, caseWeights, setCaseWeights, palletAssignments, setPalletAssignments, highlightBoxes = null, highlightKey = null, litCases = [], caseOverrides = {}, setCaseOverrides = null, onEditCase = null, editOrder = null, editData = null }) {
     const [editingCase, setEditingCase] = useState(null);
@@ -16581,6 +16608,10 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       /* @__PURE__ */ React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { background: "#fff", borderRadius: 8, padding: 24, width: 360, boxShadow: "0 12px 30px rgba(20,25,40,0.3)" } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1", style: { color: RED } }, "NCR \u2014 ", /* @__PURE__ */ React.createElement(Mono, null, flaggedNcr.batchNumber)), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED } }, flaggedNcr.date || "\u2014"), /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: INK_MUTED } }, "Reason scrapped"), /* @__PURE__ */ React.createElement("div", { className: "text-sm mb-4" }, flaggedNcr.reason || "\u2014"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setFlaggedNcr(null) }, "Close"))
     ));
   }
+  function screenNumber(key) {
+    const i = NAV.findIndex((n) => n && n.key === key);
+    return i >= 0 ? i + 1 : null;
+  }
   var NAV = [
     { key: "dashboard", label: "Orders", icon: IconOrders },
     { key: "daily", label: "Daily plan", icon: IconClock },
@@ -17614,7 +17645,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Admin", subtitle: "Not available on this account." }), /* @__PURE__ */ React.createElement(Panel, { className: "p-6 text-center" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: INK_MUTED } }, "This account doesn't have access to Admin.")))
       ) : /* @__PURE__ */ React.createElement(AdminView, { data, setData })
     };
-    return /* @__PURE__ */ React.createElement("div", { className: "app-root", style: { minHeight: "100vh", color: INK } }, /* @__PURE__ */ React.createElement("div", { id: "print-portal-root" }), /* @__PURE__ */ React.createElement("div", { className: "no-print" }, /* @__PURE__ */ React.createElement(HazardStripe, { height: 4 })), /* @__PURE__ */ React.createElement("div", { className: "mobile-header no-print" }, /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement("div", { className: "app-root", style: { minHeight: "100vh", color: INK } }, /* @__PURE__ */ React.createElement("div", { id: "print-portal-root" }), /* @__PURE__ */ React.createElement("div", { className: "no-print" }, /* @__PURE__ */ React.createElement(HazardStripe, { height: 4 })), /* @__PURE__ */ React.createElement("div", { className: "mobile-header no-print", style: { position: "relative" } }, /* @__PURE__ */ React.createElement(
       "button",
       {
         onClick: () => setMobileMenuOpen(true),
@@ -17630,7 +17661,16 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         style: { background: "none", border: "none", padding: 6, width: 36, display: "flex", alignItems: "center", justifyContent: "center", color: NAVY }
       },
       /* @__PURE__ */ React.createElement("svg", { width: "22", height: "22", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" }, /* @__PURE__ */ React.createElement("path", { d: "M15 18l-6-6 6-6" }))
-    ) : /* @__PURE__ */ React.createElement("div", { style: { width: 36 } })), syncEnabled && syncStatus !== "offline" && syncFailureDetail && syncFailureDetail.length > 0 && (syncFailureDetail.some(isUpdateRequiredFailure) ? /* @__PURE__ */ React.createElement("div", { className: "no-print", onClick: applyUpdate, role: "button", style: {
+    ) : /* @__PURE__ */ React.createElement("div", { style: { width: 36 } }), screenNumber(view) && /* @__PURE__ */ React.createElement("div", { style: {
+      position: "absolute",
+      top: 2,
+      right: 4,
+      fontSize: 10,
+      fontWeight: 700,
+      color: LIGHTGREY,
+      letterSpacing: ".04em",
+      pointerEvents: "none"
+    } }, "S", screenNumber(view))), syncEnabled && syncStatus !== "offline" && syncFailureDetail && syncFailureDetail.length > 0 && (syncFailureDetail.some(isUpdateRequiredFailure) ? /* @__PURE__ */ React.createElement("div", { className: "no-print", onClick: applyUpdate, role: "button", style: {
       background: RED,
       color: "#fff",
       cursor: "pointer",
@@ -17652,7 +17692,17 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       fontWeight: 600,
       textAlign: "center",
       padding: "6px 10px"
-    } }, syncStatus === "offline" ? `\u26A0 Offline \u2014 ${pendingCount > 0 ? `${pendingCount} change${pendingCount === 1 ? "" : "s"} ` : ""}will retry automatically. Safe to keep working.` : `\u23F3 Syncing ${pendingCount} change${pendingCount === 1 ? "" : "s"} \u2014 wait for this to clear before switching off`), /* @__PURE__ */ React.createElement("div", { className: "sidebar-backdrop no-print" + (mobileMenuOpen ? " show" : ""), onClick: () => setMobileMenuOpen(false) }), /* @__PURE__ */ React.createElement("div", { className: "flex" }, /* @__PURE__ */ React.createElement("aside", { className: "app-sidebar w-64 shrink-0 min-h-screen p-4 no-print" + (mobileMenuOpen ? " mobile-open" : ""), style: { background: NAVY_DEEP, color: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "mb-6 p-3", style: { background: "#fff", borderRadius: 3 } }, /* @__PURE__ */ React.createElement("img", { src: "data:image/png;base64," + LOGO_B64, alt: "Matrix Engineering", className: "mb-2", style: { height: 50, display: "block" } }), /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold font-display", style: { color: NAVY } }, "Matrix Engineering"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Production Control")), /* @__PURE__ */ React.createElement("div", { onClick: toggleFloorMode, className: "flex items-center gap-2 mb-4 px-1 cursor-pointer" }, /* @__PURE__ */ React.createElement(ToggleSwitch, { on: floorMode, onChange: toggleFloorMode, labelOn: "On", labelOff: "Off" }), /* @__PURE__ */ React.createElement("span", { className: "text-xs font-semibold", style: { color: "#C7CCE8" } }, "Floor Mode")), floorMode ? /* @__PURE__ */ React.createElement("nav", { className: "space-y-1.5 mb-6" }, ["dashboard", "extrusion", "glueline", "bonding"].map((k) => {
+    } }, syncStatus === "offline" ? `\u26A0 Offline \u2014 ${pendingCount > 0 ? `${pendingCount} change${pendingCount === 1 ? "" : "s"} ` : ""}will retry automatically. Safe to keep working.` : `\u23F3 Syncing ${pendingCount} change${pendingCount === 1 ? "" : "s"} \u2014 wait for this to clear before switching off`), /* @__PURE__ */ React.createElement("div", { className: "sidebar-backdrop no-print" + (mobileMenuOpen ? " show" : ""), onClick: () => setMobileMenuOpen(false) }), screenNumber(view) && /* @__PURE__ */ React.createElement("div", { className: "no-print", style: {
+      position: "fixed",
+      top: 6,
+      right: 10,
+      zIndex: 60,
+      fontSize: 11,
+      fontWeight: 700,
+      color: LIGHTGREY,
+      letterSpacing: ".04em",
+      pointerEvents: "none"
+    } }, "S", screenNumber(view)), /* @__PURE__ */ React.createElement("div", { className: "flex" }, /* @__PURE__ */ React.createElement("aside", { className: "app-sidebar w-64 shrink-0 min-h-screen p-4 no-print" + (mobileMenuOpen ? " mobile-open" : ""), style: { background: NAVY_DEEP, color: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "mb-6 p-3", style: { background: "#fff", borderRadius: 3 } }, /* @__PURE__ */ React.createElement("img", { src: "data:image/png;base64," + LOGO_B64, alt: "Matrix Engineering", className: "mb-2", style: { height: 50, display: "block" } }), /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold font-display", style: { color: NAVY } }, "Matrix Engineering"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Production Control")), /* @__PURE__ */ React.createElement("div", { onClick: toggleFloorMode, className: "flex items-center gap-2 mb-4 px-1 cursor-pointer" }, /* @__PURE__ */ React.createElement(ToggleSwitch, { on: floorMode, onChange: toggleFloorMode, labelOn: "On", labelOff: "Off" }), /* @__PURE__ */ React.createElement("span", { className: "text-xs font-semibold", style: { color: "#C7CCE8" } }, "Floor Mode")), floorMode ? /* @__PURE__ */ React.createElement("nav", { className: "space-y-1.5 mb-6" }, ["dashboard", "extrusion", "glueline", "bonding"].map((k) => {
       const n = NAV.find((x) => x.key === k);
       const Icon = n.icon;
       const active = view === n.key;
