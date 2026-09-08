@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-08.28";
+  var APP_VERSION = "2026-09-08.32";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1038,7 +1038,10 @@
       caseNum: "case_num",
       packedOutside: "packed_outside",
       planBatch: "plan_batch",
-      planned: "planned"
+      planned: "planned",
+      /* Capacity belongs to the case: 20 boxes, 10 reels, 9 reels if 12mm.
+         Held only in memory until 8 Sep, so a reel case reloaded as a box case. */
+      maxSize: "max_size"
     } },
     /* A printed pick sheet, so paper picking has a front door. A sheet used to
        leave the building with no identity: nothing knew it was out, when it came
@@ -1624,7 +1627,7 @@
     };
   }
   function productKey(text) {
-    return String(text || "").toUpperCase().replace(/\((\d+(\.\d+)?)M\)/g, "").replace(/\bREELS?\b/g, "").replace(/[^A-Z0-9.]/g, "");
+    return String(text || "").toUpperCase().replace(/\((\d+(\.\d+)?)M\)/g, "").replace(/\bREELS?\b/g, "").replace(/MM\b/g, "").replace(/[^A-Z0-9.]/g, "");
   }
   function productParts(text) {
     const t = String(text || "");
@@ -3440,14 +3443,65 @@
     const plan = [];
     let n = startAt;
     for (const p of products) {
+      const cap = isReelSpec(p.spec) ? reelsPerCase(p.spec) : perCase;
       let left = p.qty;
       while (left > 0) {
-        const take = Math.min(perCase, left);
-        plan.push({ caseNum: n++, spec: p.spec, qty: take, band: p.band });
+        const take = Math.min(cap, left);
+        plan.push({ caseNum: n++, spec: p.spec, qty: take, band: p.band, maxSize: cap });
         left -= take;
       }
     }
     return plan;
+  }
+  function plannableLines(data, lineItems) {
+    const plannable = [], excluded = [];
+    for (const li of lineItems || []) {
+      const desc = String(li && li.description || "").trim();
+      if (!desc) continue;
+      if (isDelivery(desc)) {
+        excluded.push({ ...li, why: "delivery line" });
+        continue;
+      }
+      if (isSmallItem(desc)) {
+        excluded.push({ ...li, why: "tape \u2014 goes separately, operator handles it" });
+        continue;
+      }
+      const res = typeof resolveProduct === "function" ? resolveProduct(data, desc) : null;
+      if (!res || res.status !== "exact") {
+        excluded.push({ ...li, why: "not a product in the catalogue" });
+        continue;
+      }
+      if (!(Number(li.qty) > 0)) {
+        excluded.push({ ...li, why: "no quantity" });
+        continue;
+      }
+      plannable.push(li);
+    }
+    return { plannable, excluded };
+  }
+  function planRowsForNewOrder(orderId, lineItems, opts = {}) {
+    const { plannable } = plannableLines(opts.data || {}, lineItems);
+    const plan = buildPackingPlan(plannable, { startAt: (Number(opts.startingCaseNum) || 0) + 1 });
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    return plan.map((p) => ({
+      id: caseRowId(orderId, p.caseNum),
+      orderId,
+      caseNum: p.caseNum,
+      contents: {},
+      confirmed: false,
+      deleted: false,
+      planned: { [p.spec]: Number(p.qty) || 0 },
+      /* A reel case is physically a different case, and isReelCase() reads that
+         off maxSize. Without it a nine-reel case would be read as a box case by
+         the packing sheet, the case map and the materials count. */
+      maxSize: Number(p.maxSize) || CASE_MAX_SIZE_DEFAULT,
+      planBatch: "Original",
+      weight: "",
+      pallet: "",
+      packedOutside: false,
+      updatedAt: stamp,
+      updatedBy: opts.actor || "auto-plan on order creation"
+    }));
   }
   function planAmendment(items, existingPlan, opts = {}) {
     const perCase = Number(opts.perCase) || CASE_MAX_SIZE_DEFAULT;
@@ -5338,7 +5392,20 @@ Here's the order:`;
           qty: Number(li.qty) || 0,
           unitPrice: Number(li.unitPrice) || 0
         }));
-        return { ...prevData, orders: [...prevData.orders, newOrder], lineItems: [...prevData.lineItems, ...newLineItems] };
+        const planRows = planRowsForNewOrder(id, newLineItems, { actor: currentActor(), data: prevData });
+        const notPlanned = plannableLines(prevData, newLineItems).excluded;
+        return {
+          ...prevData,
+          orders: [...prevData.orders, newOrder],
+          lineItems: [...prevData.lineItems, ...newLineItems],
+          cases: [...prevData.cases || [], ...planRows],
+          ...appendLog(prevData, {
+            action: "packing_planned",
+            entity: "order",
+            entityId: id,
+            summary: `Case plan created automatically with ${id} \u2014 ${planRows.length} cases, ${planRows.reduce((t, r) => t + Object.values(r.planned).reduce((n, q) => n + q, 0), 0)} boxes` + (notPlanned.length ? `. NOT in the plan (${notPlanned.length}): ` + notPlanned.map((l) => `${l.description} \u2014 ${l.why}`).join("; ") : "")
+          })
+        };
       });
       setRaw("");
       setParsed(null);
@@ -6369,14 +6436,39 @@ To clear this: check the size and the pt, or add it as a new product before orde
         );
         return;
       }
-      setLineItems((prevLineItems) => [...prevLineItems, {
+      const newLi = {
         id: uid("li"),
         orderId,
         description,
         qty: Number(newLine.qty),
         unitPrice: Number(newLine.unitPrice || 0),
         ...extrasLabel ? { amendmentLabel: extrasLabel } : {}
-      }]);
+      };
+      setData((prevData) => {
+        const withLine = { ...prevData, lineItems: [...prevData.lineItems, newLi] };
+        const { plannable } = plannableLines(prevData, [newLi]);
+        if (!plannable.length) {
+          return { ...withLine, ...appendLog(prevData, {
+            action: "add",
+            entity: "lineItem",
+            entityId: newLi.id,
+            summary: `Added "${description}" to ${orderId} \u2014 NO case planned: ${plannableLines(prevData, [newLi]).excluded[0].why}`
+          }) };
+        }
+        const used = (prevData.cases || []).filter((c) => !c.deleted && c.orderId === orderId).map((c) => Number(c.caseNum));
+        const startAt = used.length ? Math.max(...used) : Number((prevData.orders.find((o) => o.id === orderId) || {}).startingCaseNum) || 0;
+        const rows = planRowsForNewOrder(orderId, plannable, { startingCaseNum: startAt, actor: currentActor(), data: prevData });
+        return {
+          ...withLine,
+          cases: [...prevData.cases || [], ...rows],
+          ...appendLog(prevData, {
+            action: "packing_planned",
+            entity: "order",
+            entityId: orderId,
+            summary: `Added "${description}" to ${orderId} \u2014 ${rows.length} case${rows.length === 1 ? "" : "s"} appended (${rows[0].caseNum}\u2013${rows[rows.length - 1].caseNum})`
+          })
+        };
+      });
       setNewLine({ range: newLine.range, size: "", pt: "", packType: newLine.packType, amount: "", qty: "", unitPrice: "" });
     };
     const removeLineItemDirect = (id) => {
@@ -10243,7 +10335,7 @@ This changes the order quantities. It is recorded in the change log and can be r
                 action: "packing_planned",
                 entity: "order",
                 entityId: planning.id,
-                summary: `Packing plan written for ${planning.id} \u2014 ${rows.length} cases, ${rows.reduce((t, r) => t + r.plannedQty, 0)} boxes`
+                summary: `Packing plan written for ${planning.id} \u2014 ${rows.length} cases, ${rows.reduce((t, r) => t + Object.values(r.planned || {}).reduce((n, q) => n + (Number(q) || 0), 0), 0)} boxes`
               })
             };
           });
@@ -10733,6 +10825,42 @@ This changes the order quantities. It is recorded in the change log and can be r
         fixHere: false,
         ref: code
       });
+    }
+    {
+      const productOf = (spec) => {
+        const res = typeof resolveProduct === "function" ? resolveProduct(data, spec) : null;
+        if (res && res.status === "exact" && res.product) return res.product.id;
+        return productKey(spec);
+      };
+      const runSpecByBox = /* @__PURE__ */ new Map();
+      for (const r of runs) {
+        const code = String(r.boxNumber || "").trim().toUpperCase();
+        if (code && r.productSize && !runSpecByBox.has(code)) runSpecByBox.set(code, r.productSize);
+      }
+      const drift = /* @__PURE__ */ new Map();
+      for (const m of data.movements || []) {
+        if (!m || m.deleted || !m.spec) continue;
+        const code = String(m.boxNumber || "").trim().toUpperCase();
+        const now = runSpecByBox.get(code);
+        if (!code || !now) continue;
+        if (productOf(m.spec) === productOf(now)) continue;
+        const key = `${code}|${m.spec}|${now}`;
+        if (!drift.has(key)) drift.set(key, { code, was: m.spec, now, count: 0 });
+        drift.get(key).count++;
+      }
+      for (const d of drift.values()) {
+        add({
+          id: `specdrift:${d.code}:${d.was}:${d.now}`,
+          kind: "Ledger spec differs",
+          severity: "medium",
+          what: `${d.code}: the ledger recorded ${d.was}`,
+          detail: `${d.count} movement${d.count === 1 ? "" : "s"} \xB7 the box is now ${d.now}`,
+          why: "The ledger keeps what was believed at the time, so this is history, not an error in itself. But if the correction was wrong, stock and pick sheets are counting these boxes as the wrong product.",
+          todo: "Check the box against its label. If the ledger was right, correct the run back; if the box was relabelled, nothing to do \u2014 this line is the record that it changed.",
+          fixHere: false,
+          ref: d.code
+        });
+      }
     }
     const missing = /* @__PURE__ */ new Map();
     for (const r of runs) {
