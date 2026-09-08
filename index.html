@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-08.15";
+  var APP_VERSION = "2026-09-08.16";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -3621,11 +3621,28 @@
       const inCase = Object.values(c.contents || {}).reduce((t, n) => t + (Number(n) || 0), 0);
       const map = c.planned && typeof c.planned === "object" && Object.keys(c.planned).length ? c.planned : String(c.plannedSpec || "").trim() ? { [String(c.plannedSpec).trim()]: Number(c.plannedQty) || 0 } : null;
       if (!map) continue;
-      let filled = inCase;
+      const byBox = Object.entries(c.contents || {});
+      const specOf = (box) => {
+        const run = (data.bondingRuns || []).find((r) => r && !r.deleted && r.boxNumber === box);
+        return run ? run.productSize : box;
+      };
+      const matched = {};
+      let unmatched = 0;
+      for (const [box, q] of byBox) {
+        const n = Number(q) || 0;
+        const bs = specOf(box);
+        const hit = Object.keys(map).find((spec) => looseSpecMatch(spec, bs));
+        if (hit) matched[hit] = (matched[hit] || 0) + n;
+        else unmatched += n;
+      }
       for (const [spec, q] of Object.entries(map)) {
         const qty = Math.max(0, Number(q) || 0);
-        const taken = Math.min(filled, qty);
-        filled -= taken;
+        let taken = Math.min(qty, matched[spec] || 0);
+        if (taken < qty && unmatched > 0) {
+          const extra = Math.min(qty - taken, unmatched);
+          taken += extra;
+          unmatched -= extra;
+        }
         out.push({
           caseNum: Number(c.caseNum),
           spec: String(spec).trim(),
@@ -8363,11 +8380,28 @@ The reason is recorded. Leave blank to keep the line.`, "");
       const heads = mySpecs.map((sp) => `<th class="sz" style="width:${sizeW.toFixed(3)}%">${szHead(sp)}</th>`).join("");
       const foots = mySpecs.map((sp) => `<td class="q b">${esc(chunk.reduce((t, c) => t + (c.cells.get(sp) || 0), 0))}</td>`).join("");
       const sheetTotal = chunk.reduce((t, c) => t + c.total, 0);
+      const awaitRows = chunk.filter((c) => c.awaited && c.awaited.size > 0).map((c) => {
+        const cells = mySpecs.map((sp) => {
+          const a = c.awaited.get(sp);
+          return `<td class="q${a ? " await-has" : ""}">${a ? esc(a) : ""}</td>`;
+        }).join("");
+        const n = [...c.awaited.values()].reduce((t, q) => t + q, 0);
+        return `<tr><td class="cn">${esc(c.caseNum)}</td>${cells}<td class="tot">${esc(n)}</td><td class="wr"></td></tr>`;
+      }).join("");
+      const awaitFoot = mySpecs.map((sp) => `<td class="q b">${esc(chunk.reduce((t, c) => t + (c.awaited && c.awaited.get(sp) || 0), 0))}</td>`).join("");
+      const awaitTotal = chunk.reduce((t, c) => t + (c.awaited ? [...c.awaited.values()].reduce((a, q) => a + q, 0) : 0), 0);
+      const awaitTable = awaitRows ? `<div class="awaitblock">
+      <div class="awaithead">Still to come &mdash; planned, not yet in the case</div>
+      <table class="cm await">
+        <thead><tr><th class="cn">Case</th>${heads}<th class="tot">To come</th><th class="wr"></th></tr></thead>
+        <tbody>${awaitRows}</tbody>
+        <tfoot><tr><td class="cn">This sheet</td>${awaitFoot}<td class="tot b">${esc(awaitTotal)}</td><td class="wr"></td></tr></tfoot>
+      </table></div>` : "";
       return `<div class="sheet${idx < chunks.length - 1 ? " brk" : ""}"><table class="cm">
       <thead><tr><th class="cn">Case</th>${heads}<th class="tot">Total</th><th class="wr">Weight</th></tr>${runHead}</thead>
       <tbody>${body}</tbody>
       <tfoot><tr><td class="cn">This sheet</td>${foots}<td class="tot b">${esc(sheetTotal)}</td><td class="wr"></td></tr></tfoot>
-    </table></div>`;
+    </table>${awaitTable}</div>`;
     }).join("");
     const table = sheets;
     const totalBoxes = rows.reduce((t, c) => t + c.total, 0);
@@ -8441,6 +8475,11 @@ The reason is recorded. Leave blank to keep the line.`, "");
                   vertical-align:middle; word-break:normal; }
     td.cn { font-weight:700; font-size:11pt; }
     td.q.has { font-weight:600; }
+    .awaitblock { margin-top:7mm; }
+    .awaithead { font-size:10pt; font-weight:700; letter-spacing:.04em; text-transform:uppercase; margin-bottom:2mm; }
+    table.cm.await td, table.cm.await th { color:#555; }
+    table.cm.await td.q.await-has { font-weight:600; color:#000; }
+    table.cm.await thead th { border-bottom:1px solid #666; }
     td.q .await { color:#888; font-weight:400; font-size:0.9em; }
     td.tot { color:#4A4A4A; font-size:8.5pt; }
     /* A BAND, not a column: the pallet is a property of a RUN of cases, and a
