@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-08.11";
+  var APP_VERSION = "2026-09-08.12";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -5317,6 +5317,16 @@ Here's the order:`;
   function recordMovements(prev, list) {
     return (list || []).reduce((acc, m) => recordMovement(acc, m), prev);
   }
+  function physicalOnShelf(movements, boxNumber) {
+    const rows = (movements || []).filter((m) => m && !m.deleted && m.boxNumber === boxNumber);
+    let n = 0;
+    for (const m of rows) {
+      const q = Number(m.qty) || 0;
+      if (m.kind === "made" || m.kind === "adjusted") n += q;
+      else if (m.kind === "placed" || m.kind === "scrapped" || m.kind === "damaged") n -= q;
+    }
+    return Math.max(0, n);
+  }
   function projectBox(movements, boxNumber) {
     const rows = (movements || []).filter((m) => !m.deleted && m.boxNumber === boxNumber);
     const made = rows.filter((m) => m.kind === "made" || m.kind === "adjusted").reduce((t, m) => t + Number(m.qty || 0), 0);
@@ -6768,7 +6778,7 @@ The reason is recorded. Leave blank to keep the line.`, "");
         const updatedRuns = prevData.bondingRuns.map((r) => {
           const damagedMatch = damagedItems.find((it) => it.id === r.id);
           if (damagedMatch) {
-            const trueAvailable2 = Number(r.toStock || 0);
+            const trueAvailable2 = Math.max(Number(r.toStock || 0), physicalOnShelf(LEDGER_MOVEMENTS, r.boxNumber));
             if (trueAvailable2 > 0) {
               newDamagedPicks.push({
                 id: uid("pick"),
@@ -6785,7 +6795,9 @@ The reason is recorded. Leave blank to keep the line.`, "");
           const match = toApply.find((it) => it.id === r.id);
           if (!match) return r;
           const requested = Number(match.confirmedQty);
-          const trueAvailable = Number(r.toStock || 0);
+          const alreadyPicked = (data.stockPicks || []).filter((p) => p.boxNumber === r.boxNumber).reduce((t, p) => t + (Number(p.qtyPicked) || 0), 0);
+          const fromLedger = Math.max(0, physicalOnShelf(LEDGER_MOVEMENTS, r.boxNumber) - alreadyPicked);
+          const trueAvailable = Math.max(Number(r.toStock || 0), fromLedger);
           const qty = Math.min(requested, trueAvailable);
           if (qty < requested) shortfalls.push({ boxNumber: r.boxNumber, requested, actual: qty });
           const correctedBatch = match.baselineBatchCode !== void 0 && match.baselineBatchCode !== (r.baselineBatchCode || "") ? match.baselineBatchCode : r.baselineBatchCode;
