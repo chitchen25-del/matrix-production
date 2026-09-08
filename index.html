@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-08.14";
+  var APP_VERSION = "2026-09-08.15";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -10540,6 +10540,25 @@ This changes the order quantities. It is recorded in the change log and can be r
         detail: `${p.made} made, ${p.allocated} allocated, ${p.scrapped} scrapped \xB7 ${tmpl.productSize || ""}`,
         why: "A box cannot hold less than nothing. Some movement against this box is wrong \u2014 usually a correction written twice, or a count that was filed as a movement and then acted on.",
         todo: "Open the box's history in Stock and find the movement that does not match what happened. Write an adjustment with the reason; never edit the ledger.",
+        fixHere: false,
+        ref: box
+      });
+    }
+    for (const box of new Set(runs.map((r) => r.boxNumber).filter(Boolean))) {
+      const p = projectBox(data.movements || [], box);
+      const exists = p.made - p.scrapped;
+      if (p.allocated <= exists) continue;
+      const orders2 = Object.entries(p.byOrder).filter(([, q]) => q > 0).sort((a, b) => b[1] - a[1]);
+      if (!orders2.length) continue;
+      const tmpl = runs.find((r) => r.boxNumber === box) || {};
+      add({
+        id: `overalloc:${box}:${p.allocated}:${exists}`,
+        kind: "Promised more than exists",
+        severity: "high",
+        what: `${box} is promised ${p.allocated} across ${orders2.length} order${orders2.length === 1 ? "" : "s"}, but only ${exists} exist`,
+        detail: orders2.map(([id, q]) => `${id}: ${q}`).join(" \xB7 ") + (tmpl.productSize ? ` \xB7 ${tmpl.productSize}` : ""),
+        why: `${p.allocated - exists} box${p.allocated - exists === 1 ? "" : "es"} ${orders2.length > 1 ? "are promised to two orders at once" : "are promised that were never made"}. One of these orders will come up short at packing, and the pick sheet will not say which.`,
+        todo: "Count the box. If the boxes are there, the make is understated \u2014 adjust it with the reason. If they are not, take the allocation off whichever order is not holding them.",
         fixHere: false,
         ref: box
       });
