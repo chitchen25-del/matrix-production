@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-08.34";
+  var APP_VERSION = "2026-09-09.5";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -3544,6 +3544,59 @@
     const highest = (existingPlan || []).reduce((m, p) => Math.max(m, Number(p.caseNum) || 0), 0);
     return buildPackingPlan(extra, { perCase, startAt: highest + 1 });
   }
+  function applyAmendmentReduction(planRows, spec, reduceBy, opts = {}) {
+    const perCase = Number(opts.perCase) || (isReelSpec(spec) ? reelsPerCase(spec) : CASE_MAX_SIZE_DEFAULT);
+    const rows = [...planRows || []].sort((a, b) => Number(a.caseNum) - Number(b.caseNum));
+    const qtyOf = (r) => Object.entries(casePlanned(r)).filter(([k]) => looseSpecMatch(k, spec)).reduce((t, [, v]) => t + (Number(v) || 0), 0);
+    const contentsOf = (r) => Object.values(r.contents || {}).reduce((t, n) => t + (Number(n) || 0), 0);
+    let left = Math.max(0, Number(reduceBy) || 0);
+    const deleted = [], blocked = [], appended = [];
+    const survivors = [...rows];
+    for (let i = survivors.length - 1; i >= 0 && left > 0; i--) {
+      const r = survivors[i];
+      const promised = qtyOf(r);
+      if (promised <= 0) continue;
+      if (contentsOf(r) > 0) {
+        blocked.push({ caseNum: Number(r.caseNum), inCase: contentsOf(r), promised });
+        continue;
+      }
+      const take = Math.min(promised, left);
+      const remainder = promised - take;
+      deleted.push(Number(r.caseNum));
+      survivors.splice(i, 1);
+      left -= take;
+      if (remainder > 0) appended.push({ spec, qty: remainder });
+    }
+    const startAt = Math.max(1, Number(opts.startAt) || 1);
+    const moved = [];
+    const renumbered = survivors.map((r, idx) => {
+      const to = startAt + idx;
+      if (Number(r.caseNum) !== to) moved.push({ from: Number(r.caseNum), to });
+      return { ...r, caseNum: to };
+    });
+    let next = startAt + renumbered.length;
+    const newCases = [];
+    for (const a of appended) {
+      let q = a.qty;
+      while (q > 0) {
+        const take = Math.min(perCase, q);
+        newCases.push({ caseNum: next++, spec: a.spec, qty: take, appended: true, maxSize: perCase });
+        q -= take;
+      }
+    }
+    const lowestChanged = moved.length ? Math.min(...moved.map((m) => m.to)) : newCases.length ? newCases[0].caseNum : null;
+    return {
+      plan: renumbered,
+      newCases,
+      deleted: deleted.sort((a, b) => a - b),
+      moved,
+      blocked,
+      shortBy: left,
+      // could not be taken: everything left was blocked
+      reprintFrom: lowestChanged,
+      reprintTo: lowestChanged == null ? null : newCases.length ? newCases[newCases.length - 1].caseNum : renumbered.length ? renumbered[renumbered.length - 1].caseNum : null
+    };
+  }
   function PlanAmendmentRecord({ order, lineItems, cases, onAppend }) {
     const planned = (cases || []).filter((c) => !c.deleted && c.orderId === order.id && hasCasePlan(c));
     const items = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description));
@@ -3583,190 +3636,6 @@
       /* @__PURE__ */ React.createElement("span", { className: "text-sm", style: { fontWeight: 600, color: INK } }, r.label),
       /* @__PURE__ */ React.createElement("span", { className: "text-xs font-mono", style: { color: INK_MUTED, textAlign: "right" } }, r.nums.length, " case", r.nums.length === 1 ? "" : "s", " \xB7 ", r.boxes, " boxes", /* @__PURE__ */ React.createElement("br", null), "cases ", asRanges(r.nums))
     )), shortfall > 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-3 pt-3", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: AMBER, fontWeight: 600 } }, "Order has grown by ", shortfall, " box", shortfall === 1 ? "" : "es", " since it was planned"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1 mb-2", style: { color: INK_MUTED } }, "Nothing already planned or packed changes \u2014 the extra goes into new cases on the end, which is what Steve builds and labels next."), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: onAppend }, "Add ", Math.ceil(shortfall / CASE_MAX_SIZE_DEFAULT), " case", Math.ceil(shortfall / CASE_MAX_SIZE_DEFAULT) === 1 ? "" : "s", " to the end")), shortfall < 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-3 pt-3 text-xs", style: { borderTop: `1px solid ${BORDER}`, color: RED } }, "The plan promises ", -shortfall, " more box", -shortfall === 1 ? "" : "es", " than the order asks for. Something was reduced after planning \u2014 worth a look before this ships."));
-  }
-  function PackingPlanner({ order, lineItems, existingCases, bondingRuns = [], onSave, onClose }) {
-    const plan = React.useMemo(() => {
-      const items = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description));
-      const alreadyPlanned = (existingCases || []).filter((c) => hasCasePlan(c));
-      if (alreadyPlanned.length) {
-        const rows = (existingCases || []).flatMap((c) => {
-          const inCase = Object.values(c.contents || {}).reduce((t, n) => t + (Number(n) || 0), 0);
-          const entries = Object.entries(casePlanned(c));
-          if (!entries.length) return [{ caseNum: Number(c.caseNum), spec: "(packed)", qty: inCase, band: "locked", locked: true }];
-          return entries.map(([spec, qty]) => ({
-            caseNum: Number(c.caseNum),
-            spec,
-            qty: Number(qty) || 0,
-            band: planBandFor(spec),
-            locked: !!inCase
-          }));
-        });
-        return rows.sort((a, b) => a.caseNum - b.caseNum);
-      }
-      const locked = (existingCases || []).filter((c) => Object.keys(c.contents || {}).length);
-      if (!locked.length) return buildPackingPlan(items);
-      const spent = /* @__PURE__ */ new Map();
-      for (const c of locked) {
-        for (const [box, n] of Object.entries(c.contents || {})) {
-          const run = (bondingRuns || []).find((r) => r && !r.deleted && r.boxNumber === box);
-          const spec = run ? run.productSize : box;
-          spent.set(spec, (spent.get(spec) || 0) + (Number(n) || 0));
-        }
-      }
-      const rest = items.map((li) => {
-        let qty = Number(li.qty) || 0;
-        for (const [spec, n] of spent) {
-          if (n <= 0 || !looseSpecMatch(spec, li.description)) continue;
-          const take = Math.min(qty, n);
-          qty -= take;
-          spent.set(spec, n - take);
-        }
-        return { ...li, qty };
-      }).filter((li) => (Number(li.qty) || 0) > 0);
-      const taken = new Set(locked.map((c) => Number(c.caseNum)));
-      const free = [];
-      for (let n = 1; free.length < 400; n++) if (!taken.has(n)) free.push(n);
-      const planned = buildPackingPlan(rest);
-      return planned.map((p, i) => ({ ...p, caseNum: free[i] })).concat(locked.map((c) => ({ caseNum: Number(c.caseNum), spec: "(packed)", qty: Object.values(c.contents).reduce((t, n) => t + Number(n), 0), band: "locked", locked: true }))).sort((a, b) => a.caseNum - b.caseNum);
-    }, [order.id, lineItems, existingCases, bondingRuns]);
-    const [cases, setCases] = React.useState(plan);
-    const [shown, setShown] = React.useState(0);
-    const [picked, setPicked] = React.useState(null);
-    const played = React.useRef(false);
-    React.useEffect(() => {
-      if (played.current) return;
-      played.current = true;
-      const still = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      const n0 = cases.length;
-      if (still || !n0) {
-        setShown(n0);
-        return;
-      }
-      let n = 0;
-      const t = setInterval(() => {
-        n += 1;
-        setShown(n);
-        if (n >= n0) clearInterval(t);
-      }, 45);
-      return () => clearInterval(t);
-    }, []);
-    const bandColour = (b) => b === "12mm" ? NAVY : b === "10mm" ? BLUE : b === "7mm" ? OLIVE : LIGHTGREY;
-    const shortSpec = (s) => String(s || "").replace(/^(PX Plus|Ultra SR|Ken|Smart Formes)\s*/i, "").replace(/\s*\(.*\)\s*$/, "");
-    const swap = (a, b) => {
-      if (a === b) return;
-      setCases((cs) => {
-        const ia = cs.findIndex((c) => c.caseNum === a), ib = cs.findIndex((c) => c.caseNum === b);
-        if (ia < 0 || ib < 0 || cs[ia].locked || cs[ib].locked) return cs;
-        const next = [...cs];
-        const { spec: sa, qty: qa, band: ba } = next[ia];
-        next[ia] = { ...next[ia], spec: next[ib].spec, qty: next[ib].qty, band: next[ib].band };
-        next[ib] = { ...next[ib], spec: sa, qty: qa, band: ba };
-        return next;
-      });
-    };
-    const onDown = (c) => () => {
-      if (c.locked) return;
-      if (picked == null) {
-        setPicked(c.caseNum);
-        return;
-      }
-      if (picked === c.caseNum) {
-        setPicked(null);
-        return;
-      }
-      swap(picked, c.caseNum);
-      setPicked(null);
-    };
-    const total = cases.reduce((t, c) => t + c.qty, 0);
-    const ordered = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description)).reduce((t, li) => t + (Number(li.qty) || 0), 0);
-    return /* @__PURE__ */ React.createElement("div", { style: {
-      position: "fixed",
-      inset: 0,
-      background: "rgba(16,20,38,0.72)",
-      zIndex: 900,
-      display: "flex",
-      flexDirection: "column"
-    } }, /* @__PURE__ */ React.createElement("div", { style: {
-      background: PANEL_BG,
-      padding: "14px 18px",
-      borderBottom: `1px solid ${BORDER}`,
-      display: "flex",
-      alignItems: "center",
-      gap: 14,
-      flexWrap: "wrap"
-    } }, /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 260px", minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, letterSpacing: ".08em", textTransform: "uppercase", color: INK_MUTED } }, "Packing plan"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 17, fontWeight: 600, color: INK, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, order.id, " \xB7 ", order.customer)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: total === ordered ? GREEN : RED, fontWeight: 600 } }, cases.length, " cases \xB7 ", total, " of ", ordered, " boxes"), /* @__PURE__ */ React.createElement("button", { onClick: onClose, style: {
-      font: "inherit",
-      fontSize: 14,
-      padding: "8px 14px",
-      borderRadius: 6,
-      border: `1px solid ${BORDER}`,
-      background: "#fff",
-      color: INK,
-      cursor: "pointer"
-    } }, "Cancel"), /* @__PURE__ */ React.createElement(
-      "button",
-      {
-        onClick: () => onSave(cases.filter((c) => !c.locked)),
-        disabled: total !== ordered,
-        style: {
-          font: "inherit",
-          fontSize: 14,
-          fontWeight: 600,
-          padding: "8px 16px",
-          borderRadius: 6,
-          border: 0,
-          background: total === ordered ? NAVY : LIGHTGREY,
-          color: "#fff",
-          cursor: total === ordered ? "pointer" : "not-allowed"
-        }
-      },
-      "Save plan"
-    )), /* @__PURE__ */ React.createElement("div", { style: {
-      padding: "10px 18px",
-      background: "#F4F5F8",
-      borderBottom: `1px solid ${BORDER}`,
-      fontSize: 12.5,
-      color: INK_MUTED,
-      display: "flex",
-      gap: 16,
-      flexWrap: "wrap",
-      alignItems: "center"
-    } }, ["12mm", "10mm", "7mm"].map((b) => /* @__PURE__ */ React.createElement("span", { key: b, style: { display: "inline-flex", alignItems: "center", gap: 6 } }, /* @__PURE__ */ React.createElement("span", { style: { width: 11, height: 11, borderRadius: 3, background: bandColour(b), display: "inline-block" } }), b)), /* @__PURE__ */ React.createElement("span", { style: { marginLeft: "auto", color: picked != null ? ORANGE : INK_MUTED, fontWeight: picked != null ? 600 : 400 } }, picked != null ? `Case ${picked} picked up \u2014 tap another to swap, or tap it again to put it back` : "Tap a case, then tap another to swap what each is promised. Cases with boxes in are locked.")), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, overflow: "auto", padding: 18, background: "#EEF0F5" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fill, minmax(132px, 1fr))" } }, cases.map((c, i) => {
-      const on = i < shown;
-      const isPicked = picked === c.caseNum;
-      const isTarget = picked != null && !isPicked && !c.locked;
-      return /* @__PURE__ */ React.createElement(
-        "div",
-        {
-          key: c.caseNum,
-          "data-case": c.caseNum,
-          onPointerDown: onDown(c),
-          style: {
-            background: PANEL_BG,
-            borderRadius: 8,
-            padding: "10px 11px",
-            userSelect: "none",
-            WebkitTapHighlightColor: "transparent",
-            border: `1.5px solid ${isPicked ? NAVY : isTarget ? ORANGE : BORDER}`,
-            borderLeft: `5px solid ${bandColour(c.band)}`,
-            cursor: c.locked ? "default" : "grab",
-            opacity: on ? c.locked ? 0.62 : 1 : 0,
-            transform: on ? isPicked ? "scale(1.05)" : "translateY(0)" : "translateY(10px) scale(.96)",
-            transition: "opacity .22s ease, transform .22s cubic-bezier(.2,.8,.3,1), border-color .12s",
-            boxShadow: isPicked ? "0 6px 18px rgba(42,55,123,.28)" : "0 1px 2px rgba(20,25,40,.06)"
-          }
-        },
-        /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15, fontWeight: 700, color: INK } }, c.caseNum), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, fontWeight: 600, color: c.locked ? LIGHTGREY : INK_MUTED } }, c.qty)),
-        /* @__PURE__ */ React.createElement("div", { style: {
-          marginTop: 4,
-          fontSize: 11.5,
-          lineHeight: 1.28,
-          color: c.locked ? LIGHTGREY : INK_MUTED,
-          minHeight: 30,
-          fontStyle: c.locked ? "italic" : "normal"
-        } }, c.locked ? "packed \u2014 locked" : shortSpec(c.spec))
-      );
-    }))));
   }
   function plannedCasesFor(data, orderId) {
     const out = [];
@@ -6606,7 +6475,70 @@ The reason is recorded. Leave blank to keep the line.`, "");
       setLineEditBaseline({});
       setLineChangeReasons({});
     };
-    const updateLineItemField = (id, field, value) => setLineItems((prevLineItems) => prevLineItems.map((x) => x.id === id ? { ...x, [field]: value } : x));
+    const updateLineItemField = (id, field, value) => {
+      if (field !== "qty") {
+        setLineItems((prevLineItems) => prevLineItems.map((x) => x.id === id ? { ...x, [field]: value } : x));
+        return;
+      }
+      const li = (lineItems || []).find((x) => x.id === id);
+      const was = Number(li && li.qty) || 0;
+      const now = Number(value) || 0;
+      const drop = was - now;
+      if (!li || drop <= 0) {
+        setLineItems((prevLineItems) => prevLineItems.map((x) => x.id === id ? { ...x, [field]: value } : x));
+        return;
+      }
+      setData((prevData) => {
+        const rows = (prevData.cases || []).filter((c) => !c.deleted && c.orderId === li.orderId);
+        const order = (prevData.orders || []).find((o) => o.id === li.orderId) || {};
+        const startAt = (Number(order.startingCaseNum) || 0) + 1;
+        const res = applyAmendmentReduction(rows, li.description, drop, { startAt });
+        const say = [
+          `${li.description}: ${was} \u2192 ${now}, so ${drop} come off the plan.`,
+          res.deleted.length ? `Cases deleted: ${caseRunsLabel(res.deleted)}.` : "No case is emptied by this.",
+          res.newCases.length ? `Remainder re-promised at the end: case${res.newCases.length === 1 ? "" : "s"} ${caseRunsLabel(res.newCases.map((n) => n.caseNum))}.` : "",
+          res.moved.length ? `${res.moved.length} case${res.moved.length === 1 ? "" : "s"} renumbered \u2014 REPRINT LABELS ${res.reprintFrom} to ${res.reprintTo}.` : "",
+          res.blocked.length ? `NOT touched, boxes are physically in them: case${res.blocked.length === 1 ? "" : "s"} ${caseRunsLabel(res.blocked.map((b) => b.caseNum))}. Empty them first.` : "",
+          res.shortBy ? `${res.shortBy} could not be taken off the plan for that reason.` : ""
+        ].filter(Boolean).join("\n\n");
+        if (typeof window !== "undefined" && !window.confirm(say + "\n\nApply this?")) return prevData;
+        const keptIds = new Set(res.plan.map((r) => r.id));
+        const stamp = (/* @__PURE__ */ new Date()).toISOString();
+        const cases = (prevData.cases || []).map((c) => {
+          if (c.deleted || c.orderId !== li.orderId) return c;
+          if (!keptIds.has(c.id)) return { ...c, deleted: true, deletedAt: stamp, updatedAt: stamp, updatedBy: currentActor() };
+          const to = res.plan.find((r) => r.id === c.id);
+          return to && Number(to.caseNum) !== Number(c.caseNum) ? { ...c, caseNum: to.caseNum, updatedAt: stamp, updatedBy: currentActor() } : c;
+        });
+        const added = res.newCases.map((n) => ({
+          id: caseRowId(li.orderId, n.caseNum),
+          orderId: li.orderId,
+          caseNum: n.caseNum,
+          contents: {},
+          confirmed: false,
+          deleted: false,
+          planned: { [n.spec]: n.qty },
+          maxSize: isReelSpec(n.spec) ? reelsPerCase(n.spec) : CASE_MAX_SIZE_DEFAULT,
+          planBatch: `Amendment ${(/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`,
+          weight: "",
+          pallet: "",
+          packedOutside: false,
+          updatedAt: stamp,
+          updatedBy: currentActor()
+        }));
+        return {
+          ...prevData,
+          lineItems: prevData.lineItems.map((x) => x.id === id ? { ...x, qty: now } : x),
+          cases: [...cases, ...added],
+          ...appendLog(prevData, {
+            action: "amendment_reduction",
+            entity: "order",
+            entityId: li.orderId,
+            summary: `${li.description} reduced ${was} \u2192 ${now}. ` + (res.deleted.length ? `Cases ${caseRunsLabel(res.deleted)} deleted. ` : "") + (res.moved.length ? `Renumbered ${res.moved.length}; reprint labels ${res.reprintFrom}-${res.reprintTo}. ` : "") + (added.length ? `Remainder appended as case${added.length === 1 ? "" : "s"} ${caseRunsLabel(added.map((a) => a.caseNum))}. ` : "") + (res.blocked.length ? `Cases ${caseRunsLabel(res.blocked.map((b) => b.caseNum))} left alone \u2014 boxes in them.` : "")
+          })
+        };
+      });
+    };
     const boxedStock = boxedStockAvailable(data.bondingRuns, data.stockPicks || []);
     const boxTypeMismatch = (candidate, order) => {
       if (!order.boxType) return null;
@@ -10226,7 +10158,6 @@ This changes the order quantities. It is recorded in the change log and can be r
     const [toolsOpen, setToolsOpen] = useState(false);
     const [otherOpen, setOtherOpen] = useState(false);
     const [notesOpen, setNotesOpen] = useState(false);
-    const [planning, setPlanning] = useState(null);
     const caseRecords = data.cases || [];
     const caseWeights = new Proxy({}, { get: (_t, k) => typeof k === "symbol" ? void 0 : caseWeightOf(caseRecords, order, k), has: () => true, ownKeys: () => Object.keys(order?.caseWeights || {}), getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true }) });
     const smallCaseSizes = order?.smallCaseSizes || {};
@@ -10412,48 +10343,7 @@ This changes the order quantities. It is recorded in the change log and can be r
       },
       /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: INK } }, "Paper & adjustments", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontWeight: 400 } }, " \u2014 print the list or the case map, packing override", manualCount || Object.keys(caseOverrides).length ? `, ${[manualCount ? `${manualCount} cases packed before the app` : null, Object.keys(caseOverrides).length ? `${Object.keys(caseOverrides).length} box${Object.keys(caseOverrides).length === 1 ? "" : "es"} moved by hand` : null].filter(Boolean).join(", ")}` : "")),
       /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 12 } }, toolsOpen ? "hide" : "show")
-    ), toolsOpen && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-4 flex-wrap" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setPlanning(order) }, "\u{1F5C2} Plan packing"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => printPackingList(order, caseRows, setData) }, "\u{1F5A8} Print packing list"), /* @__PURE__ */ React.createElement(CaseMapPrintChooser, { order, caseRows, setData }), planning && /* @__PURE__ */ React.createElement(
-      PackingPlanner,
-      {
-        order: planning,
-        lineItems: data.lineItems,
-        bondingRuns: data.bondingRuns,
-        existingCases: (data.cases || []).filter((c) => !c.deleted && c.orderId === planning.id),
-        onClose: () => setPlanning(null),
-        onSave: (plan) => {
-          setData((prev) => {
-            const others = (prev.cases || []).filter((c) => !(c.orderId === planning.id && !c.deleted && !Object.keys(c.contents || {}).length));
-            const rows = plan.map((p) => {
-              const was = (prev.cases || []).find((c) => c.orderId === planning.id && !c.deleted && Number(c.caseNum) === p.caseNum);
-              return {
-                id: was ? was.id : caseRowId(planning.id, p.caseNum),
-                orderId: planning.id,
-                caseNum: p.caseNum,
-                contents: was && was.contents || {},
-                confirmed: !!(was && was.confirmed),
-                deleted: false,
-                planned: { [p.spec]: Number(p.qty) || 0 },
-                planBatch: was && was.planBatch || "Original",
-                updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-                updatedBy: currentActor()
-              };
-            });
-            const merged = [...others.filter((c) => !rows.some((r) => r.id === c.id)), ...rows];
-            return {
-              ...prev,
-              cases: merged,
-              ...appendLog(prev, {
-                action: "packing_planned",
-                entity: "order",
-                entityId: planning.id,
-                summary: `Packing plan written for ${planning.id} \u2014 ${rows.length} cases, ${rows.reduce((t, r) => t + Object.values(r.planned || {}).reduce((n, q) => n + (Number(q) || 0), 0), 0)} boxes`
-              })
-            };
-          });
-          setPlanning(null);
-        }
-      }
-    ), !overrideOn ? /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => requireAdmin(() => setOverrideOn(true)) }, "\u{1F512} Packing override") : /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setOverrideOn(false) }, "Turn override off")), /* @__PURE__ */ React.createElement(CaseMapPrint, { order, cases: caseRows }), overrideOn ? /* @__PURE__ */ React.createElement("div", { className: "mt-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Corrections \u2014 orders packed before the app"), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-4 flex-wrap text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("label", { htmlFor: "starting-case-num" }, "Already picked and packed outside the app up to case #"), /* @__PURE__ */ React.createElement(
+    ), toolsOpen && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-4 flex-wrap" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => printPackingList(order, caseRows, setData) }, "\u{1F5A8} Print packing list"), /* @__PURE__ */ React.createElement(CaseMapPrintChooser, { order, caseRows, setData }), !overrideOn ? /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => requireAdmin(() => setOverrideOn(true)) }, "\u{1F512} Packing override") : /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setOverrideOn(false) }, "Turn override off")), /* @__PURE__ */ React.createElement(CaseMapPrint, { order, cases: caseRows }), overrideOn ? /* @__PURE__ */ React.createElement("div", { className: "mt-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Corrections \u2014 orders packed before the app"), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-4 flex-wrap text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("label", { htmlFor: "starting-case-num" }, "Already picked and packed outside the app up to case #"), /* @__PURE__ */ React.createElement(
       "input",
       {
         id: "starting-case-num",
@@ -14525,7 +14415,12 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       if (res.status === "candidates") {
         return "Can't accept " + spec + " \u2014 it isn't exactly a product we make. To clear it: pick one of " + cands.slice(0, 3).map((p) => p.displayName).join("  /  ") + (cands.length > 3 ? "  /  \u2026" : "") + ".";
       }
-      return "Can't accept " + spec + " \u2014 no such product in the catalogue. To clear it: check the size and the pt, or add the product before making it.";
+      const onGlueLine = [
+        ...(data.glueLineBatches || []).filter((b) => b && !b.deleted).map((b) => b.productSize),
+        ...(data.glueRuns || []).filter((g) => g && !g.deleted).map((g) => g.productSize)
+      ].some((ps) => ps && looseSpecMatch(ps, spec));
+      if (onGlueLine) return "";
+      return "Can't accept " + spec + " \u2014 nothing by that name has been through the glue line. To clear it: check the size and the pt against the reel you are bonding, or ask Chris to set it up on the glue line first.";
     };
     const gateBatchTotal = (f) => {
       const code = String(f.boxNumber || "").trim().toUpperCase();
@@ -15659,13 +15554,19 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     const pvcColour = pvcColourForSpec(spec);
     const suggestedPvc = pvcCodeForSpec(spec, materials);
     const suggestedGlue = lastGlueBatchUsed(glueData || {}) || materialBatchCode(materials, "glue");
+    const pvcCodesInRegister = React.useMemo(() => new Set(
+      (materials || []).filter((m) => m && m.category === "pvc" && m.batchCode).map((m) => String(m.batchCode).trim())
+    ), [materials]);
     useEffect(() => {
       if (hideMaterialsSection) return;
       const patch = {};
       if (!String(values.glueBatch || "").trim() && suggestedGlue) patch.glueBatch = suggestedGlue;
-      if (values.direct === true && !String(values.extPvcCode || "").trim() && suggestedPvc) patch.extPvcCode = suggestedPvc;
+      const cur = String(values.extPvcCode || "").trim();
+      if (suggestedPvc && cur !== suggestedPvc && (!cur || pvcCodesInRegister.has(cur))) {
+        patch.extPvcCode = suggestedPvc;
+      }
       if (Object.keys(patch).length) setValues({ ...values, ...patch });
-    }, [suggestedGlue, suggestedPvc, values.direct, values.size, values.range, values.glueBatch, values.extPvcCode, hideMaterialsSection]);
+    }, [suggestedGlue, suggestedPvc, values.direct, values.size, values.range, values.glueBatch, values.extPvcCode, hideMaterialsSection, pvcCodesInRegister]);
     const trimmedCode = (values.batchNumber || "").trim().toUpperCase();
     const prefixNote = values.prefixCorrected ? `Prefix set to ${values.direct === true ? "PBL \u2014 Direct" : "PPL \u2014 Indirect, from a reel"} to match the toggle above.` : null;
     return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(FieldGroup, { label: "BATCH" }, /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Batch number"), /* @__PURE__ */ React.createElement(
@@ -16184,6 +16085,11 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       mylarVariantId: ""
     };
     const [form, setForm, draftRestored, discardDraft] = useDraftForm("glueLine", blank);
+    React.useEffect(() => {
+      if (String(form.glueBatch || "").trim()) return;
+      const last = lastGlueBatchUsed(data || {});
+      if (last) setForm((f) => String(f.glueBatch || "").trim() ? f : { ...f, glueBatch: last });
+    }, [form.glueBatch, data.glueRuns, data.glueLineBatches]);
     const [editingId, setEditingId, editForm, setEditForm, editRestored, discardEdit] = useDraftEdit("edit-glueLine");
     const [addOpen, setAddOpen] = useState(false);
     const buildSpec = (f) => f.range === "Custom" ? f.size.trim() : `${f.range} ${f.size.trim()}`;
@@ -16487,7 +16393,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         extHeight: f.extHeight,
         extWidth: f.extWidth,
         extPvcCode: f.extPvcCode
-      } : { ...blank, range: f.range });
+      } : { ...blank, range: f.range, glueBatch: f.glueBatch });
       printLabel(newRow);
       if (justAdded?.timerId) clearTimeout(justAdded.timerId);
       const timerId = setTimeout(() => setJustAdded(null), 8e3);
