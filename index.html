@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-08.5";
+  var APP_VERSION = "2026-09-08.6";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -8205,13 +8205,18 @@ The reason is recorded. Leave blank to keep the line.`, "");
     const rows = [...caseRows || []].filter((c) => !c.packedOutside).sort((a, b) => a.caseNum - b.caseNum).map((c) => {
       const cells = /* @__PURE__ */ new Map();
       for (const l of caseContentLines(c)) cells.set(l.label, (cells.get(l.label) || 0) + l.qty);
+      const awaited = /* @__PURE__ */ new Map();
+      const pSpec = String(c.plannedSpec || "").trim();
+      const toCome = pSpec ? Math.max(0, (Number(c.plannedQty) || 0) - [...cells.values()].reduce((t, q) => t + q, 0)) : 0;
+      if (toCome > 0) awaited.set(shortCaseSpec(pSpec) || pSpec, toCome);
       return {
         caseNum: c.caseNum,
         cells,
+        awaited,
         total: [...cells.values()].reduce((t, q) => t + q, 0),
         reel: isReelCase(c.maxSize)
       };
-    }).filter((c) => c.cells.size > 0);
+    }).filter((c) => c.cells.size > 0 || c.awaited.size > 0);
     const PALLET_CAP = { box: 32, reel: 14 };
     let pal = 0, onPallet = 0, palKind = null;
     for (const c of rows) {
@@ -8237,6 +8242,10 @@ The reason is recorded. Leave blank to keep the line.`, "");
       seen.add(k);
       specs.push(k);
     }
+    for (const c of rows) for (const k of c.awaited.keys()) if (!seen.has(k)) {
+      seen.add(k);
+      specs.push(k);
+    }
     const szHead = (sp) => String(sp).split(/\s+/).filter(Boolean).map((t) => `<span class="tk">${esc(t)}</span>`).join(" ");
     const CASES_PER_SHEET = 15;
     const chunks = [];
@@ -8257,6 +8266,9 @@ The reason is recorded. Leave blank to keep the line.`, "");
         }
         const cells = mySpecs.map((sp) => {
           const q = c.cells.get(sp);
+          const a = c.awaited.get(sp);
+          if (q && a) return `<td class="q has">${esc(q)}<span class="await"> (${esc(a)})</span></td>`;
+          if (a) return `<td class="q"><span class="await">(${esc(a)})</span></td>`;
           return `<td class="q${q ? " has" : ""}">${q ? esc(q) : ""}</td>`;
         }).join("");
         return band + `<tr><td class="cn">${esc(c.caseNum)}</td>${cells}<td class="tot">${esc(c.total)}</td><td class="wr"></td></tr>`;
@@ -8342,6 +8354,7 @@ The reason is recorded. Leave blank to keep the line.`, "");
                   vertical-align:middle; word-break:normal; }
     td.cn { font-weight:700; font-size:11pt; }
     td.q.has { font-weight:600; }
+    td.q .await { color:#888; font-weight:400; font-size:0.9em; }
     td.tot { color:#4A4A4A; font-size:8.5pt; }
     /* A BAND, not a column: the pallet is a property of a RUN of cases, and a
        repeated number down a column reads as data about each case rather than
