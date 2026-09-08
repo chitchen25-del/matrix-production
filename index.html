@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-09.18";
+  var APP_VERSION = "2026-09-09.19";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -3327,6 +3327,64 @@
     }
     return true;
   }
+  function orderShortfall(data, orderId) {
+    const rows = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === orderId);
+    const specs = /* @__PURE__ */ new Map();
+    for (const c of rows) {
+      for (const [spec, qty] of Object.entries(casePlanned(c))) {
+        specs.set(spec, (specs.get(spec) || 0) + (Number(qty) || 0));
+      }
+    }
+    const out = [];
+    for (const [spec, planned] of specs) {
+      const ranked = ordersNeedingSpec(data, spec);
+      const mine = ranked.needing.find((n) => n.orderId === orderId);
+      const needed = mine ? mine.needs : 0;
+      if (needed <= 0) continue;
+      const shelf = boxedStockAvailable(data.bondingRuns, data.stockPicks || []).filter((b) => looseSpecMatch(b.productSize, spec)).reduce((t, b) => t + (Number(b.available) || 0), 0);
+      out.push({
+        spec,
+        planned,
+        needed,
+        shelf,
+        toMake: Math.max(0, needed - shelf),
+        room: mine ? mine.room : []
+      });
+    }
+    return out.sort((a, b) => b.toMake - a.toMake || b.needed - a.needed || a.spec.localeCompare(b.spec));
+  }
+  function allocationRefusal(data, spec, allocations, excludeSourceId) {
+    const rows = (allocations || []).filter((a) => a && a.orderId && Number(a.qty) > 0);
+    if (!rows.length || !String(spec || "").trim()) return "";
+    let ranked;
+    try {
+      ranked = ordersNeedingSpec(data, spec, [], { excludeSourceId: excludeSourceId || null });
+    } catch (e) {
+      return "";
+    }
+    const nameOf = (id) => {
+      const o = (data.orders || []).find((x) => x.id === id);
+      return id + (o && o.customer ? ` (${o.customer})` : "");
+    };
+    for (const a of rows) {
+      const need = ranked.needing.find((n) => n.orderId === a.orderId);
+      const other = ranked.others.find((n) => n.orderId === a.orderId);
+      if (!need) {
+        if (other && other.noPlanFor) {
+          return `Can't allocate ${spec} to ${nameOf(a.orderId)} \u2014 that order's plan does not promise this product at all. To clear it: send these to stock, or add the line to the order first so it gets its cases.`;
+        }
+        return `Can't allocate ${spec} to ${nameOf(a.orderId)} \u2014 that order is already promised everything it needs of this product. To clear it: send these to stock.`;
+      }
+      if (!(need.room || []).length) {
+        return `Can't allocate ${spec} to ${nameOf(a.orderId)} \u2014 every case promised this product is already full or spoken for, so there is no case for these to go in. To clear it: send them to stock, or place what is already allocated first.`;
+      }
+      if (Number(a.qty) > need.needs) {
+        const where = (need.room || []).slice(0, 3).map((r) => `case ${r.caseNum} (${r.spaces})`).join(", ");
+        return `Can't allocate ${a.qty} to ${a.orderId} \u2014 it only needs ${need.needs} more of ${spec}${where ? ", into " + where : ""}. To clear it: drop this to ${need.needs} and let the other ${Number(a.qty) - need.needs} go to stock.`;
+      }
+    }
+    return "";
+  }
   function ordersNeedingSpec(data, spec, orderIdsToExclude = [], opts = {}) {
     const excludeSourceId = opts.excludeSourceId || null;
     const wanted = String(spec || "").trim();
@@ -4081,6 +4139,10 @@
     let working = { ...data, bondingRuns: nextRuns };
     const spec = row.productSize;
     const box = row.boxNumber;
+    if (toOrder && !reCase) {
+      const refusal = allocationRefusal(data, spec, [{ orderId: toOrder, qty }], row.id);
+      if (refusal) return { error: refusal };
+    }
     const facts = [];
     if (!reCase) {
       if (fromOrder) facts.push({ kind: "unallocated", boxNumber: box, spec, qty, orderId: fromOrder, source: "move", sourceId: row.id });
@@ -8589,7 +8651,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
       outstanding: p.outstanding
     }));
   }
-  function printCaseIconSheet(order, caseRows, setData) {
+  function printCaseIconSheet(order, caseRows, setData, data = null) {
     const esc = (v) => String(v ?? "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
     const cases = [...caseRows || []].filter((c) => !c.packedOutside).sort((a, b) => a.caseNum - b.caseNum).map((c) => ({ caseNum: c.caseNum, lines: caseContentLines(c), reel: isReelCase(c.maxSize) })).filter((c) => c.lines.length > 0);
     const grand = cases.reduce((t, c) => t + c.lines.reduce((u, l) => u + l.qty, 0), 0);
@@ -8664,6 +8726,14 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
       /* THE PAPER SAYS IT TOO. A sheet that does not mention the amendment is
          the sheet somebody packs to while the customer is on the phone about
          the extras. */
+      /* The three numbers the person carrying this sheet actually needs. */
+      ...(() => {
+        const short = typeof orderShortfall === "function" && data ? orderShortfall(data, order.id) : [];
+        if (!short.length) return [];
+        const make = short.filter((x) => x.toMake > 0);
+        const head = `<b>${short.reduce((t, x) => t + x.needed, 0)}</b> still to go in` + (make.length ? ` &nbsp;&middot;&nbsp; <b>${make.reduce((t, x) => t + x.toMake, 0)}</b> of that not made yet` : " &mdash; all of it is on the shelf");
+        return [head, ...short.slice(0, 6).map((x) => `${esc(x.spec)}: need <b>${x.needed}</b>, shelf ${x.shelf}${x.toMake ? `, <b>make ${x.toMake}</b>` : ""}`).concat(short.length > 6 ? [`\u2026and ${short.length - 6} more products`] : [])];
+      })(),
       ...(() => {
         const amend = (caseRows || []).filter((c) => c && !c.deleted && String(c.planBatch || "Original") !== "Original");
         if (!amend.length) return [];
@@ -8695,12 +8765,12 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
     printInFrame("case-map-print-frame", html);
     return html;
   }
-  function CaseMapPrintChooser({ order, caseRows, setData }) {
+  function CaseMapPrintChooser({ order, caseRows, setData, data = null }) {
     const [open, setOpen] = React.useState(false);
     if (!open) return /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setOpen(true) }, "\u{1F5FA} Print case map");
     const pick = (fn) => {
       setOpen(false);
-      fn(order, caseRows, setData);
+      fn(order, caseRows, setData, data);
     };
     return /* @__PURE__ */ React.createElement("span", { className: "inline-flex items-center gap-2 flex-wrap" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => pick(printCaseMapGrid) }, "\u{1F5FA} Grid \u2014 one row per case"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => pick(printCaseIconSheet) }, "\u{1F5FA} Tiles \u2014 one box per case"), /* @__PURE__ */ React.createElement(
       "button",
@@ -8711,7 +8781,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
       "cancel"
     ));
   }
-  function printCaseMapGrid(order, caseRows, setData) {
+  function printCaseMapGrid(order, caseRows, setData, data = null) {
     const esc = pEsc;
     const rows = [...caseRows || []].filter((c) => !c.packedOutside).sort((a, b) => a.caseNum - b.caseNum).map((c) => {
       const v = caseView(c);
@@ -8909,7 +8979,16 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
     ${paperHead("Case map", order, [
       order.customer ? esc(order.customer) : "",
       order.customerRef ? `Their ref &nbsp;<b>${esc(order.customerRef)}</b>` : "",
-      `<b>${rows.length}</b> case${rows.length === 1 ? "" : "s"} &nbsp;&middot;&nbsp; <b>${totalBoxes}</b> boxes &nbsp;&middot;&nbsp; <b>${pallets}</b> pallet${pallets === 1 ? "" : "s"}`
+      `<b>${rows.length}</b> case${rows.length === 1 ? "" : "s"} &nbsp;&middot;&nbsp; <b>${totalBoxes}</b> boxes &nbsp;&middot;&nbsp; <b>${pallets}</b> pallet${pallets === 1 ? "" : "s"}`,
+      ...(() => {
+        const short = typeof orderShortfall === "function" && data ? orderShortfall(data, order.id) : [];
+        if (!short.length) return [];
+        const make = short.filter((x) => x.toMake > 0);
+        return [
+          `<b>${short.reduce((t, x) => t + x.needed, 0)}</b> still to go in` + (make.length ? ` &nbsp;&middot;&nbsp; <b>${make.reduce((t, x) => t + x.toMake, 0)}</b> of that not made yet` : " &mdash; all of it is on the shelf"),
+          ...short.slice(0, 6).map((x) => `${esc(x.spec)}: need <b>${x.needed}</b>, shelf ${x.shelf}${x.toMake ? `, <b>make ${x.toMake}</b>` : ""}`)
+        ];
+      })()
     ])}
     ${table}
     <div class="foot">If a case is packed differently from this sheet, write it on the sheet &mdash; the sheet is the record.</div>
@@ -10515,7 +10594,7 @@ This changes the order quantities. It is recorded in the change log and can be r
       },
       /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: INK } }, "Paper & adjustments", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontWeight: 400 } }, " \u2014 print the list or the case map, packing override", manualCount || Object.keys(caseOverrides).length ? `, ${[manualCount ? `${manualCount} cases packed before the app` : null, Object.keys(caseOverrides).length ? `${Object.keys(caseOverrides).length} box${Object.keys(caseOverrides).length === 1 ? "" : "es"} moved by hand` : null].filter(Boolean).join(", ")}` : "")),
       /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 12 } }, toolsOpen ? "hide" : "show")
-    ), toolsOpen && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-4 flex-wrap" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => printPackingList(order, caseRows, setData) }, "\u{1F5A8} Print packing list"), /* @__PURE__ */ React.createElement(CaseMapPrintChooser, { order, caseRows, setData }), !overrideOn ? /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => requireAdmin(() => setOverrideOn(true)) }, "\u{1F512} Packing override") : /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setOverrideOn(false) }, "Turn override off")), /* @__PURE__ */ React.createElement(CaseMapPrint, { order, cases: caseRows }), overrideOn ? /* @__PURE__ */ React.createElement("div", { className: "mt-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Corrections \u2014 orders packed before the app"), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-4 flex-wrap text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("label", { htmlFor: "starting-case-num" }, "Already picked and packed outside the app up to case #"), /* @__PURE__ */ React.createElement(
+    ), toolsOpen && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-4 flex-wrap" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => printPackingList(order, caseRows, setData) }, "\u{1F5A8} Print packing list"), /* @__PURE__ */ React.createElement(CaseMapPrintChooser, { order, caseRows, setData, data }), !overrideOn ? /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => requireAdmin(() => setOverrideOn(true)) }, "\u{1F512} Packing override") : /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setOverrideOn(false) }, "Turn override off")), /* @__PURE__ */ React.createElement(CaseMapPrint, { order, cases: caseRows }), overrideOn ? /* @__PURE__ */ React.createElement("div", { className: "mt-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Corrections \u2014 orders packed before the app"), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-4 flex-wrap text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("label", { htmlFor: "starting-case-num" }, "Already picked and packed outside the app up to case #"), /* @__PURE__ */ React.createElement(
       "input",
       {
         id: "starting-case-num",
@@ -11723,6 +11802,13 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     };
     const save = () => {
       if (!canSave) return;
+      if (dest === "order") {
+        const refusal = allocationRefusal(data, spec, [{ orderId, qty: n }]);
+        if (refusal) {
+          if (typeof window !== "undefined") window.alert(refusal);
+          return;
+        }
+      }
       setData((prev) => {
         let next = prev;
         if (dest === "order") {
@@ -14676,34 +14762,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       const spec = buildSpec(f);
       const allocs = (f.allocations || []).filter((a) => a.orderId && Number(a.qty) > 0);
       const rows = allocs.length ? allocs : f.workNumber && Number(f.onOrderQty) > 0 ? [{ orderId: f.workNumber, qty: Number(f.onOrderQty) }] : [];
-      if (!rows.length || !spec) return "";
-      let ranked = { needing: [], others: [] };
-      try {
-        ranked = ordersNeedingSpec(data, spec, [], { excludeSourceId: excludeId || null });
-      } catch (e) {
-        return "";
-      }
-      for (const a of rows) {
-        const need = ranked.needing.find((n) => n.orderId === a.orderId);
-        const other = ranked.others.find((n) => n.orderId === a.orderId);
-        if (!need) {
-          const o = (data.orders || []).find((x) => x.id === a.orderId);
-          const who = a.orderId + (o ? " (" + o.customer + ")" : "");
-          if (other && other.noPlanFor) {
-            return `Can't allocate ${spec} to ${who} \u2014 that order's plan does not promise this product at all. To clear it: send these to stock, or add the line to the order first so it gets its cases.`;
-          }
-          return `Can't allocate ${spec} to ${who} \u2014 that order is already promised everything it needs of this product. To clear it: send these to stock.`;
-        }
-        if (!(need.room || []).length) {
-          const o = (data.orders || []).find((x) => x.id === a.orderId);
-          return `Can't allocate ${spec} to ${a.orderId}${o ? " (" + o.customer + ")" : ""} \u2014 every case promised this product is already full or spoken for, so there is no case for these to go in. To clear it: send them to stock, or place what is already allocated first.`;
-        }
-        if (Number(a.qty) > need.needs) {
-          const where = (need.room || []).slice(0, 3).map((r) => `case ${r.caseNum} (${r.spaces})`).join(", ");
-          return `Can't allocate ${a.qty} to ${a.orderId} \u2014 it only needs ${need.needs} more of ${spec}${where ? ", into " + where : ""}. To clear it: drop this to ${need.needs} and let the other ${Number(a.qty) - need.needs} go to stock.`;
-        }
-      }
-      return "";
+      return allocationRefusal(data, spec, rows, excludeId);
     };
     const gateCasePlan = (f) => {
       const allocs = (f.allocations || []).filter((a) => a.orderId && Number(a.qty) > 0);
