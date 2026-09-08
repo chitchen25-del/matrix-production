@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-08.6";
+  var APP_VERSION = "2026-09-08.8";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -3429,7 +3429,7 @@
       /* @__PURE__ */ React.createElement("span", { className: "text-xs font-mono", style: { color: INK_MUTED, textAlign: "right" } }, r.nums.length, " case", r.nums.length === 1 ? "" : "s", " \xB7 ", r.boxes, " boxes", /* @__PURE__ */ React.createElement("br", null), "cases ", asRanges(r.nums))
     )), shortfall > 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-3 pt-3", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: AMBER, fontWeight: 600 } }, "Order has grown by ", shortfall, " box", shortfall === 1 ? "" : "es", " since it was planned"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1 mb-2", style: { color: INK_MUTED } }, "Nothing already planned or packed changes \u2014 the extra goes into new cases on the end, which is what Steve builds and labels next."), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: onAppend }, "Add ", Math.ceil(shortfall / CASE_MAX_SIZE_DEFAULT), " case", Math.ceil(shortfall / CASE_MAX_SIZE_DEFAULT) === 1 ? "" : "s", " to the end")), shortfall < 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-3 pt-3 text-xs", style: { borderTop: `1px solid ${BORDER}`, color: RED } }, "The plan promises ", -shortfall, " more box", -shortfall === 1 ? "" : "es", " than the order asks for. Something was reduced after planning \u2014 worth a look before this ships."));
   }
-  function PackingPlanner({ order, lineItems, existingCases, onSave, onClose }) {
+  function PackingPlanner({ order, lineItems, existingCases, bondingRuns = [], onSave, onClose }) {
     const plan = React.useMemo(() => {
       const items = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description));
       const locked = (existingCases || []).filter((c) => Object.keys(c.contents || {}).length);
@@ -3437,7 +3437,7 @@
       const spent = /* @__PURE__ */ new Map();
       for (const c of locked) {
         for (const [box, n] of Object.entries(c.contents || {})) {
-          const run = (typeof window !== "undefined" && window.__mxRuns || []).find((r) => r.boxNumber === box);
+          const run = (bondingRuns || []).find((r) => r && !r.deleted && r.boxNumber === box);
           const spec = run ? run.productSize : box;
           spent.set(spec, (spent.get(spec) || 0) + (Number(n) || 0));
         }
@@ -3457,7 +3457,7 @@
       for (let n = 1; free.length < 400; n++) if (!taken.has(n)) free.push(n);
       const planned = buildPackingPlan(rest);
       return planned.map((p, i) => ({ ...p, caseNum: free[i] })).concat(locked.map((c) => ({ caseNum: Number(c.caseNum), spec: "(packed)", qty: Object.values(c.contents).reduce((t, n) => t + Number(n), 0), band: "locked", locked: true }))).sort((a, b) => a.caseNum - b.caseNum);
-    }, [order.id, lineItems, existingCases]);
+    }, [order.id, lineItems, existingCases, bondingRuns]);
     const [cases, setCases] = React.useState(plan);
     const [shown, setShown] = React.useState(0);
     const [picked, setPicked] = React.useState(null);
@@ -4579,18 +4579,6 @@
     const [showAllExtrude, setShowAllExtrude] = useState(false);
     const [showAllWaiting, setShowAllWaiting] = useState(false);
     const allRows = productionOutstandingRows(data.orders, data.lineItems, data.bondingRuns, data.stockPicks);
-    const reelReadiness2 = React.useMemo(() => {
-      const scrapped = new Set((data.ncrs || []).map((n) => n.batchNumber));
-      const reels = (data.glueLineBatches || []).map((b) => glueSettingsFor(b, data.glueRuns || [])).filter((g) => !g.deleted && g.cleared !== "Yes" && !scrapped.has(g.batchNumber));
-      return (spec) => {
-        const mine = reels.filter((g) => looseSpecMatch(g.productSize, spec));
-        const left = (g) => Math.max(0, Number(g.meterage || 0) - batchMeterageUsed(data.bondingRuns, g.batchNumber));
-        const ready = mine.filter((g) => g.checked === "Yes").reduce((t, g) => t + left(g), 0);
-        const unchecked = mine.filter((g) => g.checked !== "Yes").reduce((t, g) => t + left(g), 0);
-        const running = mine.some((g) => g.startedAt && !g.endedAt);
-        return { ready, unchecked, running, reels: mine.filter((g) => left(g) > 0).length };
-      };
-    }, [data.glueLineBatches, data.glueRuns, data.bondingRuns, data.ncrs]);
     const dueRows = dueDateRows(data.orders, data.lineItems, data.bondingRuns);
     const byCategory = SIZE_CATEGORIES.map((c) => {
       const rows = allRows.filter((r) => classifySize(r.spec) === c.key);
@@ -7465,6 +7453,18 @@ The reason is recorded. Leave blank to keep the line.`, "");
   function ProductionListView({ data, initialCategory, autoPrint, onConsumeJump }) {
     const [viewMode, setViewMode] = useState(initialCategory ? "size" : "size");
     const allRows = productionOutstandingRows(data.orders, data.lineItems, data.bondingRuns, data.stockPicks);
+    const reelReadiness = React.useMemo(() => {
+      const scrapped = new Set((data.ncrs || []).map((n) => n.batchNumber));
+      const reels = (data.glueLineBatches || []).map((b) => glueSettingsFor(b, data.glueRuns || [])).filter((g) => !g.deleted && g.cleared !== "Yes" && !scrapped.has(g.batchNumber));
+      return (spec) => {
+        const mine = reels.filter((g) => looseSpecMatch(g.productSize, spec));
+        const left = (g) => Math.max(0, Number(g.meterage || 0) - batchMeterageUsed(data.bondingRuns, g.batchNumber));
+        const ready = mine.filter((g) => g.checked === "Yes").reduce((t, g) => t + left(g), 0);
+        const unchecked = mine.filter((g) => g.checked !== "Yes").reduce((t, g) => t + left(g), 0);
+        const running = mine.some((g) => g.startedAt && !g.endedAt);
+        return { ready, unchecked, running, reels: mine.filter((g) => left(g) > 0).length };
+      };
+    }, [data.glueLineBatches, data.glueRuns, data.bondingRuns, data.ncrs]);
     const [cat, setCat] = useState(initialCategory || "7mm");
     const [prodListShown, setProdListShown] = useState(12);
     const [prodSearch, setProdSearch] = useState("");
@@ -9879,6 +9879,7 @@ This changes the order quantities. It is recorded in the change log and can be r
       {
         order: planning,
         lineItems: data.lineItems,
+        bondingRuns: data.bondingRuns,
         existingCases: (data.cases || []).filter((c) => !c.deleted && c.orderId === planning.id),
         onClose: () => setPlanning(null),
         onSave: (plan) => {
