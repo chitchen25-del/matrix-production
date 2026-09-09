@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-09.23";
+  var APP_VERSION = "2026-09-09.24";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -3851,6 +3851,13 @@
     if (!extra.length) return [];
     const highest = (existingPlan || []).reduce((m, p) => Math.max(m, Number(p.caseNum) || 0), 0);
     return buildPackingPlan(extra, { perCase, startAt: highest + 1 });
+  }
+  function orderHasStarted(data, orderId) {
+    const inCase = (data.cases || []).some((c) => c && !c.deleted && c.orderId === orderId && Object.values(c.contents || {}).some((q) => (Number(q) || 0) > 0));
+    if (inCase) return { started: true, why: "boxes are already in its cases" };
+    const promised = (data.movements || []).filter((m) => m && !m.deleted && m.orderId === orderId).reduce((t, m) => t + (m.kind === "allocated" ? Number(m.qty) || 0 : m.kind === "unallocated" ? -(Number(m.qty) || 0) : 0), 0);
+    if (promised > 0) return { started: true, why: "bonding has allocated boxes to it" };
+    return { started: false, why: "" };
   }
   function applyAmendmentReduction(planRows, spec, reduceBy, opts = {}) {
     const perCase = Number(opts.perCase) || (isReelSpec(spec) ? reelsPerCase(spec) : CASE_MAX_SIZE_DEFAULT);
@@ -6796,15 +6803,67 @@ The reason is recorded. Leave blank to keep the line.`, "");
       const was = Number(li && li.qty) || 0;
       const now = Number(value) || 0;
       const drop = was - now;
-      if (!li || drop <= 0) {
+      if (!li || drop === 0) {
         setLineItems((prevLineItems) => prevLineItems.map((x) => x.id === id ? { ...x, [field]: value } : x));
+        return;
+      }
+      if (drop < 0) {
+        const add = -drop;
+        setData((prevData) => {
+          const started = orderHasStarted(prevData, li.orderId);
+          const { plannable } = plannableLines(prevData, [{ ...li, qty: add }]);
+          if (!plannable.length) {
+            if (typeof window !== "undefined") window.alert(
+              `${li.description} raised ${was} \u2192 ${now}. No cases were added \u2014 this line is not something that goes in a case.`
+            );
+            return { ...prevData, lineItems: prevData.lineItems.map((x) => x.id === id ? { ...x, qty: now } : x) };
+          }
+          const used = (prevData.cases || []).filter((c) => !c.deleted && c.orderId === li.orderId).map((c) => Number(c.caseNum));
+          const startAt = used.length ? Math.max(...used) : 0;
+          const rows = planRowsForNewOrder(
+            li.orderId,
+            plannable,
+            { startingCaseNum: startAt, actor: currentActor(), data: prevData }
+          );
+          const stamp = `Amendment ${(/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
+          const added = rows.map((r) => ({ ...r, planBatch: stamp }));
+          if (typeof window !== "undefined" && !window.confirm(
+            `${li.description}: ${was} \u2192 ${now}, so ${add} more to promise.
+
+Case${added.length === 1 ? "" : "s"} ${caseRunsLabel(added.map((r) => r.caseNum))} will be added on the end.
+Nothing already labelled changes.
+
+Apply this?`
+          )) return prevData;
+          return {
+            ...prevData,
+            lineItems: prevData.lineItems.map((x) => x.id === id ? { ...x, qty: now } : x),
+            cases: [...prevData.cases || [], ...added],
+            ...appendLog(prevData, {
+              action: "amendment_increase",
+              entity: "order",
+              entityId: li.orderId,
+              summary: `${li.description} raised ${was} \u2192 ${now}${started.started ? ` (order already started \u2014 ${started.why})` : ""}. Case${added.length === 1 ? "" : "s"} ${caseRunsLabel(added.map((r) => r.caseNum))} appended.`
+            })
+          };
+        });
         return;
       }
       setData((prevData) => {
         const rows = (prevData.cases || []).filter((c) => !c.deleted && c.orderId === li.orderId);
         const order = (prevData.orders || []).find((o) => o.id === li.orderId) || {};
         const startAt = (Number(order.startingCaseNum) || 0) + 1;
+        const started = orderHasStarted(prevData, li.orderId);
         const res = applyAmendmentReduction(rows, li.description, drop, { startAt });
+        if (started.started && typeof window !== "undefined") {
+          window.alert(
+            `${li.orderId} has started \u2014 ${started.why}, and its cases are mapped out.
+
+The quantity cannot simply be changed. It will be followed through as an amendment: cases removed, everything after renumbered, and the labels that need reprinting named.
+
+Read the next screen carefully before you agree to it.`
+          );
+        }
         const say = [
           `${li.description}: ${was} \u2192 ${now}, so ${drop} come off the plan.`,
           res.deleted.length ? `Cases deleted: ${caseRunsLabel(res.deleted)}.` : "No case is emptied by this.",
