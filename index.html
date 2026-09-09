@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-09.21";
+  var APP_VERSION = "2026-09-09.22";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -3352,6 +3352,165 @@
       });
     }
     return out.sort((a, b) => b.toMake - a.toMake || b.needed - a.needed || a.spec.localeCompare(b.spec));
+  }
+  function resolveCaseContents(data, orderId, caseNum, found, putBack) {
+    const up = (x) => String(x || "").trim().toUpperCase();
+    const runs = (data.bondingRuns || []).filter((r) => r && !r.deleted);
+    const cases = (data.cases || []).filter((c) => c && !c.deleted);
+    const movs = (data.movements || []).filter((m) => m && !m.deleted);
+    const moves = [], flags = [], notes = [];
+    const specOf = (box) => {
+      const r = runs.find((x) => up(x.boxNumber) === up(box) && x.productSize);
+      return r ? r.productSize : null;
+    };
+    const placedAt = (box) => {
+      const by = /* @__PURE__ */ new Map();
+      for (const m of movs) {
+        if (up(m.boxNumber) !== up(box) || m.caseNum == null) continue;
+        if (m.kind !== "placed" && m.kind !== "unplaced") continue;
+        const k = `${m.orderId}|${Number(m.caseNum)}`;
+        by.set(k, (by.get(k) || 0) + (m.kind === "placed" ? Number(m.qty) || 0 : -(Number(m.qty) || 0)));
+      }
+      return [...by.entries()].filter(([, q]) => q > 0).map(([k, q]) => ({ orderId: k.split("|")[0], caseNum: Number(k.split("|")[1]), qty: q }));
+    };
+    const allocatedTo = (box) => {
+      const by = /* @__PURE__ */ new Map();
+      for (const m of movs) {
+        if (up(m.boxNumber) !== up(box) || !m.orderId) continue;
+        if (m.kind === "allocated") by.set(m.orderId, (by.get(m.orderId) || 0) + (Number(m.qty) || 0));
+        if (m.kind === "unallocated") by.set(m.orderId, (by.get(m.orderId) || 0) - (Number(m.qty) || 0));
+      }
+      return [...by.entries()].filter(([, q]) => q > 0).map(([id, qty]) => ({ orderId: id, qty }));
+    };
+    for (const row2 of found || []) {
+      const box = up(row2.boxNumber), qty = Number(row2.qty) || 0;
+      if (!box || qty <= 0) continue;
+      const spec = specOf(box);
+      if (!spec) {
+        flags.push({
+          kind: "unknown_box_in_case",
+          orderId,
+          boxNumber: box,
+          summary: `${box} is in ${orderId} case ${caseNum} and the system has never heard of it`,
+          detail: `${qty} found in the case. Nothing has been allocated or placed \u2014 a box code that exists nowhere cannot be promised to an order. Find out where it came from.`
+        });
+        notes.push(`${box}: unknown code, flagged, nothing recorded`);
+        continue;
+      }
+      const here = placedAt(box).filter((p) => p.orderId === orderId && p.caseNum === Number(caseNum)).reduce((t, p) => t + p.qty, 0);
+      if (here >= qty) {
+        notes.push(`${box}: already recorded here, nothing to do`);
+        continue;
+      }
+      let needed = qty - here;
+      for (const at of placedAt(box)) {
+        if (needed <= 0) break;
+        if (at.orderId === orderId && at.caseNum === Number(caseNum)) continue;
+        const take = Math.min(at.qty, needed);
+        moves.push({
+          kind: "unplaced",
+          boxNumber: box,
+          spec,
+          qty: take,
+          orderId: at.orderId,
+          caseNum: at.caseNum,
+          source: "case-fix",
+          note: `Found in ${orderId} case ${caseNum} instead`
+        });
+        if (at.orderId !== orderId) {
+          moves.push({
+            kind: "unallocated",
+            boxNumber: box,
+            spec,
+            qty: take,
+            orderId: at.orderId,
+            source: "case-fix",
+            note: `Moved to ${orderId} case ${caseNum}`
+          });
+          flags.push({
+            kind: "stock_taken_from_order",
+            orderId: at.orderId,
+            boxNumber: box,
+            summary: `${take} \xD7 ${spec} taken off ${at.orderId} \u2014 found in ${orderId} case ${caseNum}`,
+            detail: `${at.orderId} case ${at.caseNum} is now short by ${take} and that product is outstanding again on that order.`
+          });
+          notes.push(`${box}: ${take} taken off ${at.orderId} case ${at.caseNum}`);
+        } else {
+          flags.push({
+            kind: "recased",
+            orderId,
+            boxNumber: box,
+            summary: `${take} \xD7 ${spec} moved from case ${at.caseNum} to case ${caseNum} on ${orderId}`,
+            detail: `Found physically in case ${caseNum}. Case ${at.caseNum} is now short by ${take}.`
+          });
+          notes.push(`${box}: ${take} moved from case ${at.caseNum}`);
+        }
+        needed -= take;
+      }
+      const already = allocatedTo(box).find((a) => a.orderId === orderId);
+      const toAllocate = Math.max(0, qty - here - (already ? already.qty : 0));
+      if (toAllocate > 0) {
+        moves.push({
+          kind: "allocated",
+          boxNumber: box,
+          spec,
+          qty: toAllocate,
+          orderId,
+          caseNum: Number(caseNum),
+          source: "case-fix",
+          note: `Found in case ${caseNum}`
+        });
+      }
+      if (needed > 0) notes.push(`${box}: ${needed} from the shelf`);
+      moves.push({
+        kind: "placed",
+        boxNumber: box,
+        spec,
+        qty: qty - here,
+        orderId,
+        caseNum: Number(caseNum),
+        source: "case-fix"
+      });
+    }
+    for (const row2 of putBack || []) {
+      const box = up(row2.boxNumber), qty = Number(row2.qty) || 0;
+      if (!box || qty <= 0) continue;
+      const spec = specOf(box);
+      for (const at of placedAt(box).filter((p) => p.orderId === orderId && p.caseNum === Number(caseNum))) {
+        moves.push({
+          kind: "unplaced",
+          boxNumber: box,
+          spec,
+          qty: Math.min(at.qty, qty),
+          orderId,
+          caseNum: Number(caseNum),
+          source: "case-fix",
+          note: "Case already had stock in it"
+        });
+      }
+      moves.push({
+        kind: "unallocated",
+        boxNumber: box,
+        spec,
+        qty,
+        orderId,
+        source: "case-fix",
+        note: row2.location ? `Back to stock, ${row2.location}` : "Back to stock"
+      });
+      notes.push(`${box}: ${qty} back to stock${row2.location ? ` (${row2.location})` : ""}`);
+    }
+    const row = cases.find((c) => c.orderId === orderId && Number(c.caseNum) === Number(caseNum));
+    const totalFound = (found || []).reduce((t, r) => t + (Number(r.qty) || 0), 0);
+    const cap = Number(row && row.maxSize) || CASE_MAX_SIZE_DEFAULT;
+    if (totalFound > cap) {
+      flags.push({
+        kind: "case_over_capacity",
+        orderId,
+        summary: `${orderId} case ${caseNum} holds ${totalFound} in a case of ${cap}`,
+        detail: "Counted at the pallet. Either the case is over-filled or its capacity is wrong."
+      });
+    }
+    return { moves, flags, notes, totalFound, capacity: cap };
   }
   function allocationRefusal(data, spec, allocations, excludeSourceId) {
     const rows = (allocations || []).filter((a) => a && a.orderId && Number(a.qty) > 0);
@@ -11494,6 +11653,117 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       showDismissed ? `\u2190 Back to the ${live.length} still open` : `${hidden.length} set aside \u2014 show`
     ));
   }
+  function WrongStockInCaseView({ data, setData }) {
+    const [orderId, setOrderId] = useState("");
+    const [caseNum, setCaseNum] = useState("");
+    const [found, setFound] = useState([{ boxNumber: "", qty: "" }]);
+    const [putBack, setPutBack] = useState([{ boxNumber: "", qty: "", location: "" }]);
+    const [preview, setPreview] = useState(null);
+    const liveOrders = (data.orders || []).filter((o) => o && !o.deleted && !["Shipped", "Cancelled"].includes(o.stage || ""));
+    const caseRows = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === orderId).sort((a, b) => Number(a.caseNum) - Number(b.caseNum));
+    const theCase = caseRows.find((c) => Number(c.caseNum) === Number(caseNum));
+    const knownCodes = (data.bondingRuns || []).filter((r) => r && !r.deleted && r.boxNumber).map((r) => r.boxNumber);
+    const setRow = (list, setList, i, field, value) => setList(list.map((r, n) => n === i ? { ...r, [field]: value } : r));
+    const addRow = (list, setList, blank) => setList([...list, blank]);
+    const cleanFound = found.filter((r) => String(r.boxNumber).trim() && Number(r.qty) > 0);
+    const cleanBack = putBack.filter((r) => String(r.boxNumber).trim() && Number(r.qty) > 0);
+    const look = () => {
+      if (!orderId || !caseNum) return;
+      setPreview(resolveCaseContents(data, orderId, Number(caseNum), cleanFound, cleanBack));
+    };
+    const apply = () => {
+      const res = resolveCaseContents(data, orderId, Number(caseNum), cleanFound, cleanBack);
+      setData((prev) => {
+        let next = recordMovements(prev, res.moves.map((m) => ({ ...m, source: "case-fix" })));
+        for (const fl of res.flags) next = raiseIssue(next, fl);
+        next = { ...next, cases: (next.cases || []).map((c) => !c.deleted && c.orderId === orderId && Number(c.caseNum) === Number(caseNum) ? {
+          ...c,
+          contents: Object.fromEntries(cleanFound.map((r) => [String(r.boxNumber).trim().toUpperCase(), Number(r.qty)])),
+          updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+          updatedBy: currentActor()
+        } : c) };
+        return { ...next, ...appendLog(next, {
+          action: "case_contents_corrected",
+          entity: "case",
+          entityId: `${orderId}-${caseNum}`,
+          summary: `${orderId} case ${caseNum} corrected at the pallet: ${res.notes.join("; ") || "no change"}`
+        }) };
+      });
+      setPreview(null);
+      setFound([{ boxNumber: "", qty: "" }]);
+      setPutBack([{ boxNumber: "", qty: "", location: "" }]);
+      if (typeof window !== "undefined") window.alert(`Done. ${res.notes.length} change${res.notes.length === 1 ? "" : "s"} recorded${res.flags.length ? `, ${res.flags.length} flag${res.flags.length === 1 ? "" : "s"} raised for you` : ""}.`);
+    };
+    const fld = { height: 42, borderRadius: 6, border: `1px solid ${BORDER}`, padding: "0 10px", fontSize: 15, width: "100%", boxSizing: "border-box" };
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "mb-4 p-3", style: { background: "#FFF6E5", border: `1px solid #E8C77A`, borderLeft: "4px solid #E8C77A", borderRadius: 4, fontSize: 13.5, color: "#8A6100", lineHeight: 1.5 } }, "For when a case already has stock in it. Read the codes off what is really in there. Boxes that belong to another order will be taken, and that order will need them again \u2014 you get a flag either way."), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Order"), /* @__PURE__ */ React.createElement(Select, { value: orderId, onChange: (e) => {
+      setOrderId(e.target.value);
+      setCaseNum("");
+      setPreview(null);
+    }, style: { marginBottom: 10 } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose\u2026"), liveOrders.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.id, value: o.id }, o.id, " \u2014 ", o.customer))), orderId && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Case"), /* @__PURE__ */ React.createElement(Select, { value: caseNum, onChange: (e) => {
+      setCaseNum(e.target.value);
+      setPreview(null);
+    } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose\u2026"), caseRows.map((c) => {
+      const held = Object.values(c.contents || {}).reduce((t, q) => t + (Number(q) || 0), 0);
+      return /* @__PURE__ */ React.createElement("option", { key: c.id, value: c.caseNum }, "Case ", c.caseNum, " \u2014 record says ", held, " of ", Number(c.maxSize) || CASE_MAX_SIZE_DEFAULT);
+    })))), theCase && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: INK, marginBottom: 6 } }, "The record says this case holds"), Object.keys(theCase.contents || {}).length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: INK_MUTED } }, "Nothing at all.") : Object.entries(theCase.contents || {}).map(([b, q]) => /* @__PURE__ */ React.createElement("div", { key: b, style: { fontSize: 14 } }, /* @__PURE__ */ React.createElement("span", { className: "font-mono" }, b), " \xD7 ", q)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: INK_MUTED, marginTop: 6 } }, "Promised: ", Object.entries(casePlanned(theCase)).map(([k, v]) => `${v} \xD7 ${k}`).join(", ") || "nothing")), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: INK, marginBottom: 8 } }, "What is actually in it"), found.map((r, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { display: "flex", gap: 8, marginBottom: 8 } }, /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        value: r.boxNumber,
+        onChange: (e) => {
+          setRow(found, setFound, i, "boxNumber", e.target.value.toUpperCase());
+          setPreview(null);
+        },
+        placeholder: "Box code off the label",
+        autoCapitalize: "characters",
+        autoCorrect: "off",
+        spellCheck: "false",
+        style: { ...fld, flex: 2, textTransform: "uppercase" }
+      }
+    ), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        type: "number",
+        inputMode: "numeric",
+        value: r.qty,
+        onChange: (e) => {
+          setRow(found, setFound, i, "qty", e.target.value);
+          setPreview(null);
+        },
+        placeholder: "How many",
+        style: { ...fld, flex: 1 }
+      }
+    ))), found.some((r) => String(r.boxNumber).trim().length >= 4 && boxCodeNearMisses(r.boxNumber, knownCodes).length > 0) && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: "#8A6100", marginBottom: 8 } }, found.filter((r) => boxCodeNearMisses(r.boxNumber, knownCodes).length).map((r) => `${r.boxNumber} isn't on record \u2014 did you mean ${boxCodeNearMisses(r.boxNumber, knownCodes).map((n) => n.code).join(" or ")}?`).join("  ")), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => addRow(found, setFound, { boxNumber: "", qty: "" }) }, "+ Another box")), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: INK, marginBottom: 4 } }, "Boxes that now have nowhere"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED, marginBottom: 8 } }, "These go back on the shelf. The order will need them again and they will be offered next time."), putBack.map((r, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { display: "flex", gap: 8, marginBottom: 8 } }, /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        value: r.boxNumber,
+        onChange: (e) => {
+          setRow(putBack, setPutBack, i, "boxNumber", e.target.value.toUpperCase());
+          setPreview(null);
+        },
+        placeholder: "Box code",
+        autoCapitalize: "characters",
+        autoCorrect: "off",
+        spellCheck: "false",
+        style: { ...fld, flex: 2, textTransform: "uppercase" }
+      }
+    ), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        type: "number",
+        inputMode: "numeric",
+        value: r.qty,
+        onChange: (e) => {
+          setRow(putBack, setPutBack, i, "qty", e.target.value);
+          setPreview(null);
+        },
+        placeholder: "How many",
+        style: { ...fld, flex: 1 }
+      }
+    ), /* @__PURE__ */ React.createElement(Select, { value: r.location, onChange: (e) => {
+      setRow(putBack, setPutBack, i, "location", e.target.value);
+      setPreview(null);
+    }, style: { flex: 1 } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Bay \u2014"), BOX_LOCATIONS.map((loc) => /* @__PURE__ */ React.createElement("option", { key: loc, value: loc }, loc))))), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => addRow(putBack, setPutBack, { boxNumber: "", qty: "", location: "" }) }, "+ Another box")), !preview && /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: look, disabled: !cleanFound.length && !cleanBack.length }, "Show me what this will do"), preview && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4", style: { borderLeft: `4px solid ${NAVY}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: INK, marginBottom: 6 } }, "This will:"), preview.notes.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: INK_MUTED } }, "Change nothing \u2014 the record already agrees."), preview.notes.map((n, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { fontSize: 13.5, color: INK } }, "\xB7 ", n)), preview.flags.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10, padding: "8px 10px", background: "#FBEAEA", border: `1px solid ${RED}`, borderRadius: 6 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, fontWeight: 700, color: RED } }, "And raise ", preview.flags.length, " flag", preview.flags.length === 1 ? "" : "s", " for you:"), preview.flags.map((fl, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { fontSize: 12.5, color: INK, marginTop: 3 } }, fl.summary))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 12 } }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: apply }, "That's right \u2014 record it"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setPreview(null) }, "Back")))));
+  }
   function LiveBoxStockView({ data }) {
     const [search, setSearch] = useState("");
     const [openSpec, setOpenSpec] = useState(null);
@@ -11621,6 +11891,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       { key: "boxes", label: "Live box stock" },
       { key: "reels", label: "Live reel stock" },
       { key: "discrepancies", label: "Discrepancies" },
+      { key: "wrongcase", label: "Wrong stock in a case" },
       ...stockAdmin ? [{ key: "stocktaker", label: "Stock taker" }] : []
     ];
     const openCount = useMemo(() => {
@@ -11645,7 +11916,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         background: tab === t.key ? "rgba(255,255,255,0.25)" : "#FBEAEA",
         color: tab === t.key ? "#fff" : RED
       } }, openCount)
-    ))), tab === "history" && /* @__PURE__ */ React.createElement(BoxHistoryView, { data, setData, initialQuery: lookUp || initialQuery }), tab === "boxes" && /* @__PURE__ */ React.createElement(LiveBoxStockView, { data }), tab === "reels" && /* @__PURE__ */ React.createElement(LiveReelStockView, { data }), tab === "discrepancies" && /* @__PURE__ */ React.createElement(DiscrepanciesView, { data, onLookUp: (ref) => {
+    ))), tab === "history" && /* @__PURE__ */ React.createElement(BoxHistoryView, { data, setData, initialQuery: lookUp || initialQuery }), tab === "boxes" && /* @__PURE__ */ React.createElement(LiveBoxStockView, { data }), tab === "reels" && /* @__PURE__ */ React.createElement(LiveReelStockView, { data }), tab === "wrongcase" && /* @__PURE__ */ React.createElement(WrongStockInCaseView, { data, setData }), tab === "discrepancies" && /* @__PURE__ */ React.createElement(DiscrepanciesView, { data, onLookUp: (ref) => {
       setLookUp(ref);
       setTab("history");
     } }), tab === "stocktaker" && stockAdmin && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "mb-4 p-3", style: { background: "#F7F8FC", border: `1px solid ${NAVY}`, borderLeft: `4px solid ${NAVY}`, borderRadius: 4, fontSize: 13.5, color: INK_MUTED, lineHeight: 1.5 } }, "For a full count only. To add one batch that has turned up, type its code into History and movement \u2014 it will offer to add it as a box or a reel."), /* @__PURE__ */ React.createElement(StockTakerView, { data, setData })));
