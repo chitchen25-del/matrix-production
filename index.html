@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-09.22";
+  var APP_VERSION = "2026-09-09.23";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -11653,6 +11653,62 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       showDismissed ? `\u2190 Back to the ${live.length} still open` : `${hidden.length} set aside \u2014 show`
     ));
   }
+  function promisedNotPacked(data) {
+    const up = (x) => String(x || "").trim().toUpperCase();
+    const live = new Set((data.orders || []).filter((o) => o && !o.deleted && !["Shipped", "Cancelled"].includes(o.stage || "")).map((o) => o.id));
+    const by = /* @__PURE__ */ new Map();
+    for (const m of data.movements || []) {
+      if (!m || m.deleted || !m.orderId || !live.has(m.orderId)) continue;
+      const k = `${m.orderId}|${up(m.boxNumber)}`;
+      const e = by.get(k) || {
+        orderId: m.orderId,
+        boxNumber: up(m.boxNumber),
+        spec: m.spec || "",
+        allocated: 0,
+        placed: 0,
+        since: m.at || null,
+        caseNum: null
+      };
+      if (m.kind === "allocated") {
+        e.allocated += Number(m.qty) || 0;
+        if (m.caseNum != null && e.caseNum == null) e.caseNum = Number(m.caseNum);
+      }
+      if (m.kind === "unallocated") e.allocated -= Number(m.qty) || 0;
+      if (m.kind === "placed") e.placed += Number(m.qty) || 0;
+      if (m.kind === "unplaced") e.placed -= Number(m.qty) || 0;
+      if (m.spec && !e.spec) e.spec = m.spec;
+      if (m.at && (!e.since || String(m.at) < String(e.since))) e.since = m.at;
+      by.set(k, e);
+    }
+    const runOf = (box) => (data.bondingRuns || []).find((r) => r && !r.deleted && up(r.boxNumber) === box);
+    return [...by.values()].map((e) => {
+      const r = runOf(e.boxNumber);
+      return {
+        ...e,
+        waiting: e.allocated - e.placed,
+        location: r && String(r.location || "").trim() || "",
+        customer: ((data.orders || []).find((o) => o.id === e.orderId) || {}).customer || ""
+      };
+    }).filter((e) => e.waiting > 0).sort((a, b) => (a.location ? 1 : 0) - (b.location ? 1 : 0) || String(a.since).localeCompare(String(b.since)));
+  }
+  function PromisedNotPackedView({ data }) {
+    const rows = useMemo(() => promisedNotPacked(data), [data]);
+    const lost = rows.filter((r) => !r.location);
+    const days = (iso) => {
+      if (!iso) return "";
+      const d = Math.floor((Date.now() - new Date(iso).getTime()) / 864e5);
+      return d <= 0 ? "today" : d === 1 ? "1 day" : `${d} days`;
+    };
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "mb-4 p-3", style: {
+      background: lost.length ? "#FBEAEA" : "#EAF7EE",
+      border: `1px solid ${lost.length ? RED : GREEN}`,
+      borderLeft: `4px solid ${lost.length ? RED : GREEN}`,
+      borderRadius: 4,
+      fontSize: 13.5,
+      color: INK,
+      lineHeight: 1.5
+    } }, /* @__PURE__ */ React.createElement("b", null, rows.reduce((t, r) => t + r.waiting, 0)), " boxes are promised to a live order and not yet in a case.", lost.length > 0 ? /* @__PURE__ */ React.createElement(React.Fragment, null, " ", /* @__PURE__ */ React.createElement("b", null, lost.reduce((t, r) => t + r.waiting, 0), " of them have no bay recorded"), " \u2014 those are the ones that end up on top of a case. They are listed first.") : /* @__PURE__ */ React.createElement(React.Fragment, null, " Every one of them has a bay, so every one can be found.")), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-x-auto" }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: "#F7F8FC" } }, /* @__PURE__ */ React.createElement(Th, null, "Box"), /* @__PURE__ */ React.createElement(Th, null, "Product"), /* @__PURE__ */ React.createElement(Th, null, "Order"), /* @__PURE__ */ React.createElement(Th, null, "Waiting"), /* @__PURE__ */ React.createElement(Th, null, "For"), /* @__PURE__ */ React.createElement(Th, null, "Case"), /* @__PURE__ */ React.createElement(Th, null, "Bay"))), /* @__PURE__ */ React.createElement("tbody", null, rows.map((r) => /* @__PURE__ */ React.createElement("tr", { key: `${r.orderId}|${r.boxNumber}`, style: { borderTop: `1px solid ${BORDER}`, background: r.location ? "#fff" : "#FFF6F6" } }, /* @__PURE__ */ React.createElement(Td, null, /* @__PURE__ */ React.createElement("span", { className: "font-mono" }, r.boxNumber)), /* @__PURE__ */ React.createElement(Td, null, r.spec), /* @__PURE__ */ React.createElement(Td, null, r.orderId, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: INK_MUTED } }, r.customer)), /* @__PURE__ */ React.createElement(Td, null, /* @__PURE__ */ React.createElement("b", null, r.waiting)), /* @__PURE__ */ React.createElement(Td, null, days(r.since)), /* @__PURE__ */ React.createElement(Td, null, r.caseNum != null ? `case ${r.caseNum}` : /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014")), /* @__PURE__ */ React.createElement(Td, null, r.location ? r.location : /* @__PURE__ */ React.createElement("span", { style: { color: RED, fontWeight: 700 } }, "no bay \u2014 find it")))), rows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 7 }, "Nothing is waiting. Everything promised is in a case.")))));
+  }
   function WrongStockInCaseView({ data, setData }) {
     const [orderId, setOrderId] = useState("");
     const [caseNum, setCaseNum] = useState("");
@@ -11891,6 +11947,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       { key: "boxes", label: "Live box stock" },
       { key: "reels", label: "Live reel stock" },
       { key: "discrepancies", label: "Discrepancies" },
+      { key: "waiting", label: "Promised, not packed" },
       { key: "wrongcase", label: "Wrong stock in a case" },
       ...stockAdmin ? [{ key: "stocktaker", label: "Stock taker" }] : []
     ];
@@ -11916,7 +11973,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         background: tab === t.key ? "rgba(255,255,255,0.25)" : "#FBEAEA",
         color: tab === t.key ? "#fff" : RED
       } }, openCount)
-    ))), tab === "history" && /* @__PURE__ */ React.createElement(BoxHistoryView, { data, setData, initialQuery: lookUp || initialQuery }), tab === "boxes" && /* @__PURE__ */ React.createElement(LiveBoxStockView, { data }), tab === "reels" && /* @__PURE__ */ React.createElement(LiveReelStockView, { data }), tab === "wrongcase" && /* @__PURE__ */ React.createElement(WrongStockInCaseView, { data, setData }), tab === "discrepancies" && /* @__PURE__ */ React.createElement(DiscrepanciesView, { data, onLookUp: (ref) => {
+    ))), tab === "history" && /* @__PURE__ */ React.createElement(BoxHistoryView, { data, setData, initialQuery: lookUp || initialQuery }), tab === "boxes" && /* @__PURE__ */ React.createElement(LiveBoxStockView, { data }), tab === "reels" && /* @__PURE__ */ React.createElement(LiveReelStockView, { data }), tab === "waiting" && /* @__PURE__ */ React.createElement(PromisedNotPackedView, { data }), tab === "wrongcase" && /* @__PURE__ */ React.createElement(WrongStockInCaseView, { data, setData }), tab === "discrepancies" && /* @__PURE__ */ React.createElement(DiscrepanciesView, { data, onLookUp: (ref) => {
       setLookUp(ref);
       setTab("history");
     } }), tab === "stocktaker" && stockAdmin && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "mb-4 p-3", style: { background: "#F7F8FC", border: `1px solid ${NAVY}`, borderLeft: `4px solid ${NAVY}`, borderRadius: 4, fontSize: 13.5, color: INK_MUTED, lineHeight: 1.5 } }, "For a full count only. To add one batch that has turned up, type its code into History and movement \u2014 it will offer to add it as a box or a reel."), /* @__PURE__ */ React.createElement(StockTakerView, { data, setData })));
@@ -14301,12 +14358,12 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     const toShelf = Math.max(0, made - allocated);
     const over = allocated > made && made > 0;
     useEffect(() => {
-      if (String(form.location || "").trim() || toShelf <= 0) return;
+      if (String(form.location || "").trim() || toShelf <= 0 && allocated <= 0) return;
       const runs = [...allBondingRuns || []].filter((r) => !r.deleted && r.location).sort((a, b) => `${b.date || ""} ${b.timeOfDay || ""}`.localeCompare(`${a.date || ""} ${a.timeOfDay || ""}`));
       const same = runs.find((r) => spec && looseSpecMatch(r.productSize, spec));
       const pick = (same || runs[0] || {}).location;
       if (pick) setForm((f) => ({ ...f, location: pick }));
-    }, [toShelf > 0, spec]);
+    }, [toShelf > 0, allocated > 0, spec]);
     const boxTypeFor = (orderId, desc) => {
       const o = orders.find((x) => x.id === orderId);
       return orderBoxTypeFor(o, desc || spec);
@@ -14710,7 +14767,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         fontWeight: 700,
         background: toStock < 0 ? "#FBEAEA" : "#EEF1F8",
         color: toStock < 0 ? RED : NAVY
-      } }, made > 0 || allocated > 0 ? toStock : "\u2014"), toStock > 0 && /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement(Select, { value: values.location || "", onChange: (e) => setValues({ ...values, location: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Where?"), BOX_LOCATIONS.map((loc) => /* @__PURE__ */ React.createElement("option", { key: loc, value: loc }, loc)))), toStock < 0 && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: RED } }, allocated, " allocated but only ", made, " made.")));
+      } }, made > 0 || allocated > 0 ? toStock : "\u2014"), toStock < 0 && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: RED } }, allocated, " allocated but only ", made, " made.")), made > 0 && /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 items-center flex-wrap pt-2", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, fontSize: 14 } }, "Which bay are they on?"), /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement(Select, { value: values.location || "", onChange: (e) => setValues({ ...values, location: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Where?"), BOX_LOCATIONS.map((loc) => /* @__PURE__ */ React.createElement("option", { key: loc, value: loc }, loc)))), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, allocated > 0 && toStock > 0 ? "All of them, promised or not \u2014 they are on the same shelf until they are packed." : allocated > 0 ? "Promised to an order, but still on a shelf until it is packed." : "Going to stock.")));
     })()), /* @__PURE__ */ React.createElement(FieldGroup, { label: "OTHER" }, /* @__PURE__ */ React.createElement("div", { style: { width: 110 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Time of day"), /* @__PURE__ */ React.createElement(
       "input",
       {
@@ -15014,6 +15071,11 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       }
       return "";
     };
+    const gateLocation = (f) => {
+      if ((Number(f.amountMade) || 0) <= 0) return "";
+      if (String(f.location || "").trim()) return "";
+      return "Can't log these without saying which bay they are on. To clear it: pick the bay under \u201CWhich bay are they on?\u201D \u2014 boxes promised to an order still sit on a shelf until they are packed.";
+    };
     const gateProduct = (f) => {
       const spec = buildSpec(f);
       const res = resolveProduct(data, spec);
@@ -15161,7 +15223,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
           toStock: 0,
           workNumber: a.orderId,
           customerName: order?.customer || "",
-          location: "",
+          location: f.location || "",
           boxTypeId: a.boxTypeId || f.boxTypeId || ""
         };
       });
@@ -15203,7 +15265,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         setAddError(String(form.amountMade || "").trim() ? `"${form.amountMade}" isn't a number of boxes \u2014 retype how many were made.` : "Enter how many boxes were made.");
         return;
       }
-      const err = validateBatchAndBox(form, null) || validateAllocations(form) || gateProduct(form) || gateBatchTotal(form) || gateCasePlan(form) || gateAgainstPlan(form);
+      const err = validateBatchAndBox(form, null) || validateAllocations(form) || gateProduct(form) || gateBatchTotal(form) || gateCasePlan(form) || gateAgainstPlan(form) || gateLocation(form);
       if (err) {
         setAddError(err);
         return;
