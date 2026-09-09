@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-09.25";
+  var APP_VERSION = "2026-09-09.26";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1327,6 +1327,38 @@
         return;
       }
       const m = MISSING_COLUMN_RE.exec(String(error.message || ""));
+      if (table === "glue_line_batches" && /glue_line_batches_batch_number_unique/.test(String(error.message || ""))) {
+        const codes = [...new Set(outgoing.map((r) => String(r.batch_number || "").trim()).filter(Boolean))];
+        const { data: theirs, error: fetchErr } = await client.from("glue_line_batches").select("*").in("batch_number", codes);
+        if (fetchErr || !theirs) throw error;
+        const byCode = new Map(theirs.map((t) => [String(t.batch_number || "").trim().toUpperCase(), t]));
+        const healed = [], retired = [];
+        for (const r of outgoing) {
+          const t = byCode.get(String(r.batch_number || "").trim().toUpperCase());
+          if (!t || t.id === r.id) {
+            healed.push(r);
+            continue;
+          }
+          healed.push({
+            ...t,
+            product_size: String(t.product_size || "").trim() || r.product_size || t.product_size,
+            meterage: Number(t.meterage) > 0 ? t.meterage : r.meterage ?? t.meterage,
+            checked: t.checked || r.checked,
+            comments: [t.comments, r.comments].filter(Boolean).join(". "),
+            updated_at: (/* @__PURE__ */ new Date()).toISOString()
+          });
+          retired.push({ localId: r.id, cloudId: t.id, code: r.batch_number });
+        }
+        if (!retired.length) throw error;
+        outgoing = healed;
+        warnings.push({
+          table,
+          dropped: [],
+          retired,
+          message: `${retired.length} reel${retired.length === 1 ? "" : "s"} already existed in the cloud (${retired.map((x) => x.code).join(", ")}) \u2014 the cloud record was completed instead of duplicated`
+        });
+        continue;
+      }
       if (!m || dropped.includes(m[1])) throw error;
       dropped.push(m[1]);
       const col = m[1];
@@ -18265,6 +18297,14 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         markSynced();
         setSyncWarnings(res && res.warnings && res.warnings.length ? res.warnings : null);
         releasePendingDeletions(Object.keys(deletedByTable));
+        const retired = (res && res.warnings || []).flatMap((w) => w.retired || []);
+        if (retired.length) {
+          setData((prev2) => {
+            const drop = new Set(retired.map((x) => x.localId));
+            const rows = (prev2.glueLineBatches || []).filter((g) => !drop.has(g.id));
+            return { ...prev2, glueLineBatches: rows };
+          });
+        }
       }).catch((err) => {
         console.error("Sync push failed:", err);
         if (isAuthError(err) || (err.failures || []).some(isAuthError)) {

@@ -527,7 +527,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-09-08.11";
+const APP_VERSION = "2026-09-09.25";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -686,7 +686,10 @@ const SYNC_TABLES = {
      "case 1" stayed on case 1 after case 1 held different boxes, and the
      carrier was quoted that figure. `caseNum` is now a label on the record. */
   cases: { table: "cases", cols: { orderId: "order_id", caseNum: "case_num", packedOutside: "packed_outside",
-    plannedSpec: "planned_spec", plannedQty: "planned_qty", planBatch: "plan_batch" } },
+    planBatch: "plan_batch", planned: "planned",
+    /* Capacity belongs to the case: 20 boxes, 10 reels, 9 reels if 12mm.
+       Held only in memory until 8 Sep, so a reel case reloaded as a box case. */
+    maxSize: "max_size" } },
   /* A printed pick sheet, so paper picking has a front door. A sheet used to
      leave the building with no identity: nothing knew it was out, when it came
      back, or whether it had already been entered — and entering one twice is
@@ -700,7 +703,12 @@ const SYNC_TABLES = {
      that costs a customer gets to disappear quietly either. */
   issues: { table: "issues", cols: { raisedAt: "raised_at", raisedBy: "raised_by", orderId: "order_id", boxNumber: "box_number", resolvedAt: "resolved_at", resolvedBy: "resolved_by" } },
   lineItems: { table: "line_items", cols: { orderId: "order_id", unitPrice: "unit_price", fromOtherStock: "from_other_stock",
-    customerRef: "customer_ref", amendmentLabel: "amendment_label" } },
+    customerRef: "customer_ref", amendmentLabel: "amendment_label",
+    /* How many of this line were packed before the app knew about them. Held
+       until 8 Sep 2026 in orders.packedOutside, keyed by SPEC TEXT — so it
+       could not survive a product being renamed, and it duplicated a fact that
+       belongs to the line. The line item is the owner. */
+    packedOutside: "packed_outside", packedOutsideQty: "packed_outside_qty" } },
   bondingRuns: { table: "bonding_runs", cols: { productSize: "product_size", baselineBatchCode: "baseline_batch_code",
     evaCode: "eva_code", evaCleared: "eva_cleared", tapeCode: "tape_code", amountMade: "amount_made",
     /* onOrderQty and toStock are NOT here: the columns were dropped from
@@ -717,6 +725,22 @@ const SYNC_TABLES = {
   ncrs: { table: "ncrs", cols: { batchNumber: "batch_number" } },
   changeLog: { table: "change_log", cols: { entityId: "entity_id", undoneAt: "undone_at" } },
   customSizes: { table: "custom_sizes", cols: {} },
+  /* THE PRODUCT CATALOGUE — one record per product, and every spelling ever
+     seen pointing at it.
+     Until 8 Sep a product was a free-text string retyped in four places: the
+     order line, the bonding run, the case plan and the label. Four copies of
+     one fact, and every one could be typed differently — which is how
+     "PX Plus 0.40 x 1.40mm" with no pt reached an order, matched no case plan,
+     and left 32 boxes with nowhere to go. The catalogue is the one owner.
+     `products` is the strip: family, size, pt, variant (O/S, D3-D5).
+     `productForms` is Box or Reel and its metreage — a reel is the SAME
+     product in a continuous length, never a different one.
+     `productAliases` is what intake searches, so an old or customer wording
+     still finds the right product instead of quietly creating a new one. */
+  products: { table: "products", cols: { displayName: "display_name", needsReview: "needs_review",
+    createdAt: "created_at", updatedAt: "updated_at", updatedBy: "updated_by" } },
+  productForms: { table: "product_forms", cols: { productId: "product_id", createdAt: "created_at" } },
+  productAliases: { table: "product_aliases", cols: { productId: "product_id", createdAt: "created_at" } },
   productionRates: { table: "production_rates", cols: { metersPerMin: "meters_per_min" } },
   materials: { table: "materials", cols: { currentStock: "current_stock", lastStockTakeDate: "last_stock_take_date", batchCode: "batch_code" } },
   materialMovements: { table: "material_movements", cols: { materialId: "material_id", sourceType: "source_type", sourceId: "source_id" } },
@@ -762,7 +786,25 @@ function syncSnakeToCamel(s) { return s.replace(/_([a-z])/g, (_, c) => c.toUpper
    Not deleted from the objects in memory — plenty of code reads `r.toStock`
    off a row, and those rows come out of `ledgerCorrectedRuns` already carrying
    the derived value. They simply stop being SENT anywhere. */
-const DERIVED_BONDING_FIELDS = ["toStock", "onOrderQty"];
+/* NEVER WRITTEN BACK — computed on read, so sending them would recreate the
+   very duplication they were removed for, and after the columns are dropped an
+   upsert carrying them fails outright and the save is lost.
+
+   toStock / onOrderQty: derived from the ledger since 6 Sep 2026.
+
+   caseOverrides / caseRemovals / confirmedCases / packedOutside: derived from
+   the cases table by patchMapsFromCaseRecords, which ADDS them to every order
+   object at load. Without this skip the client hands them straight back.
+
+   plannedSpec / plannedQty: superseded by `planned`, which holds the whole
+   promise instead of one product of it. */
+const DERIVED_BONDING_FIELDS = ["toStock", "onOrderQty", "customerName",
+  /* caseWeights / palletAssignments: written to cases.weight and cases.pallet
+     since the table existed, derived back onto the order at load. The gate
+     found 42/42 matching and a live check 48/48. */
+  "caseWeights", "palletAssignments",
+  "caseOverrides", "caseRemovals", "confirmedCases", "packedOutside",
+  "plannedSpec", "plannedQty", "plannedOutstanding", "plannedItems"];
 
 function syncToSnakeRow(obj, colMap) {
   // Default every outgoing row to deleted:false. Without this, an upsert
@@ -1540,6 +1582,78 @@ function specCandidateIndex(rows, getSpec) {
     },
   };
 }
+/* ===== THE PRODUCT CATALOGUE — resolution ==================================
+
+   resolveProduct(data, text) is the single owner of "what product is this
+   string". Order intake, bonding entry and the label all ask it; none works it
+   out for itself. That is the same move that made caseView the one answer for
+   cases, applied to the fact that caused most of 8 September.
+
+   It answers one of three ways:
+     exact     the text is a known alias, or is a product's own name
+     candidates  it isn't, but these products are close — a HUMAN chooses
+     none      nothing close enough to offer
+
+   It never guesses. A near-match that is silently accepted is how
+   "PX Plus 0.40 x 1.40mm" became its own product with no pt. */
+function productKey(text) {
+  return String(text || "")
+    .toUpperCase()
+    .replace(/\((\d+(\.\d+)?)M\)/g, "")      // metreage is a property of the FORM
+    .replace(/\bREELS?\b/g, "")                // so is box-or-reel
+    .replace(/MM\b/g, "")                     // "0.50 x 1.20" and "0.50 x 1.20mm" are one product
+    .replace(/[^A-Z0-9.]/g, "");
+}
+/* The dimensions, pt and variant of a string, whatever order they were typed
+   in. Used to offer candidates, never to decide. */
+function productParts(text) {
+  const t = String(text || "");
+  const dims = t.match(/(\d+(?:\.\d+)?)\s*[xX]\s*(\d+(?:\.\d+)?)\s*mm/);
+  const single = t.match(/(\d+(?:\.\d+)?)\s*mm/);
+  return {
+    thickness: dims ? Number(dims[1]) : null,
+    gos: dims ? Number(dims[2]) : (single ? Number(single[1]) : null),
+    pt: (t.match(/(2-3pt|3-4pt|6pt)/i) || [null])[0],
+    variant: /O\/S/i.test(t) ? "O/S" : (t.match(/\b(D\d+(?:\.\d+)?)\b/) || [null, null])[1],
+    reel: /reel/i.test(t),
+  };
+}
+function resolveProduct(data, text) {
+  const products = (data && data.products || []).filter(p => !p.deleted);
+  const aliases = (data && data.productAliases || []).filter(a => !a.deleted);
+  const raw = String(text || "").trim();
+  if (!raw) return { status: "none", candidates: [] };
+  const byId = new Map(products.map(p => [p.id, p]));
+
+  // 1. An exact alias, or a product's own name. No question asked.
+  const hit = aliases.find(a => a.alias === raw)
+    || aliases.find(a => productKey(a.alias) === productKey(raw));
+  if (hit && byId.get(hit.productId)) return { status: "exact", product: byId.get(hit.productId), candidates: [] };
+  const self = products.find(p => productKey(p.displayName) === productKey(raw));
+  if (self) return { status: "exact", product: self, candidates: [] };
+
+  // 2. Close enough to offer. Same family and the same two dimensions is the
+  //    bar: that is a product typed without its pt, or with the wrong
+  //    metreage, which are the two faults actually seen.
+  const q = productParts(raw);
+  const famWords = raw.replace(/[\d].*$/, "").trim().toUpperCase();
+  const candidates = products.filter(p => {
+    if (q.gos == null) return false;
+    if (Number(p.gos) !== q.gos) return false;
+    if (q.thickness != null && p.thickness != null && Number(p.thickness) !== q.thickness) return false;
+    if (famWords && p.family && !p.family.toUpperCase().startsWith(famWords.split(" ")[0])) return false;
+    return true;
+  }).sort((a, b) => String(a.displayName).localeCompare(String(b.displayName)));
+
+  return { status: candidates.length ? "candidates" : "none", candidates, typed: raw };
+}
+/* "D3", "D3.5", "D4", "D5" — a double-gap product, and the number is the
+   distance between the two gaps. Part of a product's identity, like O/S:
+   a D3 is not a D5 and neither is the plain product. */
+function doubleGapOf(spec) {
+  const m = String(spec || "").match(/\bD(\d+(?:\.\d+)?)\b/i);
+  return m ? "D" + m[1] : null;
+}
 function looseSpecMatch(specA, specB) {
   const a = specDimensions(specA), b = specDimensions(specB);
   if (a.length < 2 || b.length < 2) {
@@ -1565,9 +1679,18 @@ function looseSpecMatch(specA, specB) {
     const strip = t => normalizeSpec(t).replace(/\b\d-\d\s*pt\b/gi, "").replace(/\s+/g, " ").trim();
     const ptA2 = ptOf(specA), ptB2 = ptOf(specB);
     if (ptA2 && ptB2 && ptA2 !== ptB2) return false;
+    if (doubleGapOf(specA) !== doubleGapOf(specB)) return false;
     return strip(specA) !== "" && strip(specA) === strip(specB);
   }
   if (isOffCentre(specA) !== isOffCentre(specB)) return false;
+  /* A DOUBLE IS NOT THE PLAIN PRODUCT OF THE SAME SIZE. (found 9 Sep by the
+     allocation stress test)
+     specDimensions reads 0.40 x 1.30 from both "0.40 x 1.30mm 2-3pt" and
+     "0.40 x 1.30mm D3", and pt does not separate them because a double often
+     carries none — so a D3 satisfied a plain order's need and could have been
+     allocated into its case. Two gaps and one gap are different products; the
+     spacing between the gaps makes D3 and D5 different again. */
+  if (doubleGapOf(specA) !== doubleGapOf(specB)) return false;
   if (isKenPin(specA) !== isKenPin(specB)) return false;
   /* Exceed is ejection rubber. It is not creasing matrix, it never goes near
      the glue line, and it must never be filled from — or counted as — matrix
@@ -1683,6 +1806,52 @@ function manufactureDateLabel(code, prefix) {
 // one is far more likely a typo than a genuinely new convention; (4) its
 // sequence number for that exact day doesn't skip ahead of what's already
 // been logged. Returns an array of warning strings — empty if all clear.
+/* "DID YOU MEAN…" FOR A TYPED BOX CODE. (Chris, 9 Sep)
+
+   Every box code is nine characters read off a label in a shed and retyped.
+   Three faults this week came from that and nothing else:
+     G64202GDB typed as G62402GDB — two digits swapped, so one box went
+       missing and a phantom one appeared on a case
+     I60805SDB printed as I60805SBD
+     I60708SDB, a code that exists nowhere, sitting against a case that
+       actually holds I60708GDB
+   The proper fix is scanning the barcode that is already on the label. Until
+   that exists, this catches the same class for the price of a string compare.
+
+   Only offered where the code MUST already exist — recording a box into a
+   case, amending a pick. Never on the bonding line or a stock take, where a
+   code that is new is exactly what is expected.
+
+   GDB and GBD are the same code by Chris's instruction, so a pair differing
+   only that way is not a near miss and is not offered. */
+function boxCodeNearMisses(typed, existingCodes, limit = 3) {
+  const norm = (c) => String(c || "").trim().toUpperCase();
+  const t = norm(typed);
+  if (t.length < 4) return [];
+  const same = (a, b) => a === b || a.replace(/GBD$/, "GDB") === b.replace(/GBD$/, "GDB");
+  const codes = [...new Set((existingCodes || []).map(norm).filter(Boolean))];
+  if (codes.some(c => same(c, t))) return [];        // it exists: nothing to suggest
+  const out = [];
+  for (const c of codes) {
+    if (Math.abs(c.length - t.length) > 1) continue;
+    if (same(c, t)) continue;
+    let d = 0, i = 0, j = 0, swapped = false;
+    while (i < t.length && j < c.length && d <= 2) {
+      if (t[i] === c[j]) { i++; j++; continue; }
+      /* Two adjacent characters the wrong way round is ONE mistake, not two —
+         it is the commonest of them all and a plain edit distance scores it 2
+         and hides it below the threshold. */
+      if (t[i + 1] === c[j] && t[i] === c[j + 1]) { d++; swapped = true; i += 2; j += 2; continue; }
+      if (t.length === c.length) { d++; i++; j++; continue; }
+      if (t.length > c.length) { d++; i++; continue; }
+      d++; j++;
+    }
+    d += (t.length - i) + (c.length - j);
+    if (d <= 1 || (swapped && d <= 1)) out.push({ code: c, distance: d, swapped });
+  }
+  return out.sort((a, b) => a.distance - b.distance).slice(0, limit);
+}
+
 function analyzeCodeStructure(code, dateStr, existingCodes, prefix) {
   const warnings = [];
   const trimmed = (code || "").trim();
@@ -1871,7 +2040,7 @@ function computeMakeLists(order, data) {
 // allocatable, plus a way to register something the system has never
 // seen — kept as its own small component so opening/closing it and its
 // own add-found form don't force the whole card list to re-render.
-function BatchPicker({ alternatives, onPick, onAddFound, onClose }) {
+function BatchPicker({ alternatives, onPick, onAddFound, onClose, knownCodes = [] }) {
   const [addingNew, setAddingNew] = useState(false);
   const [newBoxNumber, setNewBoxNumber] = useState("");
   const [newBatchCode, setNewBatchCode] = useState("");
@@ -1903,6 +2072,23 @@ function BatchPicker({ alternatives, onPick, onAddFound, onClose }) {
       ) : (
         <div style={{ padding: 10, borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff" }}>
           <div style={{ fontSize: 12, color: INK_MUTED, marginBottom: 8 }}>Found on the shelf but not in the list above? Register it here.</div>
+          {/* A "found" box is usually a real box the app has not seen. Sometimes
+              it is an existing code typed slightly wrong, and that one looks
+              identical until a case is short weeks later. Offered, never
+              enforced. */}
+          {newBoxNumber.trim().length >= 4 && boxCodeNearMisses(newBoxNumber, knownCodes).length > 0 && (
+            <div style={{ marginBottom: 6, padding: "7px 9px", borderRadius: 6, background: "#FFF6E5", border: "1px solid #E8C77A" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#8A6100" }}>Close to a code already on record:</div>
+              {boxCodeNearMisses(newBoxNumber, knownCodes).map(n => (
+                <button key={n.code} type="button" onClick={() => setNewBoxNumber(n.code)}
+                  style={{ display: "block", marginTop: 4, width: "100%", textAlign: "left", background: "#fff",
+                           border: `1px solid ${BORDER}`, borderRadius: 4, padding: "5px 8px", cursor: "pointer" }}>
+                  <span className="font-mono" style={{ fontWeight: 700 }}>{n.code}</span>
+                  {n.swapped ? <span style={{ fontSize: 11.5, color: "#8A6100" }}> · two characters the other way round</span> : null}
+                </button>
+              ))}
+            </div>
+          )}
           <input type="text" placeholder="Box number" value={newBoxNumber} onChange={e => setNewBoxNumber(e.target.value)}
             style={{ display: "block", width: "100%", boxSizing: "border-box", fontFamily: "monospace", fontSize: 14, height: 38, borderRadius: 6, border: `1px solid ${BORDER}`, marginBottom: 6, padding: "0 8px" }} />
           <input type="text" placeholder="Batch code (optional)" value={newBatchCode} onChange={e => setNewBatchCode(e.target.value)}
@@ -1926,7 +2112,7 @@ function BatchPicker({ alternatives, onPick, onAddFound, onClose }) {
   );
 }
 
-function PickByPhoneView({ pendingPickItems, productSummary, pendingCaseSuggestions, setPickItemQty, setPickItemDamaged, setPickItemCase, setPickItemConfirmed, alternativeBatchesFor, swapPickItemBatch, addFoundBatchForPickItem, confirmPickAndAllocate, cancelPendingPick, order }) {
+function PickByPhoneView({ pendingPickItems, productSummary, pendingCaseSuggestions, setPickItemQty, setPickItemDamaged, setPickItemCase, setPickItemConfirmed, alternativeBatchesFor, swapPickItemBatch, addFoundBatchForPickItem, confirmPickAndAllocate, commitOnePick, cancelPendingPick, order }) {
   // Which boxes the picker has explicitly said "yes, that's the count" on —
   // purely a local UI step, never touches the real pick data. Until a box
   // is confirmed, its case number stays hidden: there's nothing to tell
@@ -2001,6 +2187,8 @@ function PickByPhoneView({ pendingPickItems, productSummary, pendingCaseSuggesti
               </div>
               {batchPickerOpenFor === it.id && (
                 <BatchPicker
+                  knownCodes={(pendingPickItems || []).map(x => x.boxNumber).concat(
+                    (alternativeBatchesFor(order, (it.displaySpec || it.productSize), it.id) || []).map(a => a.boxNumber))}
                   alternatives={alternativeBatchesFor(order, (it.displaySpec || it.productSize), it.id)}
                   onPick={(alt) => { swapPickItemBatch(it.id, alt); setBatchPickerOpenFor(null); unconfirmBox(it.id); }}
                   onAddFound={(boxNumber, batchCode, qty) => { addFoundBatchForPickItem(it.id, boxNumber, batchCode, qty); setBatchPickerOpenFor(null); unconfirmBox(it.id); }}
@@ -2019,64 +2207,83 @@ function PickByPhoneView({ pendingPickItems, productSummary, pendingCaseSuggesti
                   style={{ flex: "1 1 0", minWidth: 0, height: 46, fontSize: 22, borderRadius: 8, border: `1px solid ${BORDER}`, background: "#fff", cursor: "pointer" }}>+</button>
               </div>
 
-              {!isConfirmed ? (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
-                  <button onClick={() => setPickItemDamaged(it.id, !it.damaged)}
-                    style={{ flex: "1 1 0", minWidth: 0, height: 46, borderRadius: 8, border: `1px solid ${it.damaged ? RED : BORDER}`, background: it.damaged ? RED : "#fff", color: it.damaged ? "#fff" : INK, fontWeight: 600, fontSize: 14, cursor: "pointer" }}>
-                    {it.damaged ? "✓ Damaged" : "Mark damaged"}
-                  </button>
-                  {/* Zero found means nothing to allocate and nothing to
-                      case — confirmPickAndAllocate already excludes a
-                      0-qty box from being applied at all, so offering a
-                      case number for it here would be telling someone to
-                      physically put a box that isn't there into a case. */}
-                  {!it.damaged && Number(it.confirmedQty) > 0 && (
-                    <button onClick={() => confirmBox(it.id)}
-                      style={{ flex: "1 1 0", minWidth: 0, height: 46, borderRadius: 8, border: "none", background: GREEN, color: "#fff", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>
-                      ✓ Confirm count
-                    </button>
-                  )}
-                  {!it.damaged && Number(it.confirmedQty) === 0 && (
-                    <div style={{ flex: "1 1 0", minWidth: 0, height: 46, borderRadius: 8, border: `1px solid ${BORDER}`, background: "#F2F2F0", color: INK_MUTED, fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
-                      Not on shelf — nothing to pick
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div>
-                  <div style={{ background: "#EAF7EE", border: `1.5px solid ${GREEN}`, borderRadius: 8, padding: "10px 14px", marginBottom: 8 }}>
-                    {isSplitCase ? (
-                      <>
-                        <div style={{ fontSize: 14, fontWeight: 600, color: "#1B7A3D", marginBottom: 2 }}>📦 This one's too many for one case — split it:</div>
-                        {caseBreakdown.map((c, ci) => (
-                          <div key={ci} style={{ fontSize: 14, fontWeight: 600, color: "#1B7A3D" }}>{c.qty} into Case #{c.caseNum}</div>
-                        ))}
-                      </>
-                    ) : (
-                      <div style={{ fontSize: 14, fontWeight: 600, color: "#1B7A3D", marginBottom: 4 }}>📦 Put it in Case #{caseNum ?? "—"}</div>
-                    )}
-                    <button onClick={() => unconfirmBox(it.id)} style={{ background: "none", border: "none", padding: 0, marginTop: 4, color: "#1B7A3D", fontSize: 12, textDecoration: "underline", cursor: "pointer" }}>Change</button>
+              {it.committed ? (
+                /* CONFIRMED, AND IT SAYS SO. (Chris, 9 Sep)
+                   The line is written — allocated to the order and placed in
+                   its case. It stays on screen so the picker can see what they
+                   have already done without counting boxes twice. */
+                <div style={{ background: "#FFF1DC", border: `1.5px solid ${ORANGE}`, borderRadius: 8,
+                              padding: "12px 14px", textAlign: "center" }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "#8A4B00" }}>
+                    {it.damaged ? "Confirmed — recorded as damaged"
+                      : `Confirmed — ${it.confirmedQty} in case ${it.committedCase ?? caseNum ?? "—"}`}
                   </div>
+                </div>
+              ) : (<>
+              {/* WHAT TO PICK, WHERE IT GOES, ONE TICK. (Chris, 9 Sep)
+                  The case number used to be hidden until a "Confirm count"
+                  press, so picking was two taps per box and nothing was
+                  written until the whole pallet had been walked. Anyone with
+                  ten minutes between other jobs had a screenful of work
+                  recorded nowhere.
+                  Now the destination is on screen from the start and the tick
+                  means one thing only: it is in the case. That line is written
+                  then and there; the rest of the walk stays exactly as it is,
+                  for whenever the next ten minutes turn up. */}
+              {!it.damaged && Number(it.confirmedQty) > 0 && (
+                <div style={{ background: "#EAF7EE", border: `1.5px solid ${GREEN}`, borderRadius: 8, padding: "10px 14px", marginBottom: 10 }}>
+                  {isSplitCase ? (
+                    <>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: "#1B7A3D", marginBottom: 2 }}>Too many for one case — split it:</div>
+                      {caseBreakdown.map((c, ci) => (
+                        <div key={ci} style={{ fontSize: 15, fontWeight: 700, color: "#1B7A3D" }}>{c.qty} into case {c.caseNum}</div>
+                      ))}
+                    </>
+                  ) : (
+                    <div style={{ fontSize: 16, fontWeight: 700, color: "#1B7A3D" }}>Goes in case {caseNum ?? "—"}</div>
+                  )}
                   {!isSplitCase && (
                     <input type="number" inputMode="numeric" min="1" value={it.caseOverride ?? suggestedCase ?? ""}
-                      placeholder="Case #"
+                      placeholder="Different case?"
                       onChange={e => setPickItemCase(it.boxNumber, e.target.value === "" ? null : Number(e.target.value))}
-                      style={{ width: "100%", minWidth: 0, height: 40, textAlign: "center", fontSize: 14, borderRadius: 8, border: `1px solid ${BORDER}`, background: it.caseOverride != null ? "#FFF3E6" : "#fff" }} />
+                      style={{ width: "100%", boxSizing: "border-box", height: 40, textAlign: "center", fontSize: 14, borderRadius: 8,
+                               marginTop: 8, border: `1px solid ${BORDER}`, background: it.caseOverride != null ? "#FFF3E6" : "#fff" }} />
                   )}
                 </div>
               )}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+                <button onClick={() => setPickItemDamaged(it.id, !it.damaged)}
+                  style={{ flex: "1 1 0", minWidth: 0, height: 52, borderRadius: 8, border: `1px solid ${it.damaged ? RED : BORDER}`, background: it.damaged ? RED : "#fff", color: it.damaged ? "#fff" : INK, fontWeight: 600, fontSize: 14, cursor: "pointer" }}>
+                  {it.damaged ? "✓ Damaged" : "Mark damaged"}
+                </button>
+                {!it.damaged && Number(it.confirmedQty) > 0 && (
+                  <button onClick={() => commitOnePick(order, it)}
+                    style={{ flex: "2 1 0", minWidth: 0, height: 52, borderRadius: 8, border: "none", background: GREEN, color: "#fff", fontWeight: 700, fontSize: 16, cursor: "pointer" }}>
+                    ✓ In case {isSplitCase ? "" : (caseNum ?? "")}
+                  </button>
+                )}
+                {!it.damaged && Number(it.confirmedQty) === 0 && (
+                  <div style={{ flex: "2 1 0", minWidth: 0, height: 52, borderRadius: 8, border: `1px solid ${BORDER}`, background: "#F2F2F0", color: INK_MUTED, fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
+                    Not on shelf — nothing to pick
+                  </div>
+                )}
+              </div>
+              </>)}
             </div>
           </React.Fragment>
         );
       })}
       <div style={{ paddingTop: 16, paddingBottom: 8 }}>
-        <button onClick={() => confirmPickAndAllocate(order)}
-          style={{ width: "100%", height: 54, background: AMBER, color: "#fff", fontWeight: 700, fontSize: 16, borderRadius: 8, border: "none", cursor: "pointer", marginBottom: 8 }}>
-          Confirm &amp; allocate to order
-        </button>
+        {/* NO BOTTOM COMMIT BUTTON. (Chris, 9 Sep)
+            Every line is recorded by its own tick, at the moment the box goes
+            in the case. A second, whole-list button underneath is a different
+            way of saying the same thing, and it is the way that writes lines
+            nobody carried — which is exactly what put 22 false placements in
+            the ledger on 8 September. Cancel closes the walk; anything already
+            ticked is already written and is not affected by it. */}
         <button onClick={cancelPendingPick}
           style={{ width: "100%", height: 44, background: "#fff", color: INK, fontWeight: 600, fontSize: 14, borderRadius: 8, border: `1px solid ${BORDER}`, cursor: "pointer" }}>
-          Cancel
+          Close this pick
         </button>
       </div>
     </div>
@@ -2442,7 +2649,7 @@ function orderCaseCount(order, lineItems, bondingRuns, cases = null) {
      labels on the floor would be worse than no count at all. Only orders with
      no plan get worked out. */
   const planned = (cases || []).filter(c => c && !c.deleted && c.orderId === order.id
-    && String(c.plannedSpec || "").trim());
+    && hasCasePlan(c));
   if (planned.length) {
     const withBoxes = (cases || []).filter(c => c && !c.deleted && c.orderId === order.id
       && Object.keys(c.contents || {}).length);
@@ -2465,6 +2672,46 @@ function orderCaseCount(order, lineItems, bondingRuns, cases = null) {
 // not just at the start. Then 12mm again for anything simply wide, and
 // everything else defaults to 10mm.
 const ULTRA_SR_COLOURS = /\b(mauve|silver|buff|violet|white|sky|lime|yellow|rose|slate|green|brown|red|black|blue|orange)\s+\d+(\.\d+)?\s*mm\b/i;
+/* REMOVING ONE CASE BY NUMBER, AND WHICH LABELS TO REPRINT.
+   Chris, 7 Sep: "if a case were to be taken out, we would normally just
+   reprint the case labels and reaffix starting from the first again till the
+   end." The number is a POSITION on a pallet, not a name.
+
+   Restored in the 9 Sep audit after being deleted for having no call site.
+   That was the wrong call twice over: it is covered by journey_test and
+   packplan_test, and it is not the same job as applyAmendmentReduction, which
+   removes by PRODUCT QUANTITY when a customer drops something. Deleting a
+   single case outright — a case damaged, a case that should never have
+   existed — still has no button, and this is the rule that button will use.
+   A tidy-up never loses functionality. */
+function renumberAfterRemoval(plan, removedCaseNum) {
+  const gone = Number(removedCaseNum);
+  const moved = [];
+  const kept = (plan || [])
+    .filter(p => Number(p.caseNum) !== gone)
+    .map(p => {
+      const n = Number(p.caseNum);
+      if (n <= gone) return p;
+      moved.push({ from: n, to: n - 1 });
+      return { ...p, caseNum: n - 1 };
+    })
+    .sort((a, b) => a.caseNum - b.caseNum);
+  return {
+    plan: kept, moved,
+    reprintFrom: moved.length ? gone : null,
+    reprintTo: moved.length ? kept[kept.length - 1].caseNum : null,
+  };
+}
+
+/* THE ONE PLACE THAT DECIDES 12mm / 10mm / 7mm. (audit, 9 Sep 2026)
+   productIs12mm was added on 8 Sep to answer the same question from a
+   catalogue record rather than a spec string, and nothing ever called it —
+   two implementations of one rule, which is the fault this whole rebuild has
+   been about. Deleted. So were decomposeIntoCases and decomposeReelCases,
+   whose job buildPackingPlan does now that capacity comes from the product,
+   renumberAfterRemoval was deleted here too and then restored: it has no
+   call site but it is a different job from applyAmendmentReduction and two
+   suites cover it. See its own note above. */
 function classifySize(spec) {
   const desc = (spec || "").toLowerCase();
   if (desc.includes("profile")) return "boughtin";
@@ -2810,17 +3057,6 @@ function top2SizeRows(orders, lineItems) {
   return { top2, rows };
 }
 
-function decomposeIntoCases(qty) {
-  const cases = []; let n20 = Math.floor(qty / 20);
-  for (let i = 0; i < n20; i++) cases.push({ size: 20, qty: 20 });
-  const r = qty % 20;
-  if (r === 0) {}
-  else if (r <= 5) cases.push({ size: 5, qty: r });
-  else if (r <= 10) cases.push({ size: 10, qty: r });
-  else if (r <= 15) { cases.push({ size: 10, qty: 10 }); cases.push({ size: 5, qty: r - 10 }); }
-  else { cases.push({ size: 10, qty: 10 }); cases.push({ size: 10, qty: r - 10 }); }
-  return cases;
-}
 // Reels case up differently to boxes — always capped at 10 per case, with
 // no larger 20-tier the way boxes get. Packaging (Box vs Reel) is a
 // property of the physical stock fulfilling a line item, not the order
@@ -2836,14 +3072,6 @@ function decomposeIntoCases(qty) {
 const CASE_MAX_SIZE_DEFAULT = 20;
 function reelsPerCase(spec) {
   return classifySize(spec) === "12mm" ? 9 : 10;
-}
-function decomposeReelCases(qty, spec) {
-  const cap = reelsPerCase(spec);
-  const cases = [];
-  let remaining = qty;
-  while (remaining > cap) { cases.push({ size: cap, qty: cap }); remaining -= cap; }
-  if (remaining > 0) cases.push({ size: remaining, qty: remaining });
-  return cases;
 }
 /* THE ORDER SAYS SO. Chris, 7 Sep: "it's in the customer order."
    Packaging was only ever read off the bonding runs' packageType, which is
@@ -3876,7 +4104,7 @@ function predictRunDestinations(data, pendingRuns) {
       } catch (e) {
         cases = [];
       }
-      out.push({ kind: "order", orderId: r.workNumber, customer: order?.customer || r.customerName || "",
+      out.push({ kind: "order", orderId: r.workNumber, customer: runCustomer(data.orders, r),
                  qty: onOrder, cases, boxNumber: r.boxNumber, spec: r.productSize });
     }
     if (toStock > 0) {
@@ -4321,31 +4549,285 @@ function printShippingManifest(order, setData) {
 
    Order: priority first (1 is most urgent), then due date, then order id, so
    two orders of equal priority don't swap places between renders. */
-function ordersNeedingSpec(data, spec, orderIdsToExclude = []) {
+/* THE ALLOCATION RULE, IN ONE PLACE. (audit, 9 Sep 2026)
+
+   It was written as a closure inside the bonding screen, so only the bonding
+   screen obeyed it. Moving a box to another order, moving other stock, and
+   the packing override each allocated by their own rules — which is how a box
+   gets promised to an order that has no case for it, the exact fault the rule
+   was written to stop. A rule that only one screen applies is not a rule.
+
+   Returns a refusal naming the number and how to clear it, or "" to proceed. */
+/* WHAT THIS ORDER STILL NEEDS, AND WHETHER IT EXISTS YET. (Chris, 9 Sep:
+   Dave asks for a case map because he wants to allocate stock.)
+
+   The case map says what each case is promised. It does not say what is still
+   outstanding, what is on the shelf, or what has to be made — so the person
+   holding it is reading a plan and guessing at availability. FM Plus is
+   promised 110 of 0.80 x 2.50 with 42 on the shelf, and 5 of a D3 that does
+   not exist anywhere; neither fact is anywhere on the map.
+
+   Three numbers per product, all derived: still needed, on the shelf now, and
+   what that leaves to make. */
+function orderShortfall(data, orderId) {
+  const rows = (data.cases || []).filter(c => c && !c.deleted && c.orderId === orderId);
+  const specs = new Map();
+  for (const c of rows) {
+    for (const [spec, qty] of Object.entries(casePlanned(c))) {
+      specs.set(spec, (specs.get(spec) || 0) + (Number(qty) || 0));
+    }
+  }
+  const out = [];
+  for (const [spec, planned] of specs) {
+    const ranked = ordersNeedingSpec(data, spec);
+    const mine = ranked.needing.find(n => n.orderId === orderId);
+    const needed = mine ? mine.needs : 0;
+    if (needed <= 0) continue;
+    /* On the shelf means unpromised and physically there — the same figure
+       the pick screen offers, not "made at some point". */
+    const shelf = boxedStockAvailable(data.bondingRuns, data.stockPicks || [])
+      .filter(b => looseSpecMatch(b.productSize, spec))
+      .reduce((t, b) => t + (Number(b.available) || 0), 0);
+    out.push({ spec, planned, needed, shelf,
+               toMake: Math.max(0, needed - shelf),
+               room: mine ? mine.room : [] });
+  }
+  return out.sort((a, b) => b.toMake - a.toMake || b.needed - a.needed || a.spec.localeCompare(b.spec));
+}
+
+/* WRONG STOCK IN A CASE. (Chris, 9 Sep)
+
+   Dave commits newly made boxes to wherever the app sends him, and only finds
+   out at the pallet that the case already has stock in it. He can read the
+   codes off what is in there, so this is a swap, not a mystery.
+
+   Works out what the pallet means for the records, and never guesses:
+     - a found box sitting unallocated on the shelf  -> allocate and place it
+     - a found box allocated to ANOTHER order        -> take it, and that
+       order's need reopens by exactly that amount, with a flag naming both
+     - a found box already in another case of THIS order -> a re-case, logged
+       and flagged, because the other case is now short
+     - a code the system has never seen              -> allocate nothing, raise
+       a loud flag. That is a box made before the app or never logged, and
+       only Chris can say which.
+   Boxes he was carrying go back to the shelf as unallocated, so the order's
+   need reopens and they are offered again next time.
+
+   Returns the movements to write, the flags to raise and a plain summary.
+   It writes nothing itself. */
+function resolveCaseContents(data, orderId, caseNum, found, putBack) {
+  const up = (x) => String(x || "").trim().toUpperCase();
+  const runs = (data.bondingRuns || []).filter(r => r && !r.deleted);
+  const cases = (data.cases || []).filter(c => c && !c.deleted);
+  const movs = (data.movements || []).filter(m => m && !m.deleted);
+  const moves = [], flags = [], notes = [];
+
+  const specOf = (box) => {
+    const r = runs.find(x => up(x.boxNumber) === up(box) && x.productSize);
+    return r ? r.productSize : null;
+  };
+  /* Where does the ledger currently think this box is? Derived, never stored. */
+  const placedAt = (box) => {
+    const by = new Map();
+    for (const m of movs) {
+      if (up(m.boxNumber) !== up(box) || m.caseNum == null) continue;
+      if (m.kind !== "placed" && m.kind !== "unplaced") continue;
+      const k = `${m.orderId}|${Number(m.caseNum)}`;
+      by.set(k, (by.get(k) || 0) + (m.kind === "placed" ? Number(m.qty) || 0 : -(Number(m.qty) || 0)));
+    }
+    return [...by.entries()].filter(([, q]) => q > 0)
+      .map(([k, q]) => ({ orderId: k.split("|")[0], caseNum: Number(k.split("|")[1]), qty: q }));
+  };
+  const allocatedTo = (box) => {
+    const by = new Map();
+    for (const m of movs) {
+      if (up(m.boxNumber) !== up(box) || !m.orderId) continue;
+      if (m.kind === "allocated") by.set(m.orderId, (by.get(m.orderId) || 0) + (Number(m.qty) || 0));
+      if (m.kind === "unallocated") by.set(m.orderId, (by.get(m.orderId) || 0) - (Number(m.qty) || 0));
+    }
+    return [...by.entries()].filter(([, q]) => q > 0).map(([id, qty]) => ({ orderId: id, qty }));
+  };
+
+  for (const row of (found || [])) {
+    const box = up(row.boxNumber), qty = Number(row.qty) || 0;
+    if (!box || qty <= 0) continue;
+    const spec = specOf(box);
+    if (!spec) {
+      flags.push({ kind: "unknown_box_in_case", orderId, boxNumber: box,
+        summary: `${box} is in ${orderId} case ${caseNum} and the system has never heard of it`,
+        detail: `${qty} found in the case. Nothing has been allocated or placed — a box code that exists nowhere cannot be promised to an order. Find out where it came from.` });
+      notes.push(`${box}: unknown code, flagged, nothing recorded`);
+      continue;
+    }
+    const here = placedAt(box).filter(p => p.orderId === orderId && p.caseNum === Number(caseNum))
+      .reduce((t, p) => t + p.qty, 0);
+    if (here >= qty) { notes.push(`${box}: already recorded here, nothing to do`); continue; }
+
+    /* Take it off wherever it currently is, one place at a time. */
+    let needed = qty - here;
+    for (const at of placedAt(box)) {
+      if (needed <= 0) break;
+      if (at.orderId === orderId && at.caseNum === Number(caseNum)) continue;
+      const take = Math.min(at.qty, needed);
+      moves.push({ kind: "unplaced", boxNumber: box, spec, qty: take, orderId: at.orderId,
+        caseNum: at.caseNum, source: "case-fix", note: `Found in ${orderId} case ${caseNum} instead` });
+      if (at.orderId !== orderId) {
+        moves.push({ kind: "unallocated", boxNumber: box, spec, qty: take, orderId: at.orderId,
+          source: "case-fix", note: `Moved to ${orderId} case ${caseNum}` });
+        flags.push({ kind: "stock_taken_from_order", orderId: at.orderId, boxNumber: box,
+          summary: `${take} × ${spec} taken off ${at.orderId} — found in ${orderId} case ${caseNum}`,
+          detail: `${at.orderId} case ${at.caseNum} is now short by ${take} and that product is outstanding again on that order.` });
+        notes.push(`${box}: ${take} taken off ${at.orderId} case ${at.caseNum}`);
+      } else {
+        flags.push({ kind: "recased", orderId, boxNumber: box,
+          summary: `${take} × ${spec} moved from case ${at.caseNum} to case ${caseNum} on ${orderId}`,
+          detail: `Found physically in case ${caseNum}. Case ${at.caseNum} is now short by ${take}.` });
+        notes.push(`${box}: ${take} moved from case ${at.caseNum}`);
+      }
+      needed -= take;
+    }
+    /* ALLOCATE WHATEVER IS NOT ALREADY PROMISED TO THIS ORDER — whether it
+       came off the shelf or off another order. Doing this only for the shelf
+       remainder left a box PLACED in a case with no allocation behind it,
+       which is precisely the fault the ledger has been carrying all week.
+       Caught by casefix_test before it ever ran. */
+    const already = allocatedTo(box).find(a => a.orderId === orderId);
+    const toAllocate = Math.max(0, (qty - here) - (already ? already.qty : 0));
+    if (toAllocate > 0) {
+      moves.push({ kind: "allocated", boxNumber: box, spec, qty: toAllocate, orderId,
+        caseNum: Number(caseNum), source: "case-fix", note: `Found in case ${caseNum}` });
+    }
+    if (needed > 0) notes.push(`${box}: ${needed} from the shelf`);
+    moves.push({ kind: "placed", boxNumber: box, spec, qty: qty - here, orderId,
+      caseNum: Number(caseNum), source: "case-fix" });
+  }
+
+  /* His boxes go back on the shelf: unallocated, so the order needs them again. */
+  for (const row of (putBack || [])) {
+    const box = up(row.boxNumber), qty = Number(row.qty) || 0;
+    if (!box || qty <= 0) continue;
+    const spec = specOf(box);
+    for (const at of placedAt(box).filter(p => p.orderId === orderId && p.caseNum === Number(caseNum))) {
+      moves.push({ kind: "unplaced", boxNumber: box, spec, qty: Math.min(at.qty, qty), orderId,
+        caseNum: Number(caseNum), source: "case-fix", note: "Case already had stock in it" });
+    }
+    moves.push({ kind: "unallocated", boxNumber: box, spec, qty, orderId, source: "case-fix",
+      note: row.location ? `Back to stock, ${row.location}` : "Back to stock" });
+    notes.push(`${box}: ${qty} back to stock${row.location ? ` (${row.location})` : ""}`);
+  }
+
+  /* Over-capacity is worth knowing whatever else happened. */
+  const row = cases.find(c => c.orderId === orderId && Number(c.caseNum) === Number(caseNum));
+  const totalFound = (found || []).reduce((t, r) => t + (Number(r.qty) || 0), 0);
+  const cap = Number(row && row.maxSize) || CASE_MAX_SIZE_DEFAULT;
+  if (totalFound > cap) {
+    flags.push({ kind: "case_over_capacity", orderId,
+      summary: `${orderId} case ${caseNum} holds ${totalFound} in a case of ${cap}`,
+      detail: "Counted at the pallet. Either the case is over-filled or its capacity is wrong." });
+  }
+  return { moves, flags, notes, totalFound, capacity: cap };
+}
+
+function allocationRefusal(data, spec, allocations, excludeSourceId) {
+  const rows = (allocations || []).filter(a => a && a.orderId && Number(a.qty) > 0);
+  if (!rows.length || !String(spec || "").trim()) return "";
+  let ranked;
+  try { ranked = ordersNeedingSpec(data, spec, [], { excludeSourceId: excludeSourceId || null }); }
+  catch (e) { return ""; }
+  const nameOf = (id) => {
+    const o = (data.orders || []).find(x => x.id === id);
+    return id + (o && o.customer ? ` (${o.customer})` : "");
+  };
+  for (const a of rows) {
+    const need = ranked.needing.find(n => n.orderId === a.orderId);
+    const other = ranked.others.find(n => n.orderId === a.orderId);
+    if (!need) {
+      if (other && other.noPlanFor) {
+        return `Can't allocate ${spec} to ${nameOf(a.orderId)} — that order's plan does not promise this product at all. To clear it: send these to stock, or add the line to the order first so it gets its cases.`;
+      }
+      return `Can't allocate ${spec} to ${nameOf(a.orderId)} — that order is already promised everything it needs of this product. To clear it: send these to stock.`;
+    }
+    if (!(need.room || []).length) {
+      return `Can't allocate ${spec} to ${nameOf(a.orderId)} — every case promised this product is already full or spoken for, so there is no case for these to go in. To clear it: send them to stock, or place what is already allocated first.`;
+    }
+    if (Number(a.qty) > need.needs) {
+      const where = (need.room || []).slice(0, 3).map(r => `case ${r.caseNum} (${r.spaces})`).join(", ");
+      return `Can't allocate ${a.qty} to ${a.orderId} — it only needs ${need.needs} more of ${spec}${where ? ", into " + where : ""}. To clear it: drop this to ${need.needs} and let the other ${Number(a.qty) - need.needs} go to stock.`;
+    }
+  }
+  return "";
+}
+
+function ordersNeedingSpec(data, spec, orderIdsToExclude = [], opts = {}) {
+  /* excludeSourceId: when an EXISTING bonding run is being edited, its own
+     allocation must not count against the order's need — otherwise the order
+     reads as fully promised because of the very row being corrected, and a
+     legitimate edit is refused. */
+  const excludeSourceId = opts.excludeSourceId || null;
   const wanted = String(spec || "").trim();
   const exclude = new Set(orderIdsToExclude);
   const active = (data.orders || []).filter(o =>
     !o.deleted && o.stage !== "Shipped" && o.stage !== "Cancelled" && !exclude.has(o.id));
   if (!wanted) return { needing: [], others: active.map(o => ({ orderId: o.id, customer: o.customer, needs: 0 })) };
 
+  /* NEED COMES FROM THE PLAN, NOT FROM THE LINE ITEMS. (8 Sep 2026)
+
+     The old sum was "ordered minus what runs claim to have made", which is a
+     different question and drifts from the pallet: a box packed by hand, a
+     correction against a photograph, a case someone emptied — none of it
+     showed. And it could say an order needed something the plan had never
+     promised, which is how a box ends up allocated to an order with nowhere
+     to put it.
+
+     Now:  outstanding = planned − what is in the cases − what is already
+                         allocated to this order and not yet placed
+
+     Every term derived: planned from the case rows, in-cases from contents,
+     allocated from the ledger. Nothing new is stored, and the answer is the
+     same one the case map shows, because it comes from the same rows. */
   const needing = [], others = [];
+  const ledgerFor = (orderId) => (data.movements || [])
+    .filter(m => m && !m.deleted && m.orderId === orderId);
   for (const o of active) {
-    const items = orderLineItems(data.lineItems, o.id)
-      .filter(li => !isDelivery(li.description) && !isSmallItem(li.description))
-      .filter(li => looseSpecMatch(wanted, li.description));
-    if (!items.length) { others.push({ orderId: o.id, customer: o.customer, needs: 0 }); continue; }
-    const { byLineItem } = groupAssignedRunsByLineItem(data.bondingRuns || [], o.id, items);
-    let outstanding = 0;
-    for (const { li, runs } of byLineItem) {
-      const made = runs.reduce((s, r) => s + (Number(r.onOrderQty) || 0), 0);
-      const fromOther = Number(li.fromOtherStock) || 0;
-      outstanding += Math.max(0, (Number(li.qty) || 0) - made - fromOther);
+    const rows = (data.cases || []).filter(c => c && !c.deleted && c.orderId === o.id);
+    let planned = 0, inCases = 0;
+    const room = [];
+    for (const c of rows) {
+      for (const [pSpec, pQty] of Object.entries(casePlanned(c))) {
+        if (!looseSpecMatch(wanted, pSpec)) continue;
+        const q = Number(pQty) || 0;
+        planned += q;
+        /* Only what is in this case OF THIS PRODUCT counts against this
+           promise — a shared case holding something else must not read as
+           full for a product it has not received. */
+        let here = 0;
+        for (const [box, n] of Object.entries(c.contents || {})) {
+          const bs = (data.bondingRuns || []).find(r => r && !r.deleted
+            && String(r.boxNumber || "").trim().toUpperCase() === String(box).trim().toUpperCase());
+          if (bs && looseSpecMatch(wanted, bs.productSize)) here += Number(n) || 0;
+        }
+        inCases += Math.min(here, q);
+        const spaces = Math.max(0, q - here);
+        if (spaces > 0) room.push({ caseNum: Number(c.caseNum), spaces });
+      }
     }
+    if (planned <= 0) { others.push({ orderId: o.id, customer: o.customer, needs: 0, noPlanFor: true }); continue; }
+    const allocatedUnplaced = ledgerFor(o.id).reduce((t, m) => {
+      if (!looseSpecMatch(wanted, m.spec || "")) return t;
+      if (excludeSourceId && m.sourceId === excludeSourceId) return t;
+      if (m.kind === "allocated") return t + (Number(m.qty) || 0);
+      if (m.kind === "unallocated") return t - (Number(m.qty) || 0);
+      if (m.kind === "placed") return t - (Number(m.qty) || 0);
+      if (m.kind === "unplaced") return t + (Number(m.qty) || 0);
+      return t;
+    }, 0);
+    const outstanding = Math.max(0, planned - inCases - Math.max(0, allocatedUnplaced));
+    room.sort((a, b) => a.caseNum - b.caseNum);
     if (outstanding > 0) {
-      needing.push({ orderId: o.id, customer: o.customer, needs: outstanding,
+      needing.push({ orderId: o.id, customer: o.customer, needs: outstanding, room,
                      priority: o.priority ?? null, dueDate: o.dueDate || null });
     } else {
-      others.push({ orderId: o.id, customer: o.customer, needs: 0 });
+      others.push({ orderId: o.id, customer: o.customer, needs: 0, promisedButFull: true });
     }
   }
   needing.sort((a, b) => {
@@ -4724,15 +5206,89 @@ function buildPackingPlan(items, opts = {}) {
   const plan = [];
   let n = startAt;
   for (const p of products) {
+    /* CAPACITY IS THE PRODUCT'S, NOT A FLAT TWENTY. (8 Sep 2026)
+       A case takes 20 boxes, but only 10 reels — 9 if the product is 12mm.
+       Planning reels at twenty produced cases that do not physically close:
+       ProPack's 1.00 x 4.00 REEL came out as 18 in one case where it needs
+       two. reelsPerCase already knew the rule; the planner simply never asked
+       it. Rubber is boxed and follows the box rule.
+       Reels never share a case with boxes, which holds automatically here —
+       each case carries one product. */
+    const cap = isReelSpec(p.spec) ? reelsPerCase(p.spec) : perCase;
     let left = p.qty;
     while (left > 0) {
-      const take = Math.min(perCase, left);
-      plan.push({ caseNum: n++, spec: p.spec, qty: take, band: p.band });
+      const take = Math.min(cap, left);
+      plan.push({ caseNum: n++, spec: p.spec, qty: take, band: p.band, maxSize: cap });
       left -= take;
     }
   }
   return plan;
 }
+/* CASES EXIST FROM THE MOMENT THE ORDER DOES. (Rule 2, 8 Sep 2026)
+
+   Chris: "Cases are created and product promised to them the moment an order
+   arrives on the system."
+
+   Until tonight the plan needed a button. Anything nobody pressed it on had no
+   plan, so the pick sheet had nothing to look up, the bonding line had nowhere
+   to send a box, and the case map printed from a plan computed on the fly and
+   thrown away — which is how Puh Sim's 28-case map existed only on paper.
+
+   A live order without a plan is now impossible: this runs inside the same
+   write that creates the order, so there is no window in which one exists
+   without the other, and no button to forget.
+
+   It uses buildPackingPlan — the same function the planner button used, band
+   order and all — so what is written is exactly what the button would have
+   written, minus the person having to remember. */
+/* WHAT GETS A CASE, AND WHAT NEVER DOES. (Chris, 8 Sep)
+
+   Three kinds of line are NOT packed into cases:
+
+     Not ours          "Declaration for Calibration Paper", "Delivery", customs
+                       lines, anything that does not resolve to a product in the
+                       catalogue. It has no size, no pt and no case — planning
+                       one would put a phantom case on the pallet and make the
+                       order's arithmetic wrong.
+     Tape              Profile Tape and shim tape go a different way and are the
+                       operator's to handle. Profile Tape is bought in and never
+                       appears in manufacturing views at all.
+     Zero and delivery lines, as before.
+
+   They stay ON the order — the customer ordered them and they must be shipped
+   and invoiced — they simply get no case. The excluded list is returned so the
+   screen can say so out loud rather than silently dropping them. */
+function plannableLines(data, lineItems) {
+  const plannable = [], excluded = [];
+  for (const li of (lineItems || [])) {
+    const desc = String(li && li.description || "").trim();
+    if (!desc) continue;
+    if (isDelivery(desc)) { excluded.push({ ...li, why: "delivery line" }); continue; }
+    if (isSmallItem(desc)) { excluded.push({ ...li, why: "tape — goes separately, operator handles it" }); continue; }
+    const res = (typeof resolveProduct === "function") ? resolveProduct(data, desc) : null;
+    if (!res || res.status !== "exact") { excluded.push({ ...li, why: "not a product in the catalogue" }); continue; }
+    if (!(Number(li.qty) > 0)) { excluded.push({ ...li, why: "no quantity" }); continue; }
+    plannable.push(li);
+  }
+  return { plannable, excluded };
+}
+function planRowsForNewOrder(orderId, lineItems, opts = {}) {
+  const { plannable } = plannableLines(opts.data || {}, lineItems);
+  const plan = buildPackingPlan(plannable, { startAt: (Number(opts.startingCaseNum) || 0) + 1 });
+  const stamp = new Date().toISOString();
+  return plan.map(p => ({
+    id: caseRowId(orderId, p.caseNum), orderId, caseNum: p.caseNum,
+    contents: {}, confirmed: false, deleted: false,
+    planned: { [p.spec]: Number(p.qty) || 0 },
+    /* A reel case is physically a different case, and isReelCase() reads that
+       off maxSize. Without it a nine-reel case would be read as a box case by
+       the packing sheet, the case map and the materials count. */
+    maxSize: Number(p.maxSize) || CASE_MAX_SIZE_DEFAULT,
+    planBatch: "Original", weight: "", pallet: "", packedOutside: false,
+    updatedAt: stamp, updatedBy: opts.actor || "auto-plan on order creation",
+  }));
+}
+
 /* AMENDMENTS APPEND. THEY NEVER RESHUFFLE.
    Chris, 7 Sep, on Avrupa going from 900 boxes to 1200: Steve "asked this
    morning if the cases needed to be re-arranged... I think add them to the end
@@ -4779,36 +5335,112 @@ function planAmendment(items, existingPlan, opts = {}) {
   const highest = (existingPlan || []).reduce((m, p) => Math.max(m, Number(p.caseNum) || 0), 0);
   return buildPackingPlan(extra, { perCase, startAt: highest + 1 });
 }
-/* REMOVING A CASE SHUFFLES THE REST UP, AND TELLS YOU WHICH LABELS TO REPRINT.
-   Chris, 7 Sep: "if a case were to be taken out, we would normally just reprint
-   the case labels and reaffix starting from the first again till the end. So
-   whenever a case in the number chain is taken out and deleted, all those after
-   it would be re-numbered minus one."
+/* A CUSTOMER TAKES SOMETHING OFF THE ORDER. (Chris, 9 Sep)
 
-   The number is a POSITION on a pallet, not a name — which is the thing I had
-   wrong all day, handing out "free" numbers from the middle as though 39 were
-   an identifier waiting to be reused. It is not: a pallet is packed 1, 2, 3.
+   His rule, exactly:
+     - What is taken away comes out of the cases promising that product.
+     - A case that loses its whole promise is DELETED, and every case after it
+       is renumbered — the number is a position, not a name.
+     - A case that loses only part of its promise is deleted TOO, and the stock
+       still promised in it is APPENDED to the end as a new case.
+     - Additions are always appended to the end.
 
-   Returns the renumbering AND the label range, because a renumber that does not
-   say "reprint 39 to 59" leaves someone reaffixing twenty labels from memory. */
-function renumberAfterRemoval(plan, removedCaseNum) {
-  const gone = Number(removedCaseNum);
+   Why deleting a part-emptied case rather than just reducing it: a case is a
+   physical box on a pallet with a label on it. Leaving case 12 promising 8
+   instead of 20 means a label that lies and a pallet packed round a gap. Taking
+   it out and re-promising the remainder at the end keeps every case either full
+   or the last one — which is how the pallet is actually built.
+
+   Taken from the HIGHEST-numbered case of that product downwards, so the least
+   labelling moves: dropping 20 of a product held in cases 4, 5 and 6 empties 6,
+   not 4, and cases 1-5 keep their labels.
+
+   A case with boxes physically in it is NEVER deleted here. The pallet is the
+   physical record: those boxes exist and are somewhere. Such a case is returned
+   in `blocked` for a person to deal with, and nothing about it is changed. */
+/* HAS THIS ORDER STARTED? (Chris, 9 Sep)
+
+   "An order that has been picked or bonding has allocated into cannot have
+   its lines edited to change quantity, because the cases are mapped out. An
+   amendment either up or down must be followed. If an order hasn't been
+   started, editing the quantity is open."
+
+   Started means the physical world has committed to the plan: something is in
+   a case, or boxes are promised to it. Before that the plan is only paper and
+   can be reshaped freely. After it, a bare number change would leave labelled
+   cases promising quantities the order no longer has. */
+function orderHasStarted(data, orderId) {
+  const inCase = (data.cases || []).some(c => c && !c.deleted && c.orderId === orderId
+    && Object.values(c.contents || {}).some(q => (Number(q) || 0) > 0));
+  if (inCase) return { started: true, why: "boxes are already in its cases" };
+  const promised = (data.movements || []).filter(m => m && !m.deleted && m.orderId === orderId)
+    .reduce((t, m) => t + (m.kind === "allocated" ? Number(m.qty) || 0
+                        : m.kind === "unallocated" ? -(Number(m.qty) || 0) : 0), 0);
+  if (promised > 0) return { started: true, why: "bonding has allocated boxes to it" };
+  return { started: false, why: "" };
+}
+
+function applyAmendmentReduction(planRows, spec, reduceBy, opts = {}) {
+  /* CAPACITY COMES FROM THE PRODUCT, NOT THE CALLER. A remainder appended at
+     twenty would put nineteen reels in a case that holds nine — a case that
+     does not physically close. The caller may override, but it must not have
+     to remember. */
+  const perCase = Number(opts.perCase)
+    || (isReelSpec(spec) ? reelsPerCase(spec) : CASE_MAX_SIZE_DEFAULT);
+  const rows = [...(planRows || [])].sort((a, b) => Number(a.caseNum) - Number(b.caseNum));
+  const qtyOf = (r) => Object.entries(casePlanned(r))
+    .filter(([k]) => looseSpecMatch(k, spec))
+    .reduce((t, [, v]) => t + (Number(v) || 0), 0);
+  const contentsOf = (r) => Object.values(r.contents || {}).reduce((t, n) => t + (Number(n) || 0), 0);
+
+  let left = Math.max(0, Number(reduceBy) || 0);
+  const deleted = [], blocked = [], appended = [];
+  const survivors = [...rows];
+
+  for (let i = survivors.length - 1; i >= 0 && left > 0; i--) {
+    const r = survivors[i];
+    const promised = qtyOf(r);
+    if (promised <= 0) continue;
+    if (contentsOf(r) > 0) { blocked.push({ caseNum: Number(r.caseNum), inCase: contentsOf(r), promised }); continue; }
+    const take = Math.min(promised, left);
+    const remainder = promised - take;
+    deleted.push(Number(r.caseNum));
+    survivors.splice(i, 1);
+    left -= take;
+    if (remainder > 0) appended.push({ spec, qty: remainder });
+  }
+
+  /* Renumber what is left, in order, from the first case number the order
+     starts at. Then the appended remainder goes on the end. */
+  const startAt = Math.max(1, Number(opts.startAt) || 1);
   const moved = [];
-  const kept = (plan || [])
-    .filter(p => Number(p.caseNum) !== gone)
-    .map(p => {
-      const n = Number(p.caseNum);
-      if (n <= gone) return p;
-      moved.push({ from: n, to: n - 1 });
-      return { ...p, caseNum: n - 1 };
-    })
-    .sort((a, b) => a.caseNum - b.caseNum);
+  const renumbered = survivors.map((r, idx) => {
+    const to = startAt + idx;
+    if (Number(r.caseNum) !== to) moved.push({ from: Number(r.caseNum), to });
+    return { ...r, caseNum: to };
+  });
+  let next = startAt + renumbered.length;
+  const newCases = [];
+  for (const a of appended) {
+    let q = a.qty;
+    while (q > 0) {
+      const take = Math.min(perCase, q);
+      newCases.push({ caseNum: next++, spec: a.spec, qty: take, appended: true, maxSize: perCase });
+      q -= take;
+    }
+  }
+  const lowestChanged = moved.length ? Math.min(...moved.map(m => m.to))
+    : (newCases.length ? newCases[0].caseNum : null);
   return {
-    plan: kept, moved,
-    reprintFrom: moved.length ? gone : null,
-    reprintTo: moved.length ? kept[kept.length - 1].caseNum : null,
+    plan: renumbered, newCases, deleted: deleted.sort((a, b) => a - b), moved, blocked,
+    shortBy: left,                    // could not be taken: everything left was blocked
+    reprintFrom: lowestChanged,
+    reprintTo: lowestChanged == null ? null
+      : (newCases.length ? newCases[newCases.length - 1].caseNum
+                         : (renumbered.length ? renumbered[renumbered.length - 1].caseNum : null)),
   };
 }
+
 /* THE PACKING PLANNER — a board, not a form.
    Chris, 7 Sep: "having an animated tile screen when it plans where things go
    would be cool as shit, and then having the ability to drag and drop the
@@ -4852,10 +5484,14 @@ function renumberAfterRemoval(plan, removedCaseNum) {
    since it was planned and the plan has not caught up — and offers the append,
    because an amendment nobody plans is an amendment nobody packs. */
 function PlanAmendmentRecord({ order, lineItems, cases, onAppend }) {
-  const planned = (cases || []).filter(c => !c.deleted && c.orderId === order.id && String(c.plannedSpec || "").trim());
+  const planned = (cases || []).filter(c => !c.deleted && c.orderId === order.id && hasCasePlan(c));
   const items = orderLineItems(lineItems, order.id).filter(li => !isDelivery(li.description));
   const orderedTotal = items.reduce((t, li) => t + (Number(li.qty) || 0), 0);
-  const plannedTotal = planned.reduce((t, c) => t + (Number(c.plannedQty) || 0), 0);
+  /* Sum the whole promise, not one product of it: a case promised 5 + 5 + 10
+     counted as 10 through plannedQty, so a multi-product order read as short
+     by two thirds and the amendment button offered cases nobody needs. */
+  const plannedTotal = planned.reduce((t, c) =>
+    t + Object.values(casePlanned(c)).reduce((n, q) => n + (Number(q) || 0), 0), 0);
   /* BOXES IN AN UNPLANNED CASE STILL COUNT.
      First version compared the order against the plan alone and told Chris
      Avrupa had grown by 500 boxes. It had not: 500 boxes sit packed in cases
@@ -4867,7 +5503,7 @@ function PlanAmendmentRecord({ order, lineItems, cases, onAppend }) {
      order is the truth, and everything already IN a case counts towards it —
      whether or not the plan knows about it. */
   const packedOutsidePlan = (cases || [])
-    .filter(c => !c.deleted && c.orderId === order.id && !String(c.plannedSpec || "").trim())
+    .filter(c => !c.deleted && c.orderId === order.id && !hasCasePlan(c))
     .reduce((t, c) => t + Object.values(c.contents || {}).reduce((n, v) => n + (Number(v) || 0), 0), 0);
   const shortfall = orderedTotal - plannedTotal - packedOutsidePlan;
 
@@ -4879,7 +5515,7 @@ function PlanAmendmentRecord({ order, lineItems, cases, onAppend }) {
     if (!batches.has(k)) batches.set(k, { label: k, nums: [], boxes: 0 });
     const b = batches.get(k);
     b.nums.push(Number(c.caseNum));
-    b.boxes += Number(c.plannedQty) || 0;
+    b.boxes += Object.values(casePlanned(c)).reduce((n, q) => n + (Number(q) || 0), 0);
   }
   /* "1-3, 5-9, 15" rather than twenty numbers in a row — the pallet is read in
      runs, not individually. */
@@ -4955,14 +5591,17 @@ function PackingPlanner({ order, lineItems, existingCases, bondingRuns = [], onS
        once and only read. Opening this screen on a planned order now shows
        that plan: cases holding boxes are locked, cases carrying a promise show
        their promise, and the arithmetic is the order's, not a new invention. */
-    const alreadyPlanned = (existingCases || []).filter(c => String(c.plannedSpec || "").trim());
+    const alreadyPlanned = (existingCases || []).filter(c => hasCasePlan(c));
     if (alreadyPlanned.length) {
-      const rows = (existingCases || []).map(c => {
+      /* One row per PRODUCT per case. Reading only plannedSpec showed a
+         multi-product case as though it were promised one thing — Uninark's
+         cases share products, so half the promise vanished from the preview. */
+      const rows = (existingCases || []).flatMap(c => {
         const inCase = Object.values(c.contents || {}).reduce((t, n) => t + (Number(n) || 0), 0);
-        const spec = String(c.plannedSpec || "").trim();
-        if (inCase && !spec) return { caseNum: Number(c.caseNum), spec: "(packed)", qty: inCase, band: "locked", locked: true };
-        return { caseNum: Number(c.caseNum), spec: spec || "(packed)", qty: Number(c.plannedQty) || inCase,
-                 band: spec ? planBandFor(spec) : "locked", locked: !!inCase };
+        const entries = Object.entries(casePlanned(c));
+        if (!entries.length) return [{ caseNum: Number(c.caseNum), spec: "(packed)", qty: inCase, band: "locked", locked: true }];
+        return entries.map(([spec, qty]) => ({ caseNum: Number(c.caseNum), spec, qty: Number(qty) || 0,
+                 band: planBandFor(spec), locked: !!inCase }));
       });
       return rows.sort((a, b) => a.caseNum - b.caseNum);
     }
@@ -5165,21 +5804,99 @@ function PackingPlanner({ order, lineItems, existingCases, bondingRuns = [], onS
 }
 
 function plannedCasesFor(data, orderId) {
-  return (data.cases || [])
-    .filter(c => c && !c.deleted && c.orderId === orderId && String(c.plannedSpec || "").trim())
-    .map(c => {
-      /* plannedQty is what the case holds WHEN FULL of its promised product,
-         not what is left to put in it. One meaning, whether the case is empty
-         or half done — the remainder is arithmetic, and arithmetic that stays
-         right as boxes go in. Storing "still to add" instead would be a number
-         that silently goes stale the moment somebody packs one. */
-      const inCase = Object.values(c.contents || {}).reduce((t, n) => t + (Number(n) || 0), 0);
-      const qty = Math.max(0, Number(c.plannedQty) || 0);
-      return { caseNum: Number(c.caseNum), spec: String(c.plannedSpec).trim(),
-               qty, inCase, outstanding: Math.max(0, qty - inCase) };
-    })
-    .sort((a, b) => a.caseNum - b.caseNum);
+  /* A CASE CAN BE PROMISED MORE THAN ONE PRODUCT.
+     Chris, 8 Sep, on Uninark: 25 line items, most of them 5s and 10s, into 19
+     cases. Giving every product its own case needed 32 and the order says 19,
+     so products share — and the model only had room for one promise per case.
+
+     `planned` is {spec: qty}. Each promise becomes its own entry here, so
+     everything downstream — the pick sheet, the case map, and the line that
+     tells Dave where a box goes — works per PRODUCT rather than per case.
+     `plannedSpec` is still read for cases written before this. */
+  const out = [];
+  for (const c of (data.cases || [])) {
+    if (!c || c.deleted || c.orderId !== orderId) continue;
+    const inCase = Object.values(c.contents || {}).reduce((t, n) => t + (Number(n) || 0), 0);
+    const map = casePlanned(c);
+    if (!Object.keys(map).length) continue;
+    /* WHAT IS IN THE CASE COUNTS AGAINST THE PROMISE IT ACTUALLY SATISFIES.
+       This used to spread the contents across the promises in map order, which
+       is only right when a case holds one product. Uninark case 18 holds ten
+       boxes of 0.80 x 2.50; in map order those ten were counted against the
+       0.50 x 2.10 and 0.80 x 2.30 promises instead, so both read as full and
+       the boxes on the staging shelf had nowhere to go.
+
+       Each box is matched to its own product first. Anything that matches no
+       promise — a box put somewhere it was never planned — falls through to
+       the remaining promises in order, because it is still occupying space. */
+    const byBox = Object.entries(c.contents || {});
+    const specOf = (box) => {
+      const run = (data.bondingRuns || []).find(r => r && !r.deleted && r.boxNumber === box);
+      return run ? run.productSize : box;
+    };
+    const matched = {};
+    let unmatched = 0;
+    for (const [box, q] of byBox) {
+      const n = Number(q) || 0;
+      const bs = specOf(box);
+      const hit = Object.keys(map).find(spec => looseSpecMatch(spec, bs));
+      if (hit) matched[hit] = (matched[hit] || 0) + n;
+      else unmatched += n;
+    }
+    for (const [spec, q] of Object.entries(map)) {
+      const qty = Math.max(0, Number(q) || 0);
+      let taken = Math.min(qty, matched[spec] || 0);
+      if (taken < qty && unmatched > 0) {
+        const extra = Math.min(qty - taken, unmatched);
+        taken += extra; unmatched -= extra;
+      }
+      out.push({ caseNum: Number(c.caseNum), spec: String(spec).trim(), qty,
+                 inCase: taken, outstanding: Math.max(0, qty - taken) });
+    }
+  }
+  return out.sort((a, b) => a.caseNum - b.caseNum);
 }
+/* WHAT A CASE IS PROMISED — the one accessor. (8 Sep 2026)
+
+   `planned` is {spec: qty} and can hold several products; `plannedSpec` +
+   `plannedQty` can hold exactly one, which is why Uninark's 25 line items into
+   19 cases could not be expressed in them at all. Two columns for one fact,
+   and the older pair is lossy.
+
+   Every reader goes through here, so the day the legacy columns are dropped is
+   the day this function loses two lines and nothing else changes. Until then a
+   row written by an older build still answers correctly.
+
+   plannedCasesForLegacy used to live here and had no caller at all — it was
+   deleted rather than left as a second answer waiting to be wired up. */
+/* WHO A BOX IS FOR — derived, never stored. (8 Sep 2026)
+
+   bonding_runs.customer_name held the customer alongside work_number, which
+   already names the order, which already names the customer. Two copies of one
+   fact: 63 rows disagreed with their order. Sixty-two were cosmetic — "AVRUPA",
+   "GASE", "UNIMARK" against the full names — but one, written on 8 Sep by the
+   stock-assignment path, said GASE against an Avrupa work number and hid 13
+   boxes from the order that needed them.
+
+   The order is the truth. A run with no work number is stock and has no
+   customer, which is not a gap — it is the right answer. */
+function runCustomer(orders, run) {
+  if (!run) return "";
+  const wo = String(run.workNumber || "").trim();
+  if (!wo) return "";
+  const order = (orders || []).find(o => o && !o.deleted && o.id === wo);
+  return order ? (order.customer || "") : (run.customerName || "");
+}
+
+function casePlanned(row) {
+  if (!row) return {};
+  const m = row.planned;
+  if (m && typeof m === "object" && Object.keys(m).length) return m;
+  const spec = String(row.plannedSpec || "").trim();
+  return spec ? { [spec]: Number(row.plannedQty) || 0 } : {};
+}
+function hasCasePlan(row) { return Object.keys(casePlanned(row)).length > 0; }
+
 /* What the plan has already spoken for, per line. Subtracted before anything
    is computed, so the planner only ever sees genuinely unplanned demand. */
 function subtractPlanned(items, planned) {
@@ -5224,6 +5941,30 @@ function placedBoxesByCase(data, orderId) {
   return placed;
 }
 function mergePlannedRows(rows, planned) {
+  /* plannedCasesFor now returns one entry per PRODUCT, so a case promised
+     three sizes arrives three times. Group back to one row per case before
+     merging, or the map grows a row per promise. */
+  const byCase = new Map();
+  for (const p of planned) {
+    const cur = byCase.get(p.caseNum) || { caseNum: p.caseNum, specs: [], items: [], qty: 0, outstanding: 0 };
+    cur.specs.push(p.spec);
+    /* EVERY promise, with its full quantity — not just the part still to come.
+       A case that is already full still has to say what it was for, or the map
+       stops being a map and becomes a progress report. */
+    cur.items.push({ spec: p.spec, qty: p.qty, inCase: p.inCase, outstanding: p.outstanding });
+    cur.qty += p.qty;
+    cur.outstanding += p.outstanding;
+    byCase.set(p.caseNum, cur);
+  }
+  planned = [...byCase.values()].map(c => ({
+    caseNum: c.caseNum,
+    spec: c.specs.length === 1 ? c.specs[0] : c.specs.join(" + "),
+    /* The joined label is for reading, never for matching. The grid needs the
+       products themselves — a column headed "A + B + C" matches nothing and is
+       what broke Uninark's case map, where most cases hold three sizes. */
+    items: c.items,
+    qty: c.qty, outstanding: c.outstanding,
+  }));
   const plannedNums = new Set(planned.map(p => p.caseNum));
   const kept = (rows || []).filter(r => !plannedNums.has(Number(r.caseNum))
     || (r.contributions || []).length > 0);
@@ -5231,14 +5972,20 @@ function mergePlannedRows(rows, planned) {
   for (const p of planned) {
     const existing = byNum.get(p.caseNum);
     if (existing) {
-      existing.plannedSpec = p.spec;
-      existing.plannedQty = p.qty;
+      existing.planned = { ...(existing.planned || {}), [p.spec]: Number(p.qty) || 0 };
       existing.plannedOutstanding = p.outstanding;
+      existing.plannedItems = p.items || [];
       continue;
     }
     kept.push({
+      /* IN-MEMORY ARRANGEMENT ROW, never persisted — note `planned: true` here
+         is a BOOLEAN meaning "this case came from the plan", not the {spec:qty}
+         column of the same name on a database row. casePlanned() tolerates it
+         (a boolean is not an object, so it falls through), but the collision is
+         a trap: anything reading `.planned` must know which shape it holds. */
       caseNum: p.caseNum, maxSize: CASE_MAX_SIZE_DEFAULT, contributions: [], remaining: p.outstanding,
-      plannedSpec: p.spec, plannedQty: p.qty, plannedOutstanding: p.outstanding, planned: true,
+      plannedSpec: p.spec, plannedQty: p.qty, plannedOutstanding: p.outstanding,
+      plannedItems: p.items || [], planned: true,
     });
   }
   kept.sort((a, b) => Number(a.caseNum) - Number(b.caseNum));
@@ -5323,6 +6070,35 @@ function arrangedCasesForOrder(data, orderId, opts = {}) {
        that already holds boxes keeps what it holds and shows the rest as still
        to come; an empty one is a labelled case waiting on production. Merged
        by case number and sorted, so the map reads as the pallet stands. */
+    /* A PLANNED ORDER'S CASES COME FROM THE CASES TABLE. FULL STOP.
+       Chris, 8 Sep: "why does the case map show items in the first few cases
+       when there isn't any."
+
+       Because boxes can be MADE and assigned to an order without being placed
+       in a case — Uninark has nine such runs sitting on the shelf — and the old
+       planner cases every assigned box whether or not anybody carried it. On an
+       unplanned order that guess is the best available. On a planned one it is
+       a lie written over a locked map, and it put product into cases 1 to 6
+       that are standing empty.
+
+       So when a plan exists, the planner's rows are dropped entirely. What is
+       in a case is what the cases table says is in it; what is still to come is
+       what the plan promises. Nothing is inferred from a box merely existing. */
+    if (planned.length) {
+      const rows = rec.map(c => ({
+        caseNum: Number(c.caseNum),
+        maxSize: CASE_MAX_SIZE_DEFAULT,
+        confirmed: !!c.confirmed,
+        weight: (order.caseWeights || {})[c.caseNum],
+        pallet: (order.palletAssignments || {})[c.caseNum] || "",
+        contributions: Object.entries(c.contents || {}).map(([box, qty]) => {
+          const run = (data.bondingRuns || []).find(r => r && !r.deleted && r.boxNumber === box);
+          return { boxNumber: box, qty: Number(qty) || 0, spec: run ? run.productSize : box };
+        }),
+      }));
+      return { order, caseRows: mergePlannedRows(rows, planned),
+               smallRows, otherAssigned: arranged.otherAssigned || [] };
+    }
     return { order, caseRows: mergePlannedRows(arranged.caseRows || [], planned),
              smallRows, otherAssigned: arranged.otherAssigned || [] };
   } catch (e) {
@@ -5579,6 +6355,15 @@ function moveBoxRow(data, rowId, dest) {
   let working = { ...data, bondingRuns: nextRuns };
   const spec = row.productSize;
   const box = row.boxNumber;
+  /* THE SAME RULE AS EVERY OTHER ALLOCATION. (audit, 9 Sep 2026)
+     Moving a box to another order IS an allocation, and this path applied
+     none of the plan rules — so a box could be promised to an order with no
+     case for it by walking round the bonding screen rather than through it.
+     The caller is told why rather than the move silently failing. */
+  if (toOrder && !reCase) {
+    const refusal = allocationRefusal(data, spec, [{ orderId: toOrder, qty }], row.id);
+    if (refusal) return { error: refusal };
+  }
   const facts = [];
   /* A re-case never touches allocation — the box is already on this order.
      Asserting unallocated/allocated here would net to nothing but would put
@@ -7725,6 +8510,57 @@ function splitCustomerRef(text) {
   return { customerRef: head, description: tail };
 }
 
+/* THE INTAKE GATE.
+   Chris, 8 Sep: if a line is typed differently or looks different, compare it
+   against our actual product name and ask the person entering the order which
+   one it is — so the name is consistent everywhere from the moment it lands.
+
+   The gate states how to clear it. A refusal that only says no is a stoppage;
+   this one puts the answer under the operator's thumb. There is deliberately
+   no "use it anyway" for a line with candidates: accepting the typed text is
+   what created the duplicate products in the first place. A product genuinely
+   new to the catalogue is a different thing and says so. */
+function ProductGateLine({ data, value, onResolved }) {
+  const res = resolveProduct(data, value);
+  if (!String(value || "").trim()) return null;
+  if (res.status === "exact") {
+    const differs = res.product.displayName !== String(value).trim();
+    return (
+      <div style={{ fontSize: 11, color: differs ? NAVY : "#2E8B57", marginTop: 2 }}>
+        {differs ? `→ ${res.product.displayName}` : "✓ known product"}
+      </div>
+    );
+  }
+  if (res.status === "candidates") {
+    return (
+      <div style={{ marginTop: 3, padding: "6px 8px", borderRadius: 5, background: "#FFF6E5", border: "1px solid #E8C77A" }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: "#8A6100" }}>
+          Which product is this? Pick one — the order stores the catalogue name.
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 5 }}>
+          {res.candidates.slice(0, 6).map(p => (
+            <button key={p.id} onClick={() => onResolved(p.displayName)}
+              style={{ fontSize: 11, padding: "3px 7px", borderRadius: 4, cursor: "pointer",
+                       border: `1px solid ${BORDER}`, background: "#fff", color: INK }}>
+              {p.displayName}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ fontSize: 11, color: RED, marginTop: 2 }}>
+      Not in the product catalogue. Check the spelling, or add it as a new product before ordering it.
+    </div>
+  );
+}
+/* Every line resolved? The commit asks this, so an order can never be created
+   carrying a name nothing else in the system will match. */
+function unresolvedLines(data, lines) {
+  return (lines || []).filter(li => resolveProduct(data, li.description).status !== "exact");
+}
+
 function PasteOrderPanel({ data, setData }) {
   const [open, setOpen] = useState(false);
   const [raw, setRaw, rawRestored, discardRaw] = useDraftState("pasteOrder", "", "");
@@ -7759,6 +8595,9 @@ function PasteOrderPanel({ data, setData }) {
 
   const handleConfirm = () => {
     if (!parsed || !boxType) return;
+    /* No order is created carrying a product name the rest of the system
+       cannot match. Every line resolves to a catalogue product first. */
+    if (unresolvedLines(data, parsed.lineItems).length) return;
     setData(prevData => {
       const id = nextOrderId(prevData.orders);
       const newOrder = {
@@ -7771,7 +8610,16 @@ function PasteOrderPanel({ data, setData }) {
         id: uid("li"), orderId: id, description: li.description || "", customerRef: li.customerRef || null,
         qty: Number(li.qty) || 0, unitPrice: Number(li.unitPrice) || 0,
       }));
-      return { ...prevData, orders: [...prevData.orders, newOrder], lineItems: [...prevData.lineItems, ...newLineItems] };
+      /* Rule 2: the cases and their promises are written in the SAME write as
+         the order. No button, no window where a live order has no plan. */
+      const planRows = planRowsForNewOrder(id, newLineItems, { actor: currentActor(), data: prevData });
+      const notPlanned = plannableLines(prevData, newLineItems).excluded;
+      return { ...prevData, orders: [...prevData.orders, newOrder],
+        lineItems: [...prevData.lineItems, ...newLineItems],
+        cases: [...(prevData.cases || []), ...planRows],
+        ...appendLog(prevData, { action: "packing_planned", entity: "order", entityId: id,
+          summary: `Case plan created automatically with ${id} — ${planRows.length} cases, ${planRows.reduce((t, r) => t + Object.values(r.planned).reduce((n, q) => n + q, 0), 0)} boxes`
+            + (notPlanned.length ? `. NOT in the plan (${notPlanned.length}): ` + notPlanned.map(l => `${l.description} — ${l.why}`).join("; ") : "") }) };
     });
     setRaw(""); setParsed(null); setError(""); setBoxType(""); setOpen(false);
   };
@@ -7831,7 +8679,8 @@ function PasteOrderPanel({ data, setData }) {
               </div>
               <div className="mb-2" style={{ maxHeight: 220, overflowY: "auto" }}>
                 {parsed.lineItems.map((li, i) => (
-                  <div key={i} className="flex gap-1.5 items-center mb-1.5">
+                  <div key={i} className="mb-1.5">
+                  <div className="flex gap-1.5 items-center">
                     <TextInput
                       value={li.description}
                       onChange={e => {
@@ -7860,6 +8709,13 @@ function PasteOrderPanel({ data, setData }) {
                       className="opacity-40 hover:opacity-100 px-1" title="Remove line" style={{ background: "none", border: "none", cursor: "pointer" }}
                     >✕</button>
                   </div>
+                  <ProductGateLine data={data} value={li.description}
+                    onResolved={(name) => {
+                      const next = [...parsed.lineItems];
+                      next[i] = { ...next[i], description: name };
+                      setParsed({ ...parsed, lineItems: next });
+                    }} />
+                  </div>
                 ))}
               </div>
               <button
@@ -7873,9 +8729,19 @@ function PasteOrderPanel({ data, setData }) {
                   {BOX_TYPES.map(b => <option key={b} value={b}>{b}</option>)}
                 </Select>
               </div>
-              <Button variant="accent" onClick={handleConfirm} disabled={!parsed.customer.trim() || parsed.lineItems.length === 0 || !boxType}>+ Add this order</Button>
+              <Button variant="accent" onClick={handleConfirm}
+                disabled={!parsed.customer.trim() || parsed.lineItems.length === 0 || !boxType
+                          || unresolvedLines(data, parsed.lineItems).length > 0}>+ Add this order</Button>
               {!boxType && parsed.customer.trim() && parsed.lineItems.length > 0 && (
                 <div className="text-xs mt-2" style={{ color: INK_MUTED }}>Choose a box type to add this order.</div>
+              )}
+              {/* The gate says HOW TO CLEAR IT, not just that it is shut. */}
+              {unresolvedLines(data, parsed.lineItems).length > 0 && (
+                <div className="text-xs mt-2" style={{ color: "#8A6100" }}>
+                  {unresolvedLines(data, parsed.lineItems).length} line
+                  {unresolvedLines(data, parsed.lineItems).length === 1 ? " does" : "s do"} not match a product in
+                  the catalogue. Pick the right product on each highlighted line above, then add the order.
+                </div>
               )}
             </div>
           )}
@@ -8015,6 +8881,30 @@ function recordMovements(prev, list) {
   return (list || []).reduce((acc, m) => recordMovement(acc, m), prev);
 }
 /* Current state of a box, projected from the ledger. Nothing here is stored. */
+/* WHAT IS PHYSICALLY ON THE SHELF, IGNORING WHO IT IS PROMISED TO.
+   projectBox's `onShelf` subtracts allocation, because for "can I promise this
+   to a new order" that is the right question. For "is the box there to be
+   carried" it is the wrong one: allocation is a promise, and a promised box is
+   still sitting on the shelf until somebody places it in a case.
+
+   Chris, 8 Sep: the phone pick reported "only 0 actually available" for all
+   eleven boxes and silently placed none of them. The commit was reading
+   `r.toStock`, a column DROPPED from the database on 6 September, so every
+   modern row answered zero. The boxes that did commit were old rows that still
+   carried the retired field.
+
+   made and adjusted add; placed, scrapped and damaged take away. Allocation
+   does not appear, on purpose. */
+function physicalOnShelf(movements, boxNumber) {
+  const rows = (movements || []).filter(m => m && !m.deleted && m.boxNumber === boxNumber);
+  let n = 0;
+  for (const m of rows) {
+    const q = Number(m.qty) || 0;
+    if (m.kind === "made" || m.kind === "adjusted") n += q;
+    else if (m.kind === "placed" || m.kind === "scrapped" || m.kind === "damaged") n -= q;
+  }
+  return Math.max(0, n);
+}
 function projectBox(movements, boxNumber) {
   const rows = (movements || []).filter(m => !m.deleted && m.boxNumber === boxNumber);
   const made = rows.filter(m => m.kind === "made" || m.kind === "adjusted").reduce((t, m) => t + Number(m.qty || 0), 0);
@@ -8433,6 +9323,74 @@ function useAdminPasswordGate() {
 // useSortableRows directly there — hooks can't be called a variable number
 // of times. Pulling it out into its own real component (one instance per
 // expanded order) gives it a stable place to hold its own sort state.
+/* WHAT THE CUSTOMER ADDED AFTER THEY ORDERED. (8 Sep 2026)
+
+   Chris: "I want amendments to be really visible on orders, we have very
+   fickle customers."
+
+   An extra is its own line carrying its amendment label, and its own cases on
+   the end carrying plan_batch. Both are already in the data — this reads them
+   back as one summary so an amendment is visible from the order card, the
+   order header and the paper, not only by scrolling to the middle of the line
+   items table.
+
+   Counts what was ADDED, not the order total: the point is "this order grew by
+   60 boxes on 5 Sep into cases 61-63", which is what a customer argues about. */
+function amendmentsFor(order, lineItems, cases) {
+  const lines = (lineItems || []).filter(li => li && !li.deleted && li.orderId === (order || {}).id
+    && String(li.amendmentLabel || "").trim());
+  const rows = (cases || []).filter(c => c && !c.deleted && c.orderId === (order || {}).id
+    && String(c.planBatch || "Original").trim() !== "Original");
+  const byLabel = new Map();
+  const bump = (label) => {
+    if (!byLabel.has(label)) byLabel.set(label, { label, lines: 0, boxes: 0, caseNums: [] });
+    return byLabel.get(label);
+  };
+  for (const li of lines) { const e = bump(String(li.amendmentLabel).trim()); e.lines++; e.boxes += Number(li.qty) || 0; }
+  for (const c of rows) { const e = bump(String(c.planBatch).trim()); e.caseNums.push(Number(c.caseNum)); }
+  const list = [...byLabel.values()].sort((a, b) => a.label.localeCompare(b.label));
+  for (const e of list) e.caseNums.sort((a, b) => a - b);
+  return { list, count: list.length,
+           boxes: list.reduce((t, e) => t + e.boxes, 0),
+           lineCount: lines.length };
+}
+/* "61-63" rather than "61, 62, 63" — a pallet is read in runs. */
+function caseRunsLabel(nums) {
+  const s = [...new Set(nums || [])].sort((a, b) => a - b);
+  const out = []; let i = 0;
+  while (i < s.length) {
+    let j = i; while (j + 1 < s.length && s[j + 1] === s[j] + 1) j++;
+    out.push(i === j ? `${s[i]}` : `${s[i]}\u2013${s[j]}`);
+    i = j + 1;
+  }
+  return out.join(", ");
+}
+function AmendmentBanner({ order, lineItems, cases, compact = false }) {
+  const a = amendmentsFor(order, lineItems, cases);
+  if (!a.count) return null;
+  if (compact) {
+    return (
+      <span style={{ fontSize: 10.5, fontWeight: 700, color: "#8A4B00", background: "#FFF1DC",
+                     border: "1px solid #E8C77A", borderRadius: 4, padding: "1px 5px", whiteSpace: "nowrap" }}>
+        {a.count === 1 ? "Amended" : `Amended ×${a.count}`} · +{a.boxes}
+      </span>
+    );
+  }
+  return (
+    <div style={{ border: "1px solid #E8C77A", background: "#FFF6E5", borderRadius: 6, padding: "7px 10px", marginBottom: 10 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: "#8A4B00" }}>
+        This order has been amended {a.count === 1 ? "once" : `${a.count} times`} — {a.boxes} box{a.boxes === 1 ? "" : "es"} added after the original
+      </div>
+      {a.list.map(e => (
+        <div key={e.label} style={{ fontSize: 11.5, color: "#8A6100", marginTop: 2 }}>
+          {e.label}: {e.boxes} box{e.boxes === 1 ? "" : "es"} on {e.lines} line{e.lines === 1 ? "" : "s"}
+          {e.caseNums.length ? ` \u2192 case${e.caseNums.length === 1 ? "" : "s"} ${caseRunsLabel(e.caseNums)}` : " \u2014 no cases yet"}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function OrderLineItemsTable({ items, lineItems, setLineItems, data, lineEditMode, updateLineItemField, removeLineItemDirect, lineChanged = () => false, lineChangeReasons = {}, setLineChangeReasons = null }) {
   const itemsWithTotal = items.map(li => ({ ...li, lineTotal: Number(li.qty || 0) * Number(li.unitPrice || 0) }));
   const { sorted: sortedRaw, sortBy, sortDir, toggleSort } = useSortableRows(itemsWithTotal, "description", "asc");
@@ -9291,6 +10249,28 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
     let description = newLine.range === "Custom" ? newLine.size.trim() : `${newLine.range} ${newLine.size.trim()}`;
     if (newLine.pt && !description.includes(newLine.pt)) description += ` ${newLine.pt}`;
     if (newLine.amount && !description.includes(`(${newLine.amount}m)`)) description += ` (${newLine.amount}m)`;
+    /* A WRITER IS A CALLER TOO.
+       This builds a description by concatenation, so it can produce a string
+       no product in the catalogue answers to — a size with no pt is exactly
+       what reached the bonding line on 8 Sep. The line is stored under the
+       CATALOGUE name when the text resolves, and refused when it doesn't,
+       saying which part is missing. */
+    const res = resolveProduct(data, description);
+    if (res.status === "exact") {
+      description = res.product.displayName;
+    } else if (res.status === "candidates") {
+      const list = res.candidates.slice(0, 6).map((p, i) => `  ${i + 1}. ${p.displayName}`).join("\n");
+      const pick = window.prompt(
+        `"${description}" is not exactly a product we make.\n\nWhich one is it? Type the number:\n\n${list}\n\nTo clear this: pick a number, or Cancel and correct the line — most often the pt (2-3pt, 3-4pt or 6pt) is missing.`,
+        "1");
+      const chosen = res.candidates[Number(pick) - 1];
+      if (!chosen) return;
+      description = chosen.displayName;
+    } else {
+      window.alert(
+        `"${description}" is not in the product catalogue.\n\nTo clear this: check the size and the pt, or add it as a new product before ordering it. Nothing is added to the order.`);
+      return;
+    }
     /* EXTRAS APPEND. THEY DO NOT EDIT.
        Chris, 7 Sep: "I feel just editing things leave room for confusion." He
        is describing what happened to Avrupa this morning — a line that read
@@ -9301,9 +10281,31 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
        original order stays exactly as the customer first sent it, the extras
        sit underneath in their own block, and the order total is the sum. Nothing
        is overwritten, so nothing has to be remembered. */
-    setLineItems(prevLineItems => [...prevLineItems, { id: uid("li"), orderId, description,
+    /* RULE 2 ON THE HAND-ENTRY PATH.
+       An order typed in by hand gets its lines one at a time, after the order
+       exists — so "cases created with the order" would leave a hole unless the
+       cases appear as the lines do. A new line gets its cases in the same write
+       as the line, appended on the END, which is the amendment rule: nothing
+       already numbered or labelled moves.
+       A line the catalogue does not recognise, or tape, gets no case — see
+       plannableLines. It still goes on the order. */
+    const newLi = { id: uid("li"), orderId, description,
       qty: Number(newLine.qty), unitPrice: Number(newLine.unitPrice || 0),
-      ...(extrasLabel ? { amendmentLabel: extrasLabel } : {}) }]);
+      ...(extrasLabel ? { amendmentLabel: extrasLabel } : {}) };
+    setData(prevData => {
+      const withLine = { ...prevData, lineItems: [...prevData.lineItems, newLi] };
+      const { plannable } = plannableLines(prevData, [newLi]);
+      if (!plannable.length) {
+        return { ...withLine, ...appendLog(prevData, { action: "add", entity: "lineItem", entityId: newLi.id,
+          summary: `Added "${description}" to ${orderId} — NO case planned: ${plannableLines(prevData, [newLi]).excluded[0].why}` }) };
+      }
+      const used = (prevData.cases || []).filter(c => !c.deleted && c.orderId === orderId).map(c => Number(c.caseNum));
+      const startAt = used.length ? Math.max(...used) : (Number((prevData.orders.find(o => o.id === orderId) || {}).startingCaseNum) || 0);
+      const rows = planRowsForNewOrder(orderId, plannable, { startingCaseNum: startAt, actor: currentActor(), data: prevData });
+      return { ...withLine, cases: [...(prevData.cases || []), ...rows],
+        ...appendLog(prevData, { action: "packing_planned", entity: "order", entityId: orderId,
+          summary: `Added "${description}" to ${orderId} — ${rows.length} case${rows.length === 1 ? "" : "s"} appended (${rows[0].caseNum}\u2013${rows[rows.length - 1].caseNum})` }) };
+    });
     setNewLine({ range: newLine.range, size: "", pt: "", packType: newLine.packType, amount: "", qty: "", unitPrice: "" });
   };
   // Deleting a line while already inside Edit order mode doesn't re-prompt
@@ -9356,7 +10358,116 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
     }
     setLineEditMode(false); setLineEditBaseline({}); setLineChangeReasons({});
   };
-  const updateLineItemField = (id, field, value) => setLineItems(prevLineItems => prevLineItems.map(x => x.id === id ? { ...x, [field]: value } : x));
+  /* A CUSTOMER TAKING SOMETHING OFF THE ORDER CHANGES THE PALLET. (9 Sep)
+     A quantity going DOWN is not just a number on a line — cases come out and
+     everything after them is renumbered, so labels have to be reprinted. The
+     plan is a promise: it cannot quietly promise 60 when the order says 40.
+     Shown and confirmed before anything moves, and never applied to a case
+     with boxes physically in it — those are reported instead. */
+  const updateLineItemField = (id, field, value) => {
+    if (field !== "qty") {
+      setLineItems(prevLineItems => prevLineItems.map(x => x.id === id ? { ...x, [field]: value } : x));
+      return;
+    }
+    const li = (lineItems || []).find(x => x.id === id);
+    const was = Number(li && li.qty) || 0;
+    const now = Number(value) || 0;
+    const drop = was - now;
+    if (!li || drop === 0) {
+      setLineItems(prevLineItems => prevLineItems.map(x => x.id === id ? { ...x, [field]: value } : x));
+      return;
+    }
+    /* A QUANTITY GOING UP IS AN AMENDMENT TOO. (Chris, 9 Sep)
+       Reductions have deleted and renumbered cases since this morning;
+       increases fell straight through, so the line said 200 while the cases
+       still promised 140 — the plan quietly under-promising, which is rule 2
+       broken in the direction nobody notices. An increase appends cases on
+       the end, exactly as adding a line does. */
+    if (drop < 0) {
+      const add = -drop;
+      setData(prevData => {
+        const started = orderHasStarted(prevData, li.orderId);
+        const { plannable } = plannableLines(prevData, [{ ...li, qty: add }]);
+        if (!plannable.length) {
+          if (typeof window !== "undefined") window.alert(
+            `${li.description} raised ${was} \u2192 ${now}. No cases were added — this line is not something that goes in a case.`);
+          return { ...prevData, lineItems: prevData.lineItems.map(x => x.id === id ? { ...x, qty: now } : x) };
+        }
+        const used = (prevData.cases || []).filter(c => !c.deleted && c.orderId === li.orderId).map(c => Number(c.caseNum));
+        const startAt = used.length ? Math.max(...used) : 0;
+        const rows = planRowsForNewOrder(li.orderId, plannable,
+          { startingCaseNum: startAt, actor: currentActor(), data: prevData });
+        const stamp = `Amendment ${new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
+        const added = rows.map(r => ({ ...r, planBatch: stamp }));
+        if (typeof window !== "undefined" && !window.confirm(
+          `${li.description}: ${was} \u2192 ${now}, so ${add} more to promise.\n\n`
+          + `Case${added.length === 1 ? "" : "s"} ${caseRunsLabel(added.map(r => r.caseNum))} will be added on the end.\n`
+          + `Nothing already labelled changes.\n\nApply this?`)) return prevData;
+        return { ...prevData,
+          lineItems: prevData.lineItems.map(x => x.id === id ? { ...x, qty: now } : x),
+          cases: [...(prevData.cases || []), ...added],
+          ...appendLog(prevData, { action: "amendment_increase", entity: "order", entityId: li.orderId,
+            summary: `${li.description} raised ${was} \u2192 ${now}${started.started ? ` (order already started \u2014 ${started.why})` : ""}. `
+              + `Case${added.length === 1 ? "" : "s"} ${caseRunsLabel(added.map(r => r.caseNum))} appended.` }) };
+      });
+      return;
+    }
+    setData(prevData => {
+      const rows = (prevData.cases || []).filter(c => !c.deleted && c.orderId === li.orderId);
+      const order = (prevData.orders || []).find(o => o.id === li.orderId) || {};
+      const startAt = (Number(order.startingCaseNum) || 0) + 1;
+      const started = orderHasStarted(prevData, li.orderId);
+      const res = applyAmendmentReduction(rows, li.description, drop, { startAt });
+      /* A STARTED ORDER CANNOT JUST HAVE ITS NUMBER CHANGED. (Chris, 9 Sep)
+         The cases are mapped out and labelled, so the change has to be
+         followed through as an amendment — which is what this does. The
+         difference is that on a started order it is spelled out first, and a
+         case with boxes in it is never taken away underneath anybody. */
+      if (started.started && typeof window !== "undefined") {
+        window.alert(
+          `${li.orderId} has started \u2014 ${started.why}, and its cases are mapped out.\n\n`
+          + `The quantity cannot simply be changed. It will be followed through as an amendment: `
+          + `cases removed, everything after renumbered, and the labels that need reprinting named.\n\n`
+          + `Read the next screen carefully before you agree to it.`);
+      }
+      const say = [
+        `${li.description}: ${was} \u2192 ${now}, so ${drop} come off the plan.`,
+        res.deleted.length ? `Cases deleted: ${caseRunsLabel(res.deleted)}.` : "No case is emptied by this.",
+        res.newCases.length ? `Remainder re-promised at the end: case${res.newCases.length === 1 ? "" : "s"} ${caseRunsLabel(res.newCases.map(n => n.caseNum))}.` : "",
+        res.moved.length ? `${res.moved.length} case${res.moved.length === 1 ? "" : "s"} renumbered \u2014 REPRINT LABELS ${res.reprintFrom} to ${res.reprintTo}.` : "",
+        res.blocked.length ? `NOT touched, boxes are physically in them: case${res.blocked.length === 1 ? "" : "s"} ${caseRunsLabel(res.blocked.map(b => b.caseNum))}. Empty them first.` : "",
+        res.shortBy ? `${res.shortBy} could not be taken off the plan for that reason.` : "",
+      ].filter(Boolean).join("\n\n");
+      if (typeof window !== "undefined" && !window.confirm(say + "\n\nApply this?")) return prevData;
+      const keptIds = new Set(res.plan.map(r => r.id));
+      const stamp = new Date().toISOString();
+      const cases = (prevData.cases || []).map(c => {
+        if (c.deleted || c.orderId !== li.orderId) return c;
+        if (!keptIds.has(c.id)) return { ...c, deleted: true, deletedAt: stamp, updatedAt: stamp, updatedBy: currentActor() };
+        const to = res.plan.find(r => r.id === c.id);
+        return to && Number(to.caseNum) !== Number(c.caseNum)
+          ? { ...c, caseNum: to.caseNum, updatedAt: stamp, updatedBy: currentActor() } : c;
+      });
+      const added = res.newCases.map(n => ({
+        id: caseRowId(li.orderId, n.caseNum), orderId: li.orderId, caseNum: n.caseNum,
+        contents: {}, confirmed: false, deleted: false, planned: { [n.spec]: n.qty },
+        maxSize: isReelSpec(n.spec) ? reelsPerCase(n.spec) : CASE_MAX_SIZE_DEFAULT,
+        planBatch: `Amendment ${new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`,
+        weight: "", pallet: "", packedOutside: false, updatedAt: stamp, updatedBy: currentActor(),
+      }));
+      return {
+        ...prevData,
+        lineItems: prevData.lineItems.map(x => x.id === id ? { ...x, qty: now } : x),
+        cases: [...cases, ...added],
+        ...appendLog(prevData, { action: "amendment_reduction", entity: "order", entityId: li.orderId,
+          summary: `${li.description} reduced ${was} \u2192 ${now}. `
+            + (res.deleted.length ? `Cases ${caseRunsLabel(res.deleted)} deleted. ` : "")
+            + (res.moved.length ? `Renumbered ${res.moved.length}; reprint labels ${res.reprintFrom}-${res.reprintTo}. ` : "")
+            + (added.length ? `Remainder appended as case${added.length === 1 ? "" : "s"} ${caseRunsLabel(added.map(a => a.caseNum))}. ` : "")
+            + (res.blocked.length ? `Cases ${caseRunsLabel(res.blocked.map(b => b.caseNum))} left alone \u2014 boxes in them.` : "") }),
+      };
+    });
+  };
 
   const boxedStock = boxedStockAvailable(data.bondingRuns, data.stockPicks || []);
   // Exact spec-text matches first (safest — these get proper case numbers
@@ -9583,6 +10694,17 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
       const matchingCandidates = candidates
         .filter(c => !usedIds.has(c.id) && looseSpecMatch(c.productSize, li.description) && stockFormMatchesLine(c, li.description))
         .filter(c => !allocatedElsewhere(c.boxNumber, order.id))
+        /* A WRONG CARTON IS NOT A WARNING, IT IS THE WRONG BOX.
+           Chris, 8 Sep: the phone offered Avrupa 8 boxes of 0.40 x 1.30 that
+           are sitting on D2 in WHITE cartons. Right product, wrong box, and
+           white-label is the entire point of a white box — anything printed on
+           it defeats it, and a white box arriving at a PX Plus customer is a
+           complaint.
+
+           `boxTypeIssue` already existed but only flagged, and the flag was
+           only honoured by the auto-pick. Now it excludes, the same way
+           another order's allocation does. */
+        .filter(c => !c.boxTypeIssue)
         .sort((a, b) => (a.date || "").localeCompare(b.date || ""));
       for (const c of matchingCandidates) {
         if (remaining <= 0) break;
@@ -9633,6 +10755,9 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
      like it. Pocket the phone between bays, unlock it, every tick gone.
      On the item, it rides in the same draft as everything else about it. */
   const setPickItemConfirmed = (id, confirmed) => setPendingPickItems(prev => prev.map(it => it.id === id ? { ...it, confirmed: !!confirmed } : it));
+  /* Written and done. Rides on the item like everything else about the walk,
+     so it survives the phone dropping the app in a pocket. */
+  const setPickItemCommitted = (id, committed) => setPendingPickItems(prev => prev.map(it => it.id === id ? { ...it, committed: !!committed, committedCase: it.caseOverride ?? it.committedCase ?? null } : it));
   const setPickItemDamaged = (id, damaged) => setPendingPickItems(prev => prev.map(it => it.id === id ? { ...it, damaged, confirmedQty: damaged ? 0 : it.proposedQty } : it));
   const setPickItemCase = (boxNumber, caseNum) => setPendingPickItems(prev => prev.map(it => it.boxNumber === boxNumber ? { ...it, caseOverride: caseNum } : it));
 
@@ -10243,10 +11368,40 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
     if (withBoxTypeIssue.length > 0) return "boxtype";
     return "noshelf";
   };
-  const confirmPickAndAllocate = (order, items = pendingPickItems, { receipt = true } = {}) => {
+  const confirmPickAndAllocate = (order, items = pendingPickItems, { receipt = true, onlyConfirmed = false, keepRest = false } = {}) => {
+    /* ONLY WHAT THE PICKER TICKED. (9 Sep 2026)
+
+       Every line carried a quantity defaulted to the full proposal, so a line
+       nobody touched committed exactly like one that had been carried to a
+       case. On 8 September that wrote 22 `placed` movements for boxes nobody
+       had picked up — stock recorded into cases it was never in, on a pallet
+       that then disagreed with the ledger.
+
+       The tick already exists on the item and already survives a reload. It
+       simply was not read. On the phone walk it now decides: an unticked line
+       is not picked, whatever its quantity box says.
+
+       The other two callers are unchanged and deliberately so — printing a
+       sheet and the desktop "Confirm & allocate" are both a person asserting
+       the whole list at once, with no walk to tick. */
     const damagedItems = items.filter(it => it.damaged);
-    const toApply = items.filter(it => !it.damaged && Number(it.confirmedQty) > 0);
+    const eligible = onlyConfirmed ? items.filter(it => it.confirmed) : items;
+    const toApply = eligible.filter(it => !it.damaged && Number(it.confirmedQty) > 0);
+    if (onlyConfirmed && toApply.length === 0 && damagedItems.length === 0) {
+      if (typeof window !== "undefined") window.alert(
+        "Nothing is ticked, so nothing has been picked.\n\nTo clear this: tick each line as you carry it to its case, or press Cancel if this pick is not happening.");
+      return;
+    }
     if (toApply.length === 0 && damagedItems.length === 0) { cancelPendingPick(); return; }
+    if (onlyConfirmed) {
+      const skipped = items.filter(it => !it.confirmed && !it.damaged && Number(it.confirmedQty) > 0);
+      if (skipped.length && typeof window !== "undefined" && !window.confirm(
+        `${toApply.length} line${toApply.length === 1 ? "" : "s"} ticked and will be allocated.\n\n`
+        + `${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and will be left on the shelf:\n`
+        + skipped.slice(0, 8).map(it => `  ${it.boxNumber} — ${it.productSize}`).join("\n")
+        + (skipped.length > 8 ? `\n  …and ${skipped.length - 8} more` : "")
+        + "\n\nCommit the ticked ones?")) return;
+    }
     let shortfalls = [];
     setData(prevData => {
       shortfalls = [];
@@ -10254,7 +11409,7 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
       const updatedRuns = prevData.bondingRuns.map(r => {
         const damagedMatch = damagedItems.find(it => it.id === r.id);
         if (damagedMatch) {
-          const trueAvailable = Number(r.toStock || 0);
+          const trueAvailable = Math.max(Number(r.toStock || 0), physicalOnShelf(LEDGER_MOVEMENTS, r.boxNumber));
           if (trueAvailable > 0) {
             newDamagedPicks.push({ id: uid("pick"), boxNumber: r.boxNumber, productSpec: r.productSize,
               qtyPicked: trueAvailable, datePicked: todayISO(), pickedFor: "DAMAGED", comments: `Found damaged while picking for ${order.id}` });
@@ -10264,7 +11419,17 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
         const match = toApply.find(it => it.id === r.id);
         if (!match) return r;
         const requested = Number(match.confirmedQty);
-        const trueAvailable = Number(r.toStock || 0);
+        /* The ledger, not the retired column. A box allocated to this order is
+           exactly what the picker has just carried to a case. */
+        const alreadyPicked = (data.stockPicks || [])
+          .filter(p => p.boxNumber === r.boxNumber).reduce((t, p) => t + (Number(p.qtyPicked) || 0), 0);
+        /* Whichever source actually knows. `toStock` was dropped from the
+           database on 6 Sep, so it answers 0 for every row written since —
+           which is what silently placed nothing this morning. Older rows still
+           carry it and their ledger may be thin, so the larger of the two is
+           the honest figure and neither model can zero out the other. */
+        const fromLedger = Math.max(0, physicalOnShelf(LEDGER_MOVEMENTS, r.boxNumber) - alreadyPicked);
+        const trueAvailable = Math.max(Number(r.toStock || 0), fromLedger);
         const qty = Math.min(requested, trueAvailable);
         if (qty < requested) shortfalls.push({ boxNumber: r.boxNumber, requested, actual: qty });
         // Batch code only ever changes here if the picker actually
@@ -10410,9 +11575,26 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
     if (shortfalls.length > 0) {
       setAllocateShortfallWarning({ orderId: order.id, shortfalls });
     }
-    cancelPendingPick();
-    setCheckStockFor(null);
+    /* ONE LINE AT A TIME. (Chris, 9 Sep: "I only had small pockets of time to
+       pick.") A pick used to be all-or-nothing: walk the whole pallet, then
+       commit. Anyone interrupted halfway had a screen full of work that was
+       not written anywhere, and a phone that drops a backgrounded PWA.
+       With keepRest the committed lines leave the walk and the rest stay
+       exactly as they are, so picking is as many small visits as it takes. */
+    if (keepRest) {
+      /* The line STAYS on the walk, marked done. Removing it made the list
+         jump under the picker's thumb and left no evidence on screen that the
+         box had been dealt with — on a phone, in a shed, that reads as "did
+         that save?". It stays where it was with a banner on it. */
+      for (const it of [...toApply, ...damagedItems]) setPickItemCommitted(it.id, true);
+    } else {
+      cancelPendingPick();
+      setCheckStockFor(null);
+    }
   };
+  /* One box, carried and put in its case, recorded now. */
+  const commitOnePick = (order, item) =>
+    confirmPickAndAllocate(order, [item], { receipt: false, keepRest: true });
 
   const assignedBoxesFor = (order) => data.bondingRuns.filter(r => r.workNumber === order.id && r.boxNumber);
 
@@ -10677,6 +11859,9 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
                       onChange={e => updateOrder(o.id, { address: e.target.value })} />
                   </div>
 
+                  {/* Visible before the table, not buried in it — an amendment
+                      is the first thing argued about when a customer rings. */}
+                  <AmendmentBanner order={o} lineItems={lineItems} cases={data.cases} />
                   <OrderLineItemsTable
                     items={items} lineItems={lineItems} setLineItems={setLineItems} data={data}
                     lineChanged={lineChanged} lineChangeReasons={lineChangeReasons} setLineChangeReasons={setLineChangeReasons}
@@ -11111,6 +12296,7 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
                               swapPickItemBatch={swapPickItemBatch}
                               addFoundBatchForPickItem={addFoundBatchForPickItem}
                               confirmPickAndAllocate={confirmPickAndAllocate}
+                              commitOnePick={commitOnePick}
                               cancelPendingPick={cancelPendingPick}
                               order={o}
                             />
@@ -11376,6 +12562,7 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
                   <StageRule stage={o.stage} />
                   {o.priority != null && <Badge color={o.priority <= 2 ? RED : INK_MUTED} solid={o.priority <= 2}>P{o.priority}</Badge>}
                   {o.boxType && <BoxTypeMark type={o.boxType} />}
+                  <AmendmentBanner order={o} lineItems={lineItems} cases={data.cases} compact />
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
                   <div style={{ width: 70, height: 6, borderRadius: 5, background: "#EAEAE5", overflow: "hidden" }}>
@@ -13210,16 +14397,25 @@ function caseFill(c) {
 const EMPTY_ON_PURPOSE = "Confirmed empty on purpose";
 // What is meant to be in a case, one line per size, summed across box codes.
 function caseContentLines(c) {
+  /* Reads through caseView so the screen, the list and the map cannot disagree
+     about what a case holds. The label/spec shape is kept because the screen
+     colours each line by product. */
   const bySpec = new Map();
-  for (const r of c.contributions || []) {
-    const k = shortCaseSpec(r.spec) || "(not recorded)";
-    const cur = bySpec.get(k) || { qty: 0, spec: r.spec || "" };
-    bySpec.set(k, { qty: cur.qty + (Number(r.qty) || 0), spec: cur.spec || r.spec || "" });
+  for (const x of caseView(c).contents) {
+    const k = shortCaseSpec(x.spec) || "(not recorded)";
+    const cur = bySpec.get(k) || { qty: 0, spec: x.spec || "" };
+    bySpec.set(k, { qty: cur.qty + (Number(x.qty) || 0), spec: cur.spec || x.spec || "" });
   }
   // `spec` is the full description, kept so the screen can colour each line
   // with the product's printed colour (productColourFor). The label is what
   // is read; the spec is what decides the chip.
   return [...bySpec.entries()].filter(([, v]) => v.qty > 0).map(([label, v]) => ({ label, qty: v.qty, spec: v.spec }));
+}
+/* What the case is FOR, for the screen — same shape as caseContentLines so the
+   tile can render both without knowing where either came from. */
+function casePlanLines(c) {
+  return caseView(c).plan.map(p => ({ label: shortCaseSpec(p.spec) || p.spec, qty: p.qty,
+                                      spec: p.spec, inCase: p.inCase, outstanding: p.outstanding }));
 }
 /* Chris, 4 Sep: "I want a sheet of paper with the case icons on with the sizes
    and quantities of what's meant to be inside the icon" — printed at the start
@@ -13228,7 +14424,7 @@ function caseContentLines(c) {
    order. Black on white, no status colours — the plan, not the progress.
    Printed through its own iframe so nothing else mounted on the page can end
    up on the paper (the pick-sheet contamination rule). */
-function printCaseIconSheet(order, caseRows, setData) {
+function printCaseIconSheet(order, caseRows, setData, data = null) {
   const esc = (v) => String(v ?? "").replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
   const cases = [...(caseRows || [])].filter(c => !c.packedOutside).sort((a, b) => a.caseNum - b.caseNum)
     .map(c => ({ caseNum: c.caseNum, lines: caseContentLines(c), reel: isReelCase(c.maxSize) }))
@@ -13305,6 +14501,33 @@ function printCaseIconSheet(order, caseRows, setData) {
       order.customer ? esc(order.customer) : "",
       order.customerRef ? `Their ref &nbsp;<b>${esc(order.customerRef)}</b>` : "",
       `<b>${cases.length}</b> case${cases.length === 1 ? "" : "s"} &nbsp;&middot;&nbsp; <b>${grand}</b> boxes`,
+      /* THE PAPER SAYS IT TOO. A sheet that does not mention the amendment is
+         the sheet somebody packs to while the customer is on the phone about
+         the extras. */
+      /* The three numbers the person carrying this sheet actually needs. */
+      ...(() => {
+        const short = (typeof orderShortfall === "function" && data) ? orderShortfall(data, order.id) : [];
+        if (!short.length) return [];
+        const make = short.filter(x => x.toMake > 0);
+        const head = `<b>${short.reduce((t, x) => t + x.needed, 0)}</b> still to go in`
+          + (make.length ? ` &nbsp;&middot;&nbsp; <b>${make.reduce((t, x) => t + x.toMake, 0)}</b> of that not made yet` : " &mdash; all of it is on the shelf");
+        return [head, ...short.slice(0, 6).map(x =>
+          `${esc(x.spec)}: need <b>${x.needed}</b>, shelf ${x.shelf}${x.toMake ? `, <b>make ${x.toMake}</b>` : ""}`)
+          .concat(short.length > 6 ? [`…and ${short.length - 6} more products`] : [])];
+      })(),
+      ...(() => {
+        const amend = (caseRows || []).filter(c => c && !c.deleted
+          && String(c.planBatch || "Original") !== "Original");
+        if (!amend.length) return [];
+        const byLabel = new Map();
+        for (const c of amend) {
+          const k = String(c.planBatch).trim();
+          if (!byLabel.has(k)) byLabel.set(k, []);
+          byLabel.get(k).push(Number(c.caseNum));
+        }
+        return [...byLabel.entries()].map(([label, nums]) =>
+          `<b>${esc(label)}</b> &mdash; cases ${esc(caseRunsLabel(nums))} were added after the original order`);
+      })(),
     ])}
     <div class="grid">${tiles}</div>
     <div class="foot">If a case is packed differently from this sheet, write it on the sheet &mdash; the sheet is the record.</div>
@@ -13337,10 +14560,10 @@ function printCaseIconSheet(order, caseRows, setData) {
    needs a second press to commit and Steve reads shapes faster than lists;
    and it collapses again the moment one is pressed, so the panel does not
    grow a permanent extra row. */
-function CaseMapPrintChooser({ order, caseRows, setData }) {
+function CaseMapPrintChooser({ order, caseRows, setData, data = null }) {
   const [open, setOpen] = React.useState(false);
   if (!open) return <Button variant="ghost" onClick={() => setOpen(true)}>🗺 Print case map</Button>;
-  const pick = (fn) => { setOpen(false); fn(order, caseRows, setData); };
+  const pick = (fn) => { setOpen(false); fn(order, caseRows, setData, data); };
   return (
     <span className="inline-flex items-center gap-2 flex-wrap">
       <Button variant="ghost" onClick={() => pick(printCaseMapGrid)}>🗺 Grid &mdash; one row per case</Button>
@@ -13352,7 +14575,7 @@ function CaseMapPrintChooser({ order, caseRows, setData }) {
     </span>
   );
 }
-function printCaseMapGrid(order, caseRows, setData) {
+function printCaseMapGrid(order, caseRows, setData, data = null) {
   const esc = pEsc;
   /* THE GRID SHOWS THE PLAN, NOT JUST THE PAST.
      Chris, 8 Sep: "Case map still not sorted" — the grid stopped at case 38
@@ -13365,18 +14588,23 @@ function printCaseMapGrid(order, caseRows, setData) {
      packed: `awaited` is drawn lighter, in brackets. The column total counts
      packed only, so the figures on the paper match the boxes on the pallet.
      A case with neither contents nor a plan stays off, as before. */
+  /* Same answer as the packing list and the screen: caseView. Nothing here
+     works out what a case holds or is for. */
   const rows = [...(caseRows || [])].filter(c => !c.packedOutside).sort((a, b) => a.caseNum - b.caseNum)
     .map(c => {
+      const v = caseView(c);
       const cells = new Map();
       for (const l of caseContentLines(c)) cells.set(l.label, (cells.get(l.label) || 0) + l.qty);
       const awaited = new Map();
-      const pSpec = String(c.plannedSpec || "").trim();
-      const toCome = pSpec ? Math.max(0, (Number(c.plannedQty) || 0)
-        - [...cells.values()].reduce((t, q) => t + q, 0)) : 0;
-      if (toCome > 0) awaited.set(shortCaseSpec(pSpec) || pSpec, toCome);
-      return { caseNum: c.caseNum, cells, awaited, total: [...cells.values()].reduce((t, q) => t + q, 0),
+      const planMap = new Map();
+      for (const p of v.plan) {
+        const k = shortCaseSpec(p.spec) || p.spec;
+        if (p.qty > 0) planMap.set(k, (planMap.get(k) || 0) + p.qty);
+        if (p.outstanding > 0) awaited.set(k, (awaited.get(k) || 0) + p.outstanding);
+      }
+      return { caseNum: v.caseNum, cells, awaited, planMap, total: v.total,
                reel: isReelCase(c.maxSize) };
-    }).filter(c => c.cells.size > 0 || c.awaited.size > 0);
+    }).filter(c => c.cells.size > 0 || c.planMap.size > 0);
 
   /* Pallet capacity is a property of what the case HOLDS, not one flat
      number: 32 cases of 20 boxes fill a pallet, but only 14 cases of 10
@@ -13401,6 +14629,7 @@ function printCaseMapGrid(order, caseRows, setData) {
   for (const c of rows) for (const k of c.cells.keys()) if (!seen.has(k)) { seen.add(k); specs.push(k); }
   // A product that is only promised so far still needs its column.
   for (const c of rows) for (const k of c.awaited.keys()) if (!seen.has(k)) { seen.add(k); specs.push(k); }
+  for (const c of rows) for (const k of c.planMap.keys()) if (!seen.has(k)) { seen.add(k); specs.push(k); }
 
   /* ONE TABLE. Every size across the top, every case down the side, header
      repeated at the top of each page and nowhere else.
@@ -13474,6 +14703,7 @@ function printCaseMapGrid(order, caseRows, setData) {
     for (const c of chunk) {
       for (const k of c.cells.keys()) used.add(k);
       for (const k of c.awaited.keys()) used.add(k);
+      for (const k of c.planMap.keys()) used.add(k);
     }
     const mySpecs = specs.filter(k => used.has(k));
     const cols = mySpecs.length + 3;
@@ -13494,9 +14724,30 @@ function printCaseMapGrid(order, caseRows, setData) {
         // Empty stays EMPTY. A wide sparse row is read by finding the ink.
         // What is still to come is shown in brackets and lighter, so it can
         // never be mistaken for a box that is in the case.
-        if (q && a) return `<td class="q has">${esc(q)}<span class="await"> (${esc(a)})</span></td>`;
-        if (a) return `<td class="q"><span class="await">(${esc(a)})</span></td>`;
-        return `<td class="q${q ? " has" : ""}">${q ? esc(q) : ""}</td>`;
+        /* THE GRID SAYS WHAT IS IN THE CASE. NOTHING ELSE.
+           Chris, 8 Sep: "why does the case map show items in the first few
+           cases when there isn't any". Because I had put the PROMISED
+           quantities in the cells, in brackets, when he asked the map to show
+           where everything goes. On a screen the brackets read as a promise;
+           on paper a number in a cell is a box in a case, and somebody
+           checking a pallet against this sheet would have counted five boxes
+           that are not there.
+
+           What a case is still waiting for is printed below the grid instead,
+           where it cannot be mistaken for contents. */
+        /* ONE TABLE, TWO WEIGHTS OF INK.
+           Chris, 8 Sep: "it's repeated itself... I just want it so that in
+           bold is what's in there and light what's due." The second table
+           listed the same cases in the same columns again, so a sixty-case
+           order printed every case twice and the reader had to hold two grids
+           in their head to answer one question.
+
+           So: bold is a box in the case, light is what that case is still
+           waiting for. The brackets stay on the light figure — that is what
+           stops it being counted as stock by someone checking a pallet, which
+           was the fault behind splitting the tables in the first place. */
+        return `<td class="q${q ? " has" : ""}">${q ? esc(q) : ""}${
+          a ? `<span class="await">${q ? " " : ""}(${esc(a)})</span>` : ""}</td>`;
       }).join("");
       return band + `<tr><td class="cn">${esc(c.caseNum)}</td>${cells}<td class="tot">${esc(c.total)}</td><td class="wr"></td></tr>`;
     }).join("");
@@ -13506,13 +14757,22 @@ function printCaseMapGrid(order, caseRows, setData) {
        so a partial column total sat under a label that reads like the order
        total. Whoever checks the paperwork against it would have been checking
        against a number that was never claimed to be the whole. */
-    const foots = mySpecs.map(sp => `<td class="q b">${esc(chunk.reduce((t, c) => t + (c.cells.get(sp) || 0), 0))}</td>`).join("");
+    const foots = mySpecs.map(sp => {
+      const packed = chunk.reduce((t, c) => t + (c.cells.get(sp) || 0), 0);
+      const due = chunk.reduce((t, c) => t + (c.awaited.get(sp) || 0), 0);
+      return `<td class="q b">${esc(packed)}${due ? `<span class="await"> (${esc(due)})</span>` : ""}</td>`;
+    }).join("");
     const sheetTotal = chunk.reduce((t, c) => t + c.total, 0);
+    const sheetDue = chunk.reduce((t, c) => t + [...c.awaited.values()].reduce((a, q) => a + q, 0), 0);
+
+    /* The separate "what each case is for" table was removed on 8 Sep. It
+       repeated every case and every column a second time to say a thing the
+       contents grid can say in lighter ink — see the cell above. */
 
     return `<div class="sheet${idx < chunks.length - 1 ? " brk" : ""}"><table class="cm">
       <thead><tr><th class="cn">Case</th>${heads}<th class="tot">Total</th><th class="wr">Weight</th></tr>${runHead}</thead>
       <tbody>${body}</tbody>
-      <tfoot><tr><td class="cn">This sheet</td>${foots}<td class="tot b">${esc(sheetTotal)}</td><td class="wr"></td></tr></tfoot>
+      <tfoot><tr><td class="cn">This sheet</td>${foots}<td class="tot b">${esc(sheetTotal)}${sheetDue ? `<span class="await"> (${esc(sheetDue)})</span>` : ""}</td><td class="wr"></td></tr></tfoot>
     </table></div>`;
   }).join("");
 
@@ -13619,7 +14879,15 @@ function printCaseMapGrid(order, caseRows, setData) {
       order.customer ? esc(order.customer) : "",
       order.customerRef ? `Their ref &nbsp;<b>${esc(order.customerRef)}</b>` : "",
       `<b>${rows.length}</b> case${rows.length === 1 ? "" : "s"} &nbsp;&middot;&nbsp; <b>${totalBoxes}</b> boxes &nbsp;&middot;&nbsp; <b>${pallets}</b> pallet${pallets === 1 ? "" : "s"}`,
-    ])}
+          ...(() => {
+        const short = (typeof orderShortfall === "function" && data) ? orderShortfall(data, order.id) : [];
+        if (!short.length) return [];
+        const make = short.filter(x => x.toMake > 0);
+        return [`<b>${short.reduce((t, x) => t + x.needed, 0)}</b> still to go in`
+          + (make.length ? ` &nbsp;&middot;&nbsp; <b>${make.reduce((t, x) => t + x.toMake, 0)}</b> of that not made yet` : " &mdash; all of it is on the shelf"),
+          ...short.slice(0, 6).map(x => `${esc(x.spec)}: need <b>${x.needed}</b>, shelf ${x.shelf}${x.toMake ? `, <b>make ${x.toMake}</b>` : ""}`)];
+      })(),
+])}
     ${table}
     <div class="foot">If a case is packed differently from this sheet, write it on the sheet &mdash; the sheet is the record.</div>
     <div class="p-sign">
@@ -13700,6 +14968,10 @@ function CaseTile({ c, selected, onSelect, lit = false }) {
      back to what it was, and the sizes sit underneath it in the open, where
      they have room to breathe and no longer need clipping to fit. */
   const sizeLines = caseContentLines(c);
+  /* casePlanLines reads through caseView, the same answer the printed grid and
+     the packing list use. Zero-quantity plan entries are dropped for the same
+     reason the paper drops them: a promise of nothing is not a promise. */
+  const planLines = casePlanLines(c).filter(p => (Number(p.outstanding) || 0) > 0);
   const shortSize = (label) => {
     // "0.50 x 1.70 2-3pt" → size on the line, pt small beside it.
     const m = label.match(/^(.*?)\s*(2-3pt|3-4pt|6pt)$/i);
@@ -13734,6 +15006,16 @@ function CaseTile({ c, selected, onSelect, lit = false }) {
           {c.confirmed ? `${fill.allocated}/${fill.capacity} ✓` : fill.full || fill.allocated === 0 ? `${fill.planned}` : `${fill.allocated}/${fill.capacity}`}
         </span>
       )}
+      {/* AN AMENDMENT CASE IS MARKED ON THE TILE.
+          Cases added after the original order sit at the end of the pallet and
+          look identical to the rest. The customer who added them asks about
+          them by name, so the case says which batch it belongs to. */}
+      {String(c.planBatch || "Original") !== "Original" && (
+        <span title={`Added by ${c.planBatch}`}
+          style={{ position: "absolute", top: 6, right: 5, fontSize: 8, fontWeight: 800,
+                   color: "#8A4B00", background: "#FFF1DC", border: "1px solid #E8C77A",
+                   borderRadius: 3, padding: "0 3px", lineHeight: "12px" }}>+</span>
+      )}
       {Number(c.weight) > 0 && (
         <span style={{ position: "absolute", bottom: 4, left: 5, fontSize: 9, fontWeight: 700, color: "#2E8B57" }}>{c.weight}kg</span>
       )}
@@ -13758,6 +15040,35 @@ function CaseTile({ c, selected, onSelect, lit = false }) {
                 <b style={{ fontVariantNumeric: "tabular-nums" }}>{l.qty}</b>
                 <span style={{ color: INK_MUTED }}> × </span>{size}
                 {pt && <span style={{ fontSize: 8.5, color: INK_MUTED, marginLeft: 3 }}>{pt}</span>}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    )}
+    {/* BOLD IS IN THE CASE, LIGHT IS DUE — the same two weights of ink as the
+        printed grid, which stopped repeating every case in a second table on
+        8 Sep. Only what the case is still WAITING for appears here: a finished
+        case shows its contents and nothing below them, so the tile never says
+        the same twenty boxes twice. Nothing above this block moved. */}
+    {!c.packedOutside && planLines.length > 0 && (
+      <div style={{ fontSize: 10.5, lineHeight: 1.35, color: INK_MUTED, padding: "0 2px",
+                    marginTop: sizeLines.length > 0 ? 3 : 0,
+                    paddingTop: sizeLines.length > 0 ? 3 : 0,
+                    borderTop: sizeLines.length > 0 ? `1px dotted ${BORDER}` : "none" }}>
+        <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase",
+                      color: "#9A9CA3", marginBottom: 1 }}>Due</div>
+        {planLines.map((l, i) => {
+          const { size, pt } = shortSize(l.label);
+          return (
+            <div key={"p" + i} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              {/* Same shape, dimmed — the product reads the same as it does in
+                  the contents lines, but nothing here is on the pallet yet. */}
+              <span style={{ opacity: 0.45, display: "inline-flex" }}><SizeShape spec={l.spec} /></span>
+              <span style={{ minWidth: 0 }}>
+                <b style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{l.outstanding}</b>
+                <span> × </span>{size}
+                {pt && <span style={{ fontSize: 8.5, marginLeft: 3 }}>{pt}</span>}
               </span>
             </div>
           );
@@ -13842,6 +15153,36 @@ function CaseAnnouncement({ cases, boxes, fireKey }) {
    overdrawn, batch not in the system), and the plain arithmetic of what the
    order asked for against what the cases hold. Nothing here blocked anything
    at the time — that is the point. This is the record of what to chase. */
+/* A NAMED, COLLAPSED HEADING. (Chris, 9 Sep: "the packing screen is much too
+   complicated and needs simplifying.")
+
+   The screen had ten stacked panels and the case map — the thing anybody
+   actually opens it for — was seventh, below short ship, the paper tools, the
+   corrections block, the size filter and the amendment record. On a phone that
+   is five screens of scrolling before you reach the pallet.
+
+   Nothing is removed: everything is one tap away behind its own heading, with
+   a summary on the heading so a closed section still tells you where it stands.
+   Removing a screen's functionality to tidy it is how you lose the thing
+   somebody depended on and never told you about. */
+function PackSection({ title, summary, children, defaultOpen = false, className = "" }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className={`no-print ${className}`.trim()} style={{ marginBottom: 12 }}>
+      <button onClick={() => setOpen(v => !v)}
+        style={{ width: "100%", textAlign: "left", background: "none", border: `1px solid ${BORDER}`,
+                 borderRadius: 6, padding: "9px 12px", cursor: "pointer", display: "flex",
+                 alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: INK }}>
+          {title}{summary ? <span style={{ color: INK_MUTED, fontWeight: 400 }}> — {summary}</span> : null}
+        </span>
+        <span style={{ color: INK_MUTED, fontSize: 12 }}>{open ? "hide" : "show"}</span>
+      </button>
+      {open && <div style={{ marginTop: 10 }}>{children}</div>}
+    </div>
+  );
+}
+
 function PackingDiscrepancies({ order, data, setData }) {
   const [open, setOpen] = useState(false);
   const lines = orderLineItems(data.lineItems, order.id)
@@ -14093,6 +15434,41 @@ function CaseContentsEditor({ order, caseNum, rows, data, onSave, onCancel }) {
             autoCapitalize="characters" autoCorrect="off" spellCheck="false"
             style={{ ...fld, width: "100%", marginTop: 6, textTransform: "uppercase" }} />
         )}
+        {/* DID YOU MEAN. A code typed here must already exist — this is
+            recording a box into a case, not making one. Offered, never
+            enforced: a genuinely new code is a real thing (a box made before
+            the app, found on a shelf) and the operator can carry on typing. */}
+        {manual && manualCode.trim().length >= 4 && (() => {
+          const all = [
+            ...(data.bondingRuns || []).filter(r => !r.deleted && r.boxNumber).map(r => r.boxNumber),
+            ...(data.otherStock || []).filter(o => !o.deleted && o.boxNumber).map(o => o.boxNumber),
+          ];
+          const near = boxCodeNearMisses(manualCode, all);
+          if (!near.length) return null;
+          const specOf = (code) => {
+            const r = (data.bondingRuns || []).find(x => !x.deleted && x.boxNumber === code && x.productSize);
+            return r ? r.productSize : "";
+          };
+          return (
+            <div style={{ marginTop: 6, padding: "8px 10px", borderRadius: 6, background: "#FFF6E5", border: `1px solid #E8C77A` }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#8A6100" }}>
+                {manualCode.trim()} isn't on record. Did you mean:
+              </div>
+              {near.map(n => (
+                <button key={n.code} type="button" onClick={() => setManualCode(n.code)}
+                  style={{ display: "block", marginTop: 5, background: "#fff", border: `1px solid ${BORDER}`,
+                           borderRadius: 4, padding: "5px 8px", cursor: "pointer", textAlign: "left", width: "100%" }}>
+                  <span className="font-mono" style={{ fontWeight: 700 }}>{n.code}</span>
+                  {specOf(n.code) ? <span style={{ color: INK_MUTED, fontSize: 12 }}> — {specOf(n.code)}</span> : null}
+                  {n.swapped ? <span style={{ color: "#8A6100", fontSize: 11.5 }}> · two characters the other way round</span> : null}
+                </button>
+              ))}
+              <div style={{ fontSize: 11.5, color: "#8A6100", marginTop: 5 }}>
+                Or carry on — a code that is genuinely new is fine here.
+              </div>
+            </div>
+          );
+        })()}
         {spec && !manual && options.length === 0 && (
           <div className="text-xs mt-1" style={{ color: AMBER }}>
             Nothing on the shelf for this size — type the batch number above if the box is in front of you.
@@ -14214,20 +15590,62 @@ class ScreenErrorBoundary extends ReactComponentBase {
 
    `grand` counts what is PACKED, not what is promised, so the total on the
    paper still matches the boxes on the pallet. */
+/* THE ONE ANSWER TO "WHAT IS THIS CASE FOR, AND WHAT IS IN IT".
+   Chris, 8 Sep: "I don't understand how you keep getting lost in this."
+
+   Fair question. The plan is stored once and correctly, but six screens each
+   worked out their own view of it — the case grid, the packing list, the
+   on-screen cases, the pick sheet, the destination prediction and the planner.
+   Fixing whichever one he was looking at left the other five wrong, which is
+   why the same fault kept reappearing under a different heading all afternoon.
+
+   This is the shared answer. Every renderer calls it and none derives its own.
+
+     contents  what is physically in the case, one line per product
+     plan      what the case is FOR — every product, its full quantity, how
+               many are in, how many still to come. Present whether the case
+               is empty, part filled or finished, because a map has to say
+               what a case is for even when it is done.
+
+   If a screen shows something different from another screen, it is because it
+   stopped calling this. That is the only way it can happen now. */
+function caseView(row) {
+  const bySpec = new Map();
+  for (const r of (row && row.contributions) || []) {
+    const k = r.spec || "(not recorded)";
+    bySpec.set(k, (bySpec.get(k) || 0) + (Number(r.qty) || 0));
+  }
+  const total = [...bySpec.values()].reduce((t, q) => t + q, 0);
+  const items = Array.isArray(row && row.plannedItems) ? row.plannedItems : null;
+  /* Through the one accessor, so caseView cannot disagree with the pick sheet
+     about what a case is for. */
+  const legacy = Object.entries(casePlanned(row));
+  const pSpec = legacy.length === 1 ? legacy[0][0] : "";
+  const pQty = legacy.length === 1 ? Math.max(0, Number(legacy[0][1]) || 0) : 0;
+  const plan = items && items.length
+    ? items.map(it => ({ spec: it.spec, qty: Number(it.qty) || 0,
+                         inCase: Number(it.inCase) || 0, outstanding: Number(it.outstanding) || 0 }))
+    : (pSpec ? [{ spec: pSpec, qty: pQty, inCase: Math.min(total, pQty),
+                  outstanding: Math.max(0, pQty - total) }] : []);
+  return {
+    caseNum: Number(row && row.caseNum),
+    contents: [...bySpec.entries()].map(([spec, qty]) => ({ spec, qty })),
+    total, plan,
+    planTotal: plan.reduce((t, p) => t + p.qty, 0),
+    toCome: plan.reduce((t, p) => t + p.outstanding, 0),
+    confirmed: !!(row && row.confirmed),
+  };
+}
 function packingListRows(cases) {
-  const rows = [...(cases || [])].sort((a, b) => a.caseNum - b.caseNum).map(c => {
-    const bySpec = new Map();
-    for (const r of c.contributions || []) {
-      const k = r.spec || "(not recorded)";
-      bySpec.set(k, (bySpec.get(k) || 0) + (Number(r.qty) || 0));
-    }
-    const total = [...bySpec.values()].reduce((t, q) => t + q, 0);
-    const plannedSpec = String(c.plannedSpec || "").trim();
-    const plannedQty = Math.max(0, Number(c.plannedQty) || 0);
-    const toCome = plannedSpec ? Math.max(0, plannedQty - total) : 0;
-    return { caseNum: c.caseNum, total, lines: [...bySpec.entries()],
-             plannedSpec, plannedQty, toCome };
-  }).filter(r => r.total > 0 || r.plannedSpec);
+  const rows = [...(cases || [])].sort((a, b) => a.caseNum - b.caseNum)
+    .map(c => {
+      const v = caseView(c);
+      return { caseNum: v.caseNum, total: v.total,
+               lines: v.contents.map(x => [x.spec, x.qty]),
+               plan: v.plan.map(p => [p.spec, p.qty, p.inCase, p.outstanding]),
+               toCome: v.toCome, plannedSpec: c.plannedSpec, plannedQty: c.plannedQty };
+    })
+    .filter(r => r.total > 0 || r.plan.length);
   return { rows, grand: rows.reduce((t, r) => t + r.total, 0) };
 }
 const packingShort = (spec) => String(spec)
@@ -14241,7 +15659,7 @@ function printPackingList(order, cases, setData) {
         /* What the case is still promised. Printed lighter than what is in it,
            so a picker reading down the page can tell at a glance what is done
            from what is still to come without reading a word. */
-        r.toCome > 0 ? `<div class="pl-line pl-await"><b>${pEsc(r.toCome)}</b><span class="x">&times;</span>${pEsc(packingShort(r.plannedSpec))} <i>&mdash; to come</i></div>` : ""}</td>
+        (r.plan || []).map(p => `<div class="pl-line pl-await"><b>${pEsc(p[1])}</b><span class="x">&times;</span>${pEsc(packingShort(p[0]))}${p[3] > 0 ? ` <i>&mdash; ${pEsc(p[3])} to come</i>` : " <i>&mdash; done</i>"}</div>`).join("")}</td>
       <td class="r b">${pEsc(r.total)}${r.toCome > 0 ? `<span class="pl-of"> / ${pEsc(r.total + r.toCome)}</span>` : ""}</td>
       <td class="c"><span class="tick"></span></td>
     </tr>`).join("");
@@ -14335,11 +15753,12 @@ function CaseMapPrint({ order, cases }) {
                       <b style={{ fontSize: 17 }}>{qty}</b> × {short(spec)}
                     </div>
                   ))}
-                  {r.toCome > 0 && (
-                    <div style={{ lineHeight: 1.5, color: "#666" }}>
-                      <b style={{ fontSize: 17 }}>{r.toCome}</b> × {short(r.plannedSpec)} <i>— to come</i>
+                  {(r.plan || []).map((p, i) => (
+                    <div key={"a" + i} style={{ lineHeight: 1.5, color: "#666" }}>
+                      <b style={{ fontSize: 17 }}>{p[1]}</b> × {short(p[0])}{" "}
+                      <i>{p[3] > 0 ? `— ${p[3]} to come` : "— done"}</i>
                     </div>
-                  )}
+                  ))}
                 </td>
                 <td style={{ borderBottom: "1px solid #999", padding: "9px 8px", textAlign: "right", fontSize: 19, fontWeight: 700, verticalAlign: "top" }}>
                   {r.total}{r.toCome > 0 && <span style={{ fontWeight: 400, color: "#666" }}> / {r.total + r.toCome}</span>}
@@ -14657,22 +16076,12 @@ function applyCaseContents(prev, order, caseNum, rows, flags, removed = [], stam
   let next = { ...prev, bondingRuns: runs, otherStock: other,
   orders: prev.orders.map(o => {
     if (o.id !== order.id) return o;
-    // Placing a box in case N clears its removal FROM case N; removing it
-    // from case N clears an earlier placement INTO case N. Other cases are
-    // not affected either way.
-    const prevOverrides = { ...(o.caseOverrides || {}) };
-    for (const code of Object.keys(removals)) if (prevOverrides[code] === caseNum) delete prevOverrides[code];
-    const nextRemovals = { ...(o.caseRemovals || {}) };
-    const asList = v => v === true ? null : Array.isArray(v) ? v : [];   // null = legacy "all cases"
-    for (const code of Object.keys(overrides)) {
-      const cur = asList(nextRemovals[code]);
-      if (cur === null) delete nextRemovals[code];               // legacy all-cases removal: placing anywhere lifts it
-      else { const left = cur.filter(n => n !== caseNum); if (left.length) nextRemovals[code] = left; else delete nextRemovals[code]; }
-    }
-    for (const code of Object.keys(removals)) {
-      const cur = asList(nextRemovals[code]);
-      nextRemovals[code] = cur === null ? [caseNum] : [...new Set([...cur, caseNum])];
-    }
+    /* caseOverrides and caseRemovals were maintained here until 8 Sep 2026 and
+       then computed into variables nobody read — the reads had already moved
+       to patchMapsFromCaseRecords, which derives both from the case rows. Dead
+       arithmetic invites someone to wire it back up, so it is gone. The case
+       row written below is the record; placement and removal are both simply
+       what `contents` says. */
     return {
       ...o,
       // caseOverrides/caseRemovals are derived from the cases table; written below.
@@ -14681,23 +16090,50 @@ function applyCaseContents(prev, order, caseNum, rows, flags, removed = [], stam
          confirmed case is closed: its contents are exactly what was saved.
          The planner may not put planned demand into it any more — whatever
          it wanted here goes to new cases at the end instead. */
-      /* `empty: true` when a person confirmed a case with nothing in it. That
-         is a real answer — "this case is empty, the product is not in it" —
-         and it has to be distinguishable from the mis-key that leaves a bare
-         `{boxes:{}}`, which is discarded. Without the flag, deleting every row
-         and confirming brought the planned rows straight back. */
-      confirmedCases: { ...(o.confirmedCases || {}), [caseNum]: (() => {
-        const boxes = Object.fromEntries(rows.filter(r => r.boxNumber && Number(r.qty) > 0).map(r => [String(r.boxNumber).trim(), Number(r.qty)]));
-        return Object.keys(boxes).length ? { boxes } : { boxes, empty: true };
-      })() },
+      /* confirmedCases IS NO LONGER WRITTEN (8 Sep 2026).
+         The case row below is the only record of a confirmation now. It has
+         been dual-written since the cases table existed, and patchfields_gate2
+         proved against a live pull that every entry still in the field is
+         superseded by that row or by the ledger — 212 entries, none at risk.
+         `empty: true` survives as EMPTY_ON_PURPOSE in the row's notes, which
+         is where it was already being written.
+         The field still READS: patchMapsFromCaseRecords derives it from the
+         rows on load, so nothing downstream changed. It is derived now, not
+         stored, which is the whole point. */
       updatedAt: stamp,
     };
   }) };
+  /* THE LEDGER TAKES DIFFERENCES, NOT TOTALS. (found 9 Sep by the invariant
+     check; root cause of 32 case-vs-ledger disagreements and every one of the
+     7 boxes recorded as placed more times than they were made.)
+
+     This editor is absolute — it says "case 4 holds 18 of this box". It was
+     writing that 18 as a `placed` movement, and `placed` is a delta. Saving
+     the same case twice made it 36; I60207SDB was saved enough times to reach
+     84 placed against 26 ever made, and the pallet was right all along.
+
+     So: read what the ledger already holds for this box in THIS case, and
+     write only the change. More is a `placed`, less is an `unplaced`, the
+     same figure is nothing at all — saving an unchanged case must be free. */
+  const netPlaced = (box) => (next.movements || [])
+    .filter(m => m && !m.deleted && m.orderId === order.id && Number(m.caseNum) === Number(caseNum)
+      && String(m.boxNumber || "").trim().toUpperCase() === String(box).trim().toUpperCase())
+    .reduce((t, m) => t + (m.kind === "placed" ? Number(m.qty) || 0
+                        : m.kind === "unplaced" ? -(Number(m.qty) || 0) : 0), 0);
   for (const r of rows) if (r.boxNumber && Number(r.qty) > 0) {
-    moves.push({ kind: "placed", boxNumber: String(r.boxNumber).trim(), spec: r.spec || null, qty: Number(r.qty),
+    const box = String(r.boxNumber).trim();
+    const delta = Number(r.qty) - netPlaced(box);
+    if (delta > 0) moves.push({ kind: "placed", boxNumber: box, spec: r.spec || null, qty: delta,
       orderId: order.id, caseNum, source: "override" });
+    else if (delta < 0) moves.push({ kind: "unplaced", boxNumber: box, spec: r.spec || null, qty: -delta,
+      orderId: order.id, caseNum, source: "override", note: "Case corrected downwards" });
   }
-  for (const code of Object.keys(removals)) moves.push({ kind: "unplaced", boxNumber: code, qty: 0, orderId: order.id, caseNum, source: "override" });
+  /* A removal took everything out, so the ledger has to lose what it holds —
+     an unplaced of zero removed nothing and left the box in the case forever. */
+  for (const code of Object.keys(removals)) {
+    const held = netPlaced(code);
+    if (held > 0) moves.push({ kind: "unplaced", boxNumber: code, qty: held, orderId: order.id, caseNum, source: "override" });
+  }
 
   /* The cases table has to hear about this too.
      `public.cases` gave cases an identity independent of case number, but
@@ -14839,12 +16275,19 @@ function casePalletOf(cases, order, caseNum) {
    yet migrated, behaves exactly as before. When the column is dropped this
    function loses its second half and nothing else changes. */
 function packedOutsideSpecs(order, lineItems) {
+  /* ONE OWNER: the line item.
+     The quantity lives on the line as packedOutsideQty; the boolean means "all
+     of it". The order-level map is read last and only where it still holds
+     something, so a store that has not been migrated yet still answers the
+     same — it is a fallback, not a source. Nothing writes it any more. */
   const out = {};
   for (const li of orderLineItems(lineItems, order?.id)) {
-    if (li.packedOutside) out[li.description] = true;
+    const q = Number(li.packedOutsideQty);
+    if (Number.isFinite(q) && q > 0) out[li.description] = q;
+    else if (li.packedOutside) out[li.description] = true;
   }
   for (const [k, v] of Object.entries(order?.packedOutside || {})) {
-    if (v !== null && v !== undefined) out[k] = v;
+    if (v !== null && v !== undefined && out[k] === undefined) out[k] = v;
   }
   return out;
 }
@@ -15404,7 +16847,6 @@ function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = nu
   const [toolsOpen, setToolsOpen] = useState(false);
   const [otherOpen, setOtherOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
-  const [planning, setPlanning] = useState(null);
   // Weights and small-item case sizes live on the order itself, not local
   // component state — otherwise navigating away (or the order later being
   // shipped) would lose every weight the person just entered.
@@ -15470,7 +16912,19 @@ function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = nu
   const setPalletWeights = (next) => setData(prevData => ({ ...prevData, orders: prevData.orders.map(o => o.id === orderId ? { ...o, palletWeights: next } : o) }));
   const setPalletDim = (label, key, value) => setData(prevData => ({ ...prevData, orders: prevData.orders.map(o => o.id === orderId
     ? { ...o, palletDims: { ...(o.palletDims || {}), [label]: { ...((o.palletDims || {})[label] || {}), [key]: value === "" ? "" : Number(value) || 0 } } } : o) }));
-  const setPackedOutside = (next) => setData(prevData => ({ ...prevData, orders: prevData.orders.map(o => o.id === orderId ? { ...o, packedOutside: next } : o) }));
+  /* WRITES TO THE LINE ITEM, not the order (8 Sep 2026).
+     The map was keyed by spec text, so renaming a product orphaned the figure
+     and two records held one fact. The quantity now sits on the line it
+     describes; the order field is neither written nor needed. */
+  const setPackedOutside = (next) => setData(prevData => ({
+    ...prevData,
+    lineItems: (prevData.lineItems || []).map(li => {
+      if (li.orderId !== orderId) return li;
+      const v = next[li.description];
+      const qty = (v === true) ? (Number(li.qty) || 0) : Number(v);
+      return { ...li, packedOutsideQty: Number.isFinite(qty) && qty > 0 ? qty : null };
+    }),
+  }));
   // Logged, unlike before. This one field renumbers an entire packing list,
   // and on WO-0010 it had been set to 19 with no record of who or when —
   // which turned a five-second question into an investigation.
@@ -15732,43 +17186,20 @@ function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = nu
         {toolsOpen && (
           <div>
             <div className="flex items-center gap-2 mb-4 flex-wrap">
-              {/* A BUTTON, NOT AN AUTOMATIC. Chris, 7 Sep: "I like the button
-                  option because I can retrospectively press it on existing
-                  orders." It also means the plan is something a person chose
-                  and looked at before sixty labels get printed off it. */}
-              <Button variant="ghost" onClick={() => setPlanning(order)}>🗂 Plan packing</Button>
+              {/* THE PLAN PACKING BUTTON IS GONE. (Chris, 9 Sep: "it's redundant")
+                  It existed to retrofit a plan onto orders that had none. Since
+                  2026-09-08.31 cases and their promises are written in the same
+                  operation as the order, so an order without a plan cannot
+                  exist — and a button that recomputes a stored plan is the
+                  exact fault that had the planner rebuilding Avrupa at 80 cases
+                  against an order of 60. The planner component stays for the
+                  exact fault it was built to avoid. The PackingPlanner
+                  component and this screen's `planning` state went with it —
+                  nothing could set them any more, and an orphan with no call
+                  site is what somebody wires back up by accident. Amendments
+                  are a different path: planAmendment appends onto the end. */}
               <Button variant="ghost" onClick={() => printPackingList(order, caseRows, setData)}>🖨 Print packing list</Button>
-              <CaseMapPrintChooser order={order} caseRows={caseRows} setData={setData} />
-              {planning && (
-                <PackingPlanner order={planning} lineItems={data.lineItems} bondingRuns={data.bondingRuns}
-                  existingCases={(data.cases || []).filter(c => !c.deleted && c.orderId === planning.id)}
-                  onClose={() => setPlanning(null)}
-                  onSave={(plan) => {
-                    /* Written as case rows carrying plannedSpec, which is the
-                       only thing the rest of the app reads. Cases holding boxes
-                       are never in `plan` — the planner refuses to hand them
-                       back — so nothing packed can be touched from here. */
-                    setData(prev => {
-                      const others = (prev.cases || []).filter(c => !(c.orderId === planning.id && !c.deleted && !Object.keys(c.contents || {}).length));
-                      const rows = plan.map(p => {
-                        const was = (prev.cases || []).find(c => c.orderId === planning.id && !c.deleted && Number(c.caseNum) === p.caseNum);
-                        return {
-                          id: was ? was.id : caseRowId(planning.id, p.caseNum),
-                          orderId: planning.id, caseNum: p.caseNum, contents: (was && was.contents) || {},
-                          confirmed: !!(was && was.confirmed), deleted: false,
-                          plannedSpec: p.spec, plannedQty: p.qty,
-                          planBatch: (was && was.planBatch) || "Original",
-                          updatedAt: new Date().toISOString(), updatedBy: currentActor(),
-                        };
-                      });
-                      const merged = [...others.filter(c => !rows.some(r => r.id === c.id)), ...rows];
-                      return { ...prev, cases: merged,
-                        ...appendLog(prev, { action: "packing_planned", entity: "order", entityId: planning.id,
-                          summary: `Packing plan written for ${planning.id} — ${rows.length} cases, ${rows.reduce((t, r) => t + r.plannedQty, 0)} boxes` }) };
-                    });
-                    setPlanning(null);
-                  }} />
-              )}
+              <CaseMapPrintChooser order={order} caseRows={caseRows} setData={setData} data={data} />
               {!overrideOn
                 ? <Button variant="ghost" onClick={() => requireAdmin(() => setOverrideOn(true))}>🔒 Packing override</Button>
                 : <Button variant="ghost" onClick={() => setOverrideOn(false)}>Turn override off</Button>}
@@ -15862,8 +17293,9 @@ function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = nu
              silently reflowed underneath twenty sealed cases. */
           const items = orderLineItems(data.lineItems, order.id).filter(li => !isDelivery(li.description));
           const existing = (data.cases || [])
-            .filter(c => !c.deleted && c.orderId === order.id && String(c.plannedSpec || "").trim())
-            .map(c => ({ caseNum: Number(c.caseNum), spec: String(c.plannedSpec).trim(), qty: Number(c.plannedQty) || 0 }));
+            .filter(c => !c.deleted && c.orderId === order.id && hasCasePlan(c))
+            .flatMap(c => Object.entries(casePlanned(c))
+              .map(([spec, qty]) => ({ caseNum: Number(c.caseNum), spec, qty: Number(qty) || 0 })));
           const extra = planAmendment(items, existing);
           if (!extra.length) return;
           const label = `Amendment ${new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
@@ -15872,7 +17304,7 @@ function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = nu
             cases: [...(prev.cases || []), ...extra.map(p => ({
               id: caseRowId(order.id, p.caseNum), orderId: order.id, caseNum: p.caseNum,
               contents: {}, confirmed: false, deleted: false,
-              plannedSpec: p.spec, plannedQty: p.qty, planBatch: label,
+              planned: { [p.spec]: Number(p.qty) || 0 }, planBatch: label,
               updatedAt: new Date().toISOString(), updatedBy: currentActor(),
             }))],
             ...appendLog(prev, { action: "packing_plan_appended", entity: "order", entityId: order.id,
@@ -15972,6 +17404,15 @@ function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = nu
         ))}
       </div>
 
+      {/* A HEADING THAT OPENS ONTO NOTHING IS WORSE THAN NO HEADING.
+          (Chris, 9 Sep, screenshot at 06:18)
+          The table inside is desktop-only AND hidden whenever the case grid is
+          showing, so on a phone this section was guaranteed to be empty — I
+          wrapped the panel without checking when the panel itself renders.
+          The section now exists only where its contents do. */}
+      {!gridActive && (
+      <PackSection className="desktop-only" title="Every line, case by case"
+        summary={`${caseRows.length} case${caseRows.length === 1 ? "" : "s"} in a table`}>
       <Panel className="desktop-only overflow-hidden overflow-x-auto mb-5 no-print" style={{ width: "100%", maxWidth: "100%", ...(gridActive ? { display: "none" } : {}) }}>
         <table className="w-full text-sm">
           <thead><tr style={{ background: NAVY, color: "#fff" }}>
@@ -16022,6 +17463,8 @@ function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = nu
           </tbody>
         </table>
       </Panel>
+      </PackSection>
+      )}
 
       <div className="no-print">
       {smallRows.length > 0 && (
@@ -16060,6 +17503,11 @@ function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = nu
 
       {/* ─── SHIP ─── */}
       {(allCaseNums || []).length > 0 && (
+        <PackSection title="Weigh &amp; ship"
+          summary={weighLeft === 0
+            ? `all ${allCaseNums.length} weighed, ${totalWeight.toFixed(2)} kg`
+            : `${weighedCount} of ${allCaseNums.length} weighed, ${weighLeft} to go`}
+          defaultOpen={false}>
         <div className="no-print">
           {sectionTitle("Weigh & ship",
             <button onClick={() => printWeightsSheet(order, allCaseNums, caseWeights, palletAssignments)} className="px-3"
@@ -16200,6 +17648,7 @@ function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = nu
         </div>
       )}
         </div>
+        </PackSection>
       )}
 
       {/* ─── SHORT SHIP — an operator's job, so not behind the lock ─── */}
@@ -17003,6 +18452,105 @@ function findDiscrepancies(data) {
       fixHere: false, ref: code });
   }
 
+  /* 1b. THE LEDGER SAYS ONE PRODUCT, THE BOX SAYS ANOTHER.
+     movements.spec is a SNAPSHOT — what the product was believed to be at the
+     moment the movement happened — not a copy of the run's product. That is
+     why it stays: deriving it would rewrite history, so correcting a spec
+     today would silently make this morning's movements read as though they had
+     always said the new thing.
+     But a snapshot that quietly disagrees is how 32 boxes got no destination on
+     8 Sep. So the disagreement is FLAGGED rather than erased or hidden. Both
+     sides are read through the catalogue, so a mere spelling difference —
+     "(24m)" against no metreage — is not a discrepancy; a different PRODUCT is. */
+  {
+    /* Compare PRODUCTS, not strings. The catalogue resolves both sides where it
+       can; where it cannot, productKey still strips metreage and the reel/box
+       word, because those describe the FORM a product leaves in, not a
+       different product. Without that, "(24m)" against "(20.25m)" reads as a
+       changed product and the register fills with noise — and a register that
+       screams is ignored just as surely as one that goes quiet. */
+    const productOf = (spec) => {
+      const res = (typeof resolveProduct === "function") ? resolveProduct(data, spec) : null;
+      if (res && res.status === "exact" && res.product) return res.product.id;
+      return productKey(spec);
+    };
+    const runSpecByBox = new Map();
+    for (const r of runs) {
+      const code = String(r.boxNumber || "").trim().toUpperCase();
+      if (code && r.productSize && !runSpecByBox.has(code)) runSpecByBox.set(code, r.productSize);
+    }
+    const drift = new Map();
+    for (const m of (data.movements || [])) {
+      if (!m || m.deleted || !m.spec) continue;
+      const code = String(m.boxNumber || "").trim().toUpperCase();
+      const now = runSpecByBox.get(code);
+      if (!code || !now) continue;
+      if (productOf(m.spec) === productOf(now)) continue;
+      const key = `${code}|${m.spec}|${now}`;
+      if (!drift.has(key)) drift.set(key, { code, was: m.spec, now, count: 0 });
+      drift.get(key).count++;
+    }
+    for (const d of drift.values()) {
+      add({ id: `specdrift:${d.code}:${d.was}:${d.now}`, kind: "Ledger spec differs", severity: "medium",
+        what: `${d.code}: the ledger recorded ${d.was}`,
+        detail: `${d.count} movement${d.count === 1 ? "" : "s"} · the box is now ${d.now}`,
+        why: "The ledger keeps what was believed at the time, so this is history, not an error in itself. But if the correction was wrong, stock and pick sheets are counting these boxes as the wrong product.",
+        todo: "Check the box against its label. If the ledger was right, correct the run back; if the box was relabelled, nothing to do — this line is the record that it changed.",
+        fixHere: false, ref: d.code });
+    }
+  }
+
+  /* 1c. THE CASE ROW AND THE LEDGER DISAGREE ABOUT WHAT IS IN A CASE.
+
+     Two records answer the same question by different routes: cases.contents,
+     written by whoever last recorded the case, and the ledger — placed minus
+     unplaced for that case. They should agree. On 8 Sep three did not:
+     WO-0012 case 1 said ten boxes and the ledger said nine, GASE case 26 held
+     thirteen the ledger had never heard of, Puh Sim case 3 held a product
+     recorded as a different one. Each took twenty minutes to find by hand and
+     none of them surfaced anywhere.
+
+     It reports BOTH figures and reconciles neither. The pallet decides which
+     is right, not arithmetic — and a case that says twenty while holding
+     nineteen ships as twenty. */
+  {
+    const netByCase = new Map();
+    for (const m of (data.movements || [])) {
+      if (!m || m.deleted || !m.orderId || m.caseNum == null) continue;
+      if (m.kind !== "placed" && m.kind !== "unplaced") continue;
+      const key = `${m.orderId}|${Number(m.caseNum)}|${String(m.boxNumber || "").trim().toUpperCase()}`;
+      const q = Number(m.qty) || 0;
+      netByCase.set(key, (netByCase.get(key) || 0) + (m.kind === "placed" ? q : -q));
+    }
+    for (const c of (data.cases || [])) {
+      if (!c || c.deleted) continue;
+      const boxes = new Set([
+        ...Object.keys(c.contents || {}).map(b => String(b).trim().toUpperCase()),
+        ...[...netByCase.keys()].filter(k => k.startsWith(`${c.orderId}|${Number(c.caseNum)}|`))
+          .map(k => k.split("|")[2]),
+      ].filter(Boolean));
+      const diffs = [];
+      for (const b of boxes) {
+        const row = Number((c.contents || {})[b] ?? (c.contents || {})[b.toLowerCase()] ?? 0) || 0;
+        const led = netByCase.get(`${c.orderId}|${Number(c.caseNum)}|${b}`) || 0;
+        if (row !== led) diffs.push({ box: b, row, led });
+      }
+      if (!diffs.length) continue;
+      const rowTotal = Object.values(c.contents || {}).reduce((t, n) => t + (Number(n) || 0), 0);
+      const ledTotal = [...netByCase.entries()]
+        .filter(([k]) => k.startsWith(`${c.orderId}|${Number(c.caseNum)}|`))
+        .reduce((t, [, n]) => t + n, 0);
+      add({ id: `caseledger:${c.orderId}:${c.caseNum}:${diffs.map(d => d.box + d.row + "v" + d.led).join(",")}`,
+        kind: "Case and ledger differ", severity: rowTotal === ledTotal ? "medium" : "high",
+        what: `${c.orderId} case ${c.caseNum}: the case says ${rowTotal}, the ledger says ${ledTotal}`,
+        detail: diffs.slice(0, 4).map(d => `${d.box}: case ${d.row}, ledger ${d.led}`).join("  ·  ")
+          + (diffs.length > 4 ? `  ·  +${diffs.length - 4} more` : ""),
+        why: "One of these was written without the other. Stock, pick sheets and the packing list read different records, so the pallet and the paperwork will disagree at the worst moment.",
+        todo: "Open the case and count it. The pallet is the physical record — correct whichever of the two is wrong to match what is actually in there.",
+        fixHere: false, ref: `${c.orderId} case ${c.caseNum}` });
+    }
+  }
+
   // 2. A box naming a glue batch that isn't in the system.
   const missing = new Map();
   for (const r of runs) {
@@ -17347,6 +18895,255 @@ function DiscrepanciesView({ data, onLookUp }) {
   );
 }
 
+/* PROMISED, NOT PACKED. (Chris, 9 Sep)
+
+   The report that would have shown Dave's shelf of Uninark before anybody
+   went looking for it. A box promised to an order and not yet in a case is
+   still on a shelf — every one of them should have a bay, and the ones that
+   do not are the ones that end up on top of a case.
+
+   Oldest first, because a box that has been promised since Monday is a
+   different problem from one promised an hour ago. All derived: the ledger
+   says what is promised and what is placed, the run row says where it is. */
+function promisedNotPacked(data) {
+  const up = (x) => String(x || "").trim().toUpperCase();
+  const live = new Set((data.orders || []).filter(o => o && !o.deleted
+    && !["Shipped", "Cancelled"].includes(o.stage || "")).map(o => o.id));
+  const by = new Map();
+  for (const m of (data.movements || [])) {
+    if (!m || m.deleted || !m.orderId || !live.has(m.orderId)) continue;
+    const k = `${m.orderId}|${up(m.boxNumber)}`;
+    const e = by.get(k) || { orderId: m.orderId, boxNumber: up(m.boxNumber), spec: m.spec || "",
+                             allocated: 0, placed: 0, since: m.at || null, caseNum: null };
+    if (m.kind === "allocated") { e.allocated += Number(m.qty) || 0; if (m.caseNum != null && e.caseNum == null) e.caseNum = Number(m.caseNum); }
+    if (m.kind === "unallocated") e.allocated -= Number(m.qty) || 0;
+    if (m.kind === "placed") e.placed += Number(m.qty) || 0;
+    if (m.kind === "unplaced") e.placed -= Number(m.qty) || 0;
+    if (m.spec && !e.spec) e.spec = m.spec;
+    if (m.at && (!e.since || String(m.at) < String(e.since))) e.since = m.at;
+    by.set(k, e);
+  }
+  const runOf = (box) => (data.bondingRuns || []).find(r => r && !r.deleted && up(r.boxNumber) === box);
+  return [...by.values()]
+    .map(e => { const r = runOf(e.boxNumber);
+      return { ...e, waiting: e.allocated - e.placed, location: (r && String(r.location || "").trim()) || "",
+               customer: ((data.orders || []).find(o => o.id === e.orderId) || {}).customer || "" }; })
+    .filter(e => e.waiting > 0)
+    .sort((a, b) => (a.location ? 1 : 0) - (b.location ? 1 : 0) || String(a.since).localeCompare(String(b.since)));
+}
+
+function PromisedNotPackedView({ data }) {
+  const rows = useMemo(() => promisedNotPacked(data), [data]);
+  const lost = rows.filter(r => !r.location);
+  const days = (iso) => { if (!iso) return ""; const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+    return d <= 0 ? "today" : d === 1 ? "1 day" : `${d} days`; };
+  return (
+    <div>
+      <div className="mb-4 p-3" style={{ background: lost.length ? "#FBEAEA" : "#EAF7EE",
+        border: `1px solid ${lost.length ? RED : GREEN}`, borderLeft: `4px solid ${lost.length ? RED : GREEN}`,
+        borderRadius: 4, fontSize: 13.5, color: INK, lineHeight: 1.5 }}>
+        <b>{rows.reduce((t, r) => t + r.waiting, 0)}</b> boxes are promised to a live order and not yet in a case.
+        {lost.length > 0
+          ? <> <b>{lost.reduce((t, r) => t + r.waiting, 0)} of them have no bay recorded</b> — those are the ones that end up on top of a case. They are listed first.</>
+          : <> Every one of them has a bay, so every one can be found.</>}
+      </div>
+      <Panel className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead><tr style={{ background: "#F7F8FC" }}>
+            <Th>Box</Th><Th>Product</Th><Th>Order</Th><Th>Waiting</Th><Th>For</Th><Th>Case</Th><Th>Bay</Th>
+          </tr></thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={`${r.orderId}|${r.boxNumber}`} style={{ borderTop: `1px solid ${BORDER}`, background: r.location ? "#fff" : "#FFF6F6" }}>
+                <Td><span className="font-mono">{r.boxNumber}</span></Td>
+                <Td>{r.spec}</Td>
+                <Td>{r.orderId}<div style={{ fontSize: 11.5, color: INK_MUTED }}>{r.customer}</div></Td>
+                <Td><b>{r.waiting}</b></Td>
+                <Td>{days(r.since)}</Td>
+                <Td>{r.caseNum != null ? `case ${r.caseNum}` : <span style={{ color: INK_MUTED }}>—</span>}</Td>
+                <Td>{r.location
+                  ? r.location
+                  : <span style={{ color: RED, fontWeight: 700 }}>no bay — find it</span>}</Td>
+              </tr>
+            ))}
+            {rows.length === 0 && <Empty colSpan={7}>Nothing is waiting. Everything promised is in a case.</Empty>}
+          </tbody>
+        </table>
+      </Panel>
+    </div>
+  );
+}
+
+/* WRONG STOCK IN A CASE — the screen. (Chris, 9 Sep)
+   On his phone, at the pallet, after the boxes are already committed. Pick
+   the order and case, see what the record thinks is in there, type what is
+   actually in there off the labels, and say what to do with the boxes that
+   now have nowhere. Nothing is written until he has read what it will do. */
+function WrongStockInCaseView({ data, setData }) {
+  const [orderId, setOrderId] = useState("");
+  const [caseNum, setCaseNum] = useState("");
+  const [found, setFound] = useState([{ boxNumber: "", qty: "" }]);
+  const [putBack, setPutBack] = useState([{ boxNumber: "", qty: "", location: "" }]);
+  const [preview, setPreview] = useState(null);
+
+  const liveOrders = (data.orders || []).filter(o => o && !o.deleted
+    && !["Shipped", "Cancelled"].includes(o.stage || ""));
+  const caseRows = (data.cases || []).filter(c => c && !c.deleted && c.orderId === orderId)
+    .sort((a, b) => Number(a.caseNum) - Number(b.caseNum));
+  const theCase = caseRows.find(c => Number(c.caseNum) === Number(caseNum));
+  const knownCodes = (data.bondingRuns || []).filter(r => r && !r.deleted && r.boxNumber).map(r => r.boxNumber);
+
+  const setRow = (list, setList, i, field, value) =>
+    setList(list.map((r, n) => n === i ? { ...r, [field]: value } : r));
+  const addRow = (list, setList, blank) => setList([...list, blank]);
+
+  const cleanFound = found.filter(r => String(r.boxNumber).trim() && Number(r.qty) > 0);
+  const cleanBack = putBack.filter(r => String(r.boxNumber).trim() && Number(r.qty) > 0);
+
+  const look = () => {
+    if (!orderId || !caseNum) return;
+    setPreview(resolveCaseContents(data, orderId, Number(caseNum), cleanFound, cleanBack));
+  };
+
+  const apply = () => {
+    const res = resolveCaseContents(data, orderId, Number(caseNum), cleanFound, cleanBack);
+    setData(prev => {
+      let next = recordMovements(prev, res.moves.map(m => ({ ...m, source: "case-fix" })));
+      for (const fl of res.flags) next = raiseIssue(next, fl);
+      /* The case row is the other record, and it must agree with the pallet
+         the person is standing at. Written to match exactly what they read
+         off the labels — not merged with what was there, because what was
+         there is what turned out to be wrong. */
+      next = { ...next, cases: (next.cases || []).map(c =>
+        (!c.deleted && c.orderId === orderId && Number(c.caseNum) === Number(caseNum))
+          ? { ...c, contents: Object.fromEntries(cleanFound.map(r => [String(r.boxNumber).trim().toUpperCase(), Number(r.qty)])),
+              updatedAt: new Date().toISOString(), updatedBy: currentActor() }
+          : c) };
+      return { ...next, ...appendLog(next, { action: "case_contents_corrected", entity: "case",
+        entityId: `${orderId}-${caseNum}`,
+        summary: `${orderId} case ${caseNum} corrected at the pallet: ${res.notes.join("; ") || "no change"}` }) };
+    });
+    setPreview(null); setFound([{ boxNumber: "", qty: "" }]); setPutBack([{ boxNumber: "", qty: "", location: "" }]);
+    if (typeof window !== "undefined") window.alert(`Done. ${res.notes.length} change${res.notes.length === 1 ? "" : "s"} recorded${res.flags.length ? `, ${res.flags.length} flag${res.flags.length === 1 ? "" : "s"} raised for you` : ""}.`);
+  };
+
+  const fld = { height: 42, borderRadius: 6, border: `1px solid ${BORDER}`, padding: "0 10px", fontSize: 15, width: "100%", boxSizing: "border-box" };
+
+  return (
+    <div>
+      <div className="mb-4 p-3" style={{ background: "#FFF6E5", border: `1px solid #E8C77A`, borderLeft: "4px solid #E8C77A", borderRadius: 4, fontSize: 13.5, color: "#8A6100", lineHeight: 1.5 }}>
+        For when a case already has stock in it. Read the codes off what is really in there.
+        Boxes that belong to another order will be taken, and that order will need them again — you get a flag either way.
+      </div>
+
+      <Panel className="p-4 mb-4">
+        <label className="text-xs block mb-1" style={{ color: INK_MUTED }}>Order</label>
+        <Select value={orderId} onChange={e => { setOrderId(e.target.value); setCaseNum(""); setPreview(null); }} style={{ marginBottom: 10 }}>
+          <option value="">Choose…</option>
+          {liveOrders.map(o => <option key={o.id} value={o.id}>{o.id} — {o.customer}</option>)}
+        </Select>
+        {orderId && (
+          <>
+            <label className="text-xs block mb-1" style={{ color: INK_MUTED }}>Case</label>
+            <Select value={caseNum} onChange={e => { setCaseNum(e.target.value); setPreview(null); }}>
+              <option value="">Choose…</option>
+              {caseRows.map(c => {
+                const held = Object.values(c.contents || {}).reduce((t, q) => t + (Number(q) || 0), 0);
+                return <option key={c.id} value={c.caseNum}>Case {c.caseNum} — record says {held} of {Number(c.maxSize) || CASE_MAX_SIZE_DEFAULT}</option>;
+              })}
+            </Select>
+          </>
+        )}
+      </Panel>
+
+      {theCase && (
+        <>
+          <Panel className="p-4 mb-4">
+            <div style={{ fontSize: 13, fontWeight: 700, color: INK, marginBottom: 6 }}>The record says this case holds</div>
+            {Object.keys(theCase.contents || {}).length === 0
+              ? <div style={{ fontSize: 13.5, color: INK_MUTED }}>Nothing at all.</div>
+              : Object.entries(theCase.contents || {}).map(([b, q]) => (
+                  <div key={b} style={{ fontSize: 14 }}><span className="font-mono">{b}</span> × {q}</div>
+                ))}
+            <div style={{ fontSize: 12, color: INK_MUTED, marginTop: 6 }}>
+              Promised: {Object.entries(casePlanned(theCase)).map(([k, v]) => `${v} × ${k}`).join(", ") || "nothing"}
+            </div>
+          </Panel>
+
+          <Panel className="p-4 mb-4">
+            <div style={{ fontSize: 13, fontWeight: 700, color: INK, marginBottom: 8 }}>What is actually in it</div>
+            {found.map((r, i) => (
+              <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                <input value={r.boxNumber} onChange={e => { setRow(found, setFound, i, "boxNumber", e.target.value.toUpperCase()); setPreview(null); }}
+                  placeholder="Box code off the label" autoCapitalize="characters" autoCorrect="off" spellCheck="false"
+                  style={{ ...fld, flex: 2, textTransform: "uppercase" }} />
+                <input type="number" inputMode="numeric" value={r.qty}
+                  onChange={e => { setRow(found, setFound, i, "qty", e.target.value); setPreview(null); }}
+                  placeholder="How many" style={{ ...fld, flex: 1 }} />
+              </div>
+            ))}
+            {found.some(r => String(r.boxNumber).trim().length >= 4
+              && boxCodeNearMisses(r.boxNumber, knownCodes).length > 0) && (
+              <div style={{ fontSize: 12, color: "#8A6100", marginBottom: 8 }}>
+                {found.filter(r => boxCodeNearMisses(r.boxNumber, knownCodes).length)
+                  .map(r => `${r.boxNumber} isn't on record — did you mean ${boxCodeNearMisses(r.boxNumber, knownCodes).map(n => n.code).join(" or ")}?`)
+                  .join("  ")}
+              </div>
+            )}
+            <Button variant="ghost" onClick={() => addRow(found, setFound, { boxNumber: "", qty: "" })}>+ Another box</Button>
+          </Panel>
+
+          <Panel className="p-4 mb-4">
+            <div style={{ fontSize: 13, fontWeight: 700, color: INK, marginBottom: 4 }}>Boxes that now have nowhere</div>
+            <div style={{ fontSize: 12.5, color: INK_MUTED, marginBottom: 8 }}>
+              These go back on the shelf. The order will need them again and they will be offered next time.
+            </div>
+            {putBack.map((r, i) => (
+              <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                <input value={r.boxNumber} onChange={e => { setRow(putBack, setPutBack, i, "boxNumber", e.target.value.toUpperCase()); setPreview(null); }}
+                  placeholder="Box code" autoCapitalize="characters" autoCorrect="off" spellCheck="false"
+                  style={{ ...fld, flex: 2, textTransform: "uppercase" }} />
+                <input type="number" inputMode="numeric" value={r.qty}
+                  onChange={e => { setRow(putBack, setPutBack, i, "qty", e.target.value); setPreview(null); }}
+                  placeholder="How many" style={{ ...fld, flex: 1 }} />
+                <Select value={r.location} onChange={e => { setRow(putBack, setPutBack, i, "location", e.target.value); setPreview(null); }} style={{ flex: 1 }}>
+                  <option value="">Bay —</option>
+                  {BOX_LOCATIONS.map(loc => <option key={loc} value={loc}>{loc}</option>)}
+                </Select>
+              </div>
+            ))}
+            <Button variant="ghost" onClick={() => addRow(putBack, setPutBack, { boxNumber: "", qty: "", location: "" })}>+ Another box</Button>
+          </Panel>
+
+          {!preview && (
+            <Button variant="accent" onClick={look} disabled={!cleanFound.length && !cleanBack.length}>
+              Show me what this will do
+            </Button>
+          )}
+
+          {preview && (
+            <Panel className="p-4 mb-4" style={{ borderLeft: `4px solid ${NAVY}` }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: INK, marginBottom: 6 }}>This will:</div>
+              {preview.notes.length === 0 && <div style={{ fontSize: 13.5, color: INK_MUTED }}>Change nothing — the record already agrees.</div>}
+              {preview.notes.map((n, i) => <div key={i} style={{ fontSize: 13.5, color: INK }}>· {n}</div>)}
+              {preview.flags.length > 0 && (
+                <div style={{ marginTop: 10, padding: "8px 10px", background: "#FBEAEA", border: `1px solid ${RED}`, borderRadius: 6 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 700, color: RED }}>And raise {preview.flags.length} flag{preview.flags.length === 1 ? "" : "s"} for you:</div>
+                  {preview.flags.map((fl, i) => <div key={i} style={{ fontSize: 12.5, color: INK, marginTop: 3 }}>{fl.summary}</div>)}
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                <Button variant="accent" onClick={apply}>That's right — record it</Button>
+                <Button variant="ghost" onClick={() => setPreview(null)}>Back</Button>
+              </div>
+            </Panel>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function LiveBoxStockView({ data }) {
   const [search, setSearch] = useState("");
   const [openSpec, setOpenSpec] = useState(null);
@@ -17559,6 +19356,8 @@ function StockSection({ data, setData, initialQuery, initialTab }) {
     { key: "boxes", label: "Live box stock" },
     { key: "reels", label: "Live reel stock" },
     { key: "discrepancies", label: "Discrepancies" },
+    { key: "waiting", label: "Promised, not packed" },
+    { key: "wrongcase", label: "Wrong stock in a case" },
     ...(stockAdmin ? [{ key: "stocktaker", label: "Stock taker" }] : []),
   ];
   const openCount = useMemo(() => {
@@ -17584,6 +19383,8 @@ function StockSection({ data, setData, initialQuery, initialTab }) {
       {tab === "history" && <BoxHistoryView data={data} setData={setData} initialQuery={lookUp || initialQuery} />}
       {tab === "boxes" && <LiveBoxStockView data={data} />}
       {tab === "reels" && <LiveReelStockView data={data} />}
+      {tab === "waiting" && <PromisedNotPackedView data={data} />}
+      {tab === "wrongcase" && <WrongStockInCaseView data={data} setData={setData} />}
       {tab === "discrepancies" && <DiscrepanciesView data={data} onLookUp={(ref) => { setLookUp(ref); setTab("history"); }} />}
       {tab === "stocktaker" && stockAdmin && (
         <>
@@ -17842,6 +19643,11 @@ function MoveOtherStockPanel({ data, setData, boxNumber, spec, available }) {
 
   const save = () => {
     if (!canSave) return;
+    /* Moving other stock onto an order is an allocation like any other. */
+    if (dest === "order") {
+      const refusal = allocationRefusal(data, spec, [{ orderId, qty: n }]);
+      if (refusal) { if (typeof window !== "undefined") window.alert(refusal); return; }
+    }
     setData(prev => {
       let next = prev;
       if (dest === "order") {
@@ -18360,7 +20166,7 @@ function BoxHistoryView({ data, setData, initialQuery }) {
                       : "" },
                   { label: "Location", value: bondingMatch.location },
                   { label: "Checked", value: bondingMatch.checked === "Yes" ? "Yes" : "Unconfirmed" },
-                  { label: "Customer", value: bondingMatch.customerName },
+                  { label: "Customer", value: runCustomer(data.orders, bondingMatch) },
                   { label: "Work number", value: bondingMatch.workNumber },
                   { label: "Time of day", value: bondingMatch.timeOfDay },
                   { label: "Runtime (hrs)", value: bondingMatch.runtimeHrs },
@@ -21204,7 +23010,6 @@ function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRun
   const [reelQuery, setReelQuery] = useState("");
   const [escapeOpen, setEscapeOpen] = useState(false);
   const [everyField, setEveryField] = useState(false);
-  const [extraOrderPick, setExtraOrderPick] = useState("");
   const spec = form.range === "Custom" ? String(form.size || "").trim() : `${form.range} ${String(form.size || "").trim()}`.trim();
 
   /* THE PVC CODE FILLS ITSELF IN AGAIN. Chris, 7 Sep: "need PVC codes to
@@ -21266,13 +23071,22 @@ function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRun
   // at all — offered into an empty field the moment something is going to
   // the shelf, because addRow rightly refuses stock with nowhere recorded.
   useEffect(() => {
-    if (String(form.location || "").trim() || toShelf <= 0) return;
+    /* A PROMISED BOX NEEDS AN ADDRESS TOO. (Chris, 9 Sep)
+       Stock going to the shelf has always needed a bay. Stock going to an
+       ORDER never did, on the assumption it was about to be packed — and when
+       it is not packed the same day it becomes a box with a name, an owner and
+       no address, so it gets put down on top of a case and lost. Live right
+       now: 276 boxes promised to an order and not in a case, 168 of them with
+       no location recorded anywhere.
+       So the bay is offered whenever anything is going anywhere, not only
+       when something is going to the shelf. */
+    if (String(form.location || "").trim() || (toShelf <= 0 && allocated <= 0)) return;
     const runs = [...(allBondingRuns || [])].filter(r => !r.deleted && r.location)
       .sort((a, b) => `${b.date || ""} ${b.timeOfDay || ""}`.localeCompare(`${a.date || ""} ${a.timeOfDay || ""}`));
     const same = runs.find(r => spec && looseSpecMatch(r.productSize, spec));
     const pick = (same || runs[0] || {}).location;
     if (pick) setForm(f => ({ ...f, location: pick }));
-  }, [toShelf > 0, spec]);
+  }, [toShelf > 0, allocated > 0, spec]);
 
   const boxTypeFor = (orderId, desc) => {
     const o = orders.find(x => x.id === orderId);
@@ -21361,7 +23175,19 @@ function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRun
               )}
               {reelQuery.trim().length >= 4 && !availableBatches.some(b => String(b.batchNumber).toUpperCase() === reelQuery.trim().toUpperCase()) && (
                 <div style={{ marginTop: 10, padding: "10px 12px", border: `1px dashed #CFCFCA`, borderRadius: 4 }}>
-                  <div style={{ fontSize: 14, fontWeight: 500 }}>Reel not in the system yet? Enter it here and carry on.</div>
+                  {/* Tell the truth about WHY it is not offered. A reel that is on
+                      the system without a size is not "not in the system" — and
+                      saying so is what stops the same code being entered twice. */}
+                  {(() => {
+                    const code = reelQuery.trim().toUpperCase();
+                    const onFile = ((data && data.glueLineBatches) || []).find(g => g && !g.deleted
+                      && String(g.batchNumber || "").trim().toUpperCase() === code);
+                    return onFile
+                      ? <div style={{ fontSize: 14, fontWeight: 500 }}>
+                          {code} is on the system but has no size recorded, so it can't be offered. Give it its size here and carry on — the existing record is completed, not duplicated.
+                        </div>
+                      : <div style={{ fontSize: 14, fontWeight: 500 }}>Reel not in the system yet? Enter it here and carry on.</div>;
+                  })()}
                   <div style={{ marginTop: 8 }}>
                     <BondingSpecFields values={form} setValues={setForm} listId="size-catalog-bonding" />
                     <Button variant="ghost" onClick={() => { const code = reelQuery.trim().toUpperCase(); setForm(f => ({ ...f, baselineBatchCode: code })); onUnknownBatch && onUnknownBatch(code, spec); setReelQuery(""); }}
@@ -21398,8 +23224,24 @@ function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRun
                   <span style={{ fontSize: 15 }}>{r.customer}</span>
                   <div style={{ marginTop: 3, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                     <BoxTypeMark type={bt} />
-                    {r.needs > 0 && <span style={{ fontSize: 12.5, color: INK_MUTED }}>needs {r.needs}</span>}
-                    {r.extra && <span style={{ fontSize: 12.5, color: INK_MUTED }}>doesn't need this size</span>}
+                    {/* THE CASE COMES WITH THE NEED. (Chris, 9 Sep)
+                        "A case number from the case plan shows up next to the
+                        amount needed." Dave should not have to hold the number
+                        in his head between choosing an order and carrying the
+                        box — and a need with no case behind it is not a need,
+                        it is a promise nobody can keep. */}
+                    {r.needs > 0 && (
+                      <span style={{ fontSize: 12.5, color: INK_MUTED }}>
+                        needs {r.needs}
+                        {(r.room || []).length > 0 && (
+                          <span style={{ color: NAVY, fontWeight: 600 }}>
+                            {" \u2192 case "}{(r.room || []).slice(0, 3).map(x => `${x.caseNum} (${x.spaces})`).join(", ")}
+                            {(r.room || []).length > 3 ? "…" : ""}
+                          </span>
+                        )}
+                      </span>
+                    )}
+                    {r.extra && <span style={{ fontSize: 12.5, color: RED }}>doesn't need this size</span>}
                   </div>
                 </div>
                 <input type="number" inputMode="numeric" value={r.qty || ""} onChange={e => setAlloc(r.orderId, e.target.value)}
@@ -21439,16 +23281,13 @@ function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRun
             </div>
           )}
           {over && <div style={{ fontSize: 13, color: RED, marginTop: 6 }}>That's {allocated} allocated from {made} made — take {allocated - made} off somewhere.</div>}
-          {spec && (
-            <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-              <Select value={extraOrderPick} onChange={e => setExtraOrderPick(e.target.value)} style={{ maxWidth: 260 }}>
-                <option value="">Send some to another order…</option>
-                {orders.filter(o => !o.deleted && !["Shipped", "Cancelled", "Completed"].includes(o.stage) && !rowsShown.some(r => r.orderId === o.id))
-                  .map(o => <option key={o.id} value={o.id}>{o.id} — {o.customer}</option>)}
-              </Select>
-              {extraOrderPick && <Button variant="ghost" onClick={() => { setAlloc(extraOrderPick, 1); setExtraOrderPick(""); }}>Add</Button>}
-            </div>
-          )}
+          {/* NO "SEND SOME TO ANOTHER ORDER" PICKER. (Chris, 9 Sep)
+              It listed every live order whether or not it had asked for this
+              product, which is how a box ends up promised to an order with
+              nowhere to put it. The list above is the answer: an order appears
+              because its own plan still needs this size, with the case that has
+              room for it. If nothing needs it, it is stock — and stock is a
+              real answer, not a failure. */}
         </BondStep>
 
         <BondStep n={4} q="Box code" hint="Offered, not filled in. Tap to accept or type the one on the label.">
@@ -21874,20 +23713,35 @@ const recentSuffix = "SDB";
                               color: toStock < 0 ? RED : NAVY }}>
                   {made > 0 || allocated > 0 ? toStock : "—"}
                 </div>
-                {toStock > 0 && (
-                  <div style={{ width: 150 }}>
-                    <Select value={values.location || ""} onChange={e => setValues({ ...values, location: e.target.value })}>
-                      <option value="">Where?</option>
-                      {BOX_LOCATIONS.map(loc => <option key={loc} value={loc}>{loc}</option>)}
-                    </Select>
-                  </div>
-                )}
+
                 {toStock < 0 && (
                   <span className="text-xs" style={{ color: RED }}>
                     {allocated} allocated but only {made} made.
                   </span>
                 )}
               </div>
+              {/* WHERE THE BOXES ARE. (Chris, 9 Sep)
+                  Asked for every box, not only the ones going to stock. There
+                  is no staging here: a box is on a shelf or in a case, so one
+                  promised to an order still sits on a shelf until it is
+                  packed. Asking only about the remainder is what left a shelf
+                  of Uninark boxes the system could name but not find. */}
+              {made > 0 && (
+                <div className="flex gap-2 items-center flex-wrap pt-2" style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>Which bay are they on?</div>
+                  <div style={{ width: 150 }}>
+                    <Select value={values.location || ""} onChange={e => setValues({ ...values, location: e.target.value })}>
+                      <option value="">Where?</option>
+                      {BOX_LOCATIONS.map(loc => <option key={loc} value={loc}>{loc}</option>)}
+                    </Select>
+                  </div>
+                  <span className="text-xs" style={{ color: INK_MUTED }}>
+                    {allocated > 0 && toStock > 0 ? "All of them, promised or not — they are on the same shelf until they are packed."
+                      : allocated > 0 ? "Promised to an order, but still on a shelf until it is packed."
+                      : "Going to stock."}
+                  </span>
+                </div>
+              )}
             </div>
           );
         })()}
@@ -22025,7 +23879,33 @@ function BondingLineView({ data, setData, jumpToPacking }) {
       date: dateFromReelCode(unknownReelPrompt.code) || todayISO(), assignedOrderId: null,
       extPinSize: "", extWidthCategory: "", extScrewSpeed: "", extLineSpeed: "", extHeight: "", extWidth: "", extPvcCode: "",
     };
-    setData(prevData => ({ ...prevData, glueLineBatches: [...prevData.glueLineBatches, newBatch] }));
+    setData(prevData => {
+      /* THE CODE MAY ALREADY EXIST. (Dave's screen, 9 Sep 08:30)
+         The reel picker only offers reels it can NAME, so a glue batch logged
+         with no product size is invisible to it. Its code then looks "not in
+         the system", this path inserted a second row with the same batch
+         number, and Supabase refused it: duplicate key on
+         glue_line_batches_batch_number_unique. Everything on that device then
+         sat behind the refusal.
+         The batch number is the identity. If a row already carries it — in any
+         state, sized or not, cleared or not — that row is completed, not
+         duplicated. */
+      const code = String(unknownReelPrompt.code || "").trim().toUpperCase();
+      const existing = (prevData.glueLineBatches || []).find(g => g && !g.deleted
+        && String(g.batchNumber || "").trim().toUpperCase() === code);
+      if (existing) {
+        const stamp = new Date().toISOString();
+        return { ...prevData, glueLineBatches: prevData.glueLineBatches.map(g => g.id !== existing.id ? g : {
+          ...g,
+          productSize: String(g.productSize || "").trim() || unknownReelPrompt.spec,
+          meterage: Number(g.meterage) > 0 ? g.meterage : Number(unknownMeterage),
+          checked: g.checked || "Yes",
+          comments: [g.comments, "Size filled in from Bonding Line — reel was on the system without one"].filter(Boolean).join(". "),
+          updatedAt: stamp,
+        }) };
+      }
+      return { ...prevData, glueLineBatches: [...prevData.glueLineBatches, newBatch] };
+    });
     setUnknownReelPrompt(null);
     setUnknownMeterage("");
   };
@@ -22066,6 +23946,21 @@ function BondingLineView({ data, setData, jumpToPacking }) {
   const confirmSplit = () => {
     if (!splitValid) return;
     const validLines = splitLines.filter(l => l.orderId && Number(l.qty) > 0);
+    /* MOVING STOCK ONTO AN ORDER IS AN ALLOCATION, SO IT GETS THE SAME GATES.
+       (Chris, 9 Sep) This path bypassed every one of them: it is how a row
+       carrying GASE's name ended up against Avrupa's work number on 8 Sep,
+       hiding 13 boxes from the order that needed them. The plan decides here
+       exactly as it does at the bonding line — the order must want the
+       product, must still need that many, and must have a case for them. */
+    {
+      const src = (data.bondingRuns || []).find(r => r.id === splitPrompt.id);
+      const spec = src ? src.productSize : "";
+      const probe = { size: spec, range: "Custom", pt: "", boxNumber: src ? src.boxNumber : "",
+                      amountMade: Number(src && src.amountMade) || 0,
+                      allocations: validLines.map(l => ({ orderId: l.orderId, qty: Number(l.qty) })) };
+      const err = gateCasePlan(probe) || gateAgainstPlan(probe, splitPrompt.id);
+      if (err) { if (typeof window !== "undefined") window.alert(err); return; }
+    }
     setData(prevData => {
       const source = prevData.bondingRuns.find(r => r.id === splitPrompt.id);
       if (!source) return prevData;
@@ -22224,6 +24119,111 @@ function BondingLineView({ data, setData, jumpToPacking }) {
     return "";
   };
 
+  /* ===== THE BONDING GATES (8 Sep) ==========================================
+     Every refusal states how to clear it. A gate that only says no is a
+     stoppage; one the operator can clear in three seconds is a gate.
+
+     Each was paid for on 8 September:
+       PT     I60805SDB and I60806SDB were logged as "0.40 x 1.40mm" with no
+              pt. Every order line says 2-3pt, so the destination lookup
+              matched nothing and 32 boxes were told no case at all.
+       BATCH  allocations may never exceed what was made. Already enforced
+              within one entry; this also counts what this box code was
+              allocated on EARLIER entries, which is how a split box quietly
+              over-promises.
+       PLAN   a case plan is a promise. Allocating to an order with no plan
+              sends boxes to an order that cannot say where they go. */
+  /* EVERY BOX HAS A BAY. (Chris, 9 Sep)
+     Not only the ones going to stock — a box promised to an order sits on the
+     same shelf as everything else until it is packed, and one with no bay is
+     a box the system can name but nobody can find. */
+  const gateLocation = (f) => {
+    if ((Number(f.amountMade) || 0) <= 0) return "";
+    if (String(f.location || "").trim()) return "";
+    return "Can't log these without saying which bay they are on. To clear it: pick the bay under \u201cWhich bay are they on?\u201d \u2014 boxes promised to an order still sit on a shelf until they are packed.";
+  };
+  const gateProduct = (f) => {
+    const spec = buildSpec(f);
+    const res = resolveProduct(data, spec);
+    if (res.status === "exact") return "";
+    const cands = res.candidates || [];
+    if (!f.pt && cands.some(p => p.pt)) {
+      return "Can't accept this entry as you haven't told me what pt it is. To clear it: pick "
+        + [...new Set(cands.map(p => p.pt).filter(Boolean))].join(" or ") + " in the pt field.";
+    }
+    if (res.status === "candidates") {
+      return "Can't accept " + spec + " — it isn't exactly a product we make. To clear it: pick one of "
+        + cands.slice(0, 3).map(p => p.displayName).join("  /  ") + (cands.length > 3 ? "  /  …" : "") + ".";
+    }
+    /* THE GLUE LINE IS THE FRONT DOOR. (Chris, 9 Sep)
+       Nothing reaches bonding that did not come off a reel, so a spec that
+       exists on a glue line batch or run is real whether or not the catalogue
+       has caught up with it — Chris sets those up himself. Refusing it would
+       stop the line for a product he had already made.
+       A spec that exists NOWHERE upstream is still refused: that is the old
+       hands typing something the factory never produced. */
+    const onGlueLine = [
+      ...(data.glueLineBatches || []).filter(b => b && !b.deleted).map(b => b.productSize),
+      ...(data.glueRuns || []).filter(g => g && !g.deleted).map(g => g.productSize),
+    ].some(ps => ps && looseSpecMatch(ps, spec));
+    if (onGlueLine) return "";
+    return "Can't accept " + spec + " — nothing by that name has been through the glue line. To clear it: check the size and the pt against the reel you are bonding, or ask Chris to set it up on the glue line first.";
+  };
+  const gateBatchTotal = (f, excludeId) => {
+    const code = String(f.boxNumber || "").trim().toUpperCase();
+    if (!code) return "";
+    const made = Number(f.amountMade) || 0;
+    const allocs = (f.allocations || []).filter(a => a.orderId && Number(a.qty) > 0);
+    const now = allocs.length ? allocs.reduce((t, a) => t + Number(a.qty), 0) : (Number(f.onOrderQty) || 0);
+    const ledger = (kind) => (data.movements || [])
+      .filter(m => !m.deleted && m.kind === kind
+                && String(m.boxNumber || "").trim().toUpperCase() === code
+                /* An edit must not count its own existing figures against
+                   itself, or raising 10 to 12 reads as 22 promised. */
+                && !(excludeId && m.sourceId === excludeId))
+      .reduce((t, m) => t + (Number(m.qty) || 0), 0);
+    const promised = now + ledger("allocated");
+    const total = made + ledger("made");
+    if (promised > total) {
+      return "Can't accept this entry as allocations to customers exceed the batch amount made. "
+        + code + " would be promised " + promised + " against " + total
+        + " made. To clear it: reduce an allocation by " + (promised - total) + ", or correct how many were made.";
+    }
+    return "";
+  };
+  /* DAVE PICKS THE ORDER; THE PLAN DECIDES WHETHER IT CAN HAVE IT.
+     Chris, 8 Sep: he likes choosing the order, so the choice stays his — but
+     an order that has not promised this product cannot receive it. The answer
+     for a box nothing has promised is STOCK, not "whichever order was nearest
+     in the list". Overs are the same fault: 21 made against a promise of 13 is
+     13 to the order and 8 to the shelf.
+     Each refusal carries the number, so clearing it is arithmetic, not a
+     guess. */
+  /* Delegates to allocationRefusal, which every allocation path uses. This
+     wrapper only reads the two shapes the bonding form can be in. */
+  const gateAgainstPlan = (f, excludeId) => {
+    const spec = buildSpec(f);
+    const allocs = (f.allocations || []).filter(a => a.orderId && Number(a.qty) > 0);
+    const rows = allocs.length ? allocs
+      : (f.workNumber && Number(f.onOrderQty) > 0
+          ? [{ orderId: f.workNumber, qty: Number(f.onOrderQty) }] : []);
+    return allocationRefusal(data, spec, rows, excludeId);
+  };
+  const gateCasePlan = (f) => {
+    const allocs = (f.allocations || []).filter(a => a.orderId && Number(a.qty) > 0);
+    const ids = allocs.length ? allocs.map(a => a.orderId) : (f.workNumber ? [f.workNumber] : []);
+    for (const id of ids) {
+      const planned = (data.cases || []).some(c => !c.deleted && c.orderId === id
+        && hasCasePlan(c));
+      if (!planned) {
+        const o = (data.orders || []).find(x => x.id === id);
+        return "Can't allocate to " + id + (o ? " (" + o.customer + ")" : "")
+          + " because the case plan hasn't been agreed yet — there is nowhere for these boxes to go."
+          + " To clear it: press 🗂 Plan packing on that order, then log this entry again.";
+      }
+    }
+    return "";
+  };
   const buildSpec = (f) => {
     let spec = f.range === "Custom" ? f.size.trim() : `${f.range} ${f.size.trim()}`;
     if (f.pt && !spec.includes(f.pt)) spec += ` ${f.pt}`;
@@ -22334,12 +24334,21 @@ function BondingLineView({ data, setData, jumpToPacking }) {
     const remainder = made - allocated;
     const rows = allocs.map(a => {
       const order = orderOptions.find(o => o.value === a.orderId);
-      /* Location belongs to the stock remainder only. Copying it onto an
-         order row would have a box claiming a shelf it is not going to sit
-         on, which is exactly the kind of small lie that makes a stock
-         location stop being trusted. */
+      /* THE ORDER ROW KEEPS ITS BAY. (Chris, 9 Sep — corrects an assumption
+         written here on 5 Sep.)
+
+         This blanked the location because an order row "is not going to sit
+         on a shelf". It is. There is no staging in this factory: a box is on
+         a shelf or it is in a case, and between being made and being packed
+         it is on a shelf like everything else. Blanking the bay is what left
+         Dave with a shelf of Uninark boxes the system could name but not
+         find — 276 boxes promised to an order and not in a case, 168 of them
+         with no location at all.
+
+         The bay is where the box IS, not a claim about who owns it. Both
+         facts are true at once and both are now recorded. */
       return { ...f, allocations: [], amountMade: Number(a.qty), onOrderQty: Number(a.qty), toStock: 0,
-        workNumber: a.orderId, customerName: order?.customer || "", location: "",
+        workNumber: a.orderId, customerName: order?.customer || "", location: f.location || "",
         boxTypeId: a.boxTypeId || f.boxTypeId || "" };
     });
     if (remainder > 0) {
@@ -22383,7 +24392,9 @@ function BondingLineView({ data, setData, jumpToPacking }) {
     /* The allocation overrun, which also used to be silent — the button just
        greyed out and the operator was left looking at a screen that told them
        nothing. validateAllocations has the sentence; it never got to say it. */
-    const err = validateBatchAndBox(form, null) || validateAllocations(form);
+    const err = validateBatchAndBox(form, null) || validateAllocations(form)
+             || gateProduct(form) || gateBatchTotal(form) || gateCasePlan(form)
+             || gateAgainstPlan(form) || gateLocation(form);
     if (err) { setAddError(err); return; }
     setAddError("");
     /* Stamp when this box was actually entered — once, never updated.
@@ -22413,7 +24424,7 @@ function BondingLineView({ data, setData, jumpToPacking }) {
     setPendingAdd({ newRuns, going });
   };
 
-  const performAdd = ({ newRuns }) => {
+  const performAdd = ({ newRuns, going }) => {
     setPendingAdd(null);
     // The row the toasts, undo and packing-jump refer to: the first one
     // actually going to an order, or failing that the first row at all.
@@ -22464,7 +24475,19 @@ function BondingLineView({ data, setData, jumpToPacking }) {
       working = recordMovements(working, newRuns.flatMap(r => [
         { kind: "made", boxNumber: r.boxNumber, spec: r.productSize, qty: Number(r.amountMade) || 0, reelCode: r.baselineBatchCode || null, source: "bonding", sourceId: r.id },
         ...(r.workNumber && Number(r.onOrderQty) > 0
-          ? [{ kind: "allocated", boxNumber: r.boxNumber, spec: r.productSize, qty: Number(r.onOrderQty), orderId: r.workNumber, reelCode: r.baselineBatchCode || null, source: "bonding", sourceId: r.id }]
+          /* THE CASE IT WAS SENT TO IS RECORDED, NOT JUST SHOWN. (Chris, 9 Sep)
+             predictRunDestinations worked out the case, put it on screen and
+             threw it away, so every allocation carried a null case_num and
+             "where did it tell him to put it?" could only ever be answered by
+             recomputing against data that had moved since. The number the
+             operator was actually given is now written on the movement. */
+          ? [{ kind: "allocated", boxNumber: r.boxNumber, spec: r.productSize, qty: Number(r.onOrderQty), orderId: r.workNumber,
+               caseNum: (() => {
+                 const g = (going || []).find(x => x && x.kind === "order" && x.orderId === r.workNumber
+                   && String(x.boxNumber || "") === String(r.boxNumber || ""));
+                 return g && Array.isArray(g.cases) && g.cases.length ? Number(g.cases[0]) : null;
+               })(),
+               reelCode: r.baselineBatchCode || null, source: "bonding", sourceId: r.id }]
           : []),
       ]));
       /* Clearing a reel writes off whatever the sums thought was left. Within
@@ -22621,7 +24644,21 @@ function BondingLineView({ data, setData, jumpToPacking }) {
   const cancelEdit = () => { setEditingId(null); setEditForm(null); setEditError(""); };
   const saveEdit = () => {
     if (!editForm.size.trim() || !editForm.amountMade) return;
-    const err = validateBatchAndBox(editForm, editingId);
+    /* THE EDIT GETS THE SAME GATES AS THE ENTRY. (Chris, 9 Sep)
+       Logging a box ran nine checks; editing it afterwards ran two. So a
+       refused entry could be logged correctly and then edited into exactly the
+       thing that was refused — the product changed to something that never
+       came off the glue line, the order changed to one whose plan does not
+       want it, the quantity raised past what the case has room for.
+       A rule that only applies on the way in is not a rule.
+
+       The edit excludes its own row from the batch-total check, because the
+       quantity being edited must not count against itself. */
+    const err = validateBatchAndBox(editForm, editingId)
+      || gateProduct(editForm)
+      || gateBatchTotal(editForm, editingId)
+      || gateCasePlan(editForm)
+      || gateAgainstPlan(editForm, editingId);
     if (err) { setEditError(err); return; }
     setEditError("");
     const batchCode = (editForm.baselineBatchCode || "").trim();
@@ -22954,7 +24991,7 @@ function BondingLineView({ data, setData, jumpToPacking }) {
                       <td className="px-3 py-1.5"><Mono className="text-xs">{r.evaCode || "—"}</Mono></td>
                       <td className="px-3 py-1.5"><Mono className="text-xs">{r.tapeCode || "—"}</Mono></td>
                       <td className="px-3 py-1.5 text-right"><EditableQty value={r.toStock} onCommit={v => updateRowQty(r, "toStock", v)} /></td>
-                      <td className="px-3 py-1.5">{r.customerName || ""}</td>
+                      <td className="px-3 py-1.5">{runCustomer(data.orders, r)}</td>
                       <td className="px-3 py-1.5">
                         <select value={r.workNumber || ""} onChange={e => assignRowToOrder(r, e.target.value)}
                           disabled={r.checked !== "Yes"}
@@ -23026,7 +25063,7 @@ function BondingLineView({ data, setData, jumpToPacking }) {
               ["Amount made", r.amountMade],
               ["On order", r.onOrderQty],
               ["To stock", r.toStock],
-              ["Customer", r.customerName],
+              ["Customer", runCustomer(data.orders, r)],
               ["Order", r.workNumber],
               ["Meters per box", r.metersPerBox],
               ["Package type", r.packageType],
@@ -23656,13 +25693,30 @@ function GlueLineRestFields({ values, setValues, orderOptions = [], existingBatc
   const suggestedPvc = pvcCodeForSpec(spec, materials);
   /* What the line last actually used, falling back to the register. */
   const suggestedGlue = lastGlueBatchUsed(glueData || {}) || materialBatchCode(materials, "glue");
+  /* THE PVC FOLLOWS THE HEIGHT. (Chris, 9 Sep, stood at the glue line)
+     Two faults, both here:
+       1. It only filled when the run was marked Direct, so choosing a size on
+          any other run filled nothing and the code got typed by hand.
+       2. Once filled it never moved. Change the size from 0.40 to 0.60 and
+          Blue's code stayed against a Yellow product — a wrong material code
+          against a whole run of reels.
+     Now: the suggestion fills as soon as the size is known, and FOLLOWS a size
+     change while the box still holds a code the app suggested. A code the
+     operator typed themselves is never overwritten — the test is whether the
+     current value is one of the PVC batch codes in the register. */
+  const pvcCodesInRegister = React.useMemo(() => new Set(
+    (materials || []).filter(m => m && m.category === "pvc" && m.batchCode)
+      .map(m => String(m.batchCode).trim())), [materials]);
   useEffect(() => {
     if (hideMaterialsSection) return;   // editing an existing run — leave it alone
     const patch = {};
     if (!String(values.glueBatch || "").trim() && suggestedGlue) patch.glueBatch = suggestedGlue;
-    if (values.direct === true && !String(values.extPvcCode || "").trim() && suggestedPvc) patch.extPvcCode = suggestedPvc;
+    const cur = String(values.extPvcCode || "").trim();
+    if (suggestedPvc && cur !== suggestedPvc && (!cur || pvcCodesInRegister.has(cur))) {
+      patch.extPvcCode = suggestedPvc;
+    }
     if (Object.keys(patch).length) setValues({ ...values, ...patch });
-  }, [suggestedGlue, suggestedPvc, values.direct, values.size, values.range, values.glueBatch, values.extPvcCode, hideMaterialsSection]);
+  }, [suggestedGlue, suggestedPvc, values.direct, values.size, values.range, values.glueBatch, values.extPvcCode, hideMaterialsSection, pvcCodesInRegister]);
   // PBL and PPL aren't interchangeable line labels — the prefix itself is
   // supposed to say whether this run was Direct (PBL) or Indirect, i.e.
   // extruded onto a reel first and glue-lined separately (PPL). A batch
@@ -23966,6 +26020,7 @@ function StockTakerView({ data, setData }) {
       id: uid("br"), productSize, baselineBatchCode: "", evaCode: "", tapeCode: "",
       amountMade: qty, onOrderQty: 0, toStock: qty, customerName: "", workNumber: null,
       metersPerBox: 24, boxNumber: boxCode, packageType: "Box", checked: "Yes", location,
+      boxTypeId: entry.boxTypeId || boxTypeIdForName(data.materials, "PX Plus") || "",
       runtimeHrs: "", date: todayISO(), comments: "Added via Stock Taker",
     };
     // A stock take finding a box is a COUNT — someone stood in front of it. It
@@ -23976,7 +26031,7 @@ function StockTakerView({ data, setData }) {
       { kind: "counted", boxNumber: newRun.boxNumber, spec: newRun.productSize, qty: Number(newRun.toStock) || 0, source: "stocktake", sourceId: newRun.id },
     ]));
     setBoxSessionAdds([{ id: newRun.id, size, boxCode, qty, location }, ...boxSessionAdds]);
-    setBoxInputs({ ...boxInputs, [size]: { boxCode: "", qty: "", location: "", pt } });
+    setBoxInputs({ ...boxInputs, [size]: { boxCode: "", qty: "", location: "", pt, boxTypeId: entry.boxTypeId || "" } });
   };
 
   // For a size that genuinely isn't in the catalog yet — same validation and
@@ -23998,6 +26053,7 @@ function StockTakerView({ data, setData }) {
       id: uid("br"), productSize, baselineBatchCode: "", evaCode: "", tapeCode: "",
       amountMade: qty, onOrderQty: 0, toStock: qty, customerName: "", workNumber: null,
       metersPerBox: 24, boxNumber: boxCode, packageType: "Box", checked: "Yes", location,
+      boxTypeId: customInput.boxTypeId || boxTypeIdForName(data.materials, "PX Plus") || "",
       runtimeHrs: "", date: todayISO(), comments: "Added via Stock Taker (custom size)",
     };
     // A stock take finding a box is a COUNT — someone stood in front of it. It
@@ -24135,6 +26191,14 @@ function StockTakerView({ data, setData }) {
                 {BOX_LOCATIONS.map(loc => <option key={loc} value={loc}>{loc}</option>)}
               </Select>
             </div>
+            <div style={{ width: 120 }}>
+              <label className="text-xs block mb-1" style={{ color: INK_MUTED }}>Box type</label>
+              <Select value={customInput.boxTypeId || boxTypeIdForName(data.materials, "PX Plus") || ""}
+                onChange={e => setCustomInput({ ...customInput, boxTypeId: e.target.value })}>
+                {(data.materials || []).filter(m => m.category === "boxes" && !m.deleted)
+                  .map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+              </Select>
+            </div>
             <Button variant="accent" onClick={addCustomBox}>+ Add</Button>
           </div>
           {customError && <div className="text-sm mt-2" style={{ color: RED }}>⚠ {customError}</div>}
@@ -24218,6 +26282,18 @@ function StockTakerView({ data, setData }) {
                     <Select value={bi.location || ""} onChange={e => setBoxFieldFor(size, "location", e.target.value)} style={{ width: 92 }}>
                       <option value="">Bay —</option>
                       {BOX_LOCATIONS.map(loc => <option key={loc} value={loc}>{loc}</option>)}
+                    </Select>
+                    {/* WHICH CARTON IT IS ACTUALLY IN. (Chris, 9 Sep)
+                        A stock take recorded no box type at all, so every box
+                        found on the shelf read as PX Plus — and a White box
+                        counted as PX Plus is a box that will be offered to a
+                        PX Plus customer. Box type is a property of the
+                        cardboard in front of the person counting, so it is
+                        asked here rather than assumed. */}
+                    <Select value={bi.boxTypeId || boxTypeIdForName(data.materials, "PX Plus") || ""}
+                      onChange={e => setBoxFieldFor(size, "boxTypeId", e.target.value)} style={{ width: 120 }}>
+                      {(data.materials || []).filter(m => m.category === "boxes" && !m.deleted)
+                        .map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
                     </Select>
                     <Button variant="ghost" onClick={() => addBox(size)}>+ Add</Button>
                   </>
@@ -24348,6 +26424,17 @@ function GlueLineView({ data, setData }) {
     extPinSize: "", extWidthCategory: "", extScrewSpeed: "", extLineSpeed: "", extHeight: "", extWidth: "", extPvcCode: "",
     glueOpened: false, mylarOpened: false, mylarVariantId: "" };   // no tape on the glue line
   const [form, setForm, draftRestored, discardDraft] = useDraftForm("glueLine", blank);
+  /* And on a fresh start, the last batch the line actually used. The reel just
+     logged carries it within a session (see the reset below); this covers the
+     morning, when the form is blank and the bag on the machine is the same one
+     that was on it at half four. Only fills an empty box, so it can never sit
+     on top of something typed. */
+  React.useEffect(() => {
+    if (String(form.glueBatch || "").trim()) return;
+    const last = lastGlueBatchUsed(data || {});
+    if (last) setForm(f => (String(f.glueBatch || "").trim() ? f : { ...f, glueBatch: last }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.glueBatch, data.glueRuns, data.glueLineBatches]);
   const [editingId, setEditingId, editForm, setEditForm, editRestored, discardEdit] = useDraftEdit("edit-glueLine");
   // Phone only — desktop and tablet ignore this and always show the form.
   const [addOpen, setAddOpen] = useState(false);
@@ -24677,7 +26764,13 @@ function GlueLineView({ data, setData }) {
           plCode: f.plCode, glueBatch: f.glueBatch, glueDie: f.glueDie, petType: f.petType,
           extPinSize: f.extPinSize, extWidthCategory: f.extWidthCategory, extScrewSpeed: f.extScrewSpeed,
           extLineSpeed: f.extLineSpeed, extHeight: f.extHeight, extWidth: f.extWidth, extPvcCode: f.extPvcCode }
-      : { ...blank, range: f.range });
+      /* THE GLUE BATCH REPEATS. (Chris, 9 Sep)
+         With a run open the whole setup carried over; with no run open the
+         form reset cleared it, so the same batch code got retyped for every
+         reel off the same bag of glue — and a code typed twenty times is a
+         code mistyped eventually. It is the last thing entered, not a guess:
+         carried from the reel just logged. */
+      : { ...blank, range: f.range, glueBatch: f.glueBatch });
     printLabel(newRow);
 
     // A brief, on-screen chance to undo a fresh mistake the moment it's
@@ -25603,6 +27696,18 @@ function ExtrusionView({ data, setData }) {
 /* =========================================================================
    APP SHELL
 ========================================================================= */
+/* EVERY SCREEN CARRIES A NUMBER, TOP RIGHT.
+   Chris, 8 Sep: "number each screen... then any issues just ask which screen
+   number." He is on the floor with a phone and I cannot see what he sees;
+   "the case map is wrong" could mean any of six places. A number on the screen
+   turns a guess into a fact.
+
+   The number comes from position in NAV, so it is the same on every device and
+   in every build, and it never changes when a screen is renamed. */
+function screenNumber(key) {
+  const i = NAV.findIndex(n => n && n.key === key);
+  return i >= 0 ? i + 1 : null;
+}
 const NAV = [
   { key: "dashboard", label: "Orders", icon: IconOrders },
   { key: "daily", label: "Daily plan", icon: IconClock },
@@ -27202,7 +29307,7 @@ function dataContainsId(data, id) {
       <div id="print-portal-root"></div>
       <div className="no-print"><HazardStripe height={4} /></div>
 
-      <div className="mobile-header no-print">
+      <div className="mobile-header no-print" style={{ position: "relative" }}>
         <button onClick={() => setMobileMenuOpen(true)} aria-label="Open menu"
           style={{ background: "none", border: "none", padding: 6, display: "flex", alignItems: "center", color: NAVY }}>
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
@@ -27215,6 +29320,12 @@ function dataContainsId(data, id) {
           </button>
         ) : (
           <div style={{ width: 36 }} />
+        )}
+        {screenNumber(view) && (
+          <div style={{ position: "absolute", top: 2, right: 4, fontSize: 10, fontWeight: 700,
+                        color: LIGHTGREY, letterSpacing: ".04em", pointerEvents: "none" }}>
+            S{screenNumber(view)}
+          </div>
         )}
       </div>
 
@@ -27276,6 +29387,12 @@ function dataContainsId(data, id) {
 
       <div className={"sidebar-backdrop no-print" + (mobileMenuOpen ? " show" : "")} onClick={() => setMobileMenuOpen(false)} />
 
+      {screenNumber(view) && (
+        <div className="no-print" style={{ position: "fixed", top: 6, right: 10, zIndex: 60,
+          fontSize: 11, fontWeight: 700, color: LIGHTGREY, letterSpacing: ".04em", pointerEvents: "none" }}>
+          S{screenNumber(view)}
+        </div>
+      )}
       <div className="flex">
         <aside className={"app-sidebar w-64 shrink-0 min-h-screen p-4 no-print" + (mobileMenuOpen ? " mobile-open" : "")} style={{ background: NAVY_DEEP, color: "#fff" }}>
           {/* The clipped corner went with the buttons this morning; this was the last one. The logo itself is untouched. */}
