@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-09.32";
+  var APP_VERSION = "2026-09-09.33";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -3607,16 +3607,17 @@
         others.push({ orderId: o.id, customer: o.customer, needs: 0, noPlanFor: true });
         continue;
       }
-      const allocatedUnplaced = ledgerFor(o.id).reduce((t, m) => {
-        if (!looseSpecMatch(wanted, m.spec || "")) return t;
-        if (excludeSourceId && m.sourceId === excludeSourceId) return t;
-        if (m.kind === "allocated") return t + (Number(m.qty) || 0);
-        if (m.kind === "unallocated") return t - (Number(m.qty) || 0);
-        if (m.kind === "placed") return t - (Number(m.qty) || 0);
-        if (m.kind === "unplaced") return t + (Number(m.qty) || 0);
-        return t;
-      }, 0);
-      const outstanding = Math.max(0, planned - inCases - Math.max(0, allocatedUnplaced));
+      const perBox = /* @__PURE__ */ new Map();
+      for (const m of ledgerFor(o.id)) {
+        if (!looseSpecMatch(wanted, m.spec || "")) continue;
+        if (excludeSourceId && m.sourceId === excludeSourceId) continue;
+        const k = String(m.boxNumber || "").trim().toUpperCase();
+        const q = Number(m.qty) || 0;
+        const d = m.kind === "allocated" ? q : m.kind === "unallocated" ? -q : m.kind === "placed" ? -q : m.kind === "unplaced" ? q : 0;
+        perBox.set(k, (perBox.get(k) || 0) + d);
+      }
+      const allocatedUnplaced = [...perBox.values()].reduce((t, v) => t + Math.max(0, v), 0);
+      const outstanding = Math.max(0, planned - inCases - allocatedUnplaced);
       room.sort((a, b) => a.caseNum - b.caseNum);
       if (outstanding > 0) {
         needing.push({
@@ -9309,7 +9310,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
       );
     }));
   }
-  function CaseTile({ c, selected, onSelect, lit = false }) {
+  function CaseTile({ c, selected, onSelect, lit = false, onWay = {} }) {
     const st = caseState(c);
     const edge = CASE_STATE_COLOURS[st.key];
     const fill = c.packedOutside ? null : caseFill(c);
@@ -9324,7 +9325,10 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
     }
     const fillLabel = !fill ? "" : fill.allocated > 0 ? ` \u2014 ${fill.allocated} of ${fill.capacity} boxes in` : "";
     const sizeLines = caseContentLines(c);
-    const planLines = casePlanLines(c).filter((p) => (Number(p.outstanding) || 0) > 0);
+    const planLines = casePlanLines(c).map((p) => {
+      const coming = Number(onWay[p.spec]) || 0;
+      return { ...p, coming, outstanding: Math.max(0, (Number(p.outstanding) || 0) - coming) };
+    }).filter((p) => (Number(p.outstanding) || 0) > 0 || p.coming > 0);
     const shortSize = (label) => {
       const m = label.match(/^(.*?)\s*(2-3pt|3-4pt|6pt)$/i);
       return { size: (m ? m[1] : label).replace(/\s*x\s*/i, "\xD7"), pt: m ? m[2] : null };
@@ -9417,7 +9421,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
       marginBottom: 1
     } }, "Due"), planLines.map((l, i) => {
       const { size, pt } = shortSize(l.label);
-      return /* @__PURE__ */ React.createElement("div", { key: "p" + i, style: { display: "flex", alignItems: "center", gap: 5 } }, /* @__PURE__ */ React.createElement("span", { style: { opacity: 0.45, display: "inline-flex" } }, /* @__PURE__ */ React.createElement(SizeShape, { spec: l.spec })), /* @__PURE__ */ React.createElement("span", { style: { minWidth: 0 } }, /* @__PURE__ */ React.createElement("b", { style: { fontVariantNumeric: "tabular-nums", fontWeight: 600 } }, l.outstanding), /* @__PURE__ */ React.createElement("span", null, " \xD7 "), size, pt && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 8.5, marginLeft: 3 } }, pt)));
+      return /* @__PURE__ */ React.createElement("div", { key: "p" + i, style: { display: "flex", alignItems: "center", gap: 5 } }, /* @__PURE__ */ React.createElement("span", { style: { opacity: 0.45, display: "inline-flex" } }, /* @__PURE__ */ React.createElement(SizeShape, { spec: l.spec })), /* @__PURE__ */ React.createElement("span", { style: { minWidth: 0 } }, l.outstanding > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("b", { style: { fontVariantNumeric: "tabular-nums", fontWeight: 600 } }, l.outstanding), /* @__PURE__ */ React.createElement("span", null, " \xD7 "), size, pt && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 8.5, marginLeft: 3 } }, pt)), l.coming > 0 && /* @__PURE__ */ React.createElement("span", { style: { display: "block", color: NAVY, fontWeight: 600 } }, l.coming, " on its way", l.outstanding > 0 ? "" : ` (${size})`)));
     })));
   }
   function CaseAnnouncement({ cases, boxes, fireKey }) {
@@ -9916,6 +9920,30 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
     ), /* @__PURE__ */ React.createElement("div", { style: open ? void 0 : { display: "none" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Georgia, serif", color: "#000" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 26, fontWeight: 700 } }, order.customer), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, marginBottom: 2 } }, "Order ", order.id, order.customerRef ? ` \xB7 their ref ${order.customerRef}` : ""), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, marginBottom: 14 } }, rows.length, " case", rows.length === 1 ? "" : "s", " \xB7 ", grand, " boxes altogether"), /* @__PURE__ */ React.createElement("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 15 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: { textAlign: "left", borderBottom: "2px solid #000", padding: "6px 8px", width: 62 } }, "Case"), /* @__PURE__ */ React.createElement("th", { style: { textAlign: "left", borderBottom: "2px solid #000", padding: "6px 8px" } }, "What goes in it"), /* @__PURE__ */ React.createElement("th", { style: { textAlign: "right", borderBottom: "2px solid #000", padding: "6px 8px", width: 70 } }, "Boxes"), /* @__PURE__ */ React.createElement("th", { style: { textAlign: "center", borderBottom: "2px solid #000", padding: "6px 8px", width: 60 } }, "Done"))), /* @__PURE__ */ React.createElement("tbody", null, rows.map((r) => /* @__PURE__ */ React.createElement("tr", { key: r.caseNum, style: { pageBreakInside: "avoid" } }, /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px", fontSize: 22, fontWeight: 700, verticalAlign: "top" } }, r.caseNum), /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px" } }, r.lines.map(([spec, qty], i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { lineHeight: 1.5 } }, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 17 } }, qty), " \xD7 ", short(spec))), (r.plan || []).map((p, i) => /* @__PURE__ */ React.createElement("div", { key: "a" + i, style: { lineHeight: 1.5, color: "#666" } }, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 17 } }, p[1]), " \xD7 ", short(p[0]), " ", /* @__PURE__ */ React.createElement("i", null, p[3] > 0 ? `\u2014 ${p[3]} to come` : "\u2014 done")))), /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px", textAlign: "right", fontSize: 19, fontWeight: 700, verticalAlign: "top" } }, r.total, r.toCome > 0 && /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 400, color: "#666" } }, " / ", r.total + r.toCome)), /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px", textAlign: "center", verticalAlign: "top" } }, /* @__PURE__ */ React.createElement("span", { style: { display: "inline-block", width: 22, height: 22, border: "2px solid #000" } })))))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, marginTop: 16 } }, "Printed ", (/* @__PURE__ */ new Date()).toLocaleString("en-GB", { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" }), ". If a case is different from this list, write on it \u2014 the sheet is the record."))));
   }
   function CaseGrid({ cases, caseWeights, setCaseWeights, palletAssignments, setPalletAssignments, highlightBoxes = null, highlightKey = null, litCases = [], caseOverrides = {}, setCaseOverrides = null, onEditCase = null, editOrder = null, editData = null }) {
+    const onWayByCase = useMemo(() => {
+      const out = {};
+      if (!editOrder || !editData) return out;
+      const perBox = /* @__PURE__ */ new Map();
+      for (const m of editData.movements || []) {
+        if (!m || m.deleted || m.orderId !== editOrder.id || m.caseNum == null) continue;
+        const k = `${Number(m.caseNum)}|${String(m.boxNumber || "").trim().toUpperCase()}`;
+        const q = Number(m.qty) || 0;
+        const d = m.kind === "allocated" ? q : m.kind === "unallocated" ? -q : m.kind === "placed" ? -q : m.kind === "unplaced" ? q : 0;
+        const e = perBox.get(k) || { caseNum: Number(m.caseNum), spec: m.spec || "", net: 0 };
+        e.net += d;
+        if (!e.spec && m.spec) e.spec = m.spec;
+        perBox.set(k, e);
+      }
+      for (const e of perBox.values()) {
+        if (e.net <= 0) continue;
+        const row = (cases || []).find((c) => Number(c.caseNum) === e.caseNum);
+        const planKey = row ? Object.keys(casePlanned(row)).find((k) => looseSpecMatch(k, e.spec)) : null;
+        const key = planKey || e.spec;
+        out[e.caseNum] = out[e.caseNum] || {};
+        out[e.caseNum][key] = (out[e.caseNum][key] || 0) + e.net;
+      }
+      return out;
+    }, [editOrder && editOrder.id, editData && editData.movements, cases]);
     const [editingCase, setEditingCase] = useState(null);
     const [sel, setSel] = useState(cases.length ? cases[0].caseNum : null);
     const chosen = cases.find((c) => c.caseNum === sel) || cases[0];
@@ -9986,7 +10014,8 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
         c,
         selected: c.caseNum === sel,
         onSelect: setSel,
-        lit: pulse && litCases.includes(c.caseNum)
+        lit: pulse && litCases.includes(c.caseNum),
+        onWay: onWayByCase[c.caseNum] || {}
       }
     ))), !visibleCases.length && /* @__PURE__ */ React.createElement("div", { className: "text-sm py-6 text-center", style: { color: INK_MUTED } }, "No cases in this view."), chosen && /* @__PURE__ */ React.createElement(Panel, { className: "mt-4", style: { padding: 0, overflow: "hidden" } }, /* @__PURE__ */ React.createElement(
       "div",
