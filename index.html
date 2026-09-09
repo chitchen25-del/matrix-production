@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-09.33";
+  var APP_VERSION = "2026-09-09.34";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -2980,6 +2980,7 @@
         const order = (data.orders || []).find((o) => o.id === r.workNumber);
         let cases = [];
         const planned = plannedCasesFor(data, r.workNumber);
+        const split = [];
         if (planned.length) {
           let left = onOrder;
           for (const p of planned) {
@@ -2987,8 +2988,10 @@
             if (!looseSpecMatch(p.spec, r.productSize)) continue;
             const room = p.outstanding;
             if (room <= 0) continue;
+            const take = Math.min(room, left);
             cases.push(p.caseNum);
-            left -= Math.min(room, left);
+            split.push({ caseNum: p.caseNum, qty: take });
+            left -= take;
           }
         }
         try {
@@ -3013,6 +3016,7 @@
           customer: runCustomer(data.orders, r),
           qty: onOrder,
           cases,
+          split,
           boxNumber: r.boxNumber,
           spec: r.productSize
         });
@@ -15496,21 +15500,62 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         };
         working = recordMovements(working, newRuns.flatMap((r) => [
           { kind: "made", boxNumber: r.boxNumber, spec: r.productSize, qty: Number(r.amountMade) || 0, reelCode: r.baselineBatchCode || null, source: "bonding", sourceId: r.id },
-          ...r.workNumber && Number(r.onOrderQty) > 0 ? [{
-            kind: "allocated",
-            boxNumber: r.boxNumber,
-            spec: r.productSize,
-            qty: Number(r.onOrderQty),
-            orderId: r.workNumber,
-            caseNum: (() => {
-              const g = (going || []).find((x) => x && x.kind === "order" && x.orderId === r.workNumber && String(x.boxNumber || "") === String(r.boxNumber || ""));
-              return g && Array.isArray(g.cases) && g.cases.length ? Number(g.cases[0]) : null;
-            })(),
-            reelCode: r.baselineBatchCode || null,
-            source: "bonding",
-            sourceId: r.id
-          }] : []
+          ...r.workNumber && Number(r.onOrderQty) > 0 ? (() => {
+            const g = (going || []).find((x) => x && x.kind === "order" && x.orderId === r.workNumber && String(x.boxNumber || "") === String(r.boxNumber || ""));
+            const split = g && Array.isArray(g.split) && g.split.length ? g.split : [];
+            const firstCase = split.length ? split[0].caseNum : g && g.cases && g.cases.length ? Number(g.cases[0]) : null;
+            return [
+              {
+                kind: "allocated",
+                boxNumber: r.boxNumber,
+                spec: r.productSize,
+                qty: Number(r.onOrderQty),
+                orderId: r.workNumber,
+                caseNum: firstCase,
+                reelCode: r.baselineBatchCode || null,
+                source: "bonding",
+                sourceId: r.id
+              },
+              ...split.map((sp) => ({
+                kind: "placed",
+                boxNumber: r.boxNumber,
+                spec: r.productSize,
+                qty: sp.qty,
+                orderId: r.workNumber,
+                caseNum: sp.caseNum,
+                reelCode: r.baselineBatchCode || null,
+                source: "bonding",
+                sourceId: r.id,
+                note: "Placed at bonding \u2014 the case bonding named is the move"
+              }))
+            ];
+          })() : []
         ]));
+        {
+          const stamp = (/* @__PURE__ */ new Date()).toISOString();
+          const adds = /* @__PURE__ */ new Map();
+          for (const r of newRuns) {
+            if (!r.workNumber || !(Number(r.onOrderQty) > 0)) continue;
+            const g = (going || []).find((x) => x && x.kind === "order" && x.orderId === r.workNumber && String(x.boxNumber || "") === String(r.boxNumber || ""));
+            for (const sp of g && g.split || []) {
+              const key = `${r.workNumber}|${Number(sp.caseNum)}`;
+              const cur = adds.get(key) || {};
+              const box = String(r.boxNumber || "").trim().toUpperCase();
+              cur[box] = (cur[box] || 0) + (Number(sp.qty) || 0);
+              adds.set(key, cur);
+            }
+          }
+          if (adds.size) {
+            working = { ...working, cases: (working.cases || []).map((c) => {
+              if (!c || c.deleted) return c;
+              const add = adds.get(`${c.orderId}|${Number(c.caseNum)}`);
+              if (!add) return c;
+              const contents = { ...c.contents || {} };
+              for (const [box, q2] of Object.entries(add)) contents[box] = (Number(contents[box]) || 0) + q2;
+              return { ...c, contents, updatedAt: stamp, updatedBy: currentActor() };
+            }) };
+          }
+        }
         if (reelCleared2 && batchCode2) {
           const b = prevData.glueLineBatches.find((x) => x.batchNumber === batchCode2);
           const d = b ? reelDiscrepancy(b, runsAfter) : null;
