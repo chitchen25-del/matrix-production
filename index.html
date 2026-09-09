@@ -941,7 +941,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-09.26";
+  var APP_VERSION = "2026-09-09.27";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -6533,7 +6533,7 @@ ${line}` : line;
     }, []);
     return /* @__PURE__ */ React.createElement("div", { className: "text-sm py-8", style: { color: INK_MUTED } }, "Taking you back to Orders\u2026", " ", /* @__PURE__ */ React.createElement("button", { onClick: () => onBack && onBack(), style: { background: "none", border: "none", color: NAVY, cursor: "pointer", textDecoration: "underline" } }, "Go now"));
   }
-  function OrdersView({ data, setData, mode = "active", initialExpandedId = null, jumpToPacking, onBackToOrders }) {
+  function OrdersView({ data, setData, mode = "active", initialExpandedId = null, jumpToPacking, onBackToOrders, autoPick = null }) {
     const { lineItems } = data;
     const allOrders = data.orders;
     const orders = mode === "completed" ? allOrders.filter((o) => o.stage === "Shipped") : allOrders.filter((o) => o.stage !== "Shipped");
@@ -7048,6 +7048,15 @@ Read the next screen carefully before you agree to it.`
       setCustomizingPick(false);
       return true;
     };
+    const autoPickDone = useRef(null);
+    useEffect(() => {
+      if (!autoPick || autoPickDone.current === autoPick) return;
+      const o = (orders || []).find((x) => x.id === autoPick);
+      if (!o) return;
+      autoPickDone.current = autoPick;
+      if (pickOrderInstantly(o)) setPickByPhone(true);
+      else setPickNothing({ orderId: o.id, reason: whyNothingToPick(o) });
+    }, [autoPick, orders]);
     const pickOrderInstantly = (order) => {
       const candidates = matchingBoxesFor(order);
       const orderItemsForPick = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description));
@@ -11799,6 +11808,39 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       color: INK,
       lineHeight: 1.5
     } }, /* @__PURE__ */ React.createElement("b", null, rows.reduce((t, r) => t + r.waiting, 0)), " boxes are promised to a live order and not yet in a case.", lost.length > 0 ? /* @__PURE__ */ React.createElement(React.Fragment, null, " ", /* @__PURE__ */ React.createElement("b", null, lost.reduce((t, r) => t + r.waiting, 0), " of them have no bay recorded"), " \u2014 those are the ones that end up on top of a case. They are listed first.") : /* @__PURE__ */ React.createElement(React.Fragment, null, " Every one of them has a bay, so every one can be found.")), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-x-auto" }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: "#F7F8FC" } }, /* @__PURE__ */ React.createElement(Th, null, "Box"), /* @__PURE__ */ React.createElement(Th, null, "Product"), /* @__PURE__ */ React.createElement(Th, null, "Order"), /* @__PURE__ */ React.createElement(Th, null, "Waiting"), /* @__PURE__ */ React.createElement(Th, null, "For"), /* @__PURE__ */ React.createElement(Th, null, "Case"), /* @__PURE__ */ React.createElement(Th, null, "Bay"))), /* @__PURE__ */ React.createElement("tbody", null, rows.map((r) => /* @__PURE__ */ React.createElement("tr", { key: `${r.orderId}|${r.boxNumber}`, style: { borderTop: `1px solid ${BORDER}`, background: r.location ? "#fff" : "#FFF6F6" } }, /* @__PURE__ */ React.createElement(Td, null, /* @__PURE__ */ React.createElement("span", { className: "font-mono" }, r.boxNumber)), /* @__PURE__ */ React.createElement(Td, null, r.spec), /* @__PURE__ */ React.createElement(Td, null, r.orderId, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: INK_MUTED } }, r.customer)), /* @__PURE__ */ React.createElement(Td, null, /* @__PURE__ */ React.createElement("b", null, r.waiting)), /* @__PURE__ */ React.createElement(Td, null, days(r.since)), /* @__PURE__ */ React.createElement(Td, null, r.caseNum != null ? `case ${r.caseNum}` : /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014")), /* @__PURE__ */ React.createElement(Td, null, r.location ? r.location : /* @__PURE__ */ React.createElement("span", { style: { color: RED, fontWeight: 700 } }, "no bay \u2014 find it")))), rows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 7 }, "Nothing is waiting. Everything promised is in a case.")))));
+  }
+  function PickLauncher({ data, onPick }) {
+    const waiting = useMemo(() => promisedNotPacked(data), [data]);
+    const byOrder = /* @__PURE__ */ new Map();
+    for (const w of waiting) {
+      const e = byOrder.get(w.orderId) || { orderId: w.orderId, customer: w.customer, boxes: 0, codes: 0, noBay: 0 };
+      e.boxes += w.waiting;
+      e.codes += 1;
+      if (!w.location) e.noBay += w.waiting;
+      byOrder.set(w.orderId, e);
+    }
+    const rows = [...byOrder.values()].sort((a, b) => b.boxes - a.boxes);
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: INK_MUTED, marginBottom: 12, lineHeight: 1.5 } }, "Orders with boxes on a shelf waiting to go in a case. Tap one to start."), rows.length === 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-5", style: { textAlign: "center", color: INK_MUTED } }, "Nothing is waiting to be picked."), rows.map((r) => /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        key: r.orderId,
+        onClick: () => onPick(r.orderId),
+        style: {
+          display: "block",
+          width: "100%",
+          textAlign: "left",
+          background: "#fff",
+          border: `1px solid ${BORDER}`,
+          borderLeft: `6px solid ${r.noBay ? RED : GREEN}`,
+          borderRadius: 8,
+          padding: "14px 16px",
+          marginBottom: 10,
+          cursor: "pointer"
+        }
+      },
+      /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 17, fontWeight: 700, color: INK } }, r.customer || r.orderId), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, r.orderId, " \xB7 ", r.codes, " box code", r.codes === 1 ? "" : "s")), /* @__PURE__ */ React.createElement("div", { style: { textAlign: "right" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 800, color: NAVY } }, r.boxes), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: INK_MUTED } }, "boxes waiting"))),
+      r.noBay > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: RED, marginTop: 6, fontWeight: 600 } }, r.noBay, " with no bay recorded")
+    )));
   }
   function WrongStockInCaseView({ data, setData }) {
     const [orderId, setOrderId] = useState("");
@@ -17805,6 +17847,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     { key: "glueline", label: "Glue line", icon: IconDroplet },
     { key: "bonding", label: "Bonding", icon: IconLink },
     { key: "packing", label: "Packing", icon: IconLink },
+    { key: "pick", label: "Pick", icon: IconCheckBox },
     { key: "stock", label: "Stock", icon: IconArchive },
     { key: "materials", label: "Materials", icon: IconSack },
     { key: "register", label: "Register", icon: IconAlert, badge: (data) => openIssues(data.issues).length },
@@ -17826,7 +17869,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     /* A `section` group is a caption over a flat list — never collapsible, and
        always shown. Collapsing the line would hide the very thing the rail is
        for. */
-    { label: "The line", section: true, prominent: true, line: true, keys: ["dashboard", "extrusion", "glueline", "bonding", "packing"] },
+    { label: "The line", section: true, prominent: true, line: true, keys: ["dashboard", "extrusion", "glueline", "bonding", "packing", "pick"] },
     { label: null, prominent: true, keys: ["stock"] },
     { label: null, keys: ["eva"] },
     { label: "Planning", section: true, prominent: true, keys: ["daily", "production", "gluelineschedule", "batches"] },
@@ -18091,6 +18134,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const [stockTab, setStockTab] = useState(null);
     const [packJump, setPackJump] = useState(null);
     const [searchJump, setSearchJump] = useState(null);
+    const [pickTarget, setPickTarget] = useState(null);
     const [canGoBack, setCanGoBack] = useState(false);
     const navigateTo = (nextView) => {
       if (nextView === view) return;
@@ -18802,6 +18846,17 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
          Packing is a destination in its own right, so its own list is the place
          above it. Reaching it from an order card still works: jumpToPacking sets
          the order, and Back drops to the picker rather than bouncing to Orders. */
+      pick: pickTarget ? /* @__PURE__ */ React.createElement(
+        OrdersView,
+        {
+          data,
+          setData,
+          initialExpandedId: pickTarget,
+          autoPick: pickTarget,
+          jumpToPacking,
+          onBackToOrders: () => setPickTarget(null)
+        }
+      ) : /* @__PURE__ */ React.createElement(PickLauncher, { data, onPick: (id) => setPickTarget(id) }),
       packing: /* @__PURE__ */ React.createElement(
         PackingListScreen,
         {
