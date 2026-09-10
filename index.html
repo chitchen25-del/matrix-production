@@ -959,7 +959,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-10.17";
+  var APP_VERSION = "2026-09-10.25";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -3494,15 +3494,7 @@
       }
       return [...by.entries()].filter(([, q]) => q > 0).map(([k, q]) => ({ orderId: k.split("|")[0], caseNum: Number(k.split("|")[1]), qty: q }));
     };
-    const allocatedTo = (box) => {
-      const by = /* @__PURE__ */ new Map();
-      for (const m of movs) {
-        if (up(m.boxNumber) !== up(box) || !m.orderId) continue;
-        if (m.kind === "allocated") by.set(m.orderId, (by.get(m.orderId) || 0) + (Number(m.qty) || 0));
-        if (m.kind === "unallocated") by.set(m.orderId, (by.get(m.orderId) || 0) - (Number(m.qty) || 0));
-      }
-      return [...by.entries()].filter(([, q]) => q > 0).map(([id, qty]) => ({ orderId: id, qty }));
-    };
+    const allocatedTo = (box) => promisedByOrder(data, box);
     for (const row2 of found || []) {
       const box = up(row2.boxNumber), qty = Number(row2.qty) || 0;
       if (!box || qty <= 0) continue;
@@ -3699,16 +3691,9 @@
         others.push({ orderId: o.id, customer: o.customer, needs: 0, noPlanFor: true });
         continue;
       }
-      const perBox = /* @__PURE__ */ new Map();
-      for (const m of ledgerFor(o.id)) {
-        if (!looseSpecMatch(wanted, m.spec || "")) continue;
-        if (excludeSourceId && m.sourceId === excludeSourceId) continue;
-        const k = String(m.boxNumber || "").trim().toUpperCase();
-        const q = Number(m.qty) || 0;
-        const d = m.kind === "allocated" ? q : m.kind === "unallocated" ? -q : m.kind === "placed" ? -q : m.kind === "unplaced" ? q : 0;
-        perBox.set(k, (perBox.get(k) || 0) + d);
-      }
-      const allocatedUnplaced = [...perBox.values()].reduce((t, v) => t + Math.max(0, v), 0);
+      const allocatedUnplaced = promisedOutstanding(
+        promiseRows(data, { orderId: o.id, spec: wanted }).filter((r) => !(excludeSourceId && r.sourceId === excludeSourceId))
+      );
       const outstanding = Math.max(0, planned - inCases - allocatedUnplaced);
       room.sort((a, b) => a.caseNum - b.caseNum);
       if (outstanding > 0) {
@@ -3980,7 +3965,7 @@
   function orderHasStarted(data, orderId) {
     const inCase = (data.cases || []).some((c) => c && !c.deleted && c.orderId === orderId && Object.values(c.contents || {}).some((q) => (Number(q) || 0) > 0));
     if (inCase) return { started: true, why: "boxes are already in its cases" };
-    const promised = (data.movements || []).filter((m) => m && !m.deleted && m.orderId === orderId).reduce((t, m) => t + (m.kind === "allocated" ? Number(m.qty) || 0 : m.kind === "unallocated" ? -(Number(m.qty) || 0) : 0), 0);
+    const promised = promiseRows(data, { orderId }).reduce((t, r) => t + (Number(r.qty) || 0), 0);
     if (promised > 0) return { started: true, why: "bonding has allocated boxes to it" };
     return { started: false, why: "" };
   }
@@ -5941,6 +5926,9 @@ Here's the order:`;
   function moveUnallocated({ boxNumber, spec = null, qty, orderId, caseNum = null, reelCode = null, source = "app", sourceId = null, note = null }) {
     return missingFrom("moveUnallocated", { kind: "unallocated", boxNumber, spec, qty, orderId, caseNum, reelCode, source, sourceId, note }, ["boxNumber", "qty", "orderId"]);
   }
+  function moveShipped({ boxNumber, spec = null, qty, orderId, caseNum = null, reelCode = null, source = "ship", sourceId = null, note = null }) {
+    return missingFrom("moveShipped", { kind: "shipped", boxNumber, spec, qty, orderId, caseNum, reelCode, source, sourceId, note }, ["boxNumber", "qty", "orderId"]);
+  }
   function movePlaced({ boxNumber, spec = null, qty, orderId, caseNum, reelCode = null, source = "app", sourceId = null, note = null }) {
     return missingFrom("movePlaced", { kind: "placed", boxNumber, spec, qty, orderId, caseNum, reelCode, source, sourceId, note }, ["boxNumber", "qty", "orderId", "caseNum"]);
   }
@@ -5965,7 +5953,8 @@ Here's the order:`;
     "adjusted",
     "counted",
     "scrapped",
-    "damaged"
+    "damaged",
+    "shipped"
   ];
   var SIGNED_MOVEMENT_KINDS = ["adjusted"];
   function movementRefusal(prev, m) {
@@ -6016,12 +6005,10 @@ Here's the order:`;
   function reservationsFor(data, boxNumber) {
     return (data.reservations || []).filter((r) => r && !r.deleted && r.state !== "released" && String(r.boxNumber || "").trim().toUpperCase() === String(boxNumber || "").trim().toUpperCase());
   }
-  function promisedTotal(data, boxNumber) {
-    return reservationsFor(data, boxNumber).reduce((t, r) => t + (Number(r.qty) || 0), 0);
-  }
   function freeToPromise(data, boxNumber) {
-    const p = projectBox(data.movements || [], boxNumber);
-    return p.made - p.scrapped - promisedTotal(data, boxNumber);
+    const p = placeOf(data, boxNumber);
+    const outstanding = promisedOutstanding(promiseRows(data, { boxNumber }));
+    return p.onShelf - outstanding;
   }
   function reservedToOthers(data, boxNumber, orderId) {
     const out = /* @__PURE__ */ new Map();
@@ -6030,6 +6017,50 @@ Here's the order:`;
       out.set(r.orderId, (out.get(r.orderId) || 0) + (Number(r.qty) || 0));
     }
     return [...out.entries()].map(([id, qty]) => ({ orderId: id, qty }));
+  }
+  function promiseRows(data, filter = {}) {
+    const norm = (s) => String(s || "").trim().toUpperCase();
+    const wantBox = filter.boxNumber ? norm(filter.boxNumber) : null;
+    const live = (data.reservations || []).filter((r) => r && !r.deleted && r.state !== "released");
+    const keep = (r) => (!wantBox || norm(r.boxNumber) === wantBox) && (!filter.orderId || r.orderId === filter.orderId) && (filter.caseNum == null || Number(r.caseNum) === Number(filter.caseNum)) && (!filter.spec || looseSpecMatch(filter.spec, r.spec || ""));
+    if (live.length) {
+      return live.filter(keep).map((r) => ({
+        boxNumber: norm(r.boxNumber),
+        orderId: r.orderId,
+        caseNum: r.caseNum == null ? null : Number(r.caseNum),
+        spec: r.spec || null,
+        qty: Number(r.qty) || 0,
+        placedQty: Number(r.placedQty) || 0,
+        sourceId: r.sourceId || null
+      }));
+    }
+    const by = /* @__PURE__ */ new Map();
+    for (const m of data.movements || []) {
+      if (!m || m.deleted || !m.orderId || !m.boxNumber) continue;
+      const q = Number(m.qty) || 0;
+      const promised = m.kind === "allocated" ? q : m.kind === "unallocated" ? -q : 0;
+      const placed = m.kind === "placed" ? q : m.kind === "unplaced" ? -q : 0;
+      if (!promised && !placed) continue;
+      const box = norm(m.boxNumber);
+      const cn = m.caseNum == null ? null : Number(m.caseNum);
+      const k = `${box}|${m.orderId}|${cn == null ? "" : cn}`;
+      const e = by.get(k) || { boxNumber: box, orderId: m.orderId, caseNum: cn, spec: m.spec || null, qty: 0, placedQty: 0, sourceId: m.sourceId || null };
+      e.qty += promised;
+      e.placedQty += placed;
+      if (!e.spec && m.spec) e.spec = m.spec;
+      by.set(k, e);
+    }
+    return [...by.values()].filter(keep);
+  }
+  function promisedOutstanding(rows) {
+    return rows.reduce((t, r) => t + Math.max(0, (Number(r.qty) || 0) - (Number(r.placedQty) || 0)), 0);
+  }
+  function promisedByOrder(data, boxNumber) {
+    const out = /* @__PURE__ */ new Map();
+    for (const r of promiseRows(data, { boxNumber })) {
+      out.set(r.orderId, (out.get(r.orderId) || 0) + (Number(r.qty) || 0));
+    }
+    return [...out.entries()].filter(([, q]) => q > 0).map(([orderId, qty]) => ({ orderId, qty }));
   }
   function applyMovementToReservation(next, row, stamp) {
     const kind = row.kind;
@@ -6178,8 +6209,10 @@ Here's the order:`;
       sourceId: m.sourceId || null,
       updatedAt: stamp
     };
+    const isPromise = row.kind === "allocated" || row.kind === "unallocated";
+    const withRow = isPromise ? prev : { ...prev, movements: [...prev.movements || [], row] };
     const next = applyMovementToReservation(
-      applyMovementToCaseRow({ ...prev, movements: [...prev.movements || [], row] }, row, stamp),
+      applyMovementToCaseRow(withRow, row, stamp),
       row,
       stamp
     );
@@ -6230,6 +6263,34 @@ Here's the order:`;
     }
     return Math.max(0, n);
   }
+  function placeOf(data, boxNumber) {
+    const want = String(boxNumber || "").trim().toUpperCase();
+    const goneOrders = new Set((data.orders || []).filter((o) => o && (o.stage === "Shipped" || o.stage === "Cancelled")).map((o) => o.id));
+    const inCases = [];
+    for (const c of data.cases || []) {
+      if (!c || c.deleted || goneOrders.has(c.orderId)) continue;
+      for (const [box, qty] of Object.entries(c.contents || {})) {
+        if (String(box).trim().toUpperCase() !== want) continue;
+        const n = Number(qty) || 0;
+        if (n > 0) inCases.push({ orderId: c.orderId, caseNum: Number(c.caseNum), qty: n });
+      }
+    }
+    inCases.sort((a, b) => String(a.orderId).localeCompare(String(b.orderId)) || a.caseNum - b.caseNum);
+    const packed = inCases.reduce((t, x) => t + x.qty, 0);
+    const p = projectBox(data.movements || [], boxNumber);
+    const onShelf = Math.max(0, (p.made || 0) - (p.scrapped || 0) - (p.shipped || 0) - packed);
+    const bays = [...new Set((data.bondingRuns || []).filter((r) => r && !r.deleted && String(r.boxNumber || "").trim().toUpperCase() === want).map((r) => String(r.location || "").trim()).filter((loc) => BOX_LOCATIONS.includes(loc)))].sort();
+    return { inCases, packed, onShelf, bays, unplaced: bays.length ? 0 : onShelf };
+  }
+  function placeLabel(data, boxNumber) {
+    const p = placeOf(data, boxNumber);
+    const bits = [];
+    for (const c of p.inCases) bits.push(`${c.qty} in ${c.orderId} case ${c.caseNum}`);
+    if (p.onShelf > 0) {
+      bits.push(p.bays.length ? `${p.onShelf} on ${p.bays.join(" / ")}` : `${p.onShelf} on a shelf \u2014 no bay recorded`);
+    }
+    return bits.length ? bits.join(" \xB7 ") : "nothing left";
+  }
   function projectBox(movements, boxNumber) {
     const rows = (movements || []).filter((m) => !m.deleted && m.boxNumber === boxNumber);
     const made = rows.filter((m) => m.kind === "made" || m.kind === "adjusted").reduce((t, m) => t + Number(m.qty || 0), 0);
@@ -6249,7 +6310,8 @@ Here's the order:`;
     }
     const allocated = Object.values(byOrder).reduce((t, q) => t + q, 0);
     const scrapped = rows.filter((m) => m.kind === "scrapped").reduce((t, m) => t + Number(m.qty || 0), 0);
-    return { made, allocated, scrapped, onShelf: made - allocated - scrapped, byOrder };
+    const shipped = rows.filter((m) => m.kind === "shipped").reduce((t, m) => t + Number(m.qty || 0), 0);
+    return { made, allocated, scrapped, shipped, onShelf: made - allocated - scrapped - shipped, byOrder };
   }
   function adjustBatchQuantity(prev, { boxNumber, spec, newQty, note }) {
     const p = projectBox(prev.movements, boxNumber);
@@ -6265,11 +6327,11 @@ Here's the order:`;
     const shelf = p.made - p.allocated - p.scrapped;
     const shortfall = delta < 0 ? Math.min(0, shelf + delta) : 0;
     if (shortfall < 0) {
-      const alloc = (prev.movements || []).filter((m) => !m.deleted && m.boxNumber === boxNumber && m.kind === "allocated" && Number(m.qty) > 0);
+      const alloc = promiseRows(prev, { boxNumber }).filter((a) => Math.max(0, (Number(a.qty) || 0) - (Number(a.placedQty) || 0)) > 0);
       let owed = -shortfall;
       for (const a of [...alloc].reverse()) {
         if (owed <= 0) break;
-        const take = Math.min(owed, Number(a.qty));
+        const take = Math.min(owed, Math.max(0, (Number(a.qty) || 0) - (Number(a.placedQty) || 0)));
         next = recordMovement(next, moveUnallocated({
           boxNumber,
           spec,
@@ -7055,6 +7117,23 @@ ${line}` : line;
       setShippedPrintJob({ order: { ...order, shippingManifest: manifest, shippedDate: todayISO() } });
       setData((prevData) => {
         let working = prevData;
+        const goneCases = (working.cases || []).filter((c) => c && !c.deleted && c.orderId === order.id);
+        const departures = [];
+        for (const c of goneCases) {
+          for (const [box, qty] of Object.entries(c.contents || {})) {
+            const n = Number(qty) || 0;
+            if (n > 0) departures.push(moveShipped({
+              boxNumber: box,
+              qty: n,
+              orderId: order.id,
+              caseNum: Number(c.caseNum),
+              source: "ship",
+              sourceId: order.id,
+              note: `Shipped on ${order.id} in case ${c.caseNum}`
+            }));
+          }
+        }
+        if (departures.length) working = recordMovements(working, departures);
         Object.values(caseTypeAssignments).forEach((materialId) => {
           if (!materialId) return;
           working = { ...working, ...recordMaterialMovement(working, materialId, -1, "auto_case", order.id, order.id) };
@@ -10332,14 +10411,12 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
       const out = {};
       if (!editOrder || !editData) return out;
       const perBox = /* @__PURE__ */ new Map();
-      for (const m of editData.movements || []) {
-        if (!m || m.deleted || m.orderId !== editOrder.id || m.caseNum == null) continue;
-        const k = `${Number(m.caseNum)}|${String(m.boxNumber || "").trim().toUpperCase()}`;
-        const q = Number(m.qty) || 0;
-        const d = m.kind === "allocated" ? q : m.kind === "unallocated" ? -q : m.kind === "placed" ? -q : m.kind === "unplaced" ? q : 0;
-        const e = perBox.get(k) || { caseNum: Number(m.caseNum), spec: m.spec || "", net: 0 };
-        e.net += d;
-        if (!e.spec && m.spec) e.spec = m.spec;
+      for (const r of promiseRows(editData, { orderId: editOrder.id })) {
+        if (r.caseNum == null) continue;
+        const k = `${r.caseNum}|${r.boxNumber}`;
+        const e = perBox.get(k) || { caseNum: r.caseNum, spec: r.spec || "", net: 0 };
+        e.net += Math.max(0, (Number(r.qty) || 0) - (Number(r.placedQty) || 0));
+        if (!e.spec && r.spec) e.spec = r.spec;
         perBox.set(k, e);
       }
       for (const e of perBox.values()) {
@@ -11195,7 +11272,7 @@ This changes the order quantities. It is recorded in the change log and can be r
       const want = new Set(highlightBoxes.map((b) => String(b).trim().toUpperCase()));
       const inCases = caseRows.filter((c) => (c.contributions || []).some((x) => x.boxNumber && want.has(String(x.boxNumber).trim().toUpperCase()))).map((c) => c.caseNum);
       if (inCases.length) return inCases;
-      const promised = (data.movements || []).filter((m) => m && !m.deleted && m.kind === "allocated" && m.orderId === order.id && m.caseNum != null && want.has(String(m.boxNumber || "").trim().toUpperCase())).map((m) => Number(m.caseNum));
+      const promised = promiseRows(data, { orderId: order.id }).filter((r) => r.caseNum != null && want.has(r.boxNumber) && (Number(r.qty) || 0) > 0).map((r) => Number(r.caseNum));
       return [...new Set(promised)].sort((a, b) => a - b);
     }, [caseRows, highlightBoxes, data.movements, order.id]);
     const totalItems = items.reduce((s, li) => s + Number(li.qty || 0), 0);
@@ -15710,9 +15787,19 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       return "";
     };
     const gateLocation = (f) => {
-      if ((Number(f.amountMade) || 0) <= 0) return "";
-      if (String(f.location || "").trim()) return "";
-      return "Can't log these without saying which bay they are on. To clear it: pick the bay under \u201CWhich bay are they on?\u201D \u2014 boxes promised to an order still sit on a shelf until they are packed.";
+      const made = Number(f.amountMade) || 0;
+      if (made <= 0) return "";
+      const allocs = (f.allocations || []).filter((a) => a.orderId && Number(a.qty) > 0);
+      const toOrders = allocs.length ? allocs.reduce((t, a) => t + Number(a.qty), 0) : f.workNumber ? Number(f.onOrderQty) || 0 : 0;
+      const toShelf = Math.max(0, made - toOrders);
+      const loc = String(f.location || "").trim();
+      if (loc && !BOX_LOCATIONS.includes(loc)) {
+        return "\u201C" + loc + "\u201D isn\u2019t a bay. A box is in an order\u2019s case or on a shelf \u2014 there is nowhere in between. To clear it: pick a real bay from the list, or send these to an order so they go into its case.";
+      }
+      if (toShelf > 0 && !loc) {
+        return "Can\u2019t log these without saying where the " + toShelf + " going to stock will sit. To clear it: pick the bay under \u201CWhich bay are they on?\u201D.";
+      }
+      return "";
     };
     const gateProduct = (f) => {
       const spec = buildSpec(f);
@@ -15738,9 +15825,10 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       const made = Number(f.amountMade) || 0;
       const allocs = (f.allocations || []).filter((a) => a.orderId && Number(a.qty) > 0);
       const now = allocs.length ? allocs.reduce((t, a) => t + Number(a.qty), 0) : Number(f.onOrderQty) || 0;
-      const ledger = (kind) => (data.movements || []).filter((m) => !m.deleted && m.kind === kind && String(m.boxNumber || "").trim().toUpperCase() === code && !(excludeId && m.sourceId === excludeId)).reduce((t, m) => t + (Number(m.qty) || 0), 0);
-      const promised = now + ledger("allocated");
-      const total = made + ledger("made");
+      const ledgerMade = (data.movements || []).filter((m) => !m.deleted && m.kind === "made" && String(m.boxNumber || "").trim().toUpperCase() === code && !(excludeId && m.sourceId === excludeId)).reduce((t, m) => t + (Number(m.qty) || 0), 0);
+      const alreadyPromised = promiseRows(data, { boxNumber: code }).filter((r) => !(excludeId && r.sourceId === excludeId)).reduce((t, r) => t + (Number(r.qty) || 0), 0);
+      const promised = now + alreadyPromised;
+      const total = made + ledgerMade;
       if (promised > total) {
         return "Can't accept this entry as allocations to customers exceed the batch amount made. " + code + " would be promised " + promised + " against " + total + " made. To clear it: reduce an allocation by " + (promised - total) + ", or correct how many were made.";
       }
@@ -16110,7 +16198,16 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         location: r.location || "",
         timeOfDay: r.timeOfDay || "",
         date: r.date || todayISO(),
-        comments: r.comments || ""
+        comments: r.comments || "",
+        /* THE DESTINATION PICKER HAS TO SHOW THE DESTINATION. (10 Sep 2026)
+           "WHERE IT'S GOING" reads and writes `allocations`; the edit opened
+           with none and saved from `workNumber`, so the picker was decoration:
+           you could choose an order, press the tick, and nothing was promised.
+           Found by the Phase 4 test driving a real allocation through the form.
+           Prefilled from what the row is actually promised — derived from the
+           ledger by ledgerCorrectedRuns, so it is the live figure, not a
+           stored one. */
+        allocations: r.workNumber ? [{ orderId: r.workNumber, qty: Number(r.onOrderQty ?? r.amountMade) || 0, boxTypeId: r.boxTypeId || "" }] : []
       });
     };
     const cancelEdit = () => {
@@ -16120,7 +16217,19 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     };
     const saveEdit = () => {
       if (!String(editForm.size || "").trim() || !editForm.amountMade) return;
-      const err = validateBatchAndBox(editForm, editingId) || gateProduct(editForm) || gateBatchTotal(editForm, editingId) || gateCasePlan(editForm) || gateAgainstPlan(editForm, editingId);
+      const editAllocs = (editForm.allocations || []).filter((a) => a.orderId && Number(a.qty) > 0);
+      if (editAllocs.length > 1) {
+        setEditError("This row can go to one order plus stock. To send it to more than one, save this and use Split to orders\u2026 \u2014 that writes a row for each so every screen can tell them apart.");
+        return;
+      }
+      const formForSave = {
+        ...editForm,
+        workNumber: editAllocs.length ? editAllocs[0].orderId : "",
+        onOrderQty: editAllocs.length ? Number(editAllocs[0].qty) : 0,
+        toStock: void 0,
+        boxTypeId: editAllocs.length ? editAllocs[0].boxTypeId || editForm.boxTypeId || "" : editForm.boxTypeId
+      };
+      const err = validateBatchAndBox(formForSave, editingId) || validateAllocations(formForSave) || gateProduct(formForSave) || gateBatchTotal(formForSave, editingId) || gateCasePlan(formForSave) || gateAgainstPlan(formForSave, editingId) || gateLocation(formForSave);
       if (err) {
         setEditError(err);
         return;
@@ -16130,11 +16239,11 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       const reelCleared2 = editForm.reelCleared === "Yes";
       setData((prevData) => {
         const before = (prevData.bondingRuns || []).find((r) => r.id === editingId);
-        const after = before ? { ...before, ...toRun(editForm, editingId) } : null;
+        const after = before ? { ...before, ...toRun(formForSave, editingId) } : null;
         let next = applyRowsWithLog(
           prevData,
           "bondingRuns",
-          (rows) => rows.map((r) => r.id === editingId ? { ...r, ...toRun(editForm, editingId) } : r),
+          (rows) => rows.map((r) => r.id === editingId ? { ...r, ...toRun(formForSave, editingId) } : r),
           "bondingRun",
           (r) => `box ${r.boxNumber || r.id}`
         );
@@ -16150,9 +16259,39 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
           }
           const orderDelta = Number(after.onOrderQty || 0) - Number(before.onOrderQty || 0);
           const orderId = after.workNumber || before.workNumber;
-          if (orderDelta && orderId && after.boxNumber) {
+          if (orderDelta > 0 && orderId && after.boxNumber) {
+            const pending = [{ ...after, onOrderQty: orderDelta, toStock: 0 }];
+            const going = predictRunDestinations(next, pending);
+            const g = (going || []).find((x) => x && x.kind === "order" && x.orderId === orderId && String(x.boxNumber || "") === String(after.boxNumber || ""));
+            const split = g && Array.isArray(g.split) && g.split.length ? g.split : [];
+            const firstCase = split.length ? split[0].caseNum : g && g.cases && g.cases.length ? Number(g.cases[0]) : null;
+            next = recordMovements(next, [
+              moveAllocated({
+                boxNumber: after.boxNumber,
+                spec: after.productSize,
+                qty: orderDelta,
+                orderId,
+                caseNum: firstCase,
+                reelCode: after.baselineBatchCode || null,
+                source: "bonding",
+                sourceId: after.id,
+                note: `Bonding Line row edited \u2014 on order ${before.onOrderQty || 0} to ${after.onOrderQty || 0}`
+              }),
+              ...split.map((sp) => movePlaced({
+                boxNumber: after.boxNumber,
+                spec: after.productSize,
+                qty: sp.qty,
+                orderId,
+                caseNum: sp.caseNum,
+                reelCode: after.baselineBatchCode || null,
+                source: "bonding",
+                sourceId: after.id,
+                note: "Placed at bonding \u2014 the case bonding named is the move"
+              }))
+            ]);
+          } else if (orderDelta < 0 && orderId && after.boxNumber) {
             next = recordMovement(next, {
-              kind: orderDelta > 0 ? "allocated" : "unallocated",
+              kind: "unallocated",
               boxNumber: after.boxNumber,
               spec: after.productSize,
               qty: Math.abs(orderDelta),
@@ -16335,7 +16474,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         },
         /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014"),
         BOX_LOCATIONS.map((loc) => /* @__PURE__ */ React.createElement("option", { key: loc, value: loc }, loc))
-      )), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(ToggleSwitch, { on: r.checked === "Yes", onChange: () => toggleRowChecked(r.id) })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, r.timeOfDay ? /* @__PURE__ */ React.createElement(React.Fragment, null, r.timeOfDay, formatRuntime(r.runtimeHrs) && /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " (", formatRuntime(r.runtimeHrs), ")")) : ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.date || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right font-medium" }, (Number(r.amountMade) || 0) * (Number(r.metersPerBox) || 0), "m"), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(CommentCell, { text: r.comments }))), /* @__PURE__ */ React.createElement("td", { className: "px-2 whitespace-nowrap" }, isEditing ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: saveEdit, title: "Save", className: "opacity-60 hover:opacity-100 px-1", style: { color: GREEN } }, "\u2713"), /* @__PURE__ */ React.createElement("button", { onClick: cancelEdit, title: "Cancel", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: () => startEdit(r), title: "Edit", className: "opacity-40 hover:opacity-100 px-1" }, "\u270E"), /* @__PURE__ */ React.createElement("button", { onClick: () => removeRow(r.id), title: "Delete", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715"))));
+      ), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED, maxWidth: 190, lineHeight: 1.35 } }, placeLabel(data, r.boxNumber))), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(ToggleSwitch, { on: r.checked === "Yes", onChange: () => toggleRowChecked(r.id) })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, r.timeOfDay ? /* @__PURE__ */ React.createElement(React.Fragment, null, r.timeOfDay, formatRuntime(r.runtimeHrs) && /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " (", formatRuntime(r.runtimeHrs), ")")) : ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.date || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right font-medium" }, (Number(r.amountMade) || 0) * (Number(r.metersPerBox) || 0), "m"), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(CommentCell, { text: r.comments }))), /* @__PURE__ */ React.createElement("td", { className: "px-2 whitespace-nowrap" }, isEditing ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: saveEdit, title: "Save", className: "opacity-60 hover:opacity-100 px-1", style: { color: GREEN } }, "\u2713"), /* @__PURE__ */ React.createElement("button", { onClick: cancelEdit, title: "Cancel", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: () => startEdit(r), title: "Edit", className: "opacity-40 hover:opacity-100 px-1" }, "\u270E"), /* @__PURE__ */ React.createElement("button", { onClick: () => removeRow(r.id), title: "Delete", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715"))));
     }), visibleBondingRuns.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 19 }, search ? `No boxes match "${search}".` : "No rows yet."))))), /* @__PURE__ */ React.createElement("div", { className: "mobile-only" }, /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden" }, /* @__PURE__ */ React.createElement(
       PhoneRecordCards,
       {
@@ -16356,6 +16495,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
           ["Meters per box", r.metersPerBox],
           ["Package type", r.packageType],
           ["Checked", r.checked],
+          ["Where it is", placeLabel(data, r.boxNumber)],
           ["Location", r.location],
           ["Time of day", r.timeOfDay],
           ["Date", r.date],
