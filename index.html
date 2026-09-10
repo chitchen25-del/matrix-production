@@ -891,6 +891,7 @@
     cases: [],
     pickSheets: [],
     movements: [],
+    reservations: [],
     issues: [],
     tooling: { ...DEFAULT_TOOLING, ken: KEN_TOOLING },
     ncrs: [],
@@ -941,7 +942,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-09.39";
+  var APP_VERSION = "2026-09-10.3";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1052,6 +1053,23 @@
        is a PROJECTION over this, never stored. Appends from two devices merge
        trivially, so none of the tombstone/key-merge trouble applies here. */
     movements: { table: "movements", cols: { boxNumber: "box_number", orderId: "order_id", caseNum: "case_num", reelCode: "reel_code", sourceId: "source_id" } },
+    /* THE PROMISES. A reservation is a DECISION somebody made, not an
+       observation of the world, which is why it never belonged in the movements
+       ledger. `allocated`/`unallocated` were re-derived on every render, so the
+       answer moved under you: two screens could disagree about whose box it was
+       and neither was wrong. One row per promise, issued and closed. */
+    reservations: { table: "reservations", cols: {
+      boxNumber: "box_number",
+      orderId: "order_id",
+      caseNum: "case_num",
+      placedQty: "placed_qty",
+      sourceId: "source_id",
+      createdAt: "created_at",
+      createdBy: "created_by",
+      closedAt: "closed_at",
+      closedBy: "closed_by",
+      closedReason: "closed_reason"
+    } },
     /* The register of loud flags. The app never blocks an operator, but nothing
        that costs a customer gets to disappear quietly either. */
     issues: { table: "issues", cols: { raisedAt: "raised_at", raisedBy: "raised_by", orderId: "order_id", boxNumber: "box_number", resolvedAt: "resolved_at", resolvedBy: "resolved_by" } },
@@ -3443,8 +3461,7 @@
         if (needed <= 0) break;
         if (at.orderId === orderId && at.caseNum === Number(caseNum)) continue;
         const take = Math.min(at.qty, needed);
-        moves.push({
-          kind: "unplaced",
+        moves.push(moveUnplaced({
           boxNumber: box,
           spec,
           qty: take,
@@ -3452,17 +3469,16 @@
           caseNum: at.caseNum,
           source: "case-fix",
           note: `Found in ${orderId} case ${caseNum} instead`
-        });
+        }));
         if (at.orderId !== orderId) {
-          moves.push({
-            kind: "unallocated",
+          moves.push(moveUnallocated({
             boxNumber: box,
             spec,
             qty: take,
             orderId: at.orderId,
             source: "case-fix",
             note: `Moved to ${orderId} case ${caseNum}`
-          });
+          }));
           flags.push({
             kind: "stock_taken_from_order",
             orderId: at.orderId,
@@ -3486,8 +3502,7 @@
       const already = allocatedTo(box).find((a) => a.orderId === orderId);
       const toAllocate = Math.max(0, qty - here - (already ? already.qty : 0));
       if (toAllocate > 0) {
-        moves.push({
-          kind: "allocated",
+        moves.push(moveAllocated({
           boxNumber: box,
           spec,
           qty: toAllocate,
@@ -3495,26 +3510,24 @@
           caseNum: Number(caseNum),
           source: "case-fix",
           note: `Found in case ${caseNum}`
-        });
+        }));
       }
       if (needed > 0) notes.push(`${box}: ${needed} from the shelf`);
-      moves.push({
-        kind: "placed",
+      moves.push(movePlaced({
         boxNumber: box,
         spec,
         qty: qty - here,
         orderId,
         caseNum: Number(caseNum),
         source: "case-fix"
-      });
+      }));
     }
     for (const row2 of putBack || []) {
       const box = up(row2.boxNumber), qty = Number(row2.qty) || 0;
       if (!box || qty <= 0) continue;
       const spec = specOf(box);
       for (const at of placedAt(box).filter((p) => p.orderId === orderId && p.caseNum === Number(caseNum))) {
-        moves.push({
-          kind: "unplaced",
+        moves.push(moveUnplaced({
           boxNumber: box,
           spec,
           qty: Math.min(at.qty, qty),
@@ -3522,17 +3535,16 @@
           caseNum: Number(caseNum),
           source: "case-fix",
           note: "Case already had stock in it"
-        });
+        }));
       }
-      moves.push({
-        kind: "unallocated",
+      moves.push(moveUnallocated({
         boxNumber: box,
         spec,
         qty,
         orderId,
         source: "case-fix",
         note: row2.location ? `Back to stock, ${row2.location}` : "Back to stock"
-      });
+      }));
       notes.push(`${box}: ${qty} back to stock${row2.location ? ` (${row2.location})` : ""}`);
     }
     const row = cases.find((c) => c.orderId === orderId && Number(c.caseNum) === Number(caseNum));
@@ -3562,6 +3574,15 @@
       return id + (o && o.customer ? ` (${o.customer})` : "");
     };
     for (const a of rows) {
+      if (a.boxTypeId) {
+        const order = (data.orders || []).find((x) => x.id === a.orderId);
+        const want = orderBoxTypeFor(order, spec);
+        const run = a.boxTypeId ? { boxTypeId: a.boxTypeId } : null;
+        const have = boxTypeNameOf(run && run.boxTypeId);
+        if (run && !shelfBoxFitsBoxType(run, want)) {
+          return `${a.boxNumber || "That box"} is in a ${have} box and ${nameOf(a.orderId)} takes ${want}. To clear it: send it to an order that takes ${have}, or repack it and correct the box type on the bonding run.`;
+        }
+      }
       const need = ranked.needing.find((n) => n.orderId === a.orderId);
       const other = ranked.others.find((n) => n.orderId === a.orderId);
       if (!need) {
@@ -4343,15 +4364,21 @@
     const spec = row.productSize;
     const box = row.boxNumber;
     if (toOrder && !reCase) {
-      const refusal = allocationRefusal(data, spec, [{ orderId: toOrder, qty }], row.id);
+      const refusal = allocationRefusal(
+        data,
+        spec,
+        [{ orderId: toOrder, qty, boxNumber: row.boxNumber, boxTypeId: row.boxTypeId || null }],
+        row.id
+      );
       if (refusal) return { error: refusal };
     }
     const facts = [];
     if (!reCase) {
-      if (fromOrder) facts.push({ kind: "unallocated", boxNumber: box, spec, qty, orderId: fromOrder, source: "move", sourceId: row.id });
-      if (toOrder) facts.push({ kind: "allocated", boxNumber: box, spec, qty, orderId: toOrder, source: "move", sourceId: row.id });
+      if (fromOrder) facts.push(moveUnallocated({ boxNumber: box, spec, qty, orderId: fromOrder, source: "move", sourceId: row.id }));
+      if (toOrder) facts.push(moveAllocated({ boxNumber: box, spec, qty, orderId: toOrder, source: "move", sourceId: row.id }));
     }
     const chosenCase = toOrder && dest.caseNum != null && String(dest.caseNum).trim() !== "" ? Number(dest.caseNum) : null;
+    const caseMaps = [];
     if (chosenCase != null && !isNaN(chosenCase)) {
       let splitOut = null;
       working = { ...working, orders: (working.orders || []).map((o) => {
@@ -4360,8 +4387,8 @@
         let split;
         if (prev != null && typeof prev === "object") split = { ...prev };
         else if (typeof prev === "number") {
-          const already2 = (data.bondingRuns || []).filter((r) => !r.deleted && r.workNumber === toOrder && r.boxNumber === box && r.id !== row.id).reduce((t, r) => t + (Number(r.onOrderQty) || 0), 0);
-          split = already2 > 0 ? { [prev]: already2 } : {};
+          const already = (data.bondingRuns || []).filter((r) => !r.deleted && r.workNumber === toOrder && r.boxNumber === box && r.id !== row.id).reduce((t, r) => t + (Number(r.onOrderQty) || 0), 0);
+          split = already > 0 ? { [prev]: already } : {};
         } else split = {};
         if (reCase) {
           let remaining = qty;
@@ -4377,8 +4404,8 @@
         splitOut = split;
         return o;
       }) };
-      if (splitOut) working = applyPatchMapsToCases(working, toOrder, { caseOverrides: { [box]: splitOut } });
-      facts.push({ kind: "placed", boxNumber: box, spec, qty, orderId: toOrder, caseNum: chosenCase, source: "move", sourceId: row.id });
+      if (splitOut) caseMaps.push({ caseOverrides: { [box]: splitOut } });
+      facts.push(movePlaced({ boxNumber: box, spec, qty, orderId: toOrder, caseNum: chosenCase, source: "move", sourceId: row.id }));
       let confirmedWrite = null;
       working = { ...working, orders: (working.orders || []).map((o) => {
         if (o.id !== toOrder) return o;
@@ -4402,14 +4429,10 @@
         confirmedWrite = next;
         return o;
       }) };
-      if (confirmedWrite) working = applyPatchMapsToCases(working, toOrder, { confirmedCases: confirmedWrite });
-      const already = (working.cases || []).find((c) => !c.deleted && c.orderId === toOrder && Number(c.caseNum) === Number(chosenCase));
-      if (already && already.confirmed) {
-        const contents = { ...already.contents || {}, [box]: (Number((already.contents || {})[box]) || 0) + qty };
-        working = { ...working, cases: (working.cases || []).map((c) => c.id === already.id ? { ...c, contents, updatedAt: (/* @__PURE__ */ new Date()).toISOString() } : c) };
-      }
+      if (confirmedWrite) caseMaps.push({ confirmedCases: confirmedWrite });
     }
     working = recordMovements(working, facts);
+    for (const maps of caseMaps) working = applyPatchMapsToCases(working, toOrder, maps);
     const fromLabel = fromOrder ? `order ${fromOrder}` : `shelf${row.location ? ` ${row.location}` : ""}`;
     const toLabel = toOrder ? `order ${toOrder}${chosenCase != null && !isNaN(chosenCase) ? `, case ${chosenCase}` : ""}` : `shelf ${moved.location}`;
     const summary = reCase ? `Moved ${qty} \xD7 ${box || row.id} into case ${chosenCase} on ${toOrder}` : `Moved ${qty} \xD7 ${box || row.id} from ${fromLabel} to ${toLabel}${qty < have ? ` (${have - qty} left where it was)` : ""}`;
@@ -4493,6 +4516,10 @@
   var LEDGER_MOVEMENTS = [];
   function setLedgerMovements(m) {
     LEDGER_MOVEMENTS = m || [];
+  }
+  var LEDGER_RESERVATIONS = [];
+  function setLedgerReservations(r) {
+    LEDGER_RESERVATIONS = r || [];
   }
   var BOX_MATERIALS = DEFAULT_MATERIALS;
   function setBoxMaterials(m) {
@@ -5800,7 +5827,238 @@ Here's the order:`;
     }
     window.print();
   }
+  function missingFrom(what, m, required) {
+    const gone = required.filter((f) => m[f] === void 0 || m[f] === null || m[f] === "");
+    return gone.length ? { ...m, __from: what, __missing: gone } : { ...m, __from: what };
+  }
+  function moveMade({ boxNumber, spec = null, qty, reelCode = null, source = "app", sourceId = null, note = null }) {
+    return missingFrom("moveMade", { kind: "made", boxNumber, spec, qty, orderId: null, caseNum: null, reelCode, source, sourceId, note }, ["boxNumber", "qty"]);
+  }
+  function moveAllocated({ boxNumber, spec = null, qty, orderId, caseNum = null, reelCode = null, source = "app", sourceId = null, note = null }) {
+    return missingFrom("moveAllocated", { kind: "allocated", boxNumber, spec, qty, orderId, caseNum, reelCode, source, sourceId, note }, ["boxNumber", "qty", "orderId"]);
+  }
+  function moveUnallocated({ boxNumber, spec = null, qty, orderId, caseNum = null, reelCode = null, source = "app", sourceId = null, note = null }) {
+    return missingFrom("moveUnallocated", { kind: "unallocated", boxNumber, spec, qty, orderId, caseNum, reelCode, source, sourceId, note }, ["boxNumber", "qty", "orderId"]);
+  }
+  function movePlaced({ boxNumber, spec = null, qty, orderId, caseNum, reelCode = null, source = "app", sourceId = null, note = null }) {
+    return missingFrom("movePlaced", { kind: "placed", boxNumber, spec, qty, orderId, caseNum, reelCode, source, sourceId, note }, ["boxNumber", "qty", "orderId", "caseNum"]);
+  }
+  function moveUnplaced({ boxNumber, spec = null, qty, orderId, caseNum, reelCode = null, source = "app", sourceId = null, note = null }) {
+    return missingFrom("moveUnplaced", { kind: "unplaced", boxNumber, spec, qty, orderId, caseNum, reelCode, source, sourceId, note }, ["boxNumber", "qty", "orderId", "caseNum"]);
+  }
+  function moveAdjusted({ boxNumber, spec = null, qty, source = "app", sourceId = null, note = null }) {
+    return missingFrom("moveAdjusted", { kind: "adjusted", boxNumber, spec, qty: Number(qty) || 0, orderId: null, caseNum: null, reelCode: null, source, sourceId, note }, ["boxNumber"]);
+  }
+  function moveCounted({ boxNumber, spec = null, qty, source = "app", sourceId = null, note = null }) {
+    return missingFrom("moveCounted", { kind: "counted", boxNumber, spec, qty: Number(qty) || 0, orderId: null, caseNum: null, reelCode: null, source, sourceId, note }, ["boxNumber"]);
+  }
+  function moveScrapped({ boxNumber, spec = null, qty, orderId = null, source = "app", sourceId = null, note = null }) {
+    return missingFrom("moveScrapped", { kind: "scrapped", boxNumber, spec, qty, orderId, caseNum: null, reelCode: null, source, sourceId, note }, ["boxNumber", "qty"]);
+  }
+  var MOVEMENT_KINDS = [
+    "made",
+    "allocated",
+    "unallocated",
+    "placed",
+    "unplaced",
+    "adjusted",
+    "counted",
+    "scrapped",
+    "damaged"
+  ];
+  var SIGNED_MOVEMENT_KINDS = ["adjusted"];
+  function movementRefusal(prev, m) {
+    if (m && m.__missing && m.__missing.length) {
+      return `${m.__from} was called without ${m.__missing.join(" and ")}. A ${m.kind} needs ${m.__missing.length === 1 ? "that" : "those"} to mean anything.`;
+    }
+    const kind = m && m.kind;
+    if (!MOVEMENT_KINDS.includes(kind)) {
+      return `"${kind}" is not a kind of movement. It must be one of: ${MOVEMENT_KINDS.join(", ")}.`;
+    }
+    const qty = Number(m.qty);
+    if (!isFinite(qty)) return `${kind}: the quantity is "${m.qty}", which is not a number.`;
+    if (qty < 0 && !SIGNED_MOVEMENT_KINDS.includes(kind)) {
+      return `${kind}: quantity ${qty} is negative. Only an adjustment may be signed \u2014 to take boxes back out, write the opposite kind.`;
+    }
+    const box = String(m.boxNumber || "").trim();
+    if (!box) {
+      return `${kind} of ${qty}: no box number. Boxes with no code cannot be found, allocated or picked \u2014 the code is on the label.`;
+    }
+    if (kind === "allocated" || kind === "unallocated") {
+      if (!m.orderId) return `${kind} of ${qty} \xD7 ${box}: no order. Allocation is a promise to somebody, so it has to name who.`;
+    }
+    if (kind === "allocated" && (prev.reservations || []).length) {
+      const free = freeToPromise(prev, box);
+      if (qty > free) {
+        const others = reservedToOthers(prev, box, m.orderId).map((c) => `${c.qty} to ${c.orderId}`).join(", ");
+        return `Can't promise ${qty} \xD7 ${box} to ${m.orderId} \u2014 only ${Math.max(0, free)} of it ${free === 1 ? "is" : "are"} free${others ? ` (${others})` : ""}. To clear it: drop this to ${Math.max(0, free)}, take some off the other order first, or count the shelf if you think there are more there.`;
+      }
+    }
+    if (kind === "placed" || kind === "unplaced") {
+      if (!m.orderId) return `${kind} of ${qty} \xD7 ${box}: no order. A case belongs to an order, so the order has to be named.`;
+      if (m.caseNum == null || m.caseNum === "" || !isFinite(Number(m.caseNum))) {
+        return `${kind} of ${qty} \xD7 ${box} on ${m.orderId}: no case number. "In a case" with no case is not a place \u2014 a box is on a shelf or it is in a numbered case.`;
+      }
+    }
+    return null;
+  }
+  function refuseMovement(prev, m, why) {
+    if (typeof console !== "undefined" && console.error) console.error("Movement refused:", why, m);
+    return raiseIssue(prev, {
+      kind: "movement_refused",
+      orderId: m && m.orderId || null,
+      boxNumber: m && m.boxNumber || null,
+      summary: `A movement was refused and not recorded: ${why}`,
+      detail: `Nothing was written to the ledger. The record that tried to go in was: ${JSON.stringify(m)}. This is a fault in the app, not something done wrong on the floor \u2014 but the boxes it was about have not moved in the system, so whatever was being done needs doing again once it is fixed.`
+    });
+  }
+  function reservationsFor(data, boxNumber) {
+    return (data.reservations || []).filter((r) => r && !r.deleted && r.state !== "released" && String(r.boxNumber || "").trim().toUpperCase() === String(boxNumber || "").trim().toUpperCase());
+  }
+  function promisedTotal(data, boxNumber) {
+    return reservationsFor(data, boxNumber).reduce((t, r) => t + (Number(r.qty) || 0), 0);
+  }
+  function freeToPromise(data, boxNumber) {
+    const p = projectBox(data.movements || [], boxNumber);
+    return p.made - p.scrapped - promisedTotal(data, boxNumber);
+  }
+  function reservedToOthers(data, boxNumber, orderId) {
+    const out = /* @__PURE__ */ new Map();
+    for (const r of reservationsFor(data, boxNumber)) {
+      if (r.orderId === orderId) continue;
+      out.set(r.orderId, (out.get(r.orderId) || 0) + (Number(r.qty) || 0));
+    }
+    return [...out.entries()].map(([id, qty]) => ({ orderId: id, qty }));
+  }
+  function applyMovementToReservation(next, row, stamp) {
+    const kind = row.kind;
+    if (kind !== "allocated" && kind !== "unallocated" && kind !== "placed" && kind !== "unplaced") return next;
+    if (!row.orderId || !row.boxNumber) return next;
+    const box = String(row.boxNumber).trim().toUpperCase();
+    const qty = Number(row.qty) || 0;
+    if (!qty) return next;
+    const rows = [...next.reservations || []];
+    const mine = (i) => {
+      const r = rows[i];
+      return r && !r.deleted && r.state !== "released" && String(r.boxNumber || "").trim().toUpperCase() === box && r.orderId === row.orderId;
+    };
+    const idxs = rows.map((_, i) => i).filter(mine).sort((a, b) => String(rows[a].createdAt || "").localeCompare(String(rows[b].createdAt || "")));
+    if (kind === "allocated") {
+      const same = idxs.find((i) => Number(rows[i].caseNum) === Number(row.caseNum ?? NaN));
+      if (same != null && row.caseNum != null) {
+        rows[same] = { ...rows[same], qty: (Number(rows[same].qty) || 0) + qty, updatedAt: stamp, updatedBy: currentActor() };
+      } else if (row.caseNum == null && idxs.length && rows[idxs[0]].caseNum == null) {
+        const i = idxs[0];
+        rows[i] = { ...rows[i], qty: (Number(rows[i].qty) || 0) + qty, updatedAt: stamp, updatedBy: currentActor() };
+      } else {
+        rows.push({
+          id: uid("res"),
+          boxNumber: box,
+          orderId: row.orderId,
+          caseNum: row.caseNum ?? null,
+          spec: row.spec || null,
+          qty,
+          placedQty: 0,
+          state: "open",
+          source: row.source || "app",
+          sourceId: row.sourceId || null,
+          note: row.note || null,
+          createdAt: stamp,
+          createdBy: currentActor(),
+          closedAt: null,
+          closedBy: null,
+          closedReason: null,
+          deleted: false,
+          deletedAt: null,
+          updatedAt: stamp,
+          updatedBy: currentActor()
+        });
+      }
+      return { ...next, reservations: rows };
+    }
+    if (kind === "unallocated") {
+      let left2 = qty;
+      for (const i of [...idxs].reverse()) {
+        if (left2 <= 0) break;
+        const have = Number(rows[i].qty) || 0;
+        const take = Math.min(have, left2);
+        const nowQty = have - take;
+        rows[i] = nowQty > 0 ? { ...rows[i], qty: nowQty, updatedAt: stamp, updatedBy: currentActor() } : {
+          ...rows[i],
+          qty: have,
+          state: "released",
+          closedAt: stamp,
+          closedBy: currentActor(),
+          closedReason: row.note || "Released",
+          updatedAt: stamp,
+          updatedBy: currentActor()
+        };
+        left2 -= take;
+      }
+      return { ...next, reservations: rows };
+    }
+    const dir = kind === "placed" ? 1 : -1;
+    let left = qty;
+    const wanted = idxs.filter((i) => row.caseNum == null || rows[i].caseNum == null || Number(rows[i].caseNum) === Number(row.caseNum));
+    for (const i of wanted.length ? wanted : idxs) {
+      if (left <= 0) break;
+      const cap = dir > 0 ? (Number(rows[i].qty) || 0) - (Number(rows[i].placedQty) || 0) : Number(rows[i].placedQty) || 0;
+      const take = Math.min(cap, left);
+      if (take <= 0) continue;
+      const placedQty = (Number(rows[i].placedQty) || 0) + dir * take;
+      rows[i] = {
+        ...rows[i],
+        placedQty,
+        state: placedQty >= (Number(rows[i].qty) || 0) ? "placed" : "open",
+        updatedAt: stamp,
+        updatedBy: currentActor()
+      };
+      left -= take;
+    }
+    return { ...next, reservations: rows };
+  }
+  function applyMovementToCaseRow(next, row, stamp) {
+    if (row.kind !== "placed" && row.kind !== "unplaced") return next;
+    if (!row.orderId || row.caseNum == null) return next;
+    const caseNum = Number(row.caseNum);
+    const box = String(row.boxNumber || "").trim().toUpperCase();
+    const delta = (row.kind === "placed" ? 1 : -1) * (Number(row.qty) || 0);
+    if (!box || !delta) return next;
+    const rows = [...next.cases || []];
+    const i = rows.findIndex((c) => c && !c.deleted && c.orderId === row.orderId && Number(c.caseNum) === caseNum);
+    if (i < 0) {
+      if (delta < 0) return next;
+      rows.push({
+        id: caseRowId(row.orderId, caseNum),
+        orderId: row.orderId,
+        caseNum,
+        contents: { [box]: delta },
+        planned: {},
+        confirmed: false,
+        weight: "",
+        pallet: "",
+        packedOutside: false,
+        notes: null,
+        deleted: false,
+        deletedAt: null,
+        maxSize: CASE_MAX_SIZE_DEFAULT,
+        updatedAt: stamp,
+        updatedBy: currentActor()
+      });
+      return { ...next, cases: rows };
+    }
+    const contents = { ...rows[i].contents || {} };
+    const held = Number(contents[box]) || 0;
+    const now = held + delta;
+    if (now > 0) contents[box] = now;
+    else delete contents[box];
+    rows[i] = { ...rows[i], contents, updatedAt: stamp, updatedBy: currentActor() };
+    return { ...next, cases: rows };
+  }
   function recordMovement(prev, m) {
+    if (m && Number(m.qty) === 0 && m.kind !== "adjusted") return prev;
+    const why = movementRefusal(prev, m);
+    if (why) return refuseMovement(prev, m, why);
     const stamp = (/* @__PURE__ */ new Date()).toISOString();
     const row = {
       id: uid("mv"),
@@ -5819,7 +6077,11 @@ Here's the order:`;
       sourceId: m.sourceId || null,
       updatedAt: stamp
     };
-    const next = { ...prev, movements: [...prev.movements || [], row] };
+    const next = applyMovementToReservation(
+      applyMovementToCaseRow({ ...prev, movements: [...prev.movements || [], row] }, row, stamp),
+      row,
+      stamp
+    );
     if (m.kind === "counted" && row.boxNumber) {
       const p = projectBox(next.movements, row.boxNumber);
       const diff = row.qty - p.onShelf;
@@ -5847,7 +6109,15 @@ Here's the order:`;
     return next;
   }
   function recordMovements(prev, list) {
-    return (list || []).reduce((acc, m) => recordMovement(acc, m), prev);
+    const rows = list || [];
+    let trial = prev;
+    for (const m of rows) {
+      if (m && Number(m.qty) === 0 && m.kind !== "adjusted") continue;
+      const why = movementRefusal(trial, m);
+      if (why) return refuseMovement(prev, m, `${why} Nothing from this batch of ${rows.length} was recorded.`);
+      trial = recordMovement(trial, m);
+    }
+    return rows.reduce((acc, m) => recordMovement(acc, m), prev);
   }
   function physicalOnShelf(movements, boxNumber) {
     const rows = (movements || []).filter((m) => m && !m.deleted && m.boxNumber === boxNumber);
@@ -5863,9 +6133,18 @@ Here's the order:`;
     const rows = (movements || []).filter((m) => !m.deleted && m.boxNumber === boxNumber);
     const made = rows.filter((m) => m.kind === "made" || m.kind === "adjusted").reduce((t, m) => t + Number(m.qty || 0), 0);
     const byOrder = {};
-    for (const m of rows) {
-      if (m.kind === "allocated") byOrder[m.orderId] = (byOrder[m.orderId] || 0) + Number(m.qty || 0);
-      if (m.kind === "unallocated") byOrder[m.orderId] = (byOrder[m.orderId] || 0) - Number(m.qty || 0);
+    if (LEDGER_RESERVATIONS.length) {
+      const box = String(boxNumber || "").trim().toUpperCase();
+      for (const r of LEDGER_RESERVATIONS) {
+        if (!r || r.deleted || r.state === "released") continue;
+        if (String(r.boxNumber || "").trim().toUpperCase() !== box) continue;
+        byOrder[r.orderId] = (byOrder[r.orderId] || 0) + (Number(r.qty) || 0);
+      }
+    } else {
+      for (const m of rows) {
+        if (m.kind === "allocated") byOrder[m.orderId] = (byOrder[m.orderId] || 0) + Number(m.qty || 0);
+        if (m.kind === "unallocated") byOrder[m.orderId] = (byOrder[m.orderId] || 0) - Number(m.qty || 0);
+      }
     }
     const allocated = Object.values(byOrder).reduce((t, q) => t + q, 0);
     const scrapped = rows.filter((m) => m.kind === "scrapped").reduce((t, m) => t + Number(m.qty || 0), 0);
@@ -5875,14 +6154,13 @@ Here's the order:`;
     const p = projectBox(prev.movements, boxNumber);
     const delta = Number(newQty) - p.made;
     if (!delta) return prev;
-    let next = recordMovement(prev, {
-      kind: "made",
+    let next = recordMovement(prev, moveMade({
       boxNumber,
       spec,
       qty: delta,
       source: "bonding",
       note: note || `Batch quantity corrected from ${p.made} to ${newQty}`
-    });
+    }));
     const shelf = p.made - p.allocated - p.scrapped;
     const shortfall = delta < 0 ? Math.min(0, shelf + delta) : 0;
     if (shortfall < 0) {
@@ -5891,15 +6169,14 @@ Here's the order:`;
       for (const a of [...alloc].reverse()) {
         if (owed <= 0) break;
         const take = Math.min(owed, Number(a.qty));
-        next = recordMovement(next, {
-          kind: "unallocated",
+        next = recordMovement(next, moveUnallocated({
           boxNumber,
           spec,
           qty: take,
           orderId: a.orderId,
           source: "bonding",
           note: `Batch corrected to ${newQty} and the shelf could not cover it \u2014 ${take} taken back from ${a.orderId}`
-        });
+        }));
         next = raiseIssue(next, {
           kind: "short_allocation",
           orderId: a.orderId,
@@ -6957,9 +7234,9 @@ Read the next screen carefully before you agree to it.`
       return material.name === order.boxType ? null : "wrong";
     };
     const allocatedElsewhere = (boxNumber, orderId) => {
-      const alloc = (data.movements || []).filter((m) => m && !m.deleted && m.boxNumber === boxNumber && m.kind === "allocated");
-      if (!alloc.length) return false;
-      return alloc.some((m) => m.orderId && m.orderId !== orderId) && !alloc.some((m) => m.orderId === orderId);
+      const held = reservationsFor(data, boxNumber);
+      if (!held.length) return false;
+      return held.some((r) => r.orderId && r.orderId !== orderId) && !held.some((r) => r.orderId === orderId);
     };
     const matchingBoxesFor = (order) => {
       const orderLines = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description));
@@ -7425,31 +7702,29 @@ Read the next screen carefully before you agree to it.`
           const spec = c.line.spec;
           if (c.damaged) {
             runs = scrapFromOrder(runs, box, order.id, c.printed);
-            moves.push({ kind: "unallocated", boxNumber: box, spec, qty: c.printed, orderId: order.id, source: "amend", note: `Damaged, found while picking ${sheet.ref}` });
-            moves.push({ kind: "scrapped", boxNumber: box, spec, qty: c.printed, source: "amend", note: `Damaged, found while picking ${sheet.ref}` });
+            moves.push(moveUnallocated({ boxNumber: box, spec, qty: c.printed, orderId: order.id, source: "amend", note: `Damaged, found while picking ${sheet.ref}` }));
+            moves.push(moveScrapped({ boxNumber: box, spec, qty: c.printed, source: "amend", note: `Damaged, found while picking ${sheet.ref}` }));
             delete overrides[box];
             summary.push(`${box} damaged \u2014 ${c.printed} written off`);
             continue;
           }
           if (c.notFound) {
             runs = scrapFromOrder(runs, box, order.id, c.printed);
-            moves.push({
-              kind: "unallocated",
+            moves.push(moveUnallocated({
               boxNumber: box,
               spec,
               qty: c.printed,
               orderId: order.id,
               source: "amend",
               note: `Not on the shelf when picked against sheet ${sheet.ref}`
-            });
-            moves.push({
-              kind: "adjusted",
+            }));
+            moves.push(moveAdjusted({
               boxNumber: box,
               spec,
               qty: -c.printed,
               source: "count",
               note: `Counted while picking ${sheet.ref} for ${order.id} \u2014 the box was not on the shelf. Stock reduced to match. Not damaged, not scrapped.`
-            });
+            }));
             delete overrides[box];
             summary.push(`${box} not on the shelf \u2014 ${c.printed} taken off stock`);
             continue;
@@ -7457,7 +7732,7 @@ Read the next screen carefully before you agree to it.`
           const short = c.printed - c.found;
           if (short > 0) {
             runs = returnToShelf(runs, box, order.id, short);
-            moves.push({ kind: "unallocated", boxNumber: box, spec, qty: short, orderId: order.id, source: "amend", note: `Amended against sheet ${sheet.ref} \u2014 ${c.found} found, ${c.printed} on the sheet` });
+            moves.push(moveUnallocated({ boxNumber: box, spec, qty: short, orderId: order.id, source: "amend", note: `Amended against sheet ${sheet.ref} \u2014 ${c.found} found, ${c.printed} on the sheet` }));
             summary.push(c.found === 0 ? `${box} not found \u2014 ${short} back on the shelf` : `${box} short by ${short}`);
           }
           if (c.found === 0) {
@@ -7465,17 +7740,17 @@ Read the next screen carefully before you agree to it.`
             continue;
           }
           if (c.caseMoved) {
-            moves.push({ kind: "unplaced", boxNumber: box, spec, qty: c.printed, orderId: order.id, caseNum: Number(c.printedCase), source: "amend", note: `Moved to case ${c.newCase} on amendment of ${sheet.ref}` });
-            moves.push({ kind: "placed", boxNumber: box, spec, qty: c.found, orderId: order.id, caseNum: Number(c.newCase), source: "amend" });
+            moves.push(moveUnplaced({ boxNumber: box, spec, qty: c.printed, orderId: order.id, caseNum: Number(c.printedCase), source: "amend", note: `Moved to case ${c.newCase} on amendment of ${sheet.ref}` }));
+            moves.push(movePlaced({ boxNumber: box, spec, qty: c.found, orderId: order.id, caseNum: Number(c.newCase), source: "amend" }));
             overrides[box] = Number(c.newCase);
             summary.push(`${box} went in case ${c.newCase}, not ${c.printedCase}`);
           } else if (short > 0 && c.newCase != null) {
-            moves.push({ kind: "unplaced", boxNumber: box, spec, qty: short, orderId: order.id, caseNum: Number(c.newCase), source: "amend", note: `Short against sheet ${sheet.ref}` });
+            moves.push(moveUnplaced({ boxNumber: box, spec, qty: short, orderId: order.id, caseNum: Number(c.newCase), source: "amend", note: `Short against sheet ${sheet.ref}` }));
           }
         }
         let result = { ...prevData, bondingRuns: runs, orders: prevData.orders };
-        result = applyPatchMapsToCases(result, order.id, { caseOverrides: overrides });
         result = recordMovements(result, moves);
+        result = applyPatchMapsToCases(result, order.id, { caseOverrides: overrides });
         result = reconcilePickSheet(result, sheet.id, `Amended: ${summary.join("; ")}`);
         return { ...result, ...appendLog(result, {
           action: "edit",
@@ -7497,15 +7772,15 @@ Read the next screen carefully before you agree to it.`
           const qty = Number(l.qty) || 0;
           if (qty <= 0) continue;
           runs = returnToShelf(runs, l.boxNumber, order.id, qty);
-          moves.push({ kind: "unallocated", boxNumber: l.boxNumber, spec: l.spec, qty, orderId: order.id, source: "amend", note: `Pick sheet ${sheet.ref} cancelled` });
+          moves.push(moveUnallocated({ boxNumber: l.boxNumber, spec: l.spec, qty, orderId: order.id, source: "amend", note: `Pick sheet ${sheet.ref} cancelled` }));
           if (l.caseNum != null && !Array.isArray(l.caseNum)) {
-            moves.push({ kind: "unplaced", boxNumber: l.boxNumber, spec: l.spec, qty, orderId: order.id, caseNum: Number(l.caseNum), source: "amend", note: `Pick sheet ${sheet.ref} cancelled` });
+            moves.push(moveUnplaced({ boxNumber: l.boxNumber, spec: l.spec, qty, orderId: order.id, caseNum: Number(l.caseNum), source: "amend", note: `Pick sheet ${sheet.ref} cancelled` }));
           }
           delete overrides[l.boxNumber];
         }
         let result = { ...prevData, bondingRuns: runs, orders: prevData.orders };
-        result = applyPatchMapsToCases(result, order.id, { caseOverrides: overrides });
         result = recordMovements(result, moves);
+        result = applyPatchMapsToCases(result, order.id, { caseOverrides: overrides });
         result = reconcilePickSheet(result, sheet.id, "Cancelled \u2014 everything put back");
         return { ...result, ...appendLog(result, {
           action: "edit",
@@ -7656,10 +7931,10 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
           const r = prevData.bondingRuns.find((row) => row.id === it.id);
           const taken = it.isNewlyAdded ? Number(it.confirmedQty) : Math.min(Number(it.confirmedQty), Number(r?.toStock || 0));
           if (taken <= 0) continue;
-          if (it.isNewlyAdded) moves.push({ kind: "made", boxNumber: it.boxNumber, spec: it.productSize, qty: taken, reelCode: it.baselineBatchCode || null, source: "pick", note: "Found on shelf while picking \u2014 not previously logged" });
-          moves.push({ kind: "allocated", boxNumber: it.boxNumber, spec: it.productSize || r?.productSize, qty: taken, orderId: order.id, reelCode: r?.baselineBatchCode || it.baselineBatchCode || null, source: "pick" });
+          if (it.isNewlyAdded) moves.push(moveMade({ boxNumber: it.boxNumber, spec: it.productSize, qty: taken, reelCode: it.baselineBatchCode || null, source: "pick", note: "Found on shelf while picking \u2014 not previously logged" }));
+          moves.push(moveAllocated({ boxNumber: it.boxNumber, spec: it.productSize || r?.productSize, qty: taken, orderId: order.id, reelCode: r?.baselineBatchCode || it.baselineBatchCode || null, source: "pick" }));
         }
-        for (const dmg of newDamagedPicks) moves.push({ kind: "scrapped", boxNumber: dmg.boxNumber, spec: dmg.productSpec, qty: Number(dmg.qtyPicked), source: "pick", note: dmg.comments });
+        for (const dmg of newDamagedPicks) moves.push(moveScrapped({ boxNumber: dmg.boxNumber, spec: dmg.productSpec, qty: Number(dmg.qtyPicked), source: "pick", note: dmg.comments }));
         for (const it of toApply) {
           const r = prevData.bondingRuns.find((row) => row.id === it.id);
           const taken = it.isNewlyAdded ? Number(it.confirmedQty) : Math.min(Number(it.confirmedQty), Number(r?.toStock || 0));
@@ -7667,7 +7942,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
           const spec = it.productSize || r?.productSize || null;
           const saved = newOverrides[it.boxNumber];
           if (saved != null && typeof saved !== "object") {
-            moves.push({ kind: "placed", boxNumber: it.boxNumber, spec, qty: taken, orderId: order.id, caseNum: Number(saved), source: "pick" });
+            moves.push(movePlaced({ boxNumber: it.boxNumber, spec, qty: taken, orderId: order.id, caseNum: Number(saved), source: "pick" }));
             continue;
           }
           const split = pendingCaseSuggestions[it.boxNumber];
@@ -7677,33 +7952,11 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
             if (left <= 0) break;
             const q = Math.min(Number(s.qty) || 0, left);
             if (q <= 0) continue;
-            moves.push({ kind: "placed", boxNumber: it.boxNumber, spec, qty: q, orderId: order.id, caseNum: Number(s.caseNum), source: "pick" });
+            moves.push(movePlaced({ boxNumber: it.boxNumber, spec, qty: q, orderId: order.id, caseNum: Number(s.caseNum), source: "pick" }));
             left -= q;
           }
         }
         result = recordMovements(result, moves);
-        {
-          const stamp = (/* @__PURE__ */ new Date()).toISOString();
-          const adds = /* @__PURE__ */ new Map();
-          for (const m of moves) {
-            if (m.kind !== "placed" || m.caseNum == null) continue;
-            const key = `${m.orderId}|${Number(m.caseNum)}`;
-            const cur = adds.get(key) || {};
-            const box = String(m.boxNumber || "").trim().toUpperCase();
-            cur[box] = (cur[box] || 0) + (Number(m.qty) || 0);
-            adds.set(key, cur);
-          }
-          if (adds.size) {
-            result = { ...result, cases: (result.cases || []).map((c) => {
-              if (!c || c.deleted) return c;
-              const add = adds.get(`${c.orderId}|${Number(c.caseNum)}`);
-              if (!add) return c;
-              const contents = { ...c.contents || {} };
-              for (const [box, q] of Object.entries(add)) contents[box] = (Number(contents[box]) || 0) + q;
-              return { ...c, contents, updatedAt: stamp, updatedBy: currentActor() };
-            }) };
-          }
-        }
         return result;
       });
       if (shortfalls.length > 0) {
@@ -7732,8 +7985,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
         });
         const changed = boxes.filter((r) => confirmQtyEdits[r.id] !== void 0 && Number(confirmQtyEdits[r.id]) !== Number(r.onOrderQty || 0));
         let patch = { bondingRuns: updated };
-        const returns = changed.map((r) => ({
-          kind: "unallocated",
+        const returns = changed.map((r) => moveUnallocated({
           boxNumber: r.boxNumber,
           spec: r.productSize,
           qty: Number(r.onOrderQty || 0) - Math.max(0, Math.min(Number(confirmQtyEdits[r.id]), Number(r.onOrderQty || 0))),
@@ -7758,15 +8010,14 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
     };
     const returnBoxToStock = (order, box) => {
       setData((prevData) => ({
-        ...recordMovement(prevData, {
-          kind: "unallocated",
+        ...recordMovement(prevData, moveUnallocated({
           boxNumber: box.boxNumber,
           spec: box.productSize,
           qty: Number(box.onOrderQty || 0),
           orderId: order.id,
           source: "pick",
           note: "Box returned to stock"
-        }),
+        })),
         bondingRuns: prevData.bondingRuns.map((r) => r.id === box.id ? { ...r, workNumber: null, onOrderQty: 0, toStock: Number(r.toStock || 0) + Number(box.onOrderQty || 0) } : r),
         ...appendLog(prevData, {
           action: "stock_adjustment",
@@ -7790,8 +8041,8 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
           comments: "Written off from " + order.id
         };
         const withMoves = recordMovements(prevData, [
-          { kind: "unallocated", boxNumber: box.boxNumber, spec: box.productSize, qty: Number(box.onOrderQty || 0), orderId: order.id, source: "pick", note: "Written off as damaged" },
-          { kind: "scrapped", boxNumber: box.boxNumber, spec: box.productSize, qty: Number(box.onOrderQty || 0), source: "pick", note: "Written off from " + order.id }
+          moveUnallocated({ boxNumber: box.boxNumber, spec: box.productSize, qty: Number(box.onOrderQty || 0), orderId: order.id, source: "pick", note: "Written off as damaged" }),
+          moveScrapped({ boxNumber: box.boxNumber, spec: box.productSize, qty: Number(box.onOrderQty || 0), source: "pick", note: "Written off from " + order.id })
         ]);
         return {
           ...withMoves,
@@ -7812,23 +8063,21 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
       const qty = Number(box.onOrderQty || 0);
       setData((prevData) => {
         const withMoves = recordMovements(prevData, [
-          {
-            kind: "unallocated",
+          moveUnallocated({
             boxNumber: box.boxNumber,
             spec: box.productSize,
             qty,
             orderId: order.id,
             source: "count",
             note: `Not on the shelf when picked for ${order.id}`
-          },
-          {
-            kind: "adjusted",
+          }),
+          moveAdjusted({
             boxNumber: box.boxNumber,
             spec: box.productSize,
             qty: -qty,
             source: "count",
             note: `Counted while picking ${order.id} \u2014 the box was not on the shelf. Stock reduced to match what is physically there. Not damaged, not scrapped.`
-          }
+          })
         ]);
         return {
           ...withMoves,
@@ -8063,14 +8312,21 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
           const needed = li ? Number(li.qty) || 0 : null;
           const available = allMatching.filter((b) => looseSpecMatch(b.productSize, spec) && stockFormMatchesLine(b, spec)).reduce((s, b) => s + Number(b.available || 0), 0);
           const claim = (() => {
-            const others = (data.orders || []).filter((x) => x.id !== o.id && x.stage !== "Shipped" && x.stage !== "Packing");
-            const res = shelfReservations(data.orders, data.lineItems, data.bondingRuns, data.stockPicks);
-            for (const other of others) {
-              const lines = orderLineItems(data.lineItems, other.id).filter((l) => looseSpecMatch(spec, l.description));
-              const held = lines.reduce((t, l) => t + ((res.get(other.id) || /* @__PURE__ */ new Map()).get(l.id) || 0), 0);
-              if (held > 0) return { order: other, held };
+            const boxesHere = [...new Set((pendingPickItems || []).filter((it) => (it.displaySpec || it.productSize) === spec).map((it) => it.boxNumber))];
+            const byOther = /* @__PURE__ */ new Map();
+            for (const bn of boxesHere) {
+              for (const c of reservedToOthers(data, bn, o.id)) {
+                const cur = byOther.get(c.orderId) || { qty: 0, boxes: [] };
+                cur.qty += c.qty;
+                cur.boxes.push(bn);
+                byOther.set(c.orderId, cur);
+              }
             }
-            return null;
+            if (!byOther.size) return null;
+            const [orderId, v] = [...byOther.entries()].sort((a, b) => b[1].qty - a[1].qty)[0];
+            const other = (data.orders || []).find((x) => x.id === orderId);
+            if (!other) return null;
+            return { order: other, held: v.qty, boxes: v.boxes };
           })();
           productSummary[spec] = { needed, available, claim };
         }
@@ -8111,7 +8367,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
           const isNewGroup = i === 0 || (pendingPickItems[i - 1].displaySpec || pendingPickItems[i - 1].productSize) !== (it.displaySpec || it.productSize);
           const summary = productSummary[it.displaySpec || it.productSize];
           const colCount = (customizingPick ? 1 : 0) + 7;
-          return /* @__PURE__ */ React.createElement(React.Fragment, { key: it.id }, isNewGroup && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { colSpan: colCount, className: "px-3 py-1.5", style: { background: "#EFEFEA", borderTop: `2px solid ${NAVY}` } }, /* @__PURE__ */ React.createElement("span", { className: "text-sm font-semibold", style: { color: NAVY } }, it.displaySpec || it.productSize), summary && /* @__PURE__ */ React.createElement("span", { className: "text-xs ml-3", style: { color: summary.needed != null && summary.available < summary.needed ? RED : INK_MUTED } }, "Order needs ", summary.needed != null ? summary.needed : "\u2014", " \xB7 On the shelf ", summary.available, summary.needed != null && summary.available < summary.needed ? " \u2014 short" : ""), summary && summary.claim && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: AMBER, fontWeight: 600 } }, "\u26A0 ", summary.claim.held, " of these ", summary.claim.held === 1 ? "is" : "are", " reserved for ", summary.claim.order.id, " (", summary.claim.order.customer, summary.claim.order.priority != null ? `, priority ${summary.claim.order.priority}` : "", summary.claim.order.dueDate ? `, due ${summary.claim.order.dueDate}` : "", "). Taking them leaves that order short."), customizingPick && /* @__PURE__ */ React.createElement(
+          return /* @__PURE__ */ React.createElement(React.Fragment, { key: it.id }, isNewGroup && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { colSpan: colCount, className: "px-3 py-1.5", style: { background: "#EFEFEA", borderTop: `2px solid ${NAVY}` } }, /* @__PURE__ */ React.createElement("span", { className: "text-sm font-semibold", style: { color: NAVY } }, it.displaySpec || it.productSize), summary && /* @__PURE__ */ React.createElement("span", { className: "text-xs ml-3", style: { color: summary.needed != null && summary.available < summary.needed ? RED : INK_MUTED } }, "Order needs ", summary.needed != null ? summary.needed : "\u2014", " \xB7 On the shelf ", summary.available, summary.needed != null && summary.available < summary.needed ? " \u2014 short" : ""), summary && summary.claim && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: AMBER, fontWeight: 600 } }, "\u26A0 ", summary.claim.held, " of these ", summary.claim.held === 1 ? "is" : "are", " promised to ", summary.claim.order.id, " (", summary.claim.order.customer, summary.claim.order.priority != null ? `, priority ${summary.claim.order.priority}` : "", summary.claim.order.dueDate ? `, due ${summary.claim.order.dueDate}` : "", ") \u2014 ", summary.claim.boxes.join(", "), ". Taking them leaves that order short."), customizingPick && /* @__PURE__ */ React.createElement(
             "button",
             {
               onClick: () => addAnotherBoxToPick(o, it.displaySpec || it.productSize),
@@ -10173,8 +10429,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
           extraFlags.push(`${shortfall} of ${code} was not on record anywhere \u2014 recorded as in this case; check its reel and date against the paper.`);
           logs.push({ action: "add", entity: "bondingRun", entityId: code, summary: `Packing override: ${shortfall} of ${code} recorded into ${order.id}, case ${caseNum} \u2014 not previously on record` });
         }
-        moves.push({
-          kind: "allocated",
+        moves.push(moveAllocated({
           boxNumber: code,
           spec,
           qty: needTotal - (mine ? Number(mine.onOrderQty || 0) : 0),
@@ -10182,7 +10437,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
           caseNum,
           source: "override",
           note: `Packing override, case ${caseNum}`
-        });
+        }));
         if (mine) {
           runs = runs.map((x) => x.id === mine.id ? { ...x, onOrderQty: needTotal, amountMade: needTotal, toStock: 0, updatedAt: stamp } : x);
         } else {
@@ -10250,17 +10505,15 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
     for (const r of rows) if (r.boxNumber && Number(r.qty) > 0) {
       const box = String(r.boxNumber).trim();
       const delta = Number(r.qty) - netPlaced(box);
-      if (delta > 0) moves.push({
-        kind: "placed",
+      if (delta > 0) moves.push(movePlaced({
         boxNumber: box,
         spec: r.spec || null,
         qty: delta,
         orderId: order.id,
         caseNum,
         source: "override"
-      });
-      else if (delta < 0) moves.push({
-        kind: "unplaced",
+      }));
+      else if (delta < 0) moves.push(moveUnplaced({
         boxNumber: box,
         spec: r.spec || null,
         qty: -delta,
@@ -10268,27 +10521,32 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
         caseNum,
         source: "override",
         note: "Case corrected downwards"
-      });
+      }));
     }
     for (const code of Object.keys(removals)) {
       const held = netPlaced(code);
-      if (held > 0) moves.push({ kind: "unplaced", boxNumber: code, qty: held, orderId: order.id, caseNum, source: "override" });
+      if (held > 0) moves.push(moveUnplaced({ boxNumber: code, qty: held, orderId: order.id, caseNum, source: "override" }));
     }
+    let caseRowPatch = () => {
+    };
     {
       const contents = Object.fromEntries(rows.filter((r) => r.boxNumber && Number(r.qty) > 0).map((r) => [String(r.boxNumber).trim(), Number(r.qty)]));
       const existing = (next.cases || []).find((c) => !c.deleted && c.orderId === order.id && Number(c.caseNum) === Number(caseNum));
       const patch = Object.keys(contents).length ? { contents, confirmed: true, updatedAt: stamp } : { contents, confirmed: true, notes: EMPTY_ON_PURPOSE, updatedAt: stamp };
-      next = { ...next, cases: existing ? (next.cases || []).map((c) => c.id === existing.id ? { ...c, ...patch } : c) : [...next.cases || [], {
-        id: caseRowId(order.id, caseNum),
-        orderId: order.id,
-        caseNum: Number(caseNum),
-        weight: "",
-        pallet: "",
-        packedOutside: false,
-        ...patch
-      }] };
+      caseRowPatch = () => {
+        next = { ...next, cases: existing ? (next.cases || []).map((c) => c.id === existing.id ? { ...c, ...patch } : c) : [...next.cases || [], {
+          id: caseRowId(order.id, caseNum),
+          orderId: order.id,
+          caseNum: Number(caseNum),
+          weight: "",
+          pallet: "",
+          packedOutside: false,
+          ...patch
+        }] };
+      };
     }
     next = recordMovements(next, moves.filter((m) => m.kind !== "allocated" || m.qty > 0));
+    caseRowPatch();
     for (const l of logs) next = { ...next, ...appendLog(next, l) };
     return next;
   }
@@ -12226,8 +12484,8 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         };
         let next = { ...prev, bondingRuns: [...prev.bondingRuns || [], row] };
         next = recordMovements(next, [
-          { kind: "made", boxNumber, spec, qty: n, reelCode: reel || null, source: "boxhistory", sourceId: row.id, note: "Added from Box History \u2014 not previously logged" },
-          { kind: "counted", boxNumber, spec, qty: n, source: "boxhistory", sourceId: row.id }
+          moveMade({ boxNumber, spec, qty: n, reelCode: reel || null, source: "boxhistory", sourceId: row.id, note: "Added from Box History \u2014 not previously logged" }),
+          moveCounted({ boxNumber, spec, qty: n, source: "boxhistory", sourceId: row.id })
         ]);
         next = raiseIssue(next, {
           kind: "unrecorded_box",
@@ -12286,7 +12544,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
           updatedAt: stamp
         };
         let next = { ...prev, glueLineBatches: [...prev.glueLineBatches || [], row] };
-        next = recordMovement(next, { kind: "made", boxNumber: batchNumber, spec, qty: m, reelCode: batchNumber, source: "stock", sourceId: row.id, note: "Reel added from Stock \u2014 not previously logged (qty is metres)" });
+        next = recordMovement(next, moveMade({ boxNumber: batchNumber, spec, qty: m, reelCode: batchNumber, source: "stock", sourceId: row.id, note: "Reel added from Stock \u2014 not previously logged (qty is metres)" }));
         next = raiseIssue(next, {
           kind: "unrecorded_box",
           boxNumber: batchNumber,
@@ -12348,8 +12606,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       setData((prev) => {
         let next = prev;
         if (dest === "order") {
-          next = recordMovement(next, {
-            kind: "allocated",
+          next = recordMovement(next, moveAllocated({
             boxNumber,
             spec,
             qty: n,
@@ -12357,20 +12614,19 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
             caseNum: caseNum ? Number(caseNum) : null,
             source: "move",
             note: caseNum ? `Moved to ${orderId}, case ${caseNum}` : `Moved to ${orderId}`
-          });
-          if (caseNum) next = recordMovement(next, { kind: "placed", boxNumber, spec, qty: n, orderId, caseNum: Number(caseNum), source: "move" });
+          }));
+          if (caseNum) next = recordMovement(next, movePlaced({ boxNumber, spec, qty: n, orderId, caseNum: Number(caseNum), source: "move" }));
         } else if (dest === "stock") {
-          next = recordMovement(next, {
-            kind: "adjusted",
+          next = recordMovement(next, moveAdjusted({
             boxNumber,
             spec,
             qty: 0,
             source: "move",
             note: `Moved to shelf ${location2}`
-          });
+          }));
           next = { ...next, bondingRuns: (next.bondingRuns || []).map((r) => !r.deleted && r.boxNumber === boxNumber ? { ...r, location: location2, updatedAt: (/* @__PURE__ */ new Date()).toISOString() } : r) };
         } else if (dest === "scrapped") {
-          next = recordMovement(next, { kind: "scrapped", boxNumber, spec, qty: n, source: "move", note: reason.trim() });
+          next = recordMovement(next, moveScrapped({ boxNumber, spec, qty: n, source: "move", note: reason.trim() }));
           next = raiseIssue(next, {
             kind: "other",
             boxNumber,
@@ -12414,7 +12670,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       }
       if (!window.confirm(`Scrap ${n} \xD7 ${r.boxNumber}? Reason: ${d.reason.trim()}`)) return;
       setData((prev) => {
-        let next = recordMovement(prev, { kind: "scrapped", boxNumber: r.boxNumber, spec: r.productSize, qty: n, orderId: r.workNumber || null, source: "move", note: d.reason.trim() });
+        let next = recordMovement(prev, moveScrapped({ boxNumber: r.boxNumber, spec: r.productSize, qty: n, orderId: r.workNumber || null, source: "move", note: d.reason.trim() }));
         next = { ...next, bondingRuns: (next.bondingRuns || []).map((x) => x.id === r.id ? {
           ...x,
           amountMade: Math.max(0, (Number(x.amountMade) || 0) - n),
@@ -12912,15 +13168,14 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
                   workNumber: Number(r.onOrderQty || 0) - take <= 0 ? "" : r.workNumber
                 };
               });
-              moves.push({
-                kind: "unallocated",
+              moves.push(moveUnallocated({
                 boxNumber: l.boxNumber,
                 spec: l.spec,
                 qty: Number(l.qty) || 0,
                 orderId: gone.orderId,
                 source: "revert",
                 note: `Print of ${gone.ref} reverted`
-              });
+              }));
             }
             const base = {
               ...prevData,
@@ -13560,25 +13815,23 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         if (newRuns.length === 0) return prevData;
         const recoveryMoves = [];
         for (const r of newRuns) {
-          recoveryMoves.push({
-            kind: "made",
+          recoveryMoves.push(moveMade({
             boxNumber: r.boxNumber,
             spec: r.productSize,
             qty: Number(r.amountMade) || 0,
             reelCode: r.baselineBatchCode || null,
             source: "recovery",
             note: "Recovered \u2014 missing after 22 Aug sync incident"
-          });
+          }));
           if (r.workNumber && Number(r.onOrderQty) > 0) {
-            recoveryMoves.push({
-              kind: "allocated",
+            recoveryMoves.push(moveAllocated({
               boxNumber: r.boxNumber,
               spec: r.productSize,
               qty: Number(r.onOrderQty),
               orderId: r.workNumber,
               source: "recovery",
               note: "Recovered \u2014 allocation restored with the box"
-            });
+            }));
           }
         }
         prevData = recordMovements(prevData, recoveryMoves);
@@ -14062,14 +14315,13 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     const addRow = () => {
       if (!form.batchNumber || !form.reason.trim()) return;
       const newRow = { id: uid("ncr"), ...form };
-      const ncrMove = form.batchNumber ? [{
-        kind: "scrapped",
+      const ncrMove = form.batchNumber ? [moveScrapped({
         boxNumber: form.batchNumber,
         spec: form.productSize || null,
         qty: Number(form.quantity || form.qty || 0) || 0,
         source: "ncr",
         note: form.description || form.reason || "NCR raised"
-      }] : [];
+      })] : [];
       setNcrs((prevNcrs) => [...prevNcrs, newRow]);
       if (ncrMove.length && ncrMove[0].qty > 0) setData((prev) => recordMovements(prev, ncrMove));
       const reelStillOpen = !!batchCode && !reelCleared && !autoClearedReel.current;
@@ -15151,8 +15403,8 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         const totalSplit = validLines.reduce((s, l) => s + Number(l.qty), 0);
         const updatedSource = { ...source, amountMade: Number(source.amountMade || 0) - totalSplit, toStock: Number(source.toStock || 0) - totalSplit };
         const splitMoves = [
-          ...source.workNumber ? [{ kind: "unallocated", boxNumber: source.boxNumber, spec: source.productSize, qty: validLines.reduce((t, l) => t + Number(l.qty), 0), orderId: source.workNumber, source: "split" }] : [],
-          ...validLines.map((l) => ({ kind: "allocated", boxNumber: source.boxNumber, spec: source.productSize, qty: Number(l.qty), orderId: l.orderId, reelCode: source.baselineBatchCode || null, source: "split" }))
+          ...source.workNumber ? [moveUnallocated({ boxNumber: source.boxNumber, spec: source.productSize, qty: validLines.reduce((t, l) => t + Number(l.qty), 0), orderId: source.workNumber, source: "split" })] : [],
+          ...validLines.map((l) => moveAllocated({ boxNumber: source.boxNumber, spec: source.productSize, qty: Number(l.qty), orderId: l.orderId, reelCode: source.baselineBatchCode || null, source: "split" }))
         ];
         return recordMovements({
           ...prevData,
@@ -15521,14 +15773,13 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
           glueLineBatches: batchCode2 ? prevData.glueLineBatches.map((b) => b.batchNumber === batchCode2 ? { ...b, cleared: reelCleared2 || autoCleared ? "Yes" : b.cleared || "No" } : b) : prevData.glueLineBatches
         };
         working = recordMovements(working, newRuns.flatMap((r) => [
-          { kind: "made", boxNumber: r.boxNumber, spec: r.productSize, qty: Number(r.amountMade) || 0, reelCode: r.baselineBatchCode || null, source: "bonding", sourceId: r.id },
+          moveMade({ boxNumber: r.boxNumber, spec: r.productSize, qty: Number(r.amountMade) || 0, reelCode: r.baselineBatchCode || null, source: "bonding", sourceId: r.id }),
           ...r.workNumber && Number(r.onOrderQty) > 0 ? (() => {
             const g = (going || []).find((x) => x && x.kind === "order" && x.orderId === r.workNumber && String(x.boxNumber || "") === String(r.boxNumber || ""));
             const split = g && Array.isArray(g.split) && g.split.length ? g.split : [];
             const firstCase = split.length ? split[0].caseNum : g && g.cases && g.cases.length ? Number(g.cases[0]) : null;
             return [
-              {
-                kind: "allocated",
+              moveAllocated({
                 boxNumber: r.boxNumber,
                 spec: r.productSize,
                 qty: Number(r.onOrderQty),
@@ -15537,9 +15788,8 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
                 reelCode: r.baselineBatchCode || null,
                 source: "bonding",
                 sourceId: r.id
-              },
-              ...split.map((sp) => ({
-                kind: "placed",
+              }),
+              ...split.map((sp) => movePlaced({
                 boxNumber: r.boxNumber,
                 spec: r.productSize,
                 qty: sp.qty,
@@ -15553,31 +15803,6 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
             ];
           })() : []
         ]));
-        {
-          const stamp = (/* @__PURE__ */ new Date()).toISOString();
-          const adds = /* @__PURE__ */ new Map();
-          for (const r of newRuns) {
-            if (!r.workNumber || !(Number(r.onOrderQty) > 0)) continue;
-            const g = (going || []).find((x) => x && x.kind === "order" && x.orderId === r.workNumber && String(x.boxNumber || "") === String(r.boxNumber || ""));
-            for (const sp of g && g.split || []) {
-              const key = `${r.workNumber}|${Number(sp.caseNum)}`;
-              const cur = adds.get(key) || {};
-              const box = String(r.boxNumber || "").trim().toUpperCase();
-              cur[box] = (cur[box] || 0) + (Number(sp.qty) || 0);
-              adds.set(key, cur);
-            }
-          }
-          if (adds.size) {
-            working = { ...working, cases: (working.cases || []).map((c) => {
-              if (!c || c.deleted) return c;
-              const add = adds.get(`${c.orderId}|${Number(c.caseNum)}`);
-              if (!add) return c;
-              const contents = { ...c.contents || {} };
-              for (const [box, q2] of Object.entries(add)) contents[box] = (Number(contents[box]) || 0) + q2;
-              return { ...c, contents, updatedAt: stamp, updatedBy: currentActor() };
-            }) };
-          }
-        }
         if (reelCleared2 && batchCode2) {
           const b = prevData.glueLineBatches.find((x) => x.batchNumber === batchCode2);
           const d = b ? reelDiscrepancy(b, runsAfter) : null;
@@ -15761,8 +15986,8 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
           }
           if (before.workNumber && after.workNumber && before.workNumber !== after.workNumber && after.boxNumber) {
             next = recordMovements(next, [
-              { kind: "unallocated", boxNumber: after.boxNumber, spec: after.productSize, qty: Number(before.onOrderQty || 0), orderId: before.workNumber, source: "bonding", note: `Row moved to ${after.workNumber}` },
-              { kind: "allocated", boxNumber: after.boxNumber, spec: after.productSize, qty: Number(after.onOrderQty || 0), orderId: after.workNumber, source: "bonding", note: `Row moved from ${before.workNumber}` }
+              moveUnallocated({ boxNumber: after.boxNumber, spec: after.productSize, qty: Number(before.onOrderQty || 0), orderId: before.workNumber, source: "bonding", note: `Row moved to ${after.workNumber}` }),
+              moveAllocated({ boxNumber: after.boxNumber, spec: after.productSize, qty: Number(after.onOrderQty || 0), orderId: after.workNumber, source: "bonding", note: `Row moved from ${before.workNumber}` })
             ]);
           }
         }
@@ -16651,8 +16876,8 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         comments: "Added via Stock Taker"
       };
       setData((prevData) => recordMovements({ ...prevData, bondingRuns: [...prevData.bondingRuns, newRun] }, [
-        { kind: "made", boxNumber: newRun.boxNumber, spec: newRun.productSize, qty: Number(newRun.amountMade) || 0, reelCode: newRun.baselineBatchCode || null, source: "stocktake", sourceId: newRun.id, note: "Found on stock take" },
-        { kind: "counted", boxNumber: newRun.boxNumber, spec: newRun.productSize, qty: Number(newRun.toStock) || 0, source: "stocktake", sourceId: newRun.id }
+        moveMade({ boxNumber: newRun.boxNumber, spec: newRun.productSize, qty: Number(newRun.amountMade) || 0, reelCode: newRun.baselineBatchCode || null, source: "stocktake", sourceId: newRun.id, note: "Found on stock take" }),
+        moveCounted({ boxNumber: newRun.boxNumber, spec: newRun.productSize, qty: Number(newRun.toStock) || 0, source: "stocktake", sourceId: newRun.id })
       ]));
       setBoxSessionAdds([{ id: newRun.id, size, boxCode, qty, location: location2 }, ...boxSessionAdds]);
       setBoxInputs({ ...boxInputs, [size]: { boxCode: "", qty: "", location: "", pt, boxTypeId: entry.boxTypeId || "" } });
@@ -16694,8 +16919,8 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         comments: "Added via Stock Taker (custom size)"
       };
       setData((prevData) => recordMovements({ ...prevData, bondingRuns: [...prevData.bondingRuns, newRun] }, [
-        { kind: "made", boxNumber: newRun.boxNumber, spec: newRun.productSize, qty: Number(newRun.amountMade) || 0, reelCode: newRun.baselineBatchCode || null, source: "stocktake", sourceId: newRun.id, note: "Found on stock take" },
-        { kind: "counted", boxNumber: newRun.boxNumber, spec: newRun.productSize, qty: Number(newRun.toStock) || 0, source: "stocktake", sourceId: newRun.id }
+        moveMade({ boxNumber: newRun.boxNumber, spec: newRun.productSize, qty: Number(newRun.amountMade) || 0, reelCode: newRun.baselineBatchCode || null, source: "stocktake", sourceId: newRun.id, note: "Found on stock take" }),
+        moveCounted({ boxNumber: newRun.boxNumber, spec: newRun.productSize, qty: Number(newRun.toStock) || 0, source: "stocktake", sourceId: newRun.id })
       ]));
       setBoxSessionAdds([{ id: newRun.id, size, boxCode, qty, location: location2 }, ...boxSessionAdds]);
       setCustomInput({ size: "", boxCode: "", qty: "", location: "", pt });
@@ -18193,6 +18418,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       });
     };
     setLedgerMovements(storedData.movements || []);
+    setLedgerReservations(storedData.reservations || []);
     setBoxMaterials(storedData.materials);
     const data = useMemo(() => {
       const runs = ledgerCorrectedRuns(storedData.bondingRuns || [], storedData.movements || []);
