@@ -959,7 +959,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-10.25";
+  var APP_VERSION = "2026-09-10.28";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1577,7 +1577,7 @@
     return (desc || "").trim().toLowerCase() === "delivery";
   }
   function orderLineItems(lineItems, orderId) {
-    return (lineItems || []).filter((li) => li.orderId === orderId);
+    return (lineItems || []).filter((li) => li && !li.deleted && li.orderId === orderId);
   }
   var CODED_MATERIAL_CATEGORIES = ["pvc", "glue"];
   var PVC_COLOUR_BY_HEIGHT = { "0.40": "Blue", "0.50": "Red", "0.60": "Yellow", "0.80": "Green" };
@@ -4573,6 +4573,25 @@
   function setLedgerReservations(r) {
     LEDGER_RESERVATIONS = r || [];
   }
+  var LEDGER_CASE_HOLDINGS = /* @__PURE__ */ new Map();
+  function caseHoldingsFrom(cases, orders) {
+    const gone = new Set((orders || []).filter((o) => o && (o.stage === "Shipped" || o.stage === "Cancelled")).map((o) => o.id));
+    const m = /* @__PURE__ */ new Map();
+    for (const c of cases || []) {
+      if (!c || c.deleted || gone.has(c.orderId)) continue;
+      for (const [box, qty] of Object.entries(c.contents || {})) {
+        const k = String(box).trim().toUpperCase();
+        m.set(k, (m.get(k) || 0) + (Number(qty) || 0));
+      }
+    }
+    return m;
+  }
+  function setLedgerCaseHoldings(cases, orders) {
+    LEDGER_CASE_HOLDINGS = caseHoldingsFrom(cases, orders);
+  }
+  function inLiveCases(boxNumber) {
+    return LEDGER_CASE_HOLDINGS.get(String(boxNumber || "").trim().toUpperCase()) || 0;
+  }
   var BOX_MATERIALS = DEFAULT_MATERIALS;
   function setBoxMaterials(m) {
     BOX_MATERIALS = m && m.length ? m : DEFAULT_MATERIALS;
@@ -4658,15 +4677,16 @@
         const p = projectBox(LEDGER_MOVEMENTS, r.boxNumber);
         if (!(p.made > 0)) continue;
         const alreadyPicked = (stockPicks || []).filter((x) => x.boxNumber === r.boxNumber).reduce((t, x) => t + Number(x.qtyPicked || 0), 0);
-        const available = p.onShelf - alreadyPicked;
+        const available = p.onShelf - alreadyPicked - inLiveCases(r.boxNumber);
         if (available <= 0) continue;
         const meta = bondingRuns.find((x) => x.boxNumber === r.boxNumber && Number(x.toStock || 0) > 0) || r;
+        const bay = [...new Set(bondingRuns.filter((x) => x.boxNumber === r.boxNumber && BOX_LOCATIONS.includes(String(x.location || "").trim())).map((x) => String(x.location).trim()))].sort().join(" / ");
         out.push({
           id: meta.id,
           boxNumber: r.boxNumber,
           productSize: meta.productSize,
           date: meta.date || "",
-          location: meta.location || "",
+          location: bay,
           available,
           boxTypeId: meta.boxTypeId || null,
           baselineBatchCode: meta.baselineBatchCode || "",
@@ -5293,7 +5313,21 @@
       if (reels > 0) bits.push(`${reels} reel${reels === 1 ? "" : "s"} glued${metres > 0 ? ` (${Math.round(metres)}m)` : ""}`);
       if (evaReels > 0) bits.push(`${evaReels} EVA reel${evaReels === 1 ? "" : "s"} made`);
       return /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5", style: { borderLeft: `4px solid ${GREEN}` } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1.5", style: { color: INK_MUTED } }, "Done today"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 17, fontWeight: 600, color: INK, lineHeight: 1.4 } }, bits.join(" \xB7 ")), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1.5", style: { color: INK_MUTED } }, "Everything below is what's still to do."));
-    })(), /* @__PURE__ */ React.createElement("details", { className: "no-print", style: { marginTop: 26, fontSize: 14, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("summary", { style: { cursor: "pointer", color: NAVY, listStyle: "none" } }, "How this is worked out"), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8, lineHeight: 1.6, maxWidth: "62ch" } }, "Three things, every time: ", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, "the reels actually in the rack"), " (checked, not cleared, not scrapped, with metres still left on them),", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, " what's still left to make"), " on live orders after everything already bonded is taken off, and ", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, "which orders are urgent"), " \u2014 priority first, then due date. Nothing here is a target or an estimate. Every line is a real reel or a real shortfall, and each one says why it's on the list.")), /* @__PURE__ */ React.createElement(EvaRackPanel, { rack: evaRack, setData }), /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 760, marginBottom: 34 } }, /* @__PURE__ */ React.createElement(PlanLane, { title: "Bond today", colour: NAVY, verb: "ready to bond", tasks: plan.bond, jumpToOrder }), /* @__PURE__ */ React.createElement(PlanLane, { title: "Glue line", colour: ORANGE, verb: "waiting on glue line", tasks: plan.glue, jumpToOrder }), /* @__PURE__ */ React.createElement(PlanLane, { title: "Pick from the shelf", colour: "#2E8B57", verb: "pickable", tasks: plan.pick, jumpToOrder }), /* @__PURE__ */ React.createElement(PlanLane, { title: "Ready to ship", colour: GREEN, verb: "ready to ship", tasks: plan.ship, jumpToOrder })), dueRows.length > 0 && (() => {
+    })(), /* @__PURE__ */ React.createElement("details", { className: "no-print", style: { marginTop: 26, fontSize: 14, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("summary", { style: { cursor: "pointer", color: NAVY, listStyle: "none" } }, "How this is worked out"), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8, lineHeight: 1.6, maxWidth: "62ch" } }, "Three things, every time: ", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, "the reels actually in the rack"), " (checked, not cleared, not scrapped, with metres still left on them),", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, " what's still left to make"), " on live orders after everything already bonded is taken off, and ", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, "which orders are urgent"), " \u2014 priority first, then due date. Nothing here is a target or an estimate. Every line is a real reel or a real shortfall, and each one says why it's on the list.")), /* @__PURE__ */ React.createElement(EvaRackPanel, { rack: evaRack, setData }), (() => {
+      const rows = (data.orders || []).filter((o) => o && !o.deleted && o.stage !== "Shipped" && o.stage !== "Cancelled").map((o) => {
+        const ordered = orderTotalItems(data.lineItems, o.id);
+        const cs = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === o.id);
+        let planned = 0, packed = 0;
+        for (const c of cs) {
+          for (const q of Object.values(casePlanned(c))) planned += Number(q) || 0;
+          for (const q of Object.values(c.contents || {})) packed += Number(q) || 0;
+        }
+        return { o, ordered, planned, packed, cases: cs.length, off: ordered !== planned };
+      }).filter((r) => r.ordered > 0 || r.planned > 0).sort((a, b) => (b.off ? 1 : 0) - (a.off ? 1 : 0) || String(a.o.id).localeCompare(String(b.o.id)));
+      if (!rows.length) return null;
+      const bad = rows.filter((r) => r.off);
+      return /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-6", style: { borderLeft: `4px solid ${bad.length ? RED : GREEN}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1", style: { color: bad.length ? RED : GREEN } }, bad.length ? `${bad.length} order${bad.length === 1 ? "" : "s"} don\u2019t add up` : "Every live order adds up"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED, maxWidth: 620 } }, "Ordered against what the cases promise. A difference here is a fault to find, never a case to add. Packed short of planned is just work still to do."), /* @__PURE__ */ React.createElement("table", { className: "text-sm", style: { width: "100%", maxWidth: 640 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { className: "text-xs uppercase tracking-wide", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement(Th, null, "Order"), /* @__PURE__ */ React.createElement(Th, null, "Customer"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Ordered"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Planned"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Packed"))), /* @__PURE__ */ React.createElement("tbody", null, rows.map((r) => /* @__PURE__ */ React.createElement("tr", { key: r.o.id, style: { borderTop: `1px solid ${BORDER}`, background: r.off ? "#FBEAEA" : void 0 } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs font-semibold" }, r.o.id)), /* @__PURE__ */ React.createElement("td", null, r.o.customer), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, r.ordered), /* @__PURE__ */ React.createElement("td", { className: "text-right", style: { color: r.off ? RED : INK, fontWeight: r.off ? 700 : 400 } }, r.planned), /* @__PURE__ */ React.createElement("td", { className: "text-right", style: { color: r.packed >= r.planned && r.planned > 0 ? GREEN : INK } }, r.packed))))));
+    })(), /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 760, marginBottom: 34 } }, /* @__PURE__ */ React.createElement(PlanLane, { title: "Bond today", colour: NAVY, verb: "ready to bond", tasks: plan.bond, jumpToOrder }), /* @__PURE__ */ React.createElement(PlanLane, { title: "Glue line", colour: ORANGE, verb: "waiting on glue line", tasks: plan.glue, jumpToOrder }), /* @__PURE__ */ React.createElement(PlanLane, { title: "Pick from the shelf", colour: "#2E8B57", verb: "pickable", tasks: plan.pick, jumpToOrder }), /* @__PURE__ */ React.createElement(PlanLane, { title: "Ready to ship", colour: GREEN, verb: "ready to ship", tasks: plan.ship, jumpToOrder })), dueRows.length > 0 && (() => {
       const onPlan = /* @__PURE__ */ new Map();
       const note = (id, word) => {
         if (id && !onPlan.has(id)) onPlan.set(id, word);
@@ -12775,7 +12809,6 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
           updatedAt: stamp
         };
         let next = { ...prev, glueLineBatches: [...prev.glueLineBatches || [], row] };
-        next = recordMovement(next, moveMade({ boxNumber: batchNumber, spec, qty: m, reelCode: batchNumber, source: "stock", sourceId: row.id, note: "Reel added from Stock \u2014 not previously logged (qty is metres)" }));
         next = raiseIssue(next, {
           kind: "unrecorded_box",
           boxNumber: batchNumber,
@@ -18641,6 +18674,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     };
     setLedgerMovements(storedData.movements || []);
     setLedgerReservations(storedData.reservations || []);
+    setLedgerCaseHoldings(storedData.cases || [], storedData.orders || []);
     setBoxMaterials(storedData.materials);
     const data = useMemo(() => {
       const runs = ledgerCorrectedRuns(storedData.bondingRuns || [], storedData.movements || []);
