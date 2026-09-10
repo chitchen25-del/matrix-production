@@ -942,7 +942,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-10.3";
+  var APP_VERSION = "2026-09-10.4";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -4526,6 +4526,40 @@
     BOX_MATERIALS = m && m.length ? m : DEFAULT_MATERIALS;
   }
   var DEFAULT_BOX_TYPE = "PX Plus";
+  function cartonStockFor(data, boxNumber, materials) {
+    const code = String(boxNumber || "").trim().toUpperCase();
+    const mats = materials && materials.length ? materials : data.materials || [];
+    const nameOfId = (id) => {
+      const m = mats.find((x) => x.id === id);
+      return m && m.name || null;
+    };
+    const made = {};
+    for (const r of data.bondingRuns || []) {
+      if (!r || r.deleted || String(r.boxNumber || "").trim().toUpperCase() !== code) continue;
+      const carton = nameOfId(r.boxTypeId) || "unknown";
+      made[carton] = (made[carton] || 0) + (Number(r.amountMade) || 0);
+    }
+    const promised = {};
+    for (const res of data.reservations || []) {
+      if (!res || res.deleted || res.state === "released") continue;
+      if (String(res.boxNumber || "").trim().toUpperCase() !== code) continue;
+      const o = (data.orders || []).find((x) => x.id === res.orderId);
+      const want = o && o.boxType || DEFAULT_BOX_TYPE;
+      promised[want] = (promised[want] || 0) + (Number(res.qty) || 0);
+    }
+    const free = {};
+    for (const carton of /* @__PURE__ */ new Set([...Object.keys(made), ...Object.keys(promised)])) {
+      free[carton] = Math.max(0, (made[carton] || 0) - (promised[carton] || 0));
+    }
+    return { made, promised, free };
+  }
+  function freeInCartonFor(data, boxNumber, wantType, materials) {
+    const want = wantType || DEFAULT_BOX_TYPE;
+    const s = cartonStockFor(data, boxNumber, materials);
+    const exact = s.free[want] || 0;
+    const unknown = want === DEFAULT_BOX_TYPE ? s.free.unknown || 0 : 0;
+    return exact + unknown;
+  }
   function boxTypeNameOf(boxTypeId) {
     if (!boxTypeId) return null;
     const m = BOX_MATERIALS.find((x) => x.id === boxTypeId) || DEFAULT_MATERIALS.find((x) => x.id === boxTypeId);
@@ -7275,7 +7309,13 @@ Read the next screen carefully before you agree to it.`
       const exact = free.filter((b) => orderSpecs.has(normalizeSpec(b.productSize))).map(withBoxTypeFlag);
       const exactIds = new Set(exact.map((b) => b.id));
       const loose = free.filter((b) => !exactIds.has(b.id) && orderLines.some((li) => looseSpecMatch(b.productSize, li.description) && stockFormMatchesLine(b, li.description))).map((b) => ({ ...withBoxTypeFlag(b), approxMatch: true }));
-      return [...promised, ...exact, ...loose];
+      const want = order.boxType || DEFAULT_BOX_TYPE;
+      const capToCarton = (b) => {
+        const room = freeInCartonFor(data, b.boxNumber, want, data.materials);
+        if (room <= 0) return null;
+        return room < b.available ? { ...b, available: room, cartonCapped: true } : b;
+      };
+      return [...promised, ...[...exact, ...loose].map(capToCarton).filter(Boolean)];
     };
     const openPickListFor = (order, selected) => {
       if (selected.length === 0) return false;
@@ -7803,6 +7843,25 @@ Read the next screen carefully before you agree to it.`
       return "noshelf";
     };
     const confirmPickAndAllocate = (order, items = pendingPickItems, { receipt = true, onlyConfirmed = false, keepRest = false } = {}) => {
+      {
+        const want = order.boxType || DEFAULT_BOX_TYPE;
+        const mats = data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS;
+        const wrong = items.filter((it) => it && !it.damaged && Number(it.confirmedQty) > 0 && (!onlyConfirmed || it.confirmed)).filter((it) => {
+          const run = (data.bondingRuns || []).find((r) => r && !r.deleted && r.id === it.id);
+          const carton = run && run.boxTypeId ? (mats.find((m) => m.id === run.boxTypeId) || {}).name || null : null;
+          if (!carton) return want !== DEFAULT_BOX_TYPE;
+          return carton !== want;
+        });
+        if (wrong.length) {
+          const first = wrong[0];
+          const run = (data.bondingRuns || []).find((r) => r && r.id === first.id);
+          const carton = run && run.boxTypeId ? (mats.find((m) => m.id === run.boxTypeId) || {}).name || "an unrecorded carton" : "an unrecorded carton";
+          if (typeof window !== "undefined") window.alert(
+            `${first.boxNumber} is in ${carton} and ${order.id} (${order.customer}) takes ${want}.` + (wrong.length > 1 ? ` ${wrong.length - 1} other box${wrong.length > 2 ? "es on" : " on"} this sheet ${wrong.length > 2 ? "are" : "is"} the same.` : "") + ` Nothing has been recorded. To clear it: put ${wrong.length > 1 ? "them" : "it"} back and take ${want} boxes instead, or if the box is right and the record is wrong, correct the box type on the bonding run.`
+          );
+          return;
+        }
+      }
       const damagedItems = items.filter((it) => it.damaged);
       const eligible = onlyConfirmed ? items.filter((it) => it.confirmed) : items;
       const toApply = eligible.filter((it) => !it.damaged && Number(it.confirmedQty) > 0);
