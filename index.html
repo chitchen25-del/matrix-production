@@ -959,7 +959,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-11.9";
+  var APP_VERSION = "2026-09-11.10";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -3036,7 +3036,16 @@
            sizes are extruded on the glue line itself, so they never wait. */
         needsExtrusion: classifySize(d.spec) === "7mm" && glueLinedMeters <= 0,
         reelCount: availableReels.length,
-        dies: glueDiesForSpec(d.spec)
+        dies: glueDiesForSpec(d.spec),
+        /* WHO IS WAITING ON THIS SIZE. (Chris, 11 Sep 2026 — "I want the ability
+           to print a glue line schedule by order")
+           The demand row already knows; the schedule row was throwing it away
+           and showing pooled metres with no way to ask "what does Puh Sim need
+           glued". Carried through as-is: this is the orders' own outstanding
+           quantities, NOT an apportionment of `toMake`. `toMake` is net of shelf
+           stock pooled across every order, and splitting that between them would
+           be a guess dressed as a number. */
+        breakdown: d.breakdown || []
       };
     }).filter((r) => r.stillToGlueLine > 0);
   }
@@ -9060,7 +9069,14 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
       if (!whatIf) return data.orders;
       return data.orders.map((o) => Object.prototype.hasOwnProperty.call(whatIf, o.id) ? { ...o, priority: whatIf[o.id] } : { ...o, priority: null });
     }, [data.orders, whatIf]);
-    const needRows = glueLineScheduleRows(effectiveOrders, data.lineItems, data.glueLineBatches, data.bondingRuns, data.stockPicks, data.ncrs || [], data.glueRuns || []);
+    const allNeedRows = glueLineScheduleRows(effectiveOrders, data.lineItems, data.glueLineBatches, data.bondingRuns, data.stockPicks, data.ncrs || [], data.glueRuns || []);
+    const [scheduleOrderId, setScheduleOrderId] = React.useState("");
+    const needRows = React.useMemo(() => {
+      if (!scheduleOrderId) return allNeedRows;
+      return allNeedRows.filter((r) => (r.breakdown || []).some((b) => b.orderId === scheduleOrderId));
+    }, [allNeedRows, scheduleOrderId]);
+    const scheduleOrder = (data.orders || []).find((o) => o.id === scheduleOrderId) || null;
+    const orderNeedFor = (r) => (r.breakdown || []).filter((b) => b.orderId === scheduleOrderId).reduce((t, b) => t + (Number(b.qty) || 0), 0);
     const reelMetres = learnedReelMetres(data.glueLineBatches);
     const todayCapacity = glueCapacityForDate(/* @__PURE__ */ new Date(todayISO() + "T00:00:00"));
     const unrankable = unrankableOrders(effectiveOrders, data.lineItems, data.bondingRuns, data.stockPicks);
@@ -9152,10 +9168,27 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
         }
       },
       showMakeList ? "Hide make list" : "\u{1F4CB} Full make list"
-    )), showMakeList && (() => {
+    )), /* @__PURE__ */ React.createElement("div", { className: "no-print mb-3 flex items-center gap-2 flex-wrap" }, /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, "Schedule for"), /* @__PURE__ */ React.createElement(
+      "select",
+      {
+        value: scheduleOrderId,
+        onChange: (e) => setScheduleOrderId(e.target.value),
+        style: { fontSize: 13, border: `1px solid ${BORDER}`, borderRadius: 5, padding: "4px 6px", minHeight: 34 }
+      },
+      /* @__PURE__ */ React.createElement("option", { value: "" }, "Every order"),
+      (data.orders || []).filter((o) => o && !o.deleted && !["Shipped", "Cancelled"].includes(o.stage)).map((o) => /* @__PURE__ */ React.createElement("option", { key: o.id, value: o.id }, o.id, " \u2014 ", o.customer))
+    ), scheduleOrderId && /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => setScheduleOrderId(""),
+        className: "text-xs",
+        style: { background: "none", border: "none", color: NAVY, cursor: "pointer", fontWeight: 600 }
+      },
+      "show every order"
+    ), scheduleOrderId && needRows.length === 0 && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: GREEN, fontWeight: 600 } }, "Nothing for the glue line to make for this order.")), showMakeList && (() => {
       const list = glueMakeList(needRows, dieCounts, { reelMetres });
       const totalM = list.reduce((s2, d) => s2 + d.metres, 0);
-      return /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5 print-only-block", style: { borderLeft: `4px solid ${NAVY}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between mb-1 flex-wrap gap-2 no-print" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "text-base font-semibold", style: { color: NAVY } }, "Glue line make list"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, list.length, " die", list.length === 1 ? "" : "s", " with work \xB7 ", totalM.toLocaleString(), "m total \xB7 finishes ", list.length ? list[list.length - 1].finishDate : "\u2014"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "At 11 m/min: ", todayCapacity.toLocaleString(), "m today (", (/* @__PURE__ */ new Date(todayISO() + "T00:00:00")).getDay() === 5 ? "Friday, 08:30\u201313:45" : "08:30\u201316:45", ") \xB7 each die change costs ", GLUE_DIE_CHANGE_MINUTES, " min \u2248 ", GLUE_DIE_CHANGE_MINUTES * GLUE_METRES_PER_MINUTE, "m of output")), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => printAndLog(setData, "glue line make list", "glueLine", null, `Printed glue line make list \u2014 ${list.length} dies, ${totalM.toLocaleString()}m`) }, "\u{1F5A8} Print make list")), /* @__PURE__ */ React.createElement("div", { className: "mb-3" }, /* @__PURE__ */ React.createElement(WhyBox, { label: "Why this order?" }, "Ordered by how much work sits behind each die, because a die change costs output \u2014 once it's mounted, everything else it can run is nearly free. Metres already on the rack are taken off before anything is asked for, so nothing here is something you already have. Priority shows on every row: run an urgent die out of turn if you need to.")), list.map((d, i) => /* @__PURE__ */ React.createElement(React.Fragment, { key: d.key }, i > 0 && list[i - 1].startDay !== d.startDay && /* @__PURE__ */ React.createElement("div", { className: "my-3", style: { display: "flex", alignItems: "center", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1, borderTop: `2px dashed ${d.startDay === 1 ? GREEN : BORDER}` } }), /* @__PURE__ */ React.createElement("span", { style: {
+      return /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5 print-only-block", style: { borderLeft: `4px solid ${NAVY}` } }, /* @__PURE__ */ React.createElement("div", { className: "mb-2", style: { borderBottom: `1px solid ${BORDER}`, paddingBottom: 6 } }, /* @__PURE__ */ React.createElement("div", { className: "text-base font-semibold", style: { color: INK } }, "Glue line make list", scheduleOrder ? ` \u2014 ${scheduleOrder.id} ${scheduleOrder.customer}` : " \u2014 every live order"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Printed ", todayISO(), " \xB7 ", list.length, " die", list.length === 1 ? "" : "s", " \xB7 ", totalM.toLocaleString(), "m", scheduleOrder ? " \xB7 metres are what the LINE runs for each size across every order, not this order's share" : "")), /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between mb-1 flex-wrap gap-2 no-print" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "text-base font-semibold", style: { color: NAVY } }, "Glue line make list"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, list.length, " die", list.length === 1 ? "" : "s", " with work \xB7 ", totalM.toLocaleString(), "m total \xB7 finishes ", list.length ? list[list.length - 1].finishDate : "\u2014"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "At 11 m/min: ", todayCapacity.toLocaleString(), "m today (", (/* @__PURE__ */ new Date(todayISO() + "T00:00:00")).getDay() === 5 ? "Friday, 08:30\u201313:45" : "08:30\u201316:45", ") \xB7 each die change costs ", GLUE_DIE_CHANGE_MINUTES, " min \u2248 ", GLUE_DIE_CHANGE_MINUTES * GLUE_METRES_PER_MINUTE, "m of output")), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => printAndLog(setData, "glue line make list", "glueLine", null, `Printed glue line make list${scheduleOrder ? ` for ${scheduleOrder.id} ${scheduleOrder.customer}` : ""} \u2014 ${list.length} dies, ${totalM.toLocaleString()}m`) }, "\u{1F5A8} Print make list", scheduleOrder ? ` for ${scheduleOrder.id}` : "")), /* @__PURE__ */ React.createElement("div", { className: "mb-3" }, /* @__PURE__ */ React.createElement(WhyBox, { label: "Why this order?" }, "Ordered by how much work sits behind each die, because a die change costs output \u2014 once it's mounted, everything else it can run is nearly free. Metres already on the rack are taken off before anything is asked for, so nothing here is something you already have. Priority shows on every row: run an urgent die out of turn if you need to.")), list.map((d, i) => /* @__PURE__ */ React.createElement(React.Fragment, { key: d.key }, i > 0 && list[i - 1].startDay !== d.startDay && /* @__PURE__ */ React.createElement("div", { className: "my-3", style: { display: "flex", alignItems: "center", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1, borderTop: `2px dashed ${d.startDay === 1 ? GREEN : BORDER}` } }), /* @__PURE__ */ React.createElement("span", { style: {
         fontSize: 12,
         fontWeight: 700,
         whiteSpace: "nowrap",
