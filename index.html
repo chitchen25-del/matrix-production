@@ -959,7 +959,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-10.29";
+  var APP_VERSION = "2026-09-11.8";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1356,10 +1356,11 @@
     let outgoing = rows;
     const dropped = [];
     for (let attempt = 0; attempt < 8; attempt++) {
-      const { error } = await client.from(table).upsert(outgoing);
+      const { data: saved, error } = await client.from(table).upsert(outgoing).select("id");
       if (!error) {
         if (dropped.length) warnings.push({ table, dropped, message: `saved without ${dropped.join(", ")} \u2014 the database doesn't have ${dropped.length === 1 ? "that column" : "those columns"} yet` });
-        return;
+        const landed = new Set((saved || []).map((r) => r.id));
+        return outgoing.filter((r) => !landed.has(r.id)).map((r) => r.id);
       }
       const m = MISSING_COLUMN_RE.exec(String(error.message || ""));
       if (table === "glue_line_batches" && /glue_line_batches_batch_number_unique/.test(String(error.message || ""))) {
@@ -1478,6 +1479,7 @@
     const skip = new Set(opts.skipTables || []);
     const okTables = [];
     const warnings = [];
+    const refused = [];
     const prevTables = dataToTables(prevData);
     const nextTables = dataToTables(nextData);
     const actor = currentSyncActor();
@@ -1502,7 +1504,8 @@
         const deletedIds = prevRows.filter((p) => !p.deleted && !nextRows.some((r) => r.id === p.id)).map((p) => p.id);
         if (changed.length) {
           const outgoing = actor ? changed.map((r) => ({ ...r, updated_by: actor })) : changed;
-          await upsertHealingMissingColumns(client, table, outgoing, warnings);
+          const refusedIds = await upsertHealingMissingColumns(client, table, outgoing, warnings);
+          if (refusedIds && refusedIds.length) refused.push({ table, ids: refusedIds });
         }
         if (deletedIds.length) {
           const { error } = await client.from(table).update(actor ? { deleted: true, updated_by: actor } : { deleted: true }).in("id", deletedIds);
@@ -1521,9 +1524,10 @@
       err.failures = failures;
       err.okTables = okTables;
       err.warnings = warnings;
+      err.refused = refused;
       throw err;
     }
-    return { okTables, warnings };
+    return { okTables, warnings, refused };
   }
   function countPendingChanges(prevData, nextData) {
     const prevTables = dataToTables(prevData);
@@ -2273,7 +2277,7 @@
         }
         const isShelfRow = stockRowIdx >= 0 ? i === stockRowIdx : i === 0;
         if (isShelfRow && !shelfPlaced) {
-          toStock = Math.max(0, p.onShelf);
+          toStock = placeOf({ ...ledgerView(), movements }, box).available;
           shelfPlaced = true;
         }
         if (Number(r.onOrderQty || 0) !== onOrderQty || Number(r.toStock || 0) !== toStock) patched.set(r.id, { ...r, onOrderQty, toStock });
@@ -2505,7 +2509,7 @@
     const shelf = boxedStockAvailable(bondingRuns, stockPicks || []);
     for (const row of map.values()) {
       const candidates = shelf.filter((b) => looseSpecMatch(b.productSize, row.spec) && stockFormMatchesLine(b, row.spec)).map((b) => ({ ...b, left: Number(b.available || 0) }));
-      row.onShelf = candidates.reduce((t, b) => t + b.left, 0);
+      row.freeOnShelf = candidates.reduce((t, b) => t + b.left, 0);
       let covered = 0;
       const toMakeByBox = {};
       const ordered = [...row.breakdown].sort((a, b) => {
@@ -4586,11 +4590,15 @@
     }
     return m;
   }
+  var LEDGER_CASES = [];
+  var LEDGER_ORDERS = [];
   function setLedgerCaseHoldings(cases, orders) {
     LEDGER_CASE_HOLDINGS = caseHoldingsFrom(cases, orders);
+    LEDGER_CASES = cases || [];
+    LEDGER_ORDERS = orders || [];
   }
-  function inLiveCases(boxNumber) {
-    return LEDGER_CASE_HOLDINGS.get(String(boxNumber || "").trim().toUpperCase()) || 0;
+  function ledgerView() {
+    return { movements: LEDGER_MOVEMENTS, cases: LEDGER_CASES, orders: LEDGER_ORDERS, reservations: LEDGER_RESERVATIONS };
   }
   var BOX_MATERIALS = DEFAULT_MATERIALS;
   function setBoxMaterials(m) {
@@ -4677,7 +4685,7 @@
         const p = projectBox(LEDGER_MOVEMENTS, r.boxNumber);
         if (!(p.made > 0)) continue;
         const alreadyPicked = (stockPicks || []).filter((x) => x.boxNumber === r.boxNumber).reduce((t, x) => t + Number(x.qtyPicked || 0), 0);
-        const available = p.onShelf - alreadyPicked - inLiveCases(r.boxNumber);
+        const available = Math.max(0, placeOf(ledgerView(), r.boxNumber).available - alreadyPicked);
         if (available <= 0) continue;
         const meta = bondingRuns.find((x) => x.boxNumber === r.boxNumber && Number(x.toStock || 0) > 0) || r;
         const bay = [...new Set(bondingRuns.filter((x) => x.boxNumber === r.boxNumber && BOX_LOCATIONS.includes(String(x.location || "").trim())).map((x) => String(x.location).trim()))].sort().join(" / ");
@@ -5553,15 +5561,32 @@ Here's the order:`;
       } }, /* @__PURE__ */ React.createElement("div", { className: "font-semibold mb-1.5" }, "How to use this:"), /* @__PURE__ */ React.createElement("ol", { style: { paddingLeft: 16, margin: 0, listStyle: "decimal" } }, /* @__PURE__ */ React.createElement("li", null, "Click to copy this prompt"), /* @__PURE__ */ React.createElement("li", null, "Open any Claude chat (claude.ai)"), /* @__PURE__ */ React.createElement("li", null, "Paste it, and attach the order \u2014 PDF or a photo \u2014 in the same message"), /* @__PURE__ */ React.createElement("li", null, "Send it \u2014 Claude replies with the order in the right format"), /* @__PURE__ */ React.createElement("li", null, "Copy Claude's reply and paste it in the box below"), /* @__PURE__ */ React.createElement("li", null, "Click Preview, check it looks right, then Add this order")))
     );
   }
-  function CaseMover({ boxNumber, caseNum, caseOverrides, setCaseOverrides, size = 30 }) {
+  function CaseMover({ boxNumber, caseNum, caseOverrides, setCaseOverrides, cases, size = 30 }) {
     if (!boxNumber) return null;
     const raw = caseOverrides[boxNumber];
     const isSplit = raw != null && typeof raw === "object";
     const at = isSplit ? caseNum : raw ?? caseNum;
     const moved = raw != null;
+    const up = (x) => String(x || "").trim().toUpperCase();
+    const mine = (cases || []).flatMap((c) => c.contributions || []).filter((r) => up(r.boxNumber) === up(boxNumber)).reduce((t, r) => t + (Number(r.qty) || 0), 0);
+    const moveRefusal = (n) => {
+      if (!Array.isArray(cases) || !cases.length) return null;
+      const dest = cases.find((c) => Number(c.caseNum) === Number(n));
+      if (!dest) return `There is no case ${n} on this order.`;
+      const cap = Number(dest.maxSize) || CASE_MAX_SIZE_DEFAULT;
+      const held = (dest.contributions || []).filter((r) => up(r.boxNumber) !== up(boxNumber)).reduce((t, r) => t + (Number(r.qty) || 0), 0);
+      if (held + mine > cap) {
+        return `Case ${n} holds ${held} of ${cap} \u2014 the other ${mine} will not fit.`;
+      }
+      return null;
+    };
+    const downWhy = isSplit || at <= 1 ? null : moveRefusal(at - 1);
+    const upWhy = isSplit ? null : moveRefusal(at + 1);
     const move = (n) => {
       if (isSplit) return;
-      if (n >= 1) setCaseOverrides({ ...caseOverrides, [boxNumber]: n });
+      if (n < 1) return;
+      if (moveRefusal(n)) return;
+      setCaseOverrides({ ...caseOverrides, [boxNumber]: n });
     };
     const btn = {
       width: size,
@@ -5576,7 +5601,7 @@ Here's the order:`;
       cursor: "pointer",
       padding: 0
     };
-    return /* @__PURE__ */ React.createElement("div", { className: "no-print", style: { display: "flex", alignItems: "center", gap: size > 36 ? 8 : 4, flexWrap: "wrap" } }, size > 36 && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, "In case"), /* @__PURE__ */ React.createElement("button", { onClick: () => move(at - 1), disabled: isSplit || at <= 1, style: { ...btn, opacity: isSplit || at <= 1 ? 0.35 : 1 }, title: isSplit ? "This box is split across cases \u2014 put back to change it" : "Move to the case before" }, "\u2212"), /* @__PURE__ */ React.createElement("span", { style: { minWidth: size > 36 ? 34 : 30, textAlign: "center", fontWeight: 800, fontSize: size > 36 ? 18 : 15, color: moved ? NAVY : INK } }, at), /* @__PURE__ */ React.createElement("button", { onClick: () => move(at + 1), disabled: isSplit, style: { ...btn, opacity: isSplit ? 0.35 : 1 }, title: isSplit ? "This box is split across cases \u2014 put back to change it" : "Move to the case after" }, "+"), moved && /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement("div", { className: "no-print", style: { display: "flex", alignItems: "center", gap: size > 36 ? 8 : 4, flexWrap: "wrap" } }, size > 36 && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, "In case"), /* @__PURE__ */ React.createElement("button", { onClick: () => move(at - 1), disabled: isSplit || at <= 1 || !!downWhy, style: { ...btn, opacity: isSplit || at <= 1 || downWhy ? 0.35 : 1 }, title: isSplit ? "This box is split across cases \u2014 put back to change it" : downWhy || "Move to the case before" }, "\u2212"), /* @__PURE__ */ React.createElement("span", { style: { minWidth: size > 36 ? 34 : 30, textAlign: "center", fontWeight: 800, fontSize: size > 36 ? 18 : 15, color: moved ? NAVY : INK } }, at), /* @__PURE__ */ React.createElement("button", { onClick: () => move(at + 1), disabled: isSplit || !!upWhy, style: { ...btn, opacity: isSplit || upWhy ? 0.35 : 1 }, title: isSplit ? "This box is split across cases \u2014 put back to change it" : upWhy || "Move to the case after" }, "+"), moved && /* @__PURE__ */ React.createElement(
       "button",
       {
         onClick: () => {
@@ -5587,7 +5612,7 @@ Here's the order:`;
         style: { background: "none", border: "none", padding: 0, cursor: "pointer", color: NAVY, fontSize: 11.5, fontWeight: 600 }
       },
       "moved by hand \xB7 put back"
-    ));
+    ), (downWhy || upWhy) && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: AMBER, fontWeight: 600, flexBasis: "100%" } }, downWhy && upWhy && downWhy === upWhy ? downWhy : downWhy || upWhy));
   }
   function ProfileGlyph({ spec, size = 12 }) {
     const s = String(spec || "");
@@ -6011,7 +6036,7 @@ Here's the order:`;
     if (kind === "allocated" || kind === "unallocated") {
       if (!m.orderId) return `${kind} of ${qty} \xD7 ${box}: no order. Allocation is a promise to somebody, so it has to name who.`;
     }
-    if (kind === "allocated" && (prev.reservations || []).length) {
+    if (kind === "allocated") {
       const free = freeToPromise(prev, box);
       if (qty > free) {
         const others = reservedToOthers(prev, box, m.orderId).map((c) => `${c.qty} to ${c.orderId}`).join(", ");
@@ -6040,9 +6065,7 @@ Here's the order:`;
     return (data.reservations || []).filter((r) => r && !r.deleted && r.state !== "released" && String(r.boxNumber || "").trim().toUpperCase() === String(boxNumber || "").trim().toUpperCase());
   }
   function freeToPromise(data, boxNumber) {
-    const p = placeOf(data, boxNumber);
-    const outstanding = promisedOutstanding(promiseRows(data, { boxNumber }));
-    return p.onShelf - outstanding;
+    return placeOf(data, boxNumber).available;
   }
   function reservedToOthers(data, boxNumber, orderId) {
     const out = /* @__PURE__ */ new Map();
@@ -6057,34 +6080,21 @@ Here's the order:`;
     const wantBox = filter.boxNumber ? norm(filter.boxNumber) : null;
     const live = (data.reservations || []).filter((r) => r && !r.deleted && r.state !== "released");
     const keep = (r) => (!wantBox || norm(r.boxNumber) === wantBox) && (!filter.orderId || r.orderId === filter.orderId) && (filter.caseNum == null || Number(r.caseNum) === Number(filter.caseNum)) && (!filter.spec || looseSpecMatch(filter.spec, r.spec || ""));
-    if (live.length) {
-      return live.filter(keep).map((r) => ({
-        boxNumber: norm(r.boxNumber),
-        orderId: r.orderId,
-        caseNum: r.caseNum == null ? null : Number(r.caseNum),
-        spec: r.spec || null,
-        qty: Number(r.qty) || 0,
-        placedQty: Number(r.placedQty) || 0,
-        sourceId: r.sourceId || null
-      }));
-    }
-    const by = /* @__PURE__ */ new Map();
-    for (const m of data.movements || []) {
-      if (!m || m.deleted || !m.orderId || !m.boxNumber) continue;
-      const q = Number(m.qty) || 0;
-      const promised = m.kind === "allocated" ? q : m.kind === "unallocated" ? -q : 0;
-      const placed = m.kind === "placed" ? q : m.kind === "unplaced" ? -q : 0;
-      if (!promised && !placed) continue;
-      const box = norm(m.boxNumber);
-      const cn = m.caseNum == null ? null : Number(m.caseNum);
-      const k = `${box}|${m.orderId}|${cn == null ? "" : cn}`;
-      const e = by.get(k) || { boxNumber: box, orderId: m.orderId, caseNum: cn, spec: m.spec || null, qty: 0, placedQty: 0, sourceId: m.sourceId || null };
-      e.qty += promised;
-      e.placedQty += placed;
-      if (!e.spec && m.spec) e.spec = m.spec;
-      by.set(k, e);
-    }
-    return [...by.values()].filter(keep);
+    return live.filter(keep).map((r) => ({
+      boxNumber: norm(r.boxNumber),
+      orderId: r.orderId,
+      caseNum: r.caseNum == null ? null : Number(r.caseNum),
+      spec: r.spec || null,
+      qty: Number(r.qty) || 0,
+      placedQty: Number(r.placedQty) || 0,
+      /* When the promise was made. The report of boxes promised and not yet
+         carried sorts on it — oldest first, because a box promised on Monday
+         is a different problem from one promised an hour ago. It used to read
+         the movement's `at`; the reservation's own createdAt is the same fact,
+         first-hand. */
+      since: r.createdAt || null,
+      sourceId: r.sourceId || null
+    }));
   }
   function promisedOutstanding(rows) {
     return rows.reduce((t, r) => t + Math.max(0, (Number(r.qty) || 0) - (Number(r.placedQty) || 0)), 0);
@@ -6251,8 +6261,8 @@ Here's the order:`;
       stamp
     );
     if (m.kind === "counted" && row.boxNumber) {
-      const p = projectBox(next.movements, row.boxNumber);
-      const diff = row.qty - p.onShelf;
+      const shelfNow = placeOf(next, row.boxNumber).onShelf;
+      const diff = row.qty - shelfNow;
       if (diff !== 0) {
         const adj = {
           id: uid("mv"),
@@ -6268,7 +6278,7 @@ Here's the order:`;
           reelCode: null,
           source: row.source,
           sourceId: row.sourceId,
-          note: `Count wins: counted ${row.qty}, shelf projected ${p.onShelf}${m.note ? " \u2014 " + m.note : ""}`,
+          note: `Count wins: counted ${row.qty}, shelf projected ${shelfNow}${m.note ? " \u2014 " + m.note : ""}`,
           updatedAt: stamp
         };
         return { ...next, movements: [...next.movements, adj] };
@@ -6287,16 +6297,6 @@ Here's the order:`;
     }
     return rows.reduce((acc, m) => recordMovement(acc, m), prev);
   }
-  function physicalOnShelf(movements, boxNumber) {
-    const rows = (movements || []).filter((m) => m && !m.deleted && m.boxNumber === boxNumber);
-    let n = 0;
-    for (const m of rows) {
-      const q = Number(m.qty) || 0;
-      if (m.kind === "made" || m.kind === "adjusted") n += q;
-      else if (m.kind === "placed" || m.kind === "scrapped" || m.kind === "damaged") n -= q;
-    }
-    return Math.max(0, n);
-  }
   function placeOf(data, boxNumber) {
     const want = String(boxNumber || "").trim().toUpperCase();
     const goneOrders = new Set((data.orders || []).filter((o) => o && (o.stage === "Shipped" || o.stage === "Cancelled")).map((o) => o.id));
@@ -6312,9 +6312,12 @@ Here's the order:`;
     inCases.sort((a, b) => String(a.orderId).localeCompare(String(b.orderId)) || a.caseNum - b.caseNum);
     const packed = inCases.reduce((t, x) => t + x.qty, 0);
     const p = projectBox(data.movements || [], boxNumber);
-    const onShelf = Math.max(0, (p.made || 0) - (p.scrapped || 0) - (p.shipped || 0) - packed);
+    const onShelfRaw = (p.made || 0) - (p.scrapped || 0) - (p.shipped || 0) - packed;
+    const onShelf = Math.max(0, onShelfRaw);
+    const promised = promisedOutstanding(promiseRows(data, { boxNumber }));
+    const available = Math.max(0, onShelf - promised);
     const bays = [...new Set((data.bondingRuns || []).filter((r) => r && !r.deleted && String(r.boxNumber || "").trim().toUpperCase() === want).map((r) => String(r.location || "").trim()).filter((loc) => BOX_LOCATIONS.includes(loc)))].sort();
-    return { inCases, packed, onShelf, bays, unplaced: bays.length ? 0 : onShelf };
+    return { inCases, packed, onShelf, onShelfRaw, promised, available, bays, unplaced: bays.length ? 0 : onShelf };
   }
   function placeLabel(data, boxNumber) {
     const p = placeOf(data, boxNumber);
@@ -6329,23 +6332,18 @@ Here's the order:`;
     const rows = (movements || []).filter((m) => !m.deleted && m.boxNumber === boxNumber);
     const made = rows.filter((m) => m.kind === "made" || m.kind === "adjusted").reduce((t, m) => t + Number(m.qty || 0), 0);
     const byOrder = {};
-    if (LEDGER_RESERVATIONS.length) {
+    {
       const box = String(boxNumber || "").trim().toUpperCase();
       for (const r of LEDGER_RESERVATIONS) {
         if (!r || r.deleted || r.state === "released") continue;
         if (String(r.boxNumber || "").trim().toUpperCase() !== box) continue;
         byOrder[r.orderId] = (byOrder[r.orderId] || 0) + (Number(r.qty) || 0);
       }
-    } else {
-      for (const m of rows) {
-        if (m.kind === "allocated") byOrder[m.orderId] = (byOrder[m.orderId] || 0) + Number(m.qty || 0);
-        if (m.kind === "unallocated") byOrder[m.orderId] = (byOrder[m.orderId] || 0) - Number(m.qty || 0);
-      }
     }
     const allocated = Object.values(byOrder).reduce((t, q) => t + q, 0);
     const scrapped = rows.filter((m) => m.kind === "scrapped").reduce((t, m) => t + Number(m.qty || 0), 0);
     const shipped = rows.filter((m) => m.kind === "shipped").reduce((t, m) => t + Number(m.qty || 0), 0);
-    return { made, allocated, scrapped, shipped, onShelf: made - allocated - scrapped - shipped, byOrder };
+    return { made, allocated, scrapped, shipped, byOrder };
   }
   function adjustBatchQuantity(prev, { boxNumber, spec, newQty, note }) {
     const p = projectBox(prev.movements, boxNumber);
@@ -6358,7 +6356,7 @@ Here's the order:`;
       source: "bonding",
       note: note || `Batch quantity corrected from ${p.made} to ${newQty}`
     }));
-    const shelf = p.made - p.allocated - p.scrapped;
+    const shelf = placeOf(prev, boxNumber).available;
     const shortfall = delta < 0 ? Math.min(0, shelf + delta) : 0;
     if (shortfall < 0) {
       const alloc = promiseRows(prev, { boxNumber }).filter((a) => Math.max(0, (Number(a.qty) || 0) - (Number(a.placedQty) || 0)) > 0);
@@ -8072,7 +8070,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
         const updatedRuns = prevData.bondingRuns.map((r) => {
           const damagedMatch = damagedItems.find((it) => it.id === r.id);
           if (damagedMatch) {
-            const trueAvailable2 = Math.max(Number(r.toStock || 0), physicalOnShelf(LEDGER_MOVEMENTS, r.boxNumber));
+            const trueAvailable2 = Math.max(Number(r.toStock || 0), placeOf(ledgerView(), r.boxNumber).onShelf);
             if (trueAvailable2 > 0) {
               newDamagedPicks.push({
                 id: uid("pick"),
@@ -8090,7 +8088,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
           if (!match) return r;
           const requested = Number(match.confirmedQty);
           const alreadyPicked = (data.stockPicks || []).filter((p) => p.boxNumber === r.boxNumber).reduce((t, p) => t + (Number(p.qtyPicked) || 0), 0);
-          const fromLedger = Math.max(0, physicalOnShelf(LEDGER_MOVEMENTS, r.boxNumber) - alreadyPicked);
+          const fromLedger = Math.max(0, placeOf(ledgerView(), r.boxNumber).onShelf - alreadyPicked);
           const trueAvailable = Math.max(Number(r.toStock || 0), fromLedger);
           const qty = Math.min(requested, trueAvailable);
           if (qty < requested) shortfalls.push({ boxNumber: r.boxNumber, requested, actual: qty });
@@ -8953,7 +8951,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
       ), isOpen && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", null), /* @__PURE__ */ React.createElement("td", { colSpan: 4, className: "px-3 pb-3" }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-xs", style: { background: "#F7F7F5" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("th", { className: "text-left py-1" }, "Customer"), /* @__PURE__ */ React.createElement("th", { className: "text-right py-1" }, "Qty needed"))), /* @__PURE__ */ React.createElement("tbody", null, byCustomer.map((c) => /* @__PURE__ */ React.createElement("tr", { key: c.customer, style: { borderTop: "1px solid #E5E5E0" } }, /* @__PURE__ */ React.createElement("td", { className: "py-1" }, c.customer), /* @__PURE__ */ React.createElement("td", { className: "text-right py-1 font-medium" }, c.qty))))))));
     }), rows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 4 }, "Nothing outstanding in ", catLabel, ".")))), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto print-clean", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product spec"), /* @__PURE__ */ React.createElement(Th, null, "Customer"), /* @__PURE__ */ React.createElement(Th, { w: 90 }, "Order"), /* @__PURE__ */ React.createElement(ThR, { w: 80 }, "Qty"))), /* @__PURE__ */ React.createElement("tbody", null, rows.flatMap((r, ri) => [
       ...r.breakdown.map((b, bi) => /* @__PURE__ */ React.createElement("tr", { key: r.spec + "-" + bi, className: ri % 2 ? "" : "bg-black/[0.015]", style: { borderTop: bi === 0 ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-3 no-wrap" }, bi === 0 ? r.spec : ""), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, b.customer, b.boxType && b.boxType !== DEFAULT_BOX_TYPE && /* @__PURE__ */ React.createElement("span", { style: { marginLeft: 6, fontSize: 10.5, fontWeight: 700, color: "#7A4D00", background: "#FFF0A6", borderRadius: 999, padding: "1px 7px", whiteSpace: "nowrap" } }, b.boxType, " boxes")), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, b.orderId)), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, b.qty, b.toMake != null && b.toMake !== b.qty && /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 11, marginLeft: 6 } }, "make ", b.toMake)))),
-      /* @__PURE__ */ React.createElement("tr", { key: r.spec + "-total", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-3 no-wrap font-semibold", colSpan: 3, style: { textAlign: "right", color: INK_MUTED } }, r.onShelf > 0 ? /* @__PURE__ */ React.createElement(React.Fragment, null, "Ordered ", /* @__PURE__ */ React.createElement("b", { style: { color: INK } }, r.qty), " \xB7 ", /* @__PURE__ */ React.createElement("span", { style: { color: GREEN } }, r.covered ?? r.onShelf, " on the shelf"), r.shelfWrongBox > 0 && /* @__PURE__ */ React.createElement("span", { style: { color: AMBER } }, " \xB7 ", r.shelfWrongBox, " more on the shelf in the wrong box"), " \xB7 to make") : /* @__PURE__ */ React.createElement(React.Fragment, null, "Total to make"), r.toMake > 0 && r.byBoxType && Object.keys(r.byBoxType).some((k) => k !== DEFAULT_BOX_TYPE) && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: "#7A4D00" } }, Object.entries(r.byBoxType).map(([k, v]) => `${v} in ${k} boxes`).join(" \xB7 "))), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-bold", style: { color: r.toMake === 0 ? GREEN : INK } }, r.toMake === 0 ? "covered" : r.toMake))
+      /* @__PURE__ */ React.createElement("tr", { key: r.spec + "-total", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-3 no-wrap font-semibold", colSpan: 3, style: { textAlign: "right", color: INK_MUTED } }, r.freeOnShelf > 0 ? /* @__PURE__ */ React.createElement(React.Fragment, null, "Ordered ", /* @__PURE__ */ React.createElement("b", { style: { color: INK } }, r.qty), " \xB7 ", /* @__PURE__ */ React.createElement("span", { style: { color: GREEN } }, r.covered ?? r.freeOnShelf, " free on the shelf"), r.shelfWrongBox > 0 && /* @__PURE__ */ React.createElement("span", { style: { color: AMBER } }, " \xB7 ", r.shelfWrongBox, " more on the shelf in the wrong box"), " \xB7 to make") : /* @__PURE__ */ React.createElement(React.Fragment, null, "Total to make"), r.toMake > 0 && r.byBoxType && Object.keys(r.byBoxType).some((k) => k !== DEFAULT_BOX_TYPE) && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: "#7A4D00" } }, Object.entries(r.byBoxType).map(([k, v]) => `${v} in ${k} boxes`).join(" \xB7 "))), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-bold", style: { color: r.toMake === 0 ? GREEN : INK } }, r.toMake === 0 ? "covered" : r.toMake))
     ]), rows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 4 }, "Nothing outstanding in ", catLabel, "."))))), viewMode === "order" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto no-print", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(SortTh, { col: "spec", sortBy: leftSortBy, sortDir: leftSortDir, onSort: leftToggleSort, className: "text-left px-3 py-2" }, "Product spec"), /* @__PURE__ */ React.createElement(SortTh, { col: "ordered", sortBy: leftSortBy, sortDir: leftSortDir, onSort: leftToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 90 } }, "Ordered"), /* @__PURE__ */ React.createElement(SortTh, { col: "made", sortBy: leftSortBy, sortDir: leftSortDir, onSort: leftToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 90 } }, "Made"), /* @__PURE__ */ React.createElement(SortTh, { col: "remaining", sortBy: leftSortBy, sortDir: leftSortDir, onSort: leftToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 100 } }, "Remaining"), /* @__PURE__ */ React.createElement(SortTh, { col: "status", sortBy: leftSortBy, sortDir: leftSortDir, onSort: leftToggleSort, className: "text-left px-3 py-2", style: { width: 120 } }, "Status"))), /* @__PURE__ */ React.createElement("tbody", null, sortedLeftRows.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 no-wrap" }, /* @__PURE__ */ React.createElement(Spec, { s: r.spec })), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.ordered), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.made), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.remaining), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Badge, { color: statusColor[r.status] }, r.status)))), leftRows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 5 }, orderId ? "No line items." : "Pick an order.")))), orderId && /* @__PURE__ */ React.createElement("div", { className: "print-only" }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Georgia, serif", fontWeight: 700, fontSize: 22, color: NAVY } }, "What's Left To Make \u2014 ", orderId, order ? ` \u2014 ${order.customer}` : ""), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 2 } }, (/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", year: "numeric", month: "long", day: "numeric" })), /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { marginTop: 16 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product spec"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Ordered"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Made"), /* @__PURE__ */ React.createElement(ThR, { w: 100 }, "Remaining"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Status"))), /* @__PURE__ */ React.createElement("tbody", null, sortedLeftRows.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.id, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3" }, /* @__PURE__ */ React.createElement(Spec, { s: r.spec })), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.ordered), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.made), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.remaining), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.status))), sortedLeftRows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 5 }, "No line items."))))), viewMode === "eva" && /* @__PURE__ */ React.createElement(ProductionScheduleView, { data, embedded: true }), viewMode === "top2" && (top2.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "text-sm py-8", style: { color: INK_MUTED } }, "Set a Priority on at least one order to see this.") : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "flex gap-6 mb-4 text-sm" }, top2.map((o, i) => /* @__PURE__ */ React.createElement("div", { key: o.id }, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Priority order #", i + 1, ":"), " ", /* @__PURE__ */ React.createElement(Mono, { className: "font-semibold" }, o.id), " \u2014 ", o.customer, " (P", o.priority, ")"))), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product spec"), top2.map((o) => /* @__PURE__ */ React.createElement(ThR, { key: o.id, w: 110 }, o.id)), /* @__PURE__ */ React.createElement(ThR, { w: 110 }, "Combined"))), /* @__PURE__ */ React.createElement("tbody", null, top2Rows.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.spec, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 no-wrap" }, /* @__PURE__ */ React.createElement(Spec, { s: r.spec })), top2.map((o) => /* @__PURE__ */ React.createElement("td", { key: o.id, className: "text-right px-3" }, r.qtyByOrder[o.id] || 0)), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-semibold" }, r.combined)))))))));
   }
   function CustomersView({ data }) {
@@ -10590,7 +10588,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
         className: "flex items-baseline justify-between gap-3 px-4 py-2.5",
         style: { borderTop: i ? `1px solid #F0F0EC` : "none" }
       },
-      /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { fontWeight: 600, color: INK } }, /* @__PURE__ */ React.createElement(SpecWithRef, { spec: r.spec, customerRef: r.customerRef })), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-0.5", style: { color: INK_MUTED } }, r.boxNumber ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Mono, null, r.boxNumber), r.batchCode ? /* @__PURE__ */ React.createElement(React.Fragment, null, " \xB7 batch ", /* @__PURE__ */ React.createElement(Mono, null, r.batchCode)) : null) : /* @__PURE__ */ React.createElement("span", { style: { color: AMBER, fontWeight: 600 } }, "not run yet \u2014 no box or batch assigned")), setCaseOverrides && r.boxNumber && /* @__PURE__ */ React.createElement("div", { className: "mt-1.5" }, /* @__PURE__ */ React.createElement(CaseMover, { boxNumber: r.boxNumber, caseNum: chosen.caseNum, caseOverrides, setCaseOverrides }))),
+      /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { fontWeight: 600, color: INK } }, /* @__PURE__ */ React.createElement(SpecWithRef, { spec: r.spec, customerRef: r.customerRef })), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-0.5", style: { color: INK_MUTED } }, r.boxNumber ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Mono, null, r.boxNumber), r.batchCode ? /* @__PURE__ */ React.createElement(React.Fragment, null, " \xB7 batch ", /* @__PURE__ */ React.createElement(Mono, null, r.batchCode)) : null) : /* @__PURE__ */ React.createElement("span", { style: { color: AMBER, fontWeight: 600 } }, "not run yet \u2014 no box or batch assigned")), setCaseOverrides && r.boxNumber && /* @__PURE__ */ React.createElement("div", { className: "mt-1.5" }, /* @__PURE__ */ React.createElement(CaseMover, { boxNumber: r.boxNumber, caseNum: chosen.caseNum, caseOverrides, setCaseOverrides, cases }))),
       /* @__PURE__ */ React.createElement("span", { className: "font-mono shrink-0", style: { fontWeight: 800, fontSize: 13.5 } }, r.qty)
     )), /* @__PURE__ */ React.createElement(
       "div",
@@ -11596,7 +11594,7 @@ This changes the order quantities. It is recorded in the change log and can be r
           /* @__PURE__ */ React.createElement("span", { className: "font-semibold", style: { color: INK } }, "Case ", /* @__PURE__ */ React.createElement(Mono, { className: "font-bold" }, c.caseNum)),
           /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, c.contributions.reduce((t, r) => t + (Number(r.qty) || 0), 0), " items")
         ),
-        /* @__PURE__ */ React.createElement("div", { className: "px-4 py-2" }, c.contributions.map((row, ri) => /* @__PURE__ */ React.createElement("div", { key: ri, className: "py-2", style: { borderTop: ri ? `1px solid #EFEFEC` : "none" } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline justify-between gap-3" }, /* @__PURE__ */ React.createElement(SpecWithRef, { className: "text-sm", style: { color: INK, fontWeight: 600 }, spec: row.spec, customerRef: row.customerRef }), /* @__PURE__ */ React.createElement("span", { className: "font-mono text-sm font-bold shrink-0" }, row.qty)), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement(Mono, { style: { color: row.boxNumber ? INK : INK_MUTED } }, row.boxNumber || "not run yet"), row.batchCode ? /* @__PURE__ */ React.createElement(React.Fragment, null, " \xB7 batch ", /* @__PURE__ */ React.createElement(Mono, null, row.batchCode)) : null), row.boxNumber && /* @__PURE__ */ React.createElement("div", { className: "mt-2" }, /* @__PURE__ */ React.createElement(CaseMover, { boxNumber: row.boxNumber, caseNum: c.caseNum, caseOverrides, setCaseOverrides, size: 44 }))))),
+        /* @__PURE__ */ React.createElement("div", { className: "px-4 py-2" }, c.contributions.map((row, ri) => /* @__PURE__ */ React.createElement("div", { key: ri, className: "py-2", style: { borderTop: ri ? `1px solid #EFEFEC` : "none" } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline justify-between gap-3" }, /* @__PURE__ */ React.createElement(SpecWithRef, { className: "text-sm", style: { color: INK, fontWeight: 600 }, spec: row.spec, customerRef: row.customerRef }), /* @__PURE__ */ React.createElement("span", { className: "font-mono text-sm font-bold shrink-0" }, row.qty)), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement(Mono, { style: { color: row.boxNumber ? INK : INK_MUTED } }, row.boxNumber || "not run yet"), row.batchCode ? /* @__PURE__ */ React.createElement(React.Fragment, null, " \xB7 batch ", /* @__PURE__ */ React.createElement(Mono, null, row.batchCode)) : null), row.boxNumber && /* @__PURE__ */ React.createElement("div", { className: "mt-2" }, /* @__PURE__ */ React.createElement(CaseMover, { boxNumber: row.boxNumber, caseNum: c.caseNum, caseOverrides, setCaseOverrides, cases: caseRows, size: 44 }))))),
         /* @__PURE__ */ React.createElement(
           "div",
           {
@@ -11634,7 +11632,7 @@ This changes the order quantities. It is recorded in the change log and can be r
             className: ci % 2 ? "" : "bg-black/[0.015]",
             style: { borderTop: ri === 0 ? `2px solid ${NAVY}` : `1px solid ${BORDER}` }
           },
-          /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-3" }, ri === 0 && /* @__PURE__ */ React.createElement(Mono, null, c.caseNum), row.boxNumber && /* @__PURE__ */ React.createElement("div", { className: "mt-1" }, /* @__PURE__ */ React.createElement(CaseMover, { boxNumber: row.boxNumber, caseNum: c.caseNum, caseOverrides, setCaseOverrides }))),
+          /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-3" }, ri === 0 && /* @__PURE__ */ React.createElement(Mono, null, c.caseNum), row.boxNumber && /* @__PURE__ */ React.createElement("div", { className: "mt-1" }, /* @__PURE__ */ React.createElement(CaseMover, { boxNumber: row.boxNumber, caseNum: c.caseNum, caseOverrides, setCaseOverrides, cases: caseRows }))),
           /* @__PURE__ */ React.createElement("td", { className: "px-3 no-wrap" }, /* @__PURE__ */ React.createElement(Spec, { s: row.spec })),
           /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs", style: { color: row.boxNumber ? INK : INK_MUTED } }, row.boxNumber || "not run yet")),
           /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs", style: { color: row.batchCode ? INK : INK_MUTED } }, row.batchCode || "\u2014")),
@@ -11821,14 +11819,16 @@ The manifest will list them as cases with no pallet, and the gross weight will b
     const boxes = [...new Set(runs.map((r) => r.boxNumber))];
     const shelfByLocation = /* @__PURE__ */ new Map();
     const byOrder = /* @__PURE__ */ new Map();
-    let onShelf = 0, made = 0, scrapped = 0;
+    let onShelf = 0, made = 0, scrapped = 0, free = 0;
     for (const box of boxes) {
       const p = projectBox(data.movements, box);
       const rows = runs.filter((r) => r.boxNumber === box);
       const ledgered = p.made > 0;
       made += ledgered ? p.made : rows.reduce((t, r) => t + Number(r.amountMade || 0), 0);
       scrapped += p.scrapped || 0;
-      const shelf = ledgered ? p.onShelf : rows.reduce((t, r) => t + Number(r.toStock || 0), 0);
+      const place = ledgered ? placeOf(data, box) : null;
+      const shelf = place ? place.onShelf : rows.reduce((t, r) => t + Number(r.toStock || 0), 0);
+      free += place ? place.available : rows.reduce((t, r) => t + Number(r.toStock || 0), 0);
       if (shelf > 0) {
         onShelf += shelf;
         const loc = (rows.find((r) => r.location) || {}).location || "(no shelf recorded)";
@@ -11858,6 +11858,7 @@ The manifest will list them as cases with no pallet, and the gross weight will b
       spec,
       made,
       onShelf,
+      free,
       scrapped,
       onOrders: [...byOrder.values()].sort((a, z) => String(a.dueDate).localeCompare(String(z.dueDate))),
       shelves: [...shelfByLocation.values()].sort((a, z) => z.qty - a.qty),
@@ -11873,7 +11874,7 @@ The manifest will list them as cases with no pallet, and the gross weight will b
     const w = result;
     const row = { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 };
     const Row = ({ label, value, sub }) => /* @__PURE__ */ React.createElement("div", { style: { ...row, padding: "6px 0", borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("span", null, label, sub && /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 12 } }, " ", sub)), /* @__PURE__ */ React.createElement("b", { style: { whiteSpace: "nowrap" } }, value));
-    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: INK_MUTED } }, "What we have"), /* @__PURE__ */ React.createElement("div", { className: "text-lg font-semibold font-display mb-3" }, w.spec), /* @__PURE__ */ React.createElement(Row, { label: "On the shelf", value: w.onShelf, sub: "free to pick" }), /* @__PURE__ */ React.createElement(Row, { label: "Committed to orders", value: w.onOrders.reduce((t, o) => t + o.qty, 0) }), w.otherQty > 0 && /* @__PURE__ */ React.createElement(Row, { label: "Other Stock", value: w.otherQty }), /* @__PURE__ */ React.createElement(Row, { label: "Reels available to bond", value: `${Math.round(w.reelMetres)}m`, sub: `${w.reels.length} reel${w.reels.length === 1 ? "" : "s"}` }), /* @__PURE__ */ React.createElement(Row, { label: "Still ordered by customers", value: w.ordered }), w.scrapped > 0 && /* @__PURE__ */ React.createElement(Row, { label: "Scrapped", value: w.scrapped })), w.shelves.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Where it is"), w.shelves.map((sh) => /* @__PURE__ */ React.createElement("div", { key: sh.location, className: "mb-2.5" }, /* @__PURE__ */ React.createElement("div", { style: { ...row, fontWeight: 600 } }, /* @__PURE__ */ React.createElement("span", { style: { color: sh.location.startsWith("(") ? AMBER : INK } }, sh.location), /* @__PURE__ */ React.createElement("span", { style: { whiteSpace: "nowrap" } }, sh.qty)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, sh.boxes.map((b) => `${b.boxNumber} (${b.qty})`).join(" \xB7 "))))), w.onOrders.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Who has claimed it"), w.onOrders.map((o) => /* @__PURE__ */ React.createElement("div", { key: o.orderId, className: "mb-2.5" }, /* @__PURE__ */ React.createElement("div", { style: { ...row, fontWeight: 600 } }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, o.orderId), " ", o.customer, o.dueDate ? /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontWeight: 400 } }, " \xB7 due ", o.dueDate) : null), /* @__PURE__ */ React.createElement("span", { style: { whiteSpace: "nowrap" } }, o.qty)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, o.boxes.map((b) => `${b.boxNumber} (${b.qty})`).join(" \xB7 "), o.inCases.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, " \u2014 in case", o.inCases.length === 1 ? "" : "s", " ", [...new Set(o.inCases.map((c) => c.caseNum))].sort((a, z) => a - z).join(", ")))))), w.other.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Other stock"), w.other.map((o) => /* @__PURE__ */ React.createElement("div", { key: o.id, style: { ...row, padding: "4px 0" } }, /* @__PURE__ */ React.createElement("span", null, o.boxNumber || "(no code)", o.notes ? /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " \xB7 ", o.notes) : null), /* @__PURE__ */ React.createElement("b", { style: { whiteSpace: "nowrap" } }, o.qty)))), w.reels.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Reels that could make more"), w.reels.map((r) => /* @__PURE__ */ React.createElement("div", { key: r.batchNumber, style: { ...row, padding: "4px 0" } }, /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, r.batchNumber), /* @__PURE__ */ React.createElement("b", { style: { whiteSpace: "nowrap" } }, Math.round(r.remaining), "m")))));
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: INK_MUTED } }, "What we have"), /* @__PURE__ */ React.createElement("div", { className: "text-lg font-semibold font-display mb-3" }, w.spec), /* @__PURE__ */ React.createElement(Row, { label: "On the shelf", value: w.onShelf, sub: "what you would count at the bay" }), /* @__PURE__ */ React.createElement(Row, { label: "Free to pick", value: w.free, sub: "not promised to anyone" }), /* @__PURE__ */ React.createElement(Row, { label: "Committed to orders", value: w.onOrders.reduce((t, o) => t + o.qty, 0) }), w.otherQty > 0 && /* @__PURE__ */ React.createElement(Row, { label: "Other Stock", value: w.otherQty }), /* @__PURE__ */ React.createElement(Row, { label: "Reels available to bond", value: `${Math.round(w.reelMetres)}m`, sub: `${w.reels.length} reel${w.reels.length === 1 ? "" : "s"}` }), /* @__PURE__ */ React.createElement(Row, { label: "Still ordered by customers", value: w.ordered }), w.scrapped > 0 && /* @__PURE__ */ React.createElement(Row, { label: "Scrapped", value: w.scrapped })), w.shelves.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Where it is"), w.shelves.map((sh) => /* @__PURE__ */ React.createElement("div", { key: sh.location, className: "mb-2.5" }, /* @__PURE__ */ React.createElement("div", { style: { ...row, fontWeight: 600 } }, /* @__PURE__ */ React.createElement("span", { style: { color: sh.location.startsWith("(") ? AMBER : INK } }, sh.location), /* @__PURE__ */ React.createElement("span", { style: { whiteSpace: "nowrap" } }, sh.qty)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, sh.boxes.map((b) => `${b.boxNumber} (${b.qty})`).join(" \xB7 "))))), w.onOrders.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Who has claimed it"), w.onOrders.map((o) => /* @__PURE__ */ React.createElement("div", { key: o.orderId, className: "mb-2.5" }, /* @__PURE__ */ React.createElement("div", { style: { ...row, fontWeight: 600 } }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, o.orderId), " ", o.customer, o.dueDate ? /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontWeight: 400 } }, " \xB7 due ", o.dueDate) : null), /* @__PURE__ */ React.createElement("span", { style: { whiteSpace: "nowrap" } }, o.qty)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, o.boxes.map((b) => `${b.boxNumber} (${b.qty})`).join(" \xB7 "), o.inCases.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, " \u2014 in case", o.inCases.length === 1 ? "" : "s", " ", [...new Set(o.inCases.map((c) => c.caseNum))].sort((a, z) => a - z).join(", ")))))), w.other.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Other stock"), w.other.map((o) => /* @__PURE__ */ React.createElement("div", { key: o.id, style: { ...row, padding: "4px 0" } }, /* @__PURE__ */ React.createElement("span", null, o.boxNumber || "(no code)", o.notes ? /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " \xB7 ", o.notes) : null), /* @__PURE__ */ React.createElement("b", { style: { whiteSpace: "nowrap" } }, o.qty)))), w.reels.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Reels that could make more"), w.reels.map((r) => /* @__PURE__ */ React.createElement("div", { key: r.batchNumber, style: { ...row, padding: "4px 0" } }, /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, r.batchNumber), /* @__PURE__ */ React.createElement("b", { style: { whiteSpace: "nowrap" } }, Math.round(r.remaining), "m")))));
   }
   var DISCREPANCY_DISMISSALS_KEY = "matrixDiscrepancyDismissals";
   var DISCREPANCY_SEEN_KEY = "matrixDiscrepancySeen";
@@ -12057,38 +12058,46 @@ The manifest will list them as cases with no pallet, and the gross weight will b
         ref: r.boxNumber || r.id
       });
     }
-    for (const r of runs) {
-      const made = Number(r.amountMade) || 0, on = Number(r.onOrderQty) || 0, st = Number(r.toStock) || 0;
-      if (made === on + st) continue;
+    for (const box of new Set(runs.map((r) => r.boxNumber).filter(Boolean))) {
+      const rows = runs.filter((r) => r.boxNumber === box);
+      const onRows = rows.reduce((t, r) => t + (Number(r.amountMade) || 0), 0);
+      const inLedger = projectBox(data.movements || [], box).made;
+      if (!inLedger) continue;
+      if (onRows === inLedger) continue;
+      const tmpl = rows[0] || {};
       add({
-        id: `sums:${r.id}:${made}:${on}:${st}`,
-        kind: "Doesn't add up",
+        id: `rowvsledger:${box}:${onRows}:${inLedger}`,
+        kind: "Row and ledger differ",
         severity: "high",
-        what: `${r.boxNumber || r.id}: ${made} made, but ${on} on order + ${st} to stock = ${on + st}`,
-        detail: r.productSize || "",
-        why: `${Math.abs(made - (on + st))} box${Math.abs(made - (on + st)) === 1 ? "" : "es"} ${made > on + st ? "unaccounted for" : "counted twice"}.`,
-        todo: "Open the row in Bonding and correct whichever figure is wrong.",
+        what: `${box}: the bonding ${rows.length === 1 ? "row says" : "rows say"} ${onRows} made, the ledger says ${inLedger}`,
+        detail: `${rows.length} row${rows.length === 1 ? "" : "s"} \xB7 ${tmpl.productSize || ""}`,
+        why: "Every figure for this box \u2014 what is on the shelf, what is free to promise, what still needs making \u2014 is worked out from the ledger. While the row disagrees, the two screens showing this box will not match.",
+        todo: "Count the box. Then correct whichever is wrong: the row in Bonding, or an adjustment in Box History with the reason.",
         fixHere: true,
-        ref: r.boxNumber || r.id
+        ref: box
       });
     }
     for (const box of new Set(runs.map((r) => r.boxNumber).filter(Boolean))) {
-      const p = projectBox(data.movements || [], box);
-      if (p.onShelf >= 0) continue;
+      const p = placeOf(data, box);
+      if (p.onShelfRaw >= 0) continue;
       const tmpl = runs.find((r) => r.boxNumber === box) || {};
       add({
-        id: `negshelf:${box}:${p.onShelf}`,
+        id: `negshelf:${box}:${p.onShelfRaw}`,
         kind: "Ledger below zero",
         severity: "high",
-        what: `${box} projects ${p.onShelf} on the shelf \u2014 more taken out than was ever put in`,
-        detail: `${p.made} made, ${p.allocated} allocated, ${p.scrapped} scrapped \xB7 ${tmpl.productSize || ""}`,
+        what: `${box} projects ${p.onShelfRaw} on the shelf \u2014 more taken out than was ever put in`,
+        detail: `${p.packed} in live cases, ${p.promised} promised and not yet carried \xB7 ${tmpl.productSize || ""}`,
         why: "A box cannot hold less than nothing. Some movement against this box is wrong \u2014 usually a correction written twice, or a count that was filed as a movement and then acted on.",
         todo: "Open the box's history in Stock and find the movement that does not match what happened. Write an adjustment with the reason; never edit the ledger.",
         fixHere: false,
         ref: box
       });
     }
-    const noLoc = runs.filter((r) => (Number(r.toStock) || 0) > 0 && !String(r.location || "").trim());
+    const noLoc = runs.filter((r) => {
+      if (!r.boxNumber) return false;
+      const p = placeOf(data, r.boxNumber);
+      return p.onShelf > 0 && !p.bays.length;
+    }).filter((r, i, all) => all.findIndex((x) => x.boxNumber === r.boxNumber) === i);
     if (noLoc.length) {
       add({
         id: `noloc:${noLoc.map((r) => r.id).sort().join(",")}`,
@@ -12338,27 +12347,23 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     const up = (x) => String(x || "").trim().toUpperCase();
     const live = new Set((data.orders || []).filter((o) => o && !o.deleted && !["Shipped", "Cancelled"].includes(o.stage || "")).map((o) => o.id));
     const by = /* @__PURE__ */ new Map();
-    for (const m of data.movements || []) {
-      if (!m || m.deleted || !m.orderId || !live.has(m.orderId)) continue;
-      const k = `${m.orderId}|${up(m.boxNumber)}`;
+    for (const r of promiseRows(data)) {
+      if (!live.has(r.orderId)) continue;
+      const k = `${r.orderId}|${up(r.boxNumber)}`;
       const e = by.get(k) || {
-        orderId: m.orderId,
-        boxNumber: up(m.boxNumber),
-        spec: m.spec || "",
+        orderId: r.orderId,
+        boxNumber: up(r.boxNumber),
+        spec: r.spec || "",
         allocated: 0,
         placed: 0,
-        since: m.at || null,
+        since: r.since || null,
         caseNum: null
       };
-      if (m.kind === "allocated") {
-        e.allocated += Number(m.qty) || 0;
-        if (m.caseNum != null && e.caseNum == null) e.caseNum = Number(m.caseNum);
-      }
-      if (m.kind === "unallocated") e.allocated -= Number(m.qty) || 0;
-      if (m.kind === "placed") e.placed += Number(m.qty) || 0;
-      if (m.kind === "unplaced") e.placed -= Number(m.qty) || 0;
-      if (m.spec && !e.spec) e.spec = m.spec;
-      if (m.at && (!e.since || String(m.at) < String(e.since))) e.since = m.at;
+      e.allocated += Number(r.qty) || 0;
+      e.placed += Number(r.placedQty) || 0;
+      if (r.caseNum != null && e.caseNum == null) e.caseNum = Number(r.caseNum);
+      if (r.spec && !e.spec) e.spec = r.spec;
+      if (r.since && (!e.since || String(r.since) < String(e.since))) e.since = r.since;
       by.set(k, e);
     }
     const runOf = (box) => (data.bondingRuns || []).find((r) => r && !r.deleted && up(r.boxNumber) === box);
@@ -13738,7 +13743,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       /* @__PURE__ */ React.createElement("button", { onClick: state.dismiss, className: "opacity-60 hover:opacity-100", style: { background: "none", border: "none", color: "#fff", cursor: "pointer" } }, "\u2715")
     );
   }
-  function useDraftForm(draftKey, blank) {
+  function useDraftForm(draftKey, blank, opts = {}) {
     const storageKey = DRAFT_PREFIX + draftKey;
     const blankJson = JSON.stringify(blank);
     const [restored, setRestored] = useState(false);
@@ -13752,7 +13757,14 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
           localStorage.removeItem(storageKey);
           return blank;
         }
-        return { ...blank, ...parsed.form };
+        const restoredForm = { ...blank, ...parsed.form };
+        const freshen = opts.freshenOnNewDay || [];
+        if (freshen.length) {
+          const savedDay = String(parsed.at || "").slice(0, 10);
+          const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+          if (savedDay && savedDay !== today) for (const k of freshen) restoredForm[k] = blank[k];
+        }
+        return restoredForm;
       } catch {
         return blank;
       }
@@ -16248,8 +16260,28 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       setEditForm(null);
       setEditError("");
     };
+    const editErrorRef = React.useRef(null);
+    React.useEffect(() => {
+      if (editError && editErrorRef.current && editErrorRef.current.scrollIntoView) {
+        try {
+          editErrorRef.current.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+        } catch {
+        }
+      }
+    }, [editError]);
     const saveEdit = () => {
-      if (!String(editForm.size || "").trim() || !editForm.amountMade) return;
+      if (!String(editForm.size || "").trim()) {
+        setEditError("This row has no size, so there is nothing to save against. Pick the size from the list, then press the tick again.");
+        return;
+      }
+      if (editForm.amountMade === "" || editForm.amountMade == null) {
+        setEditError("Amount made is empty. Put the number of boxes in, then press the tick again.");
+        return;
+      }
+      if (Number(editForm.amountMade) === 0) {
+        setEditError("Amount made is 0. If the run made nothing, delete the row rather than save it as zero; if it made boxes, put the number in.");
+        return;
+      }
       const editAllocs = (editForm.allocations || []).filter((a) => a.orderId && Number(a.qty) > 0);
       if (editAllocs.length > 1) {
         setEditError("This row can go to one order plus stock. To send it to more than one, save this and use Split to orders\u2026 \u2014 that writes a row for each so every screen can tell them apart.");
@@ -16481,7 +16513,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       }
     )), /* @__PURE__ */ React.createElement(SortTh, { col: "productSize", sortBy: bondSortBy, sortDir: bondSortDir, onSort: bondToggleSort, className: "text-left px-3 py-2" }, "Product size"), /* @__PURE__ */ React.createElement(Th, { w: 160 }, "Baseline batch"), /* @__PURE__ */ React.createElement(SortTh, { col: "boxNumber", sortBy: bondSortBy, sortDir: bondSortDir, onSort: bondToggleSort, className: "text-left px-3 py-2", style: { width: 150 } }, "Batch code"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Manufactured"), /* @__PURE__ */ React.createElement(SortTh, { col: "amountMade", sortBy: bondSortBy, sortDir: bondSortDir, onSort: bondToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 100 } }, "Amount made"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "On order"), /* @__PURE__ */ React.createElement(Th, { w: 130 }, "EVA code"), /* @__PURE__ */ React.createElement(Th, { w: 130 }, "Tape code"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "To stock"), /* @__PURE__ */ React.createElement(Th, { w: 140 }, "Customer"), /* @__PURE__ */ React.createElement(Th, { w: 130 }, "Work number"), /* @__PURE__ */ React.createElement(ThR, { w: 100 }, "Meters/box"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Location"), /* @__PURE__ */ React.createElement(Th, { w: 90 }, "Checked"), /* @__PURE__ */ React.createElement(ThR, { w: 110 }, "Time of day"), /* @__PURE__ */ React.createElement(SortTh, { col: "date", sortBy: bondSortBy, sortDir: bondSortDir, onSort: bondToggleSort, startDir: "desc", className: "text-left px-3 py-2", style: { width: 140 } }, "Date"), /* @__PURE__ */ React.createElement(SortTh, { col: "meterageUsed", sortBy: bondSortBy, sortDir: bondSortDir, onSort: bondToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 110 } }, "Meterage used"), /* @__PURE__ */ React.createElement(Th, null, "Comments"), /* @__PURE__ */ React.createElement("th", { style: { width: 70 } }))), /* @__PURE__ */ React.createElement("tbody", null, visibleBondingRuns.map((r, i) => {
       const isEditing = editingId === r.id;
-      return /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}`, background: isEditing ? "#FFF8EF" : void 0 } }, isEditing ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-2" }), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-2", colSpan: 19 }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(BondingSpecFields, { values: editForm, setValues: setEditForm, listId: "size-catalog-bonding" }), /* @__PURE__ */ React.createElement(BondingRestFields, { values: editForm, setValues: setEditForm, orderOptions, availableBatches, existingBoxCodes: bondingRuns.map((r2) => r2.boxNumber).filter(Boolean), allBondingRuns: bondingRuns, knownBatchCodes, onUnknownBatch: handleUnknownBatch, materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, lineItems: data.lineItems, evaRuns: data.evaRuns, fullData: data, excludeRunId: editingId }), editError && /* @__PURE__ */ React.createElement("div", { className: "text-sm mb-2", style: { color: RED } }, "\u26A0 ", editError)))) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-center" }, Number(r.toStock) > 0 && /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: selectedForRemoval.has(r.id), onChange: () => toggleSelectedForRemoval(r.id) })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 no-wrap" }, /* @__PURE__ */ React.createElement(Spec, { s: r.productSize, checked: String(r.checked) === "Yes" })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.baselineBatchCode ? (() => {
+      return /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}`, background: isEditing ? "#FFF8EF" : void 0 } }, isEditing ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-2" }), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-2", colSpan: 19 }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(BondingSpecFields, { values: editForm, setValues: setEditForm, listId: "size-catalog-bonding" }), /* @__PURE__ */ React.createElement(BondingRestFields, { values: editForm, setValues: setEditForm, orderOptions, availableBatches, existingBoxCodes: bondingRuns.map((r2) => r2.boxNumber).filter(Boolean), allBondingRuns: bondingRuns, knownBatchCodes, onUnknownBatch: handleUnknownBatch, materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, lineItems: data.lineItems, evaRuns: data.evaRuns, fullData: data, excludeRunId: editingId }), editError && /* @__PURE__ */ React.createElement("div", { ref: editErrorRef, className: "text-sm mb-2", style: { color: RED } }, "\u26A0 ", editError)))) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-center" }, Number(r.toStock) > 0 && /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: selectedForRemoval.has(r.id), onChange: () => toggleSelectedForRemoval(r.id) })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 no-wrap" }, /* @__PURE__ */ React.createElement(Spec, { s: r.productSize, checked: String(r.checked) === "Yes" })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.baselineBatchCode ? (() => {
         const batch = batchByCode.get(r.baselineBatchCode);
         const cleared = batch?.cleared === "Yes";
         return /* @__PURE__ */ React.createElement(Badge, { color: cleared ? RED : GREEN }, r.baselineBatchCode);
@@ -16507,11 +16539,31 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         },
         /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014"),
         BOX_LOCATIONS.map((loc) => /* @__PURE__ */ React.createElement("option", { key: loc, value: loc }, loc))
-      ), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED, maxWidth: 190, lineHeight: 1.35 } }, placeLabel(data, r.boxNumber))), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(ToggleSwitch, { on: r.checked === "Yes", onChange: () => toggleRowChecked(r.id) })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, r.timeOfDay ? /* @__PURE__ */ React.createElement(React.Fragment, null, r.timeOfDay, formatRuntime(r.runtimeHrs) && /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " (", formatRuntime(r.runtimeHrs), ")")) : ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.date || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right font-medium" }, (Number(r.amountMade) || 0) * (Number(r.metersPerBox) || 0), "m"), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(CommentCell, { text: r.comments }))), /* @__PURE__ */ React.createElement("td", { className: "px-2 whitespace-nowrap" }, isEditing ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: saveEdit, title: "Save", className: "opacity-60 hover:opacity-100 px-1", style: { color: GREEN } }, "\u2713"), /* @__PURE__ */ React.createElement("button", { onClick: cancelEdit, title: "Cancel", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: () => startEdit(r), title: "Edit", className: "opacity-40 hover:opacity-100 px-1" }, "\u270E"), /* @__PURE__ */ React.createElement("button", { onClick: () => removeRow(r.id), title: "Delete", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715"))));
+      ), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED, maxWidth: 190, lineHeight: 1.35 } }, placeLabel(data, r.boxNumber))), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(ToggleSwitch, { on: r.checked === "Yes", onChange: () => toggleRowChecked(r.id) })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, r.timeOfDay ? /* @__PURE__ */ React.createElement(React.Fragment, null, r.timeOfDay, formatRuntime(r.runtimeHrs) && /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " (", formatRuntime(r.runtimeHrs), ")")) : ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.date || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right font-medium" }, (Number(r.amountMade) || 0) * (Number(r.metersPerBox) || 0), "m"), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(CommentCell, { text: r.comments }))), /* @__PURE__ */ React.createElement("td", { className: "px-2 whitespace-nowrap" }, isEditing ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: saveEdit, title: "Save", className: "opacity-60 hover:opacity-100 px-1", style: { color: GREEN } }, "\u2713"), /* @__PURE__ */ React.createElement("button", { onClick: cancelEdit, title: "Cancel", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715"), editError && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: RED, maxWidth: 220, whiteSpace: "normal", lineHeight: 1.35 } }, "\u26A0 ", editError)) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: () => startEdit(r), title: "Edit", className: "opacity-40 hover:opacity-100 px-1" }, "\u270E"), /* @__PURE__ */ React.createElement("button", { onClick: () => removeRow(r.id), title: "Delete", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715"))));
     }), visibleBondingRuns.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 19 }, search ? `No boxes match "${search}".` : "No rows yet."))))), /* @__PURE__ */ React.createElement("div", { className: "mobile-only" }, /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden" }, /* @__PURE__ */ React.createElement(
       PhoneRecordCards,
       {
         rows: visibleBondingRuns,
+        editingId,
+        onEdit: (r) => startEdit(r),
+        onDelete: (r) => removeRow(r.id),
+        renderEdit: () => /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(BondingSpecFields, { values: editForm, setValues: setEditForm, listId: "size-catalog-bonding" }), /* @__PURE__ */ React.createElement(BondingRestFields, { values: editForm, setValues: setEditForm, orderOptions, availableBatches, existingBoxCodes: bondingRuns.map((x) => x.boxNumber).filter(Boolean), allBondingRuns: bondingRuns, knownBatchCodes, onUnknownBatch: handleUnknownBatch, materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, lineItems: data.lineItems, evaRuns: data.evaRuns, fullData: data, excludeRunId: editingId }), editError && /* @__PURE__ */ React.createElement("div", { className: "text-sm my-2", style: { color: RED } }, "\u26A0 ", editError), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mt-3" }, /* @__PURE__ */ React.createElement(
+          "button",
+          {
+            onClick: saveEdit,
+            className: "flex-1 text-sm font-semibold text-white",
+            style: { minHeight: 44, borderRadius: 6, border: "none", background: GREEN }
+          },
+          "\u2713 Save"
+        ), /* @__PURE__ */ React.createElement(
+          "button",
+          {
+            onClick: cancelEdit,
+            className: "text-sm font-semibold px-4",
+            style: { minHeight: 44, borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", color: INK }
+          },
+          "Cancel"
+        ))),
         empty: "No boxes logged yet.",
         primary: (r) => r.boxNumber || "(no code)",
         secondary: (r) => `${r.productSize || "\u2014"} \xB7 ${r.amountMade ?? "\u2014"} made \u2192 ${r.workNumber || "stock"} \xB7 ${r.date || "\u2014"}`,
@@ -17434,16 +17486,32 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       ), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => addReel(size) }, "+ Add"))), err && /* @__PURE__ */ React.createElement("div", { style: { color: RED, fontSize: 12.5, marginTop: 6 } }, "\u26A0 ", err));
     }), sizes.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { padding: "24px 0", textAlign: "center", color: INK_MUTED } }, "No sizes catalogued for ", range, " yet."), sizes.length > 0 && visibleSizes.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { padding: "24px 0", textAlign: "center", color: INK_MUTED } }, 'No sizes match "', search, '".')));
   }
-  function PhoneRecordCards({ rows, primary, secondary, detail, empty, onOpen }) {
+  function PhoneRecordCards({
+    rows,
+    primary,
+    secondary,
+    detail,
+    empty,
+    onOpen,
+    editingId,
+    renderEdit,
+    onEdit,
+    onDelete
+  }) {
     const [openId, setOpenId] = useState(null);
     if (!rows.length) return /* @__PURE__ */ React.createElement("div", { className: "text-sm px-3 py-6 text-center", style: { color: INK_MUTED } }, empty);
     return /* @__PURE__ */ React.createElement("div", null, rows.map((r, i) => {
-      const open = openId === r.id;
+      const editingThis = editingId != null && editingId === r.id;
+      const open = openId === r.id || editingThis;
       const details = (detail(r) || []).filter((d) => d && d[1] !== void 0 && d[1] !== null && d[1] !== "");
-      return /* @__PURE__ */ React.createElement("div", { key: r.id, style: { borderTop: i ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement(
+      return /* @__PURE__ */ React.createElement("div", { key: r.id, style: {
+        borderTop: i ? `1px solid ${BORDER}` : "none",
+        background: editingThis ? "#FFF8EF" : void 0
+      } }, /* @__PURE__ */ React.createElement(
         "button",
         {
           onClick: () => {
+            if (editingThis) return;
             setOpenId(open ? null : r.id);
             if (onOpen) onOpen(r);
           },
@@ -17452,7 +17520,24 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         },
         /* @__PURE__ */ React.createElement("div", { className: "min-w-0" }, /* @__PURE__ */ React.createElement("div", { className: "font-mono font-semibold text-sm", style: { color: INK } }, primary(r)), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-0.5", style: { color: INK_MUTED } }, secondary(r))),
         /* @__PURE__ */ React.createElement("span", { className: "text-xs shrink-0", style: { color: INK_MUTED, marginTop: 2 } })
-      ), open && /* @__PURE__ */ React.createElement("div", { className: "px-3 pb-3" }, details.map(([label, value], j) => /* @__PURE__ */ React.createElement("div", { key: j, className: "flex items-baseline justify-between text-xs py-1", style: { borderTop: j ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, label), /* @__PURE__ */ React.createElement("span", { className: "text-right ml-3", style: { color: INK } }, value)))));
+      ), editingThis && renderEdit && /* @__PURE__ */ React.createElement("div", { className: "px-3 pb-3" }, renderEdit(r)), open && !editingThis && /* @__PURE__ */ React.createElement("div", { className: "px-3 pb-3" }, details.map(([label, value], j) => /* @__PURE__ */ React.createElement("div", { key: j, className: "flex items-baseline justify-between text-xs py-1", style: { borderTop: j ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, label), /* @__PURE__ */ React.createElement("span", { className: "text-right ml-3", style: { color: INK } }, value))), (onEdit || onDelete) && /* 44px targets: this is pressed standing at a machine. */
+      /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mt-3" }, onEdit && /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          onClick: () => onEdit(r),
+          className: "flex-1 text-sm font-semibold",
+          style: { minHeight: 44, borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", color: NAVY }
+        },
+        "\u270E Edit"
+      ), onDelete && /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          onClick: () => onDelete(r),
+          className: "text-sm font-semibold px-4",
+          style: { minHeight: 44, borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", color: RED }
+        },
+        "Delete"
+      ))));
     }));
   }
   function GlueLineView({ data, setData }) {
@@ -17499,7 +17584,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       mylarOpened: false,
       mylarVariantId: ""
     };
-    const [form, setForm, draftRestored, discardDraft] = useDraftForm("glueLine", blank);
+    const [form, setForm, draftRestored, discardDraft] = useDraftForm("glueLine", blank, { freshenOnNewDay: ["date", "timeOfDay"] });
     React.useEffect(() => {
       if (form.direct !== true) return;
       const spec = form.range === "Custom" ? String(form.size || "").trim() : `${form.range} ${String(form.size || "").trim()}`.trim();
@@ -17837,7 +17922,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
           return working;
         });
       }
-      setForm((f) => ({ ...f, batchNumber: "", timeOfDay: nowHHMM() }));
+      setForm((f) => ({ ...f, batchNumber: "", date: todayISO(), timeOfDay: nowHHMM() }));
       printLabel(newRow);
       if (justAdded?.timerId) clearTimeout(justAdded.timerId);
       const timerId = setTimeout(() => setJustAdded(null), 8e3);
@@ -18029,6 +18114,26 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       PhoneRecordCards,
       {
         rows: visibleGlueRows,
+        editingId,
+        onEdit: (r) => startEdit(r),
+        onDelete: (r) => removeRow(r.id),
+        renderEdit: () => /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(GlueLineSpecFields, { values: editForm, setValues: setEditForm, listId }), /* @__PURE__ */ React.createElement(GlueLineRestFields, { values: editForm, setValues: setEditForm, orderOptions, existingBatchNumbers: rows.map((x) => x.batchNumber).filter(Boolean), materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, hideMaterialsSection: true }), editError && /* @__PURE__ */ React.createElement("div", { className: "text-sm my-2", style: { color: RED } }, "\u26A0 ", editError), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mt-3" }, /* @__PURE__ */ React.createElement(
+          "button",
+          {
+            onClick: saveEdit,
+            className: "flex-1 text-sm font-semibold text-white",
+            style: { minHeight: 44, borderRadius: 6, border: "none", background: GREEN }
+          },
+          "\u2713 Save"
+        ), /* @__PURE__ */ React.createElement(
+          "button",
+          {
+            onClick: cancelEdit,
+            className: "text-sm font-semibold px-4",
+            style: { minHeight: 44, borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", color: INK }
+          },
+          "Cancel"
+        ))),
         empty: "No reel batches yet.",
         primary: (r) => r.batchNumber || "(no code)",
         secondary: (r) => `${r.productSize || "\u2014"} \xB7 ${r.meterage ?? "\u2014"}m \xB7 ${r.date || "\u2014"}`,
@@ -18631,7 +18736,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         /* @__PURE__ */ React.createElement("br", null),
         /* @__PURE__ */ React.createElement("span", { className: "font-semibold" }, "Tap here to update."),
         " Nothing typed on this device is lost \u2014 it goes up once the new build loads."
-      ), rejected && !updateRequired && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2 p-2", style: { background: "rgba(243,166,166,0.12)", border: "1px solid rgba(243,166,166,0.4)", borderRadius: 5, color: "#FBD9D9" } }, /* @__PURE__ */ React.createElement("div", { className: "font-semibold mb-1" }, syncStatus === "offline" ? "The connection dropped while saving:" : "This isn't a dropped connection \u2014 Supabase is rejecting specific data:"), syncFailureDetail.map((f, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "mb-1" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, f.table), ": ", f.message)), /* @__PURE__ */ React.createElement("div", { style: { color: "#D9C7C7" } }, "Everything else is still syncing normally \u2014 only the item(s) above are stuck. Send this to Claude to fix.")), syncWarnings && syncWarnings.some((w) => w.dropped && w.dropped.length) && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2 p-2", style: { background: "rgba(245,212,138,0.10)", border: "1px solid rgba(245,212,138,0.4)", borderRadius: 5, color: "#F7E3B4" } }, /* @__PURE__ */ React.createElement("div", { className: "font-semibold mb-1" }, "Saved, but the database is missing a column:"), syncWarnings.filter((w) => w.dropped && w.dropped.length).map((w, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "mb-1" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, w.table), ": ", w.message)), /* @__PURE__ */ React.createElement("div", { style: { color: "#D9CBA8" } }, "Send this to Claude \u2014 it's a one-line migration.")), syncWarnings && syncWarnings.some((w) => w.retired && w.retired.length) && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2 p-2", style: { background: "rgba(143,217,168,0.10)", border: "1px solid rgba(143,217,168,0.4)", borderRadius: 5, color: "#CFEFD9" } }, /* @__PURE__ */ React.createElement("div", { className: "font-semibold mb-1" }, "Tidied up on the way to the cloud:"), syncWarnings.filter((w) => w.retired && w.retired.length).map((w, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "mb-1" }, w.message, ". Nothing to do."))), /* @__PURE__ */ React.createElement(
+      ), rejected && !updateRequired && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2 p-2", style: { background: "rgba(243,166,166,0.12)", border: "1px solid rgba(243,166,166,0.4)", borderRadius: 5, color: "#FBD9D9" } }, /* @__PURE__ */ React.createElement("div", { className: "font-semibold mb-1" }, syncStatus === "offline" ? "The connection dropped while saving:" : "This isn't a dropped connection \u2014 Supabase is rejecting specific data:"), syncFailureDetail.map((f, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "mb-1" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, f.table), ": ", f.message)), /* @__PURE__ */ React.createElement("div", { style: { color: "#D9C7C7" } }, "Everything else is still syncing normally \u2014 only the item(s) above are stuck. Send this to Claude to fix.")), syncWarnings && syncWarnings.some((w) => w.dropped && w.dropped.length) && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2 p-2", style: { background: "rgba(245,212,138,0.10)", border: "1px solid rgba(245,212,138,0.4)", borderRadius: 5, color: "#F7E3B4" } }, /* @__PURE__ */ React.createElement("div", { className: "font-semibold mb-1" }, "Saved, but the database is missing a column:"), syncWarnings.filter((w) => w.dropped && w.dropped.length).map((w, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "mb-1" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, w.table), ": ", w.message)), /* @__PURE__ */ React.createElement("div", { style: { color: "#D9CBA8" } }, "Send this to Claude \u2014 it's a one-line migration.")), syncWarnings && syncWarnings.some((w) => w.stale && w.stale.length) && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2 p-2", style: { background: "rgba(245,212,138,0.10)", border: "1px solid rgba(245,212,138,0.4)", borderRadius: 5, color: "#F7E3B4" } }, /* @__PURE__ */ React.createElement("div", { className: "font-semibold mb-1" }, "Not saved \u2014 the cloud was newer:"), syncWarnings.filter((w) => w.stale && w.stale.length).map((w, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "mb-1" }, w.message)), /* @__PURE__ */ React.createElement("div", { style: { color: "#D9CBA8" } }, "Check the screen you were last working on before entering it again.")), syncWarnings && syncWarnings.some((w) => w.retired && w.retired.length) && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2 p-2", style: { background: "rgba(143,217,168,0.10)", border: "1px solid rgba(143,217,168,0.4)", borderRadius: 5, color: "#CFEFD9" } }, /* @__PURE__ */ React.createElement("div", { className: "font-semibold mb-1" }, "Tidied up on the way to the cloud:"), syncWarnings.filter((w) => w.retired && w.retired.length).map((w, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "mb-1" }, w.message, ". Nothing to do."))), /* @__PURE__ */ React.createElement(
         "button",
         {
           onClick: refreshFromCloud,
@@ -18859,8 +18964,10 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           const prev = prevDataRef.current;
           pushSyncChanges(syncClientRef.current, prev, storedData).then((res) => {
             prevDataRef.current = advancePrevForTables(prev, data, res.okTables);
+            if (res.refused && res.refused.length) reconcileRefusedRowsRef.current(res.refused);
           }).catch((err) => {
             if (err && err.okTables) prevDataRef.current = advancePrevForTables(prev, data, err.okTables);
+            if (err && err.refused && err.refused.length) reconcileRefusedRowsRef.current(err.refused);
           });
         }
       };
@@ -18948,6 +19055,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         setSyncFailureDetail(null);
         markSynced();
         setSyncWarnings(res && res.warnings && res.warnings.length ? res.warnings : null);
+        if (res && res.refused && res.refused.length) reconcileRefusedRowsRef.current(res.refused);
         releasePendingDeletions(Object.keys(deletedByTable));
         const retired = (res && res.warnings || []).flatMap((w) => w.retired || []);
         if (retired.length) {
@@ -18970,6 +19078,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         releasePendingDeletions(okTables);
         setPendingCount(countPendingChanges(prevDataRef.current, data));
         if (err.warnings && err.warnings.length) setSyncWarnings(err.warnings);
+        if (err.refused && err.refused.length) reconcileRefusedRowsRef.current(err.refused);
         const offline = failures.length === 0 || failures.some(isNetworkFailure);
         setSyncStatus(offline ? "offline" : "connected");
         setSyncFailureDetail(failures.length ? failures : null);
@@ -19051,6 +19160,36 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       const res = await fetchRemoteTables(client);
       return mergeRemoteIntoData(currentData, res.data);
     };
+    const reconcileRefusedRows = async (refused) => {
+      if (!refused || !refused.length) return;
+      const client = syncClientRef.current;
+      if (!client) return;
+      const count = refused.reduce((t, r) => t + (r.ids || []).length, 0);
+      try {
+        const res = await fetchRemoteTables(client);
+        noteWatermarks(res);
+        const merged = mergeRemoteIntoData(dataRef.current, res.data);
+        skipNextPushRef.current = true;
+        setDataRaw(merged);
+        prevDataRef.current = merged;
+        setPendingCount(0);
+        markSynced();
+        setSyncWarnings((cur) => [...(cur || []).filter((w) => !(w.stale && w.stale.length)), {
+          table: refused.map((r) => r.table).join(", "),
+          stale: refused,
+          message: `${count} ${count === 1 ? "change was" : "changes were"} not saved \u2014 the cloud already had a newer version. This device has been brought up to date.`
+        }]);
+      } catch (e) {
+        console.error("Could not reconcile refused rows:", e);
+        setSyncWarnings((cur) => [...(cur || []).filter((w) => !(w.stale && w.stale.length)), {
+          table: refused.map((r) => r.table).join(", "),
+          stale: refused,
+          message: `${count} ${count === 1 ? "change was" : "changes were"} not saved \u2014 the cloud already had a newer version, and this device could not fetch it. Press Refresh.`
+        }]);
+      }
+    };
+    const reconcileRefusedRowsRef = useRef(reconcileRefusedRows);
+    reconcileRefusedRowsRef.current = reconcileRefusedRows;
     const refreshFromCloud = async () => {
       if (!syncClientRef.current) return;
       setSyncStatus("refreshing");
@@ -19097,6 +19236,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         setSyncFailureDetail(null);
         setSyncWarnings(res.warnings && res.warnings.length ? res.warnings : null);
         markSynced();
+        if (res.refused && res.refused.length) await reconcileRefusedRows(res.refused);
       } catch (e) {
         console.error("Catch-up push failed:", e);
         prevDataRef.current = advancePrevForTables(remote, merged, e.okTables || []);
@@ -19123,6 +19263,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
               setSyncFailureDetail(null);
               setSyncWarnings(pushRes.warnings && pushRes.warnings.length ? pushRes.warnings : null);
               markSynced();
+              if (pushRes.refused && pushRes.refused.length) await reconcileRefusedRows(pushRes.refused);
             } catch (e) {
               console.error("Offline-recovery push failed:", e);
               prevDataRef.current = advancePrevForTables(remote2, merged2, e.okTables || []);
