@@ -1014,7 +1014,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-12.29";
+  var APP_VERSION = "2026-09-12.31";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1234,6 +1234,25 @@
     } },
     /* The acknowledgement as it was actually printed, kept so the customer can
        download the same document rather than a second render of it. */
+    /* Facts about a CUSTOMER rather than an order — who to ring, their terms,
+       their VAT treatment, and the notes that otherwise live in people's heads.
+       Keyed on the company name, the join everything else already uses. */
+    customers: {
+      table: "customers",
+      cols: {
+        companyName: "company_name",
+        contactName: "contact_name",
+        contactEmail: "contact_email",
+        contactPhone: "contact_phone",
+        vatTreatment: "vat_treatment",
+        customerVat: "customer_vat",
+        customerEori: "customer_eori",
+        accountNumber: "account_number",
+        createdAt: "created_at",
+        updatedAt: "updated_at",
+        updatedBy: "updated_by"
+      }
+    },
     orderAcknowledgements: { table: "order_acknowledgements", cols: {
       orderId: "order_id",
       createdAt: "created_at",
@@ -9138,11 +9157,167 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
           subtitle: `${theirOrders.length} order${theirOrders.length === 1 ? "" : "s"} \xB7 ${fmtMoney(totalValue)} total`
         }
       ), (() => {
+        const ids = new Set(theirOrders.map((o) => o.id));
+        const theirLines = (lineItems || []).filter((li) => !li.deleted && ids.has(li.orderId));
+        const dateOf = (id) => (theirOrders.find((o) => o.id === id) || {}).orderDate || "";
+        const bySpec = /* @__PURE__ */ new Map();
+        for (const li of theirLines) {
+          const k = String(li.description || "").trim();
+          if (!k) continue;
+          const cur = bySpec.get(k) || { spec: k, qty: 0, times: 0, last: "" };
+          cur.qty += Number(li.qty) || 0;
+          cur.times += 1;
+          const d = dateOf(li.orderId);
+          if (d > cur.last) cur.last = d;
+          bySpec.set(k, cur);
+        }
+        const buys = [...bySpec.values()].sort((a, b) => b.qty - a.qty);
+        const measurable = theirOrders.filter((o) => o.dueDate && o.shippedDate);
+        const onTime = measurable.filter((o) => o.shippedDate <= o.dueDate).length;
+        const lateDays = measurable.filter((o) => o.shippedDate > o.dueDate).map((o) => Math.round((new Date(o.shippedDate) - new Date(o.dueDate)) / 864e5));
+        const worstLate = lateDays.length ? Math.max(...lateDays) : 0;
+        const dates = theirOrders.map((o) => o.orderDate).filter(Boolean).sort();
+        const spanDays = dates.length > 1 ? Math.round((new Date(dates[dates.length - 1]) - new Date(dates[0])) / 864e5) : 0;
+        const halfAgo = spanDays > 60 ? new Date(Date.now() - spanDays / 2 * 864e5).toISOString().slice(0, 10) : null;
+        const recent = halfAgo ? theirOrders.filter((o) => (o.orderDate || "") >= halfAgo).length : null;
+        const earlier = halfAgo ? theirOrders.length - recent : null;
+        const theirMsgs = (data.orderMessages || []).filter((m) => !m.deleted && ids.has(m.orderId)).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+        const unanswered = theirMsgs.filter((m) => m.authorSide === "customer" && !m.readAt).length;
+        return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 } }, /* @__PURE__ */ React.createElement(Panel, { className: "p-4", style: { flex: "1 1 260px" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "How we have done for them"), measurable.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, marginTop: 6, color: INK_MUTED } }, "Nothing measurable yet \u2014 no order has both a due date and a shipped date.") : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: {
+          fontSize: 26,
+          fontWeight: 650,
+          marginTop: 4,
+          color: onTime === measurable.length ? GREEN : onTime / measurable.length >= 0.8 ? INK : RED
+        } }, onTime, " of ", measurable.length), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "shipped on or before the date they asked for", worstLate > 0 ? ` \xB7 worst was ${worstLate} day${worstLate === 1 ? "" : "s"} late` : "")), recent != null && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: {
+          marginTop: 10,
+          color: recent < earlier ? ORANGE : INK_MUTED,
+          fontWeight: recent < earlier ? 600 : 400
+        } }, recent === earlier ? `Ordering at the same rate as before (${recent} then ${earlier})` : recent < earlier ? `Ordering less than they were \u2014 ${earlier} orders, then ${recent}. Worth a call.` : `Ordering more than they were \u2014 ${earlier} orders, then ${recent}.`)), /* @__PURE__ */ React.createElement(Panel, { className: "p-4", style: { flex: "1 1 260px" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "What they are asking", unanswered > 0 ? " \u2014 unanswered" : ""), theirMsgs.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, marginTop: 6, color: INK_MUTED } }, "Nothing on any of their orders.") : theirMsgs.slice(0, 3).map((m) => /* @__PURE__ */ React.createElement("div", { key: m.id, style: {
+          marginTop: 7,
+          borderLeft: `3px solid ${m.authorSide === "customer" && !m.readAt ? ORANGE : BORDER}`,
+          paddingLeft: 8
+        } }, /* @__PURE__ */ React.createElement("div", { style: {
+          fontSize: 13,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          fontStyle: m.withdrawnAt ? "italic" : "normal",
+          color: m.withdrawnAt ? INK_MUTED : INK
+        } }, m.withdrawnAt ? "withdrawn" : m.body), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, m.authorSide === "matrix" ? "us" : "them", " \xB7 ", m.orderId))))), buys.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "What they buy \u2014 ", buys.length, " size", buys.length === 1 ? "" : "s", ", most first"), /* @__PURE__ */ React.createElement("table", { className: "w-full", style: { fontSize: 13.5, borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", { style: { color: INK_MUTED, borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement(Th, null, "Size"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Boxes"), /* @__PURE__ */ React.createElement(ThR, { w: 70 }, "Orders"), /* @__PURE__ */ React.createElement(ThR, { w: 110 }, "Last ordered"))), /* @__PURE__ */ React.createElement("tbody", null, buys.slice(0, 12).map((bq) => /* @__PURE__ */ React.createElement("tr", { key: bq.spec, style: { borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3" }, bq.spec), /* @__PURE__ */ React.createElement("td", { className: "text-right py-2 px-3", style: { fontWeight: 600 } }, bq.qty.toLocaleString()), /* @__PURE__ */ React.createElement("td", { className: "text-right py-2 px-3" }, bq.times), /* @__PURE__ */ React.createElement("td", { className: "text-right py-2 px-3 text-xs", style: { color: INK_MUTED } }, bq.last || "\u2014"))))), buys.length > 12 && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: INK_MUTED } }, "Showing the top 12 of ", buys.length, ".")));
+      })(), (() => {
+        const rec = (data.customers || []).find((c) => !c.deleted && c.companyName === selected) || { id: selected, companyName: selected };
+        const stamp = () => (/* @__PURE__ */ new Date()).toISOString();
+        const put = (field, value) => setData((prev) => {
+          const list = prev.customers || [];
+          const found = list.find((c) => c.id === selected);
+          const next = {
+            ...found || { id: selected, companyName: selected, createdAt: stamp(), deleted: false },
+            [field]: value,
+            updatedAt: stamp(),
+            updatedBy: currentActor()
+          };
+          return {
+            ...prev,
+            customers: found ? list.map((c) => c.id === selected ? next : c) : [...list, next],
+            ...appendLog(prev, {
+              action: "update",
+              entity: "customer",
+              entityId: selected,
+              summary: `${selected} \u2014 ${field} updated`
+            })
+          };
+        });
+        const Field = ({ label, field, wide, placeholder, lines }) => /* @__PURE__ */ React.createElement("label", { className: "text-xs", style: { color: INK_MUTED, flex: wide ? "1 1 100%" : "1 1 180px" } }, /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 3 } }, label), lines ? /* @__PURE__ */ React.createElement(
+          "textarea",
+          {
+            defaultValue: rec[field] || "",
+            rows: lines,
+            placeholder,
+            onBlur: (e) => {
+              if (e.target.value !== (rec[field] || "")) put(field, e.target.value);
+            },
+            style: {
+              font: "inherit",
+              fontSize: 14,
+              width: "100%",
+              padding: "8px 10px",
+              borderRadius: 4,
+              border: `1px solid ${BORDER}`,
+              background: "#fff",
+              color: INK,
+              resize: "vertical"
+            }
+          }
+        ) : /* @__PURE__ */ React.createElement(
+          "input",
+          {
+            defaultValue: rec[field] || "",
+            placeholder,
+            onBlur: (e) => {
+              if (e.target.value !== (rec[field] || "")) put(field, e.target.value);
+            },
+            style: {
+              font: "inherit",
+              fontSize: 14,
+              width: "100%",
+              minHeight: 38,
+              padding: "7px 10px",
+              borderRadius: 4,
+              border: `1px solid ${BORDER}`,
+              background: "#fff",
+              color: INK
+            }
+          }
+        ));
+        return /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-3", style: { color: INK_MUTED } }, "What we know about them"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 12, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(Field, { label: "Who to ring", field: "contactName", placeholder: "name" }), /* @__PURE__ */ React.createElement(Field, { label: "Telephone", field: "contactPhone", placeholder: "number" }), /* @__PURE__ */ React.createElement(Field, { label: "Email", field: "contactEmail", placeholder: "address" }), /* @__PURE__ */ React.createElement(Field, { label: "Account number", field: "accountNumber", placeholder: "on their paperwork" }), /* @__PURE__ */ React.createElement("label", { className: "text-xs", style: { color: INK_MUTED, flex: "1 1 180px" } }, /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 3 } }, "VAT treatment"), /* @__PURE__ */ React.createElement(
+          "select",
+          {
+            defaultValue: rec.vatTreatment || "",
+            onChange: (e) => put("vatTreatment", e.target.value),
+            style: {
+              font: "inherit",
+              fontSize: 14,
+              width: "100%",
+              minHeight: 38,
+              padding: "7px 10px",
+              borderRadius: 4,
+              border: `1px solid ${BORDER}`,
+              background: "#fff",
+              color: INK
+            }
+          },
+          /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014 decide on each order \u2014"),
+          /* @__PURE__ */ React.createElement("option", { value: "uk" }, "UK \u2014 20%"),
+          /* @__PURE__ */ React.createElement("option", { value: "eu" }, "EU \u2014 zero rated"),
+          /* @__PURE__ */ React.createElement("option", { value: "row" }, "Rest of world \u2014 exempt")
+        )), /* @__PURE__ */ React.createElement(Field, { label: "Their VAT number", field: "customerVat", placeholder: "for EU paperwork" }), /* @__PURE__ */ React.createElement(Field, { label: "Their EORI", field: "customerEori", placeholder: "for EU paperwork" }), /* @__PURE__ */ React.createElement(Field, { label: "Terms", field: "terms", placeholder: "30 days from invoice" }), /* @__PURE__ */ React.createElement(
+          Field,
+          {
+            label: "Delivery address",
+            field: "address",
+            wide: true,
+            lines: 3,
+            placeholder: "where their orders go"
+          }
+        ), /* @__PURE__ */ React.createElement(
+          Field,
+          {
+            label: "Anything worth knowing",
+            field: "notes",
+            wide: true,
+            lines: 3,
+            placeholder: "Won't take part deliveries. Always rings Dave, never emails."
+          }
+        )), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 8 } }, "Saved as you leave each box. This is ours \u2014 the customer never sees any of it.", rec.updatedBy ? ` Last changed by ${rec.updatedBy}.` : ""));
+      })(), (() => {
         const withAddr = theirOrders.find((o) => (o.address || "").trim());
         const last = theirOrders[0];
         const refs = [...new Set(theirOrders.map((o) => (o.reference || "").trim()).filter(Boolean))].slice(0, 4);
         const live = theirOrders.filter((o) => !["Shipped", "Cancelled"].includes(o.stage)).length;
-        return /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 22, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 240px", minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Delivery address"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, whiteSpace: "pre-wrap", marginTop: 3 } }, withAddr && withAddr.address || "None recorded on any order.")), /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 200px" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Their references"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, marginTop: 3 } }, refs.length ? refs.join(", ") : "\u2014"), /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED, marginTop: 12 } }, "Last ordered"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, marginTop: 3 } }, last ? last.orderDate || "\u2014" : "\u2014")), /* @__PURE__ */ React.createElement("div", { style: { flex: "0 0 auto", textAlign: "right" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 26, fontWeight: 650 } }, live), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "live now"))));
+        return /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 22, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 240px", minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Delivery address"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, whiteSpace: "pre-wrap", marginTop: 3 } }, (() => {
+          const onRecord = (data.customers || []).find((c) => !c.deleted && c.companyName === selected);
+          return onRecord && (onRecord.address || "").trim() || withAddr && withAddr.address || "None recorded \u2014 add it above.";
+        })())), /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 200px" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Their references"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, marginTop: 3 } }, refs.length ? refs.join(", ") : "\u2014"), /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED, marginTop: 12 } }, "Last ordered"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, marginTop: 3 } }, last ? last.orderDate || "\u2014" : "\u2014")), /* @__PURE__ */ React.createElement("div", { style: { flex: "0 0 auto", textAlign: "right" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 26, fontWeight: 650 } }, live), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "live now"))));
       })(), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, { w: 100 }, "Order"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Stage"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Order date"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Due date"), /* @__PURE__ */ React.createElement(ThR, { w: 100 }, "Value"))), /* @__PURE__ */ React.createElement("tbody", null, theirOrders.map((o, i) => /* @__PURE__ */ React.createElement("tr", { key: o.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3" }, /* @__PURE__ */ React.createElement(
         "button",
         {
