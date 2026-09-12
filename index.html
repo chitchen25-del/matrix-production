@@ -1014,7 +1014,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-12.23";
+  var APP_VERSION = "2026-09-12.24";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -15410,9 +15410,11 @@ It stops being offered on new orders and in the client hub. Orders that already 
     const [prices, setPrices] = useState({});
     const [vat, setVat] = useState(null);
     const [extra, setExtra] = useState({ accountNumber: "", customerVat: "", customerEori: "", fxRate: "" });
+    const [boxType, setBoxType] = useState(null);
     const [justDone, setJustDone] = useState(null);
     const open = waiting.find((o) => o.id === openId) || null;
     const vatKey = vat || (open ? suggestedVatTreatment(open) : "uk");
+    const boxKey = boxType != null ? boxType : open ? open.boxType || "" : "";
     const lines = open ? (data.lineItems || []).filter((li) => !li.deleted && li.orderId === open.id) : [];
     const priceOf = (li) => prices[li.id] !== void 0 ? prices[li.id] : Number(li.unitPrice) || "";
     const priced = lines.filter((li) => Number(priceOf(li)) > 0).length;
@@ -15424,10 +15426,15 @@ It stops being offered on new orders and in the client hub. Orders that already 
         window.alert(`${lines.length - priced} line${lines.length - priced === 1 ? "" : "s"} still have no price. Every line needs one before this goes back to the customer.`);
         return;
       }
+      if (!boxKey) {
+        window.alert("Set the carton first. The pick gate refuses shelf stock whose carton does not match the order, so an order without one cannot be filled from stock.");
+        return;
+      }
       if (!window.confirm(
         `Confirm ${open.customer}'s order at ${money(total)}?
 
-It becomes a live order, its cases are planned, and the prices go back to them in the client hub.`
+` + (boxKey ? `Packing in ${boxKey} cartons${open.boxType && open.boxType !== boxKey ? ` (was ${open.boxType})` : ""}.
+` : "") + `It becomes a live order, its cases are planned, and the prices go back to them in the client hub.`
       )) return;
       setData((prev) => {
         const stamp = (/* @__PURE__ */ new Date()).toISOString();
@@ -15439,7 +15446,13 @@ It becomes a live order, its cases are planned, and the prices go back to them i
         let next = {
           ...prev,
           lineItems: nextLines,
-          orders: prev.orders.map((o) => o.id === open.id ? { ...o, confirmedAt: stamp, confirmedBy: currentActor(), updatedAt: stamp } : o)
+          orders: prev.orders.map((o) => o.id === open.id ? {
+            ...o,
+            confirmedAt: stamp,
+            confirmedBy: currentActor(),
+            ...boxKey && boxKey !== o.boxType ? { boxType: boxKey } : {},
+            updatedAt: stamp
+          } : o)
         };
         const planned = planMissingCases(next, open.id);
         if (planned) next = planned.patch;
@@ -15447,7 +15460,7 @@ It becomes a live order, its cases are planned, and the prices go back to them i
           action: "portal_order_confirmed",
           entity: "order",
           entityId: open.id,
-          summary: `${open.id} (${open.customer}) placed on the client hub \u2014 confirmed by ${currentActor()}, ${lines.length} line${lines.length === 1 ? "" : "s"} priced, ${money(total)}`
+          summary: `${open.id} (${open.customer}) placed on the client hub \u2014 confirmed by ${currentActor()}, ${lines.length} line${lines.length === 1 ? "" : "s"} priced, ${money(total)}` + (boxKey && boxKey !== open.boxType ? `. Carton changed from ${open.boxType || "not set"} to ${boxKey}` : "")
         }) };
       });
       const ackOrder = { ...open, confirmedAt: (/* @__PURE__ */ new Date()).toISOString(), confirmedBy: currentActor() };
@@ -15504,6 +15517,8 @@ It becomes a live order, its cases are planned, and the prices go back to them i
             onClick: () => {
               setOpenId(on ? null : o.id);
               setPrices({});
+              setBoxType(null);
+              setVat(null);
             }
           },
           on ? "Close" : "Open"
@@ -15521,6 +15536,8 @@ It becomes a live order, its cases are planned, and the prices go back to them i
           onClick: () => {
             setOpenId(o.id === openId ? null : o.id);
             setPrices({});
+            setBoxType(null);
+            setVat(null);
           }
         },
         o.id === openId ? "Close" : "Open"
@@ -15593,6 +15610,24 @@ It becomes a live order, its cases are planned, and the prices go back to them i
       /* @__PURE__ */ React.createElement("option", { value: "uk" }, "UK \u2014 20%"),
       /* @__PURE__ */ React.createElement("option", { value: "eu" }, "EU \u2014 Zero Rated EC Goods Income"),
       /* @__PURE__ */ React.createElement("option", { value: "world" }, "Rest of world \u2014 Exempt")
+    )), /* @__PURE__ */ React.createElement("label", { className: "text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 3 } }, "Carton"), /* @__PURE__ */ React.createElement(
+      "select",
+      {
+        value: boxKey,
+        onChange: (e) => setBoxType(e.target.value),
+        style: {
+          font: "inherit",
+          fontSize: 13,
+          minHeight: 36,
+          padding: "6px 8px",
+          border: `1px solid ${boxKey ? BORDER : ORANGE}`,
+          borderRadius: 4,
+          background: "#fff",
+          color: INK
+        }
+      },
+      /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014 not set \u2014"),
+      BOX_TYPES.map((b) => /* @__PURE__ */ React.createElement("option", { key: b, value: b }, b))
     )), /* @__PURE__ */ React.createElement("label", { className: "text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 3 } }, "Account number"), /* @__PURE__ */ React.createElement(
       "input",
       {
