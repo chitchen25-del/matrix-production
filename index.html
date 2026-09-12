@@ -959,7 +959,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-11.22";
+  var APP_VERSION = "2026-09-12.4";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -5430,7 +5430,17 @@
         right: (
           /* Three buttons on one unwrapped line put "Customers" 52px off the
              right of a phone. Wrap, and they stack instead. (11 Sep 2026) */
-          /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-2 justify-end" }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => goTo && goTo("neworders") }, "+ New order"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => goTo && goTo("completed") }, "Completed orders"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => goTo && goTo("customers") }, "Customers"))
+          /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-2 justify-end" }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => goTo && goTo("neworders") }, "+ New order"), portalOrdersWaiting(data).length > 0 && /* @__PURE__ */ React.createElement(
+            Button,
+            {
+              variant: "accent",
+              onClick: () => goTo && goTo("clientorders"),
+              style: { background: ORANGE }
+            },
+            "Client orders (",
+            portalOrdersWaiting(data).length,
+            ")"
+          ), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => goTo && goTo("completed") }, "Completed orders"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => goTo && goTo("customers") }, "Customers"))
         )
       }
     ), /* @__PURE__ */ React.createElement("div", { className: "no-print flex items-center gap-2 flex-wrap mb-4" }, /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, "Sort"), /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement(Select, { value: sortBy, onChange: (e) => setSortBy(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "urgent" }, "Most urgent"), /* @__PURE__ */ React.createElement("option", { value: "id" }, "Order number"), /* @__PURE__ */ React.createElement("option", { value: "customer" }, "Customer"), /* @__PURE__ */ React.createElement("option", { value: "due" }, "Due date"))), /* @__PURE__ */ React.createElement("span", { className: "text-xs ml-2", style: { color: INK_MUTED } }, "Stage"), /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement(Select, { value: stageFilter, onChange: (e) => setStageFilter(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "all" }, "All stages"), Object.keys(STAGE_COLORS).filter((st) => st !== "Shipped").map((st) => /* @__PURE__ */ React.createElement("option", { key: st, value: st }, st)))), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, rows.length, " order", rows.length === 1 ? "" : "s")), top2.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5", style: { borderLeft: `4px solid ${RED}` } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: RED } }, "Most urgent right now"), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-5" }, top2.map((o) => /* @__PURE__ */ React.createElement(
@@ -14539,7 +14549,628 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       })(), /* @__PURE__ */ React.createElement("div", { className: "min-w-0" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm no-wrap", style: { color: INK } }, mat ? mat.name : mv.materialId), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, sourceLabel[mv.sourceType] || mv.sourceType, mv.note ? ` \u2014 ${mv.note}` : ""))), /* @__PURE__ */ React.createElement("div", { className: "text-right shrink-0" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold", style: { color: mv.qty < 0 ? RED : GREEN } }, mv.qty > 0 ? "+" : "", mv.qty), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, mv.date)));
     })));
   }
-  function MatrixOverviewView({ data, jumpToOrder }) {
+  function ordersMissingPlan(data) {
+    const live = (a) => (a || []).filter((x) => !x.deleted);
+    const out = [];
+    for (const o of live(data.orders)) {
+      if (["Shipped", "Cancelled"].includes(o.stage)) continue;
+      const hasCase = live(data.cases).some((c) => c.orderId === o.id);
+      if (hasCase) continue;
+      const mine = live(data.lineItems).filter((li) => li.orderId === o.id);
+      const { plannable } = plannableLines(data, mine);
+      if (!plannable.length) continue;
+      out.push({
+        order: o,
+        plannable,
+        boxes: plannable.reduce((t, li) => t + (Number(li.qty) || 0), 0)
+      });
+    }
+    return out;
+  }
+  function planMissingCases(data, orderId) {
+    const found = ordersMissingPlan(data).find((x) => x.order.id === orderId);
+    if (!found) return null;
+    const order = found.order;
+    const rows = planRowsForNewOrder(orderId, found.plannable, {
+      startingCaseNum: Number(order.startingCaseNum) || 0,
+      actor: currentActor(),
+      data
+    }).map((r) => ({ ...r, planBatch: "Original", updatedBy: "plan laid down on arrival" }));
+    if (!rows.length) return null;
+    const boxes = rows.reduce((t, r) => t + Object.values(r.planned).reduce((n, q) => n + Number(q || 0), 0), 0);
+    return {
+      rows,
+      patch: {
+        ...data,
+        cases: [...data.cases || [], ...rows],
+        ...appendLog(data, {
+          action: "packing_planned",
+          entity: "order",
+          entityId: orderId,
+          summary: `${orderId} (${order.customer || "no customer"}) arrived with no case plan \u2014 ${rows.length} case${rows.length === 1 ? "" : "s"} laid down, ${boxes} boxes`
+        })
+      }
+    };
+  }
+  var ACK_VAT_TREATMENTS = {
+    uk: { label: "20%", rateLabel: "Total VAT 20%", rate: 0.2 },
+    eu: { label: "Zero Rated EC Goods Income", rateLabel: "Total Zero Rated EC Goods Income", rate: 0 },
+    world: { label: "Exempt", rateLabel: "Total Exempt", rate: 0 }
+  };
+  var MATRIX_VAT_NUMBER = "003213350";
+  var MATRIX_EORI = "GB003213350000";
+  function suggestedVatTreatment(order) {
+    const a = String(order && order.address || "").toUpperCase();
+    const EU = [
+      "ITALY",
+      "GERMANY",
+      "FRANCE",
+      "SPAIN",
+      "POLAND",
+      "NETHERLANDS",
+      "BELGIUM",
+      "PORTUGAL",
+      "AUSTRIA",
+      "DENMARK",
+      "SWEDEN",
+      "FINLAND",
+      "IRELAND",
+      "CZECH",
+      "SLOVAK",
+      "HUNGARY",
+      "ROMANIA",
+      "BULGARIA",
+      "GREECE",
+      "CROATIA",
+      "SLOVENIA",
+      "ESTONIA",
+      "LATVIA",
+      "LITHUANIA",
+      "LUXEMBOURG",
+      "MALTA",
+      "CYPRUS"
+    ];
+    if (EU.some((c) => a.includes(c))) return "eu";
+    if (/UNITED KINGDOM|ENGLAND|SCOTLAND|WALES|ISLE OF MAN|\bUK\b/.test(a)) return "uk";
+    if (!a.trim()) return "uk";
+    return "world";
+  }
+  function orderAckDoc(order, lines, opts = {}) {
+    const esc = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const treatment = ACK_VAT_TREATMENTS[opts.vat || suggestedVatTreatment(order)] || ACK_VAT_TREATMENTS.uk;
+    const cur = String(order.currency || "GBP").toUpperCase();
+    const n2 = (n) => Number(n || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const dateLong = (d) => {
+      if (!d) return "";
+      const dt = new Date(d);
+      if (isNaN(dt)) return String(d);
+      return dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+    };
+    const priced = lines.filter((li) => !li.deleted);
+    const subtotal = priced.reduce((t, li) => t + (Number(li.qty) || 0) * (Number(li.unitPrice) || 0), 0);
+    const vat = subtotal * treatment.rate;
+    const lineRows = priced.map((li) => `
+    <tr>
+      <td class="desc">${esc(li.description)}</td>
+      <td class="r">${n2(li.qty)}</td>
+      <td class="r">${n2(li.unitPrice)}</td>
+      <td class="c">${esc(treatment.label)}</td>
+      <td class="r">${n2((Number(li.qty) || 0) * (Number(li.unitPrice) || 0))}</td>
+    </tr>`).join("");
+    const euLines = treatment === ACK_VAT_TREATMENTS.eu ? `
+    <tr>
+      <td class="desc">Dec CM, All the above items are creasing matrix - plastic extrusions, used in the folding carton industry HS Code 3921 1200 90</td>
+      <td class="r">1.00</td><td class="r">0.00</td><td class="c">${esc(treatment.label)}</td><td class="r">0.00</td>
+    </tr>
+    <tr>
+      <td class="desc">Export, The exporter of the products covered by this document (GB${esc(MATRIX_VAT_NUMBER)}) declares that, except where otherwise clearly indicated, these products are of United Kingdom preferential origin.<br>
+        EORI Number: ${esc(MATRIX_EORI)}${opts.customerVat ? `<br>Customers VAT Number: ${esc(opts.customerVat)}` : ""}${opts.customerEori ? `<br>Customers EORI Number: ${esc(opts.customerEori)}` : ""}</td>
+      <td class="r">1.00</td><td class="r">0.00</td><td class="c">${esc(treatment.label)}</td><td class="r">0.00</td>
+    </tr>` : "";
+    const conversionBox = cur !== "GBP" && Number(opts.fxRate) > 0 ? `
+    <div class="fx">
+      <div class="fx-h">GBP Equivalent Conversion</div>
+      <div class="fx-r">1 GBP = ${esc(opts.fxRate)} ${esc(cur)}</div>
+      <table class="fx-t">
+        <tr><th>VAT RATES</th><th class="r">NET GOODS</th><th class="r">VAT</th></tr>
+        <tr><td>${esc(treatment.label)}</td><td class="r">${n2(subtotal / Number(opts.fxRate))}</td><td class="r">${n2(vat / Number(opts.fxRate))}</td></tr>
+      </table>
+    </div>` : "";
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Order acknowledged ${esc(order.id)}</title>
+<style>
+  @page { size: A4; margin: 14mm 12mm; }
+  body { font-family: Arial, Helvetica, sans-serif; color: #1a1a1a; font-size: 10pt; margin: 0; }
+  .head { display: flex; gap: 18px; margin-bottom: 26px; }
+  .head > div { flex: 1 1 0; }
+  h1 { font-size: 21pt; font-weight: 400; letter-spacing: .01em; margin: 0 0 10px 0; line-height: 1.12; }
+  .addr { font-size: 9.5pt; line-height: 1.45; }
+  .facts div.k { font-weight: 700; font-size: 9.5pt; margin-top: 11px; }
+  .facts div.k:first-child { margin-top: 0; }
+  .facts div.v { font-size: 9.5pt; }
+  table.lines { width: 100%; border-collapse: collapse; margin-top: 6px; }
+  table.lines th { font-weight: 700; font-size: 10pt; padding: 5px 6px; border-bottom: 1.4px solid #1a1a1a; }
+  table.lines th.l, table.lines td.desc { text-align: left; }
+  table.lines th.r, table.lines td.r { text-align: right; }
+  table.lines th.c, table.lines td.c { text-align: center; }
+  table.lines td { padding: 8px 6px; border-bottom: .6px solid #c8c8c8; font-size: 9.5pt; vertical-align: top; }
+  td.desc { width: 46%; }
+  .totals { width: 62%; margin-left: 38%; margin-top: 2px; border-collapse: collapse; }
+  .totals td { padding: 6px 6px; font-size: 10pt; }
+  .totals td.k { text-align: right; font-weight: 700; }
+  .totals td.v { text-align: right; width: 30%; }
+  .totals tr.rule td { border-top: 1.1px solid #1a1a1a; }
+  .fx { float: left; width: 46%; border: .8px solid #999; padding: 7px 9px; margin-top: 10px; font-size: 8.5pt; }
+  .fx-h { font-weight: 700; }
+  .fx-t { width: 100%; border-collapse: collapse; margin-top: 7px; border-top: .8px solid #999; padding-top: 4px; }
+  .fx-t th { text-align: left; font-size: 8pt; font-weight: 700; padding-top: 5px; }
+  .fx-t th.r, .fx-t td.r { text-align: right; }
+  .due { clear: both; padding-top: 26px; font-size: 10pt; font-weight: 700; }
+  .foot { margin-top: 40px; font-size: 7.5pt; color: #333; }
+</style></head><body>
+  <div class="head">
+    <div>
+      <h1>ORDER<br>ACKNOWLEDGED</h1>
+      <div class="addr">${esc(order.customer)}${order.address ? "<br>" + esc(order.address).replace(/\n/g, "<br>") : ""}</div>
+    </div>
+    <div class="facts">
+      <div class="k">Date</div><div class="v">${esc(dateLong(order.confirmedAt || order.orderDate))}</div>
+      <div class="k">Account Number</div><div class="v">${esc(opts.accountNumber || "")}</div>
+      <div class="k">Order Number</div><div class="v">${esc(order.id)}</div>
+      <div class="k">Reference</div><div class="v">${esc(order.reference || "")}</div>
+      <div class="k">VAT Number</div><div class="v">${esc(MATRIX_VAT_NUMBER)}</div>
+    </div>
+    <div class="addr">
+      Matrix Engineering Limited<br>Unit 7A, Parkway<br>Balthane Industrial Estate<br>IM9 2AQ<br>ISLE OF MAN
+    </div>
+  </div>
+
+  <table class="lines">
+    <thead><tr>
+      <th class="l">Description</th><th class="r">Quantity</th><th class="r">Unit Price</th>
+      <th class="c">VAT</th><th class="r">Amount ${esc(cur)}</th>
+    </tr></thead>
+    <tbody>${lineRows}${euLines}</tbody>
+  </table>
+
+  ${conversionBox}
+  <table class="totals">
+    <tr><td class="k">Subtotal</td><td class="v">${n2(subtotal)}</td></tr>
+    <tr class="rule"><td class="k">${esc(treatment.rateLabel)}</td><td class="v">${n2(vat)}</td></tr>
+    <tr class="rule"><td class="k">Order Total ${esc(cur)}</td><td class="v">${n2(subtotal + vat)}</td></tr>
+  </table>
+
+  <div class="due">${order.dueDate ? "Wanted by: " + esc(dateLong(order.dueDate)) : ""}</div>
+  <p style="clear:both; font-size:9pt; margin-top:22px">
+    Thank you for your order. This is an acknowledgement of what we have booked in and the price agreed &mdash;
+    it is not an invoice and nothing is payable against it. Your invoice follows on despatch.
+  </p>
+
+  <div class="foot">Company Registration No: 123380C. Registered Office: Unit 7A, Parkway, Balthane Industrial Estate, IM9 2AQ, Isle of Man</div>
+</body></html>`;
+  }
+  function printOrderAck(order, lines, opts) {
+    printInFrame("ack-print-frame", orderAckDoc(order, lines, opts));
+  }
+  function productFormsOf(data, productId) {
+    return (data.productForms || []).filter((f) => !f.deleted && f.productId === productId);
+  }
+  function productsMissingForm(data) {
+    return (data.products || []).filter((p) => !p.deleted && p.active !== false).filter((p) => productFormsOf(data, p.id).filter((f) => f.active !== false).length === 0);
+  }
+  function productDescription(product, form) {
+    const m = form && form.metres != null && String(form.metres).trim() !== "" ? ` (${String(Number(form.metres))}m)` : "";
+    const reel = form && form.form === "Reel" ? " REEL" : "";
+    return `${product.displayName}${m}${reel}`;
+  }
+  function slugForProduct(family, thickness, gos, pt) {
+    return [family, thickness, "x", gos + "mm", pt].join(" ").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  }
+  function ProductsView({ data, setData }) {
+    const [q, setQ] = useState("");
+    const [addingTo, setAddingTo] = useState(null);
+    const [newForm, setNewForm] = useState({ form: "Box", metres: "24" });
+    const [showAdd, setShowAdd] = useState(false);
+    const [np, setNp] = useState({ family: "PX Plus", thickness: "", gos: "", pt: "2-3pt", form: "Box", metres: "24" });
+    const [clone, setClone] = useState({ from: "", to: "" });
+    const live = (data.products || []).filter((p) => !p.deleted);
+    const missing = productsMissingForm(data);
+    const families = [...new Set(live.map((p) => p.family).filter(Boolean))].sort();
+    const aliasCount = (id) => (data.productAliases || []).filter((a) => !a.deleted && a.productId === id).length;
+    const needle = q.trim().toLowerCase();
+    const shown = (needle ? live.filter((p) => String(p.displayName || "").toLowerCase().includes(needle) || String(p.family || "").toLowerCase().includes(needle)) : live).slice(0, needle ? 400 : 60);
+    const stamp = () => (/* @__PURE__ */ new Date()).toISOString();
+    const addForm = (product, form, metres) => {
+      const m = String(metres).trim() === "" ? null : Number(metres);
+      if (form === "Box" && !(Number(m) > 0)) {
+        window.alert("A box needs a metreage \u2014 it is how many metres the case holds, and the plan counts on it.");
+        return;
+      }
+      setData((prev) => {
+        const row = {
+          id: `${product.id}-${form.toLowerCase()}-${m == null ? "na" : String(m).replace(".", "-")}`,
+          productId: product.id,
+          form,
+          metres: m,
+          active: true,
+          createdAt: stamp(),
+          updatedAt: stamp(),
+          deleted: false
+        };
+        if ((prev.productForms || []).some((f) => !f.deleted && f.id === row.id)) {
+          window.alert(`${product.displayName} already has that form.`);
+          return prev;
+        }
+        return {
+          ...prev,
+          productForms: [...prev.productForms || [], row],
+          ...appendLog(prev, {
+            action: "add",
+            entity: "productForm",
+            entityId: row.id,
+            summary: `${product.displayName} can now be ordered as ${productDescription(product, row)}`
+          })
+        };
+      });
+      setAddingTo(null);
+    };
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(
+      SectionHeader,
+      {
+        title: "Products",
+        subtitle: `${live.length} products \xB7 ${(data.productForms || []).filter((f) => !f.deleted).length} box and reel forms \xB7 ${(data.productAliases || []).filter((a) => !a.deleted).length} names customers order them under`
+      }
+    ), missing.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-4", style: { borderLeft: `3px solid ${RED}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: RED } }, missing.length, " product", missing.length === 1 ? "" : "s", " cannot be ordered \u2014 no box or reel recorded"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 3 } }, "Without a form there is no metreage and nothing to order. These are invisible on the client hub."), [...new Set(missing.map((p) => p.family))].map((fam) => /* @__PURE__ */ React.createElement("div", { key: fam, className: "text-xs", style: { marginTop: 5 } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 600 } }, fam), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " \u2014 ", missing.filter((p) => p.family === fam).length, " product", missing.filter((p) => p.family === fam).length === 1 ? "" : "s")))), /* @__PURE__ */ React.createElement("div", { className: "flex items-end gap-3 mb-3 flex-wrap" }, /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        value: q,
+        onChange: (e) => setQ(e.target.value),
+        placeholder: "Search a size, a code or a range",
+        style: {
+          font: "inherit",
+          fontSize: 14,
+          minHeight: 38,
+          padding: "8px 10px",
+          flex: "1 1 260px",
+          border: `1px solid ${BORDER}`,
+          borderRadius: 4,
+          background: "#fff"
+        }
+      }
+    ), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => setShowAdd((s) => !s) }, showAdd ? "Close" : "+ New product")), showAdd && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED } }, "The name is built from what you type, in the shape the rest of the system already uses \u2014 so an order line, the hub and the production plan all match it without anybody editing a string."), /* @__PURE__ */ React.createElement("div", { className: "flex items-end gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement("label", { className: "text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("div", null, "Range"), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        list: "mx-families",
+        value: np.family,
+        onChange: (e) => setNp((s) => ({ ...s, family: e.target.value })),
+        style: { font: "inherit", fontSize: 13, width: 140, minHeight: 36, padding: "6px 8px", border: `1px solid ${BORDER}`, borderRadius: 4 }
+      }
+    ), /* @__PURE__ */ React.createElement("datalist", { id: "mx-families" }, families.map((f) => /* @__PURE__ */ React.createElement("option", { key: f, value: f })))), /* @__PURE__ */ React.createElement("label", { className: "text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("div", null, "Thickness mm"), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        type: "number",
+        step: "0.01",
+        value: np.thickness,
+        onChange: (e) => setNp((s) => ({ ...s, thickness: e.target.value })),
+        style: { font: "inherit", fontSize: 13, width: 92, minHeight: 36, padding: "6px 8px", border: `1px solid ${BORDER}`, borderRadius: 4 }
+      }
+    )), /* @__PURE__ */ React.createElement("label", { className: "text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("div", null, "Channel mm"), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        type: "number",
+        step: "0.01",
+        value: np.gos,
+        onChange: (e) => setNp((s) => ({ ...s, gos: e.target.value })),
+        style: { font: "inherit", fontSize: 13, width: 92, minHeight: 36, padding: "6px 8px", border: `1px solid ${BORDER}`, borderRadius: 4 }
+      }
+    )), /* @__PURE__ */ React.createElement("label", { className: "text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("div", null, "Rule"), /* @__PURE__ */ React.createElement(
+      "select",
+      {
+        value: np.pt,
+        onChange: (e) => setNp((s) => ({ ...s, pt: e.target.value })),
+        style: { font: "inherit", fontSize: 13, minHeight: 36, padding: "6px 8px", border: `1px solid ${BORDER}`, borderRadius: 4, background: "#fff" }
+      },
+      /* @__PURE__ */ React.createElement("option", null, "2-3pt"),
+      /* @__PURE__ */ React.createElement("option", null, "3-4pt"),
+      /* @__PURE__ */ React.createElement("option", null, "4-6pt"),
+      /* @__PURE__ */ React.createElement("option", null, "6pt")
+    )), /* @__PURE__ */ React.createElement("label", { className: "text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("div", null, "Sold as"), /* @__PURE__ */ React.createElement(
+      "select",
+      {
+        value: np.form,
+        onChange: (e) => setNp((s) => ({ ...s, form: e.target.value })),
+        style: { font: "inherit", fontSize: 13, minHeight: 36, padding: "6px 8px", border: `1px solid ${BORDER}`, borderRadius: 4, background: "#fff" }
+      },
+      /* @__PURE__ */ React.createElement("option", null, "Box"),
+      /* @__PURE__ */ React.createElement("option", null, "Reel")
+    )), /* @__PURE__ */ React.createElement("label", { className: "text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("div", null, "Metres"), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        type: "number",
+        step: "0.25",
+        value: np.metres,
+        onChange: (e) => setNp((s) => ({ ...s, metres: e.target.value })),
+        style: { font: "inherit", fontSize: 13, width: 92, minHeight: 36, padding: "6px 8px", border: `1px solid ${BORDER}`, borderRadius: 4 }
+      }
+    ))), /* @__PURE__ */ React.createElement("div", { className: "mt-3 text-xs", style: { color: INK_MUTED } }, "It will be called:", " ", /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { color: INK, fontWeight: 600 } }, np.family && np.thickness && np.gos ? `${np.family} ${Number(np.thickness).toFixed(2)} x ${Number(np.gos).toFixed(2)}mm ${np.pt}${np.metres ? ` (${Number(np.metres)}m)` : ""}${np.form === "Reel" ? " REEL" : ""}` : "\u2014 fill in the range, thickness and channel")), /* @__PURE__ */ React.createElement("div", { className: "mt-3" }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => {
+      const th = Number(np.thickness), gos = Number(np.gos);
+      if (!np.family.trim() || !(th > 0) || !(gos > 0)) {
+        window.alert("A product needs a range, a thickness and a channel width.");
+        return;
+      }
+      const displayName = `${np.family.trim()} ${th.toFixed(2)} x ${gos.toFixed(2)}mm ${np.pt}`;
+      if (live.some((p) => productKey(p.displayName) === productKey(displayName))) {
+        window.alert(`${displayName} is already on the list.`);
+        return;
+      }
+      const id = slugForProduct(np.family.trim(), th.toFixed(2), gos.toFixed(2), np.pt);
+      const m = String(np.metres).trim() === "" ? null : Number(np.metres);
+      setData((prev) => ({
+        ...prev,
+        products: [...prev.products || [], {
+          id,
+          family: np.family.trim(),
+          colour: null,
+          thickness: th,
+          gos,
+          pt: np.pt,
+          variant: null,
+          displayName,
+          active: true,
+          needsReview: null,
+          createdAt: stamp(),
+          updatedAt: stamp(),
+          updatedBy: currentActor(),
+          deleted: false
+        }],
+        productForms: [...prev.productForms || [], {
+          id: `${id}-${np.form.toLowerCase()}-${m == null ? "na" : String(m).replace(".", "-")}`,
+          productId: id,
+          form: np.form,
+          metres: m,
+          active: true,
+          createdAt: stamp(),
+          updatedAt: stamp(),
+          deleted: false
+        }],
+        ...appendLog(prev, {
+          action: "add",
+          entity: "product",
+          entityId: id,
+          summary: `New product ${displayName}, sold as ${np.form}${m ? ` ${m}m` : ""}`
+        })
+      }));
+      setShowAdd(false);
+      setNp((s) => ({ ...s, thickness: "", gos: "" }));
+    } }, "Add it"))), /* @__PURE__ */ React.createElement(Panel, { style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full", style: { fontSize: 13.5, borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", { style: { color: INK_MUTED, borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement(Th, null, "Product"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Range"), /* @__PURE__ */ React.createElement(Th, { w: 220 }, "Ordered as"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Other names"), /* @__PURE__ */ React.createElement(Th, { w: 150 }))), /* @__PURE__ */ React.createElement("tbody", null, shown.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 5 }, "Nothing matches that."), shown.map((p) => {
+      const forms = productFormsOf(data, p.id);
+      return /* @__PURE__ */ React.createElement("tr", { key: p.id, style: { borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3", style: { fontWeight: 550 } }, p.displayName, p.active === false && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, " \xB7 retired")), /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 text-xs", style: { color: INK_MUTED } }, p.family), /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 text-xs" }, forms.length === 0 ? /* @__PURE__ */ React.createElement("span", { style: { color: RED, fontWeight: 600 } }, "nothing \u2014 cannot be ordered") : forms.map((f) => /* @__PURE__ */ React.createElement("div", { key: f.id }, productDescription(p, f)))), /* @__PURE__ */ React.createElement("td", { className: "text-right py-2 px-3 text-xs", style: { color: INK_MUTED } }, aliasCount(p.id) || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 text-right" }, addingTo === p.id ? /* @__PURE__ */ React.createElement("span", { className: "flex items-center gap-2 justify-end" }, /* @__PURE__ */ React.createElement(
+        "select",
+        {
+          value: newForm.form,
+          onChange: (e) => setNewForm((s) => ({ ...s, form: e.target.value })),
+          style: { font: "inherit", fontSize: 12.5, minHeight: 32, border: `1px solid ${BORDER}`, borderRadius: 4, background: "#fff" }
+        },
+        /* @__PURE__ */ React.createElement("option", null, "Box"),
+        /* @__PURE__ */ React.createElement("option", null, "Reel")
+      ), /* @__PURE__ */ React.createElement(
+        "input",
+        {
+          type: "number",
+          step: "0.25",
+          value: newForm.metres,
+          onChange: (e) => setNewForm((s) => ({ ...s, metres: e.target.value })),
+          style: { font: "inherit", fontSize: 12.5, width: 64, minHeight: 32, padding: "4px 6px", border: `1px solid ${BORDER}`, borderRadius: 4 }
+        }
+      ), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => addForm(p, newForm.form, newForm.metres) }, "Save")) : /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => {
+        setAddingTo(p.id);
+        setNewForm({ form: "Box", metres: "24" });
+      } }, forms.length ? "Add a form" : "Give it a form")));
+    })))), !needle && live.length > shown.length && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: INK_MUTED } }, "Showing ", shown.length, " of ", live.length, ". Search to find the rest."));
+  }
+  function portalOrdersWaiting(data) {
+    const live = (a) => (a || []).filter((x) => !x.deleted);
+    return live(data.orders).filter((o) => o.source === "portal" && !o.confirmedAt && o.stage !== "Cancelled").sort((a, b) => String(a.orderDate || "").localeCompare(String(b.orderDate || "")));
+  }
+  function lastPriceFor(data, customer, description) {
+    const live = (a) => (a || []).filter((x) => !x.deleted);
+    const theirs = new Set(live(data.orders).filter((o) => o.customer === customer).map((o) => o.id));
+    let best = null;
+    for (const li of live(data.lineItems)) {
+      if (!theirs.has(li.orderId)) continue;
+      if (String(li.description || "").trim() !== String(description || "").trim()) continue;
+      if (!(Number(li.unitPrice) > 0)) continue;
+      const o = live(data.orders).find((x) => x.id === li.orderId);
+      const when = String(o && o.orderDate || "");
+      if (!best || when > best.when) best = { price: Number(li.unitPrice), when, orderId: li.orderId };
+    }
+    return best;
+  }
+  function ClientOrdersView({ data, setData, jumpToOrder }) {
+    const waiting = portalOrdersWaiting(data);
+    const [openId, setOpenId] = useState(waiting.length === 1 ? waiting[0].id : null);
+    const [prices, setPrices] = useState({});
+    const [vat, setVat] = useState(null);
+    const [extra, setExtra] = useState({ accountNumber: "", customerVat: "", customerEori: "", fxRate: "" });
+    const [justDone, setJustDone] = useState(null);
+    const open = waiting.find((o) => o.id === openId) || null;
+    const vatKey = vat || (open ? suggestedVatTreatment(open) : "uk");
+    const lines = open ? (data.lineItems || []).filter((li) => !li.deleted && li.orderId === open.id) : [];
+    const priceOf = (li) => prices[li.id] !== void 0 ? prices[li.id] : Number(li.unitPrice) || "";
+    const priced = lines.filter((li) => Number(priceOf(li)) > 0).length;
+    const total = lines.reduce((t, li) => t + (Number(priceOf(li)) || 0) * (Number(li.qty) || 0), 0);
+    const money = (n) => `${open && open.currency === "EUR" ? "\u20AC" : open && open.currency === "USD" ? "$" : "\xA3"}${n.toFixed(2)}`;
+    const confirm2 = () => {
+      if (!open) return;
+      if (priced < lines.length) {
+        window.alert(`${lines.length - priced} line${lines.length - priced === 1 ? "" : "s"} still have no price. Every line needs one before this goes back to the customer.`);
+        return;
+      }
+      if (!window.confirm(
+        `Confirm ${open.customer}'s order at ${money(total)}?
+
+It becomes a live order, its cases are planned, and the prices go back to them in the client hub.`
+      )) return;
+      setData((prev) => {
+        const stamp = (/* @__PURE__ */ new Date()).toISOString();
+        const nextLines = (prev.lineItems || []).map((li) => {
+          if (li.deleted || li.orderId !== open.id) return li;
+          const p = prices[li.id];
+          return p === void 0 ? li : { ...li, unitPrice: Number(p) || 0, updatedAt: stamp };
+        });
+        let next = {
+          ...prev,
+          lineItems: nextLines,
+          orders: prev.orders.map((o) => o.id === open.id ? { ...o, confirmedAt: stamp, confirmedBy: currentActor(), updatedAt: stamp } : o)
+        };
+        const planned = planMissingCases(next, open.id);
+        if (planned) next = planned.patch;
+        return { ...next, ...appendLog(next, {
+          action: "portal_order_confirmed",
+          entity: "order",
+          entityId: open.id,
+          summary: `${open.id} (${open.customer}) placed on the client hub \u2014 confirmed by ${currentActor()}, ${lines.length} line${lines.length === 1 ? "" : "s"} priced, ${money(total)}`
+        }) };
+      });
+      setJustDone({
+        order: { ...open, confirmedAt: (/* @__PURE__ */ new Date()).toISOString(), confirmedBy: currentActor() },
+        lines: lines.map((li) => ({ ...li, unitPrice: Number(priceOf(li)) || 0 })),
+        opts: { vat: vatKey, ...extra },
+        total
+      });
+      setPrices({});
+      setOpenId(null);
+    };
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(
+      SectionHeader,
+      {
+        title: "Client orders",
+        subtitle: waiting.length ? `${waiting.length} waiting to be confirmed and priced` : "Nothing waiting \u2014 every order placed on the website has been confirmed"
+      }
+    ), waiting.length === 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-6 text-center", style: { color: INK_MUTED } }, "Orders placed on creasingmatrix.com land here first. There are none waiting."), waiting.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "mb-4" }, /* @__PURE__ */ React.createElement("table", { className: "w-full", style: { fontSize: 13.5, borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", { style: { color: INK_MUTED, borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement(Th, null, "Customer"), /* @__PURE__ */ React.createElement(Th, { w: 130 }, "Placed"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Their ref"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Lines"), /* @__PURE__ */ React.createElement(ThR, { w: 100 }, "Wanted by"), /* @__PURE__ */ React.createElement(Th, { w: 110 }))), /* @__PURE__ */ React.createElement("tbody", null, waiting.map((o) => {
+      const n = (data.lineItems || []).filter((li) => !li.deleted && li.orderId === o.id).length;
+      return /* @__PURE__ */ React.createElement("tr", { key: o.id, style: {
+        borderBottom: `1px solid ${BORDER}`,
+        background: o.id === openId ? "#FBF7F2" : void 0
+      } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3", style: { fontWeight: 550 } }, o.customer), /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3" }, o.orderDate || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3" }, o.reference || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "text-right py-2 px-3" }, n), /* @__PURE__ */ React.createElement("td", { className: "text-right py-2 px-3" }, o.dueDate || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 text-right" }, /* @__PURE__ */ React.createElement(
+        Button,
+        {
+          variant: o.id === openId ? "accent" : "ghost",
+          onClick: () => {
+            setOpenId(o.id === openId ? null : o.id);
+            setPrices({});
+          }
+        },
+        o.id === openId ? "Close" : "Open"
+      )));
+    })))), justDone && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4", style: { borderLeft: `3px solid ${GREEN}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, fontWeight: 600 } }, justDone.order.customer, " confirmed"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 3 } }, justDone.order.id, " \xB7 priced and its cases planned \xB7 the prices are with the customer in the hub now."), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 mt-3 flex-wrap" }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => printOrderAck(justDone.order, justDone.lines, justDone.opts) }, "Print the order acknowledgement"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setJustDone(null) }, "Done"))), open && /* @__PURE__ */ React.createElement(Panel, { className: "p-4" }, /* @__PURE__ */ React.createElement("div", { className: "mb-3" }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 17, fontWeight: 650 } }, open.customer), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 2 } }, open.id, " \xB7 placed ", open.orderDate || "\u2014", open.reference ? ` \xB7 their ref ${open.reference}` : "", open.dueDate ? ` \xB7 wanted by ${open.dueDate}` : "", open.boxType ? ` \xB7 ${open.boxType} box` : ""), open.notes && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { marginTop: 6, color: INK } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "They said: "), open.notes), open.address && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { marginTop: 4, color: INK_MUTED } }, "Deliver to: ", open.address)), /* @__PURE__ */ React.createElement("table", { className: "w-full", style: { fontSize: 13.5, borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", { style: { color: INK_MUTED, borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement(Th, null, "Product"), /* @__PURE__ */ React.createElement(ThR, { w: 70 }, "Qty"), /* @__PURE__ */ React.createElement(Th, { w: 150 }, "Last paid"), /* @__PURE__ */ React.createElement(ThR, { w: 120 }, "Unit price"), /* @__PURE__ */ React.createElement(ThR, { w: 100 }, "Line total"))), /* @__PURE__ */ React.createElement("tbody", null, lines.map((li) => {
+      const last = lastPriceFor(data, open.customer, li.description);
+      const p = priceOf(li);
+      return /* @__PURE__ */ React.createElement("tr", { key: li.id, style: { borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3" }, li.description, li.customerRef && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, " \xB7 ", li.customerRef)), /* @__PURE__ */ React.createElement("td", { className: "text-right py-2 px-3" }, li.qty), /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 text-xs", style: { color: INK_MUTED } }, last ? `${money(last.price)} on ${last.orderId}` : "never ordered before"), /* @__PURE__ */ React.createElement("td", { className: "text-right py-2 px-3" }, /* @__PURE__ */ React.createElement(
+        "input",
+        {
+          type: "number",
+          step: "0.01",
+          min: "0",
+          value: p,
+          onChange: (e) => setPrices((s) => ({ ...s, [li.id]: e.target.value })),
+          style: {
+            width: 92,
+            textAlign: "right",
+            font: "inherit",
+            minHeight: 36,
+            padding: "6px 8px",
+            border: `1px solid ${Number(p) > 0 ? BORDER : ORANGE}`,
+            borderRadius: 4,
+            background: "#fff"
+          }
+        }
+      )), /* @__PURE__ */ React.createElement("td", { className: "text-right py-2 px-3 tabular-nums" }, Number(p) > 0 ? money(Number(p) * (Number(li.qty) || 0)) : "\u2014"));
+    })), /* @__PURE__ */ React.createElement("tfoot", { style: { borderTop: `2px solid ${INK}` } }, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { className: "py-2.5 px-3", style: { fontWeight: 650 } }, "Order total"), /* @__PURE__ */ React.createElement("td", null), /* @__PURE__ */ React.createElement("td", null), /* @__PURE__ */ React.createElement("td", { className: "text-right py-2.5 px-3 text-xs", style: { color: INK_MUTED } }, priced, " of ", lines.length, " priced"), /* @__PURE__ */ React.createElement("td", { className: "text-right py-2.5 px-3 tabular-nums", style: { fontWeight: 650 } }, money(total))))), /* @__PURE__ */ React.createElement("div", { className: "flex items-end gap-3 mt-4 flex-wrap" }, /* @__PURE__ */ React.createElement("label", { className: "text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 3 } }, "VAT treatment"), /* @__PURE__ */ React.createElement(
+      "select",
+      {
+        value: vatKey,
+        onChange: (e) => setVat(e.target.value),
+        style: {
+          font: "inherit",
+          fontSize: 13,
+          minHeight: 36,
+          padding: "6px 8px",
+          border: `1px solid ${BORDER}`,
+          borderRadius: 4,
+          background: "#fff",
+          color: INK
+        }
+      },
+      /* @__PURE__ */ React.createElement("option", { value: "uk" }, "UK \u2014 20%"),
+      /* @__PURE__ */ React.createElement("option", { value: "eu" }, "EU \u2014 Zero Rated EC Goods Income"),
+      /* @__PURE__ */ React.createElement("option", { value: "world" }, "Rest of world \u2014 Exempt")
+    )), /* @__PURE__ */ React.createElement("label", { className: "text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 3 } }, "Account number"), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        value: extra.accountNumber,
+        onChange: (e) => setExtra((x) => ({ ...x, accountNumber: e.target.value })),
+        style: {
+          font: "inherit",
+          fontSize: 13,
+          width: 120,
+          minHeight: 36,
+          padding: "6px 8px",
+          border: `1px solid ${BORDER}`,
+          borderRadius: 4
+        }
+      }
+    )), vatKey === "eu" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("label", { className: "text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 3 } }, "Their VAT number"), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        value: extra.customerVat,
+        onChange: (e) => setExtra((x) => ({ ...x, customerVat: e.target.value })),
+        style: {
+          font: "inherit",
+          fontSize: 13,
+          width: 140,
+          minHeight: 36,
+          padding: "6px 8px",
+          border: `1px solid ${BORDER}`,
+          borderRadius: 4
+        }
+      }
+    )), /* @__PURE__ */ React.createElement("label", { className: "text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 3 } }, "Their EORI number"), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        value: extra.customerEori,
+        onChange: (e) => setExtra((x) => ({ ...x, customerEori: e.target.value })),
+        style: {
+          font: "inherit",
+          fontSize: 13,
+          width: 140,
+          minHeight: 36,
+          padding: "6px 8px",
+          border: `1px solid ${BORDER}`,
+          borderRadius: 4
+        }
+      }
+    ))), String(open.currency || "GBP").toUpperCase() !== "GBP" && /* @__PURE__ */ React.createElement("label", { className: "text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 3 } }, "1 GBP = ? ", String(open.currency).toUpperCase()), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        value: extra.fxRate,
+        onChange: (e) => setExtra((x) => ({ ...x, fxRate: e.target.value })),
+        style: {
+          font: "inherit",
+          fontSize: 13,
+          width: 110,
+          minHeight: 36,
+          padding: "6px 8px",
+          border: `1px solid ${BORDER}`,
+          borderRadius: 4
+        }
+      }
+    ))), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 mt-4 flex-wrap" }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: confirm2 }, "Confirm and price this order"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => printOrderAck(
+      open,
+      lines.map((li) => ({ ...li, unitPrice: Number(priceOf(li)) || 0 })),
+      { vat: vatKey, ...extra }
+    ) }, "Preview the acknowledgement"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => jumpToOrder && jumpToOrder(open.id) }, "Open the order itself"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, flex: "1 1 200px" } }, "Confirming plans its cases and sends the prices back to the customer in the hub. It does not issue an invoice \u2014 Xero still does that."))));
+  }
+  function MatrixOverviewView({ data, setData, jumpToOrder }) {
     const liveRows = (a) => (a || []).filter((x) => !x.deleted);
     const orders = liveRows(data.orders).filter((o) => !["Shipped", "Cancelled"].includes(o.stage));
     const cases = liveRows(data.cases);
@@ -14577,6 +15208,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     }), { ordered: 0, planned: 0, packed: 0, outstanding: 0, cases: 0, casesFull: 0 });
     const totalPct = T.ordered > 0 ? Math.round(T.packed / T.ordered * 100) : 0;
     const offPlan = rows.filter((r) => r.planOff !== 0);
+    const noPlan = ordersMissingPlan(data);
     const shelf = liveRows(data.bondingRuns).filter((r) => !r.workNumber && (Number(r.toStock) || 0) > 0);
     const shelfBoxes = shelf.reduce((t, r) => t + (Number(r.toStock) || 0), 0);
     const shelfNoBay = shelf.filter((r) => !String(r.location || "").trim());
@@ -14598,7 +15230,18 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         title: "Matrix overview",
         subtitle: `${rows.length} live orders \xB7 ${T.ordered.toLocaleString()} boxes ordered \xB7 ${totalPct}% packed`
       }
-    ), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-4" }, /* @__PURE__ */ React.createElement(Fig, { n: rows.length, label: "live orders" }), /* @__PURE__ */ React.createElement(Fig, { n: T.ordered.toLocaleString(), label: "boxes ordered" }), /* @__PURE__ */ React.createElement(Fig, { n: T.packed.toLocaleString(), label: "packed", tone: GREEN }), /* @__PURE__ */ React.createElement(Fig, { n: T.outstanding.toLocaleString(), label: "still to pack", tone: T.outstanding ? ORANGE : GREEN }), /* @__PURE__ */ React.createElement(Fig, { n: `${totalPct}%`, label: "of everything ordered" }), /* @__PURE__ */ React.createElement(Fig, { n: T.cases.toLocaleString(), label: "cases required" }), /* @__PURE__ */ React.createElement(Fig, { n: T.casesFull.toLocaleString(), label: "cases full" }))), /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-4", style: { borderLeft: `3px solid ${offPlan.length ? RED : GREEN}` } }, offPlan.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14 } }, "Every one of the ", rows.length, " live orders has a case plan that comes to exactly what was ordered.") : /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: RED } }, offPlan.length, " order", offPlan.length === 1 ? "" : "s", " where the plan does not come to what was ordered"), offPlan.map((r) => /* @__PURE__ */ React.createElement("div", { key: r.id, className: "text-xs", style: { color: INK_MUTED, marginTop: 3 } }, r.customer, " \u2014 ordered ", r.ordered, ", planned ", r.planned, " (", r.planOff > 0 ? "+" : "", r.planOff, ")")))), /* @__PURE__ */ React.createElement(Panel, { className: "mb-4", style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full", style: { fontSize: 13.5, borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", { style: { color: INK_MUTED, borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement(Th, null, "Customer"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Stage"), /* @__PURE__ */ React.createElement(ThR, { w: 84 }, "Ordered"), /* @__PURE__ */ React.createElement(ThR, { w: 84 }, "Planned"), /* @__PURE__ */ React.createElement(ThR, { w: 78 }, "Packed"), /* @__PURE__ */ React.createElement(ThR, { w: 92 }, "Outstanding"), /* @__PURE__ */ React.createElement(ThR, { w: 78 }, "Cases"), /* @__PURE__ */ React.createElement(ThR, { w: 64 }, "%"))), /* @__PURE__ */ React.createElement("tbody", null, rows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 8 }, "No live orders."), rows.map((r) => /* @__PURE__ */ React.createElement(
+    ), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-4" }, /* @__PURE__ */ React.createElement(Fig, { n: rows.length, label: "live orders" }), /* @__PURE__ */ React.createElement(Fig, { n: T.ordered.toLocaleString(), label: "boxes ordered" }), /* @__PURE__ */ React.createElement(Fig, { n: T.packed.toLocaleString(), label: "packed", tone: GREEN }), /* @__PURE__ */ React.createElement(Fig, { n: T.outstanding.toLocaleString(), label: "still to pack", tone: T.outstanding ? ORANGE : GREEN }), /* @__PURE__ */ React.createElement(Fig, { n: `${totalPct}%`, label: "of everything ordered" }), /* @__PURE__ */ React.createElement(Fig, { n: T.cases.toLocaleString(), label: "cases required" }), /* @__PURE__ */ React.createElement(Fig, { n: T.casesFull.toLocaleString(), label: "cases full" }))), noPlan.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-4", style: { borderLeft: `3px solid ${RED}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: RED } }, noPlan.length, " order", noPlan.length === 1 ? "" : "s", " arrived with no case plan"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 3 } }, "Until the cases are laid down the order promises nothing \u2014 bonding will not offer it and it cannot be picked."), noPlan.map((x) => /* @__PURE__ */ React.createElement("div", { key: x.order.id, className: "flex items-center gap-3", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1, fontSize: 13.5 } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 550 } }, x.order.customer || x.order.id), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " \u2014 ", x.boxes, " boxes across ", x.plannable.length, " line", x.plannable.length === 1 ? "" : "s")), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => {
+      setData((prev) => {
+        const done = planMissingCases(prev, x.order.id);
+        if (!done) return prev;
+        if (typeof window !== "undefined" && !window.confirm(
+          `${x.order.customer || x.order.id}: ${done.rows.length} case${done.rows.length === 1 ? "" : "s"} will be laid down, numbered ${done.rows[0].caseNum}\u2013${done.rows[done.rows.length - 1].caseNum}.
+
+Plan it?`
+        )) return prev;
+        return done.patch;
+      });
+    } }, "Lay the plan down")))), /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-4", style: { borderLeft: `3px solid ${offPlan.length ? RED : GREEN}` } }, offPlan.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14 } }, "Every one of the ", rows.length, " live orders has a case plan that comes to exactly what was ordered.") : /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: RED } }, offPlan.length, " order", offPlan.length === 1 ? "" : "s", " where the plan does not come to what was ordered"), offPlan.map((r) => /* @__PURE__ */ React.createElement("div", { key: r.id, className: "text-xs", style: { color: INK_MUTED, marginTop: 3 } }, r.customer, " \u2014 ordered ", r.ordered, ", planned ", r.planned, " (", r.planOff > 0 ? "+" : "", r.planOff, ")")))), /* @__PURE__ */ React.createElement(Panel, { className: "mb-4", style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full", style: { fontSize: 13.5, borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", { style: { color: INK_MUTED, borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement(Th, null, "Customer"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Stage"), /* @__PURE__ */ React.createElement(ThR, { w: 84 }, "Ordered"), /* @__PURE__ */ React.createElement(ThR, { w: 84 }, "Planned"), /* @__PURE__ */ React.createElement(ThR, { w: 78 }, "Packed"), /* @__PURE__ */ React.createElement(ThR, { w: 92 }, "Outstanding"), /* @__PURE__ */ React.createElement(ThR, { w: 78 }, "Cases"), /* @__PURE__ */ React.createElement(ThR, { w: 64 }, "%"))), /* @__PURE__ */ React.createElement("tbody", null, rows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 8 }, "No live orders."), rows.map((r) => /* @__PURE__ */ React.createElement(
       "tr",
       {
         key: r.id,
@@ -18790,6 +19433,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     { key: "ncr", label: "NCR log", icon: IconAlert },
     { key: "overview", label: "Matrix overview", icon: IconChart },
     { key: "metrics", label: "Metrics", icon: IconChart },
+    { key: "products", label: "Products", icon: IconDiamond },
     { key: "tooling", label: "Tooling", icon: IconTool },
     { key: "admin", label: "Admin", icon: IconAlert },
     /* Reachable, but not in the sidebar. New Orders, Completed Orders and
@@ -18797,6 +19441,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
        the EVA view inside Production list. They keep NAV entries so search,
        history and direct navigation still find them by name. */
     { key: "neworders", label: "New orders", icon: IconOrders, hidden: true },
+    { key: "clientorders", label: "Client orders", icon: IconOrders, hidden: true },
     { key: "completed", label: "Completed orders", icon: IconCheckBox, hidden: true },
     { key: "customers", label: "Customers", icon: IconOrders, hidden: true },
     { key: "schedule", label: "Ordered by EVA size", icon: IconLink, hidden: true }
@@ -18812,6 +19457,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     { label: "Planning", section: true, prominent: true, keys: ["daily", "production", "gluelineschedule", "batches"] },
     { label: null, keys: ["materials"] },
     { label: "Quality and reports", keys: ["overview", "register", "ncr", "metrics"] },
+    { label: null, keys: ["products"] },
     { label: null, keys: ["tooling"] },
     { label: null, keys: ["admin"] }
   ];
@@ -19857,7 +20503,9 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       tooling: /* @__PURE__ */ React.createElement(BaselineToolingView, { data, setData }),
       ncr: /* @__PURE__ */ React.createElement(NcrLogView, { data, setData }),
       register: /* @__PURE__ */ React.createElement(IssuesRegisterView, { data, setData }),
-      overview: /* @__PURE__ */ React.createElement(MatrixOverviewView, { data, jumpToOrder }),
+      products: /* @__PURE__ */ React.createElement(ProductsView, { data, setData }),
+      clientorders: /* @__PURE__ */ React.createElement(ClientOrdersView, { data, setData, jumpToOrder }),
+      overview: /* @__PURE__ */ React.createElement(MatrixOverviewView, { data, setData, jumpToOrder }),
       metrics: /* @__PURE__ */ React.createElement(MetricsView, { data, setData }),
       admin: syncUserRole === "standard" ? (
         // Reached via search or direct navigation, not the nav link — the nav
