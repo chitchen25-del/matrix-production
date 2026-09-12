@@ -959,7 +959,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-12.8";
+  var APP_VERSION = "2026-09-12.9";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -14782,12 +14782,6 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     const i = BASE_ORDER.indexOf(b);
     return { key: b, label: b, order: i < 0 ? 50 : i };
   }
-  function boxContentsLine(metres) {
-    const m = Number(metres);
-    if (!(m > 0)) return null;
-    const strips = Math.round(m / 0.75);
-    return `Contents of box ${strips} x 750mm strips = ${m} metres`;
-  }
   var RANGE_BLURB = {
     "PX Plus": "The standard synthetic matrix for folding carton. Sold as Phoenix+ on the website.",
     "Ultra SR": "High-impact polyester at the same thickness as steel matrix. For abrasive recycled board.",
@@ -14865,16 +14859,23 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     })();
     const setMetres = (form, value) => {
       const m = String(value).trim() === "" ? null : Number(value);
-      setData((prev) => ({
-        ...prev,
-        productForms: (prev.productForms || []).map((f) => f.id === form.id ? { ...f, metres: m, updatedAt: stamp() } : f),
-        ...appendLog(prev, {
-          action: "update",
-          entity: "productForm",
-          entityId: form.id,
-          summary: `${form.form} metreage changed to ${m == null ? "none" : m + "m"}`
-        })
-      }));
+      setData((prev) => {
+        const clash = (prev.productForms || []).find((f) => !f.deleted && f.id !== form.id && f.productId === form.productId && f.form === form.form && Number(f.metres) === Number(m));
+        if (clash) {
+          window.alert(`There is already a ${form.form.toLowerCase()} of ${m}m for this size.`);
+          return prev;
+        }
+        return {
+          ...prev,
+          productForms: (prev.productForms || []).map((f) => f.id === form.id ? { ...f, metres: m, updatedAt: stamp() } : f),
+          ...appendLog(prev, {
+            action: "update",
+            entity: "productForm",
+            entityId: form.id,
+            summary: `${form.form} metreage changed to ${m == null ? "none" : m + "m"}`
+          })
+        };
+      });
     };
     const toggleActive = (product) => {
       const retiring = product.active !== false;
@@ -14902,7 +14903,7 @@ It stops being offered on new orders and in the client hub. Orders that already 
       }
       setData((prev) => {
         const row = {
-          id: `${product.id}-${form.toLowerCase()}-${m == null ? "na" : String(m).replace(".", "-")}`,
+          id: `${product.id}-${form.toLowerCase()}-${m == null ? "na" : String(Number(m)).replace(".", "-")}`,
           productId: product.id,
           form,
           metres: m,
@@ -14911,9 +14912,22 @@ It stops being offered on new orders and in the client hub. Orders that already 
           updatedAt: stamp(),
           deleted: false
         };
-        if ((prev.productForms || []).some((f) => !f.deleted && f.id === row.id)) {
+        const already = (prev.productForms || []).find((f) => f.productId === product.id && f.form === form && Number(f.metres) === Number(m));
+        if (already && !already.deleted) {
           window.alert(`${product.displayName} is already sold that way.`);
           return prev;
+        }
+        if (already) {
+          return {
+            ...prev,
+            productForms: (prev.productForms || []).map((f) => f.id === already.id ? { ...f, deleted: false, active: true, updatedAt: stamp() } : f),
+            ...appendLog(prev, {
+              action: "update",
+              entity: "productForm",
+              entityId: already.id,
+              summary: `${product.displayName} is sold as ${productDescription(product, already)} again`
+            })
+          };
         }
         return {
           ...prev,
@@ -14991,93 +15005,54 @@ It stops being offered on new orders and in the client hub. Orders that already 
           bad > 0 && (phone ? /* @__PURE__ */ React.createElement("span", { style: { color: on ? "#FFD9D2" : RED, fontWeight: 700 } }, " \u2022") : /* @__PURE__ */ React.createElement("span", { style: { color: on ? "#FFD9D2" : RED, fontWeight: 600 } }, " \xB7 ", bad, " not sellable"))
         );
       })
-    ), /* @__PURE__ */ React.createElement(Panel, { className: "p-4" }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 19, fontWeight: 650 } }, range), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 3, marginBottom: 14 } }, RANGE_BLURB[range] || "", /* @__PURE__ */ React.createElement("div", { style: { marginTop: 5, fontWeight: 600, color: PORTAL_FAMILIES.includes(range) ? GREEN : INK_MUTED } }, PORTAL_FAMILIES.includes(range) ? "Customers can order this range on the client hub." : "Made here, not sold on the client hub.")), phone ? /* @__PURE__ */ React.createElement("div", null, rows.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-center py-8", style: { color: INK_MUTED } }, "Nothing in this range yet."), rows.map((p) => {
-      const forms = productFormsOf(data, p.id);
-      const retired = p.active === false;
-      const f0 = forms[0];
-      return /* @__PURE__ */ React.createElement("div", { key: p.id, style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 12,
-        padding: "11px 2px",
-        borderBottom: `1px solid ${BORDER}`,
-        opacity: retired ? 0.5 : 1
-      } }, /* @__PURE__ */ React.createElement("div", { style: { minWidth: 58 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 19, fontWeight: 650, lineHeight: 1 } }, nOrNull(p.gos)), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "mm")), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: {
-        fontSize: 14,
-        fontWeight: 600,
-        whiteSpace: "nowrap",
-        overflow: "hidden",
-        textOverflow: "ellipsis"
-      } }, swatch(p.colour), p.colour || "\u2014", p.variant && /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontWeight: 400 } }, " ", p.variant)), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 2 } }, [
-        p.pt,
-        p.thickness != null ? `${nOrNull(p.thickness)} high` : null,
-        forms.length ? forms.map((f) => f.form).join(" & ") : null
-      ].filter(Boolean).join(" \xB7 "), retired ? " \xB7 retired" : ""), forms.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: RED, fontWeight: 600, marginTop: 3 } }, "not sellable \u2014 nothing set")), forms.length === 0 ? /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => addForm(p, "Box", 24) }, "Sell as a box") : /* @__PURE__ */ React.createElement("div", { style: { textAlign: "right" } }, /* @__PURE__ */ React.createElement(
+    ), /* @__PURE__ */ React.createElement(Panel, { className: "p-4" }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 19, fontWeight: 650 } }, range), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 3, marginBottom: 14 } }, RANGE_BLURB[range] || "", /* @__PURE__ */ React.createElement("div", { style: { marginTop: 5, fontWeight: 600, color: PORTAL_FAMILIES.includes(range) ? GREEN : INK_MUTED } }, PORTAL_FAMILIES.includes(range) ? "Customers can order this range on the client hub." : "Made here, not sold on the client hub.")), rows.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-center py-8", style: { color: INK_MUTED } }, "Nothing in this range yet."), grouped.map((g) => {
+      const metresIn = [...new Set(g.items.flatMap((p) => productFormsOf(data, p.id).map((f) => Number(f.metres)).filter((n) => n > 0)))].sort((a, b) => b - a);
+      const byColour = /* @__PURE__ */ new Map();
+      for (const p of g.items) {
+        const k = `${p.colour || "\u2014"}|${p.thickness == null ? "" : Number(p.thickness)}`;
+        if (!byColour.has(k)) byColour.set(k, { colour: p.colour, height: p.thickness, items: [] });
+        byColour.get(k).items.push(p);
+      }
+      const lines = [...byColour.values()].sort((a, b) => (Number(a.height) || 0) - (Number(b.height) || 0) || String(a.colour).localeCompare(String(b.colour)));
+      return /* @__PURE__ */ React.createElement("div", { key: g.key, style: { marginTop: 22 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, fontSize: 15, color: ORANGE } }, range, " ", g.label), /* @__PURE__ */ React.createElement("div", { style: { height: 1, background: BORDER, margin: "8px 0 4px" } }), lines.map((ln) => {
+        const widths = [...new Set(ln.items.map((p) => Number(p.gos)).filter((n) => n > 0))].sort((a, b) => a - b);
+        const unsellable = ln.items.filter((p) => productFormsOf(data, p.id).length === 0);
+        const retired = ln.items.every((p) => p.active === false);
+        return /* @__PURE__ */ React.createElement("div", { key: ln.colour + ln.height, style: {
+          display: "flex",
+          gap: 12,
+          alignItems: "baseline",
+          padding: "9px 0",
+          borderBottom: `1px solid ${BORDER}`,
+          opacity: retired ? 0.5 : 1,
+          flexWrap: phone ? "wrap" : "nowrap"
+        } }, /* @__PURE__ */ React.createElement("div", { style: { flex: phone ? "1 1 100%" : "0 0 190px", fontWeight: 650, fontSize: 14 } }, swatch(ln.colour), ln.colour || "\u2014", /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 400, color: INK_MUTED } }, ln.height != null ? `  Height ${Number(ln.height).toFixed(2)}mm` : "")), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, fontSize: phone ? 13 : 13.5, minWidth: 0 } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Channel Width "), widths.map((w) => Number(w).toFixed(1)).join(", "), "mm", unsellable.length > 0 && /* @__PURE__ */ React.createElement("span", { style: { color: RED, fontWeight: 600 } }, "  \xB7  ", unsellable.length, " not sellable")), unsellable.length > 0 && /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => unsellable.forEach((p) => addForm(p, "Box", metresIn[0] || 24)) }, "Sell as a box"), !phone && !retired && unsellable.length === 0 && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => ln.items.forEach((p) => toggleActive(p)) }, "Retire"));
+      }), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2", style: { marginTop: 10, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, "Contents of box"), metresIn.length === 0 ? /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: RED, fontWeight: 600 } }, "nothing set") : metresIn.map((m) => /* @__PURE__ */ React.createElement("span", { key: m, className: "text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement(
         "input",
         {
           type: "number",
           step: "0.25",
           inputMode: "decimal",
-          defaultValue: f0.metres == null ? "" : Number(f0.metres),
+          defaultValue: m,
           onBlur: (e) => {
-            if (String(e.target.value) !== String(f0.metres == null ? "" : Number(f0.metres))) setMetres(f0, e.target.value);
+            const v = Number(e.target.value);
+            if (!(v > 0) || v === m) return;
+            g.items.forEach((p) => productFormsOf(data, p.id).filter((f) => Number(f.metres) === m).forEach((f) => setMetres(f, v)));
           },
           style: {
             font: "inherit",
-            fontSize: 15,
-            width: 68,
+            fontSize: 13,
+            width: 64,
             textAlign: "right",
-            minHeight: 40,
-            padding: "6px 8px",
+            minHeight: 34,
+            padding: "4px 6px",
             border: `1px solid ${BORDER}`,
-            borderRadius: 4
+            borderRadius: 4,
+            margin: "0 4px"
           }
         }
-      ), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 2 } }, "m a box")));
-    })) : /* @__PURE__ */ React.createElement("table", { className: "w-full", style: { fontSize: 13.5, borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", { style: { color: INK_MUTED, borderBottom: `1.4px solid ${INK}` } }, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement(Th, { w: 150 }, "Base colour"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Height (mm)"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Width (mm)"), /* @__PURE__ */ React.createElement(Th, { w: 90 }, "Rule"), /* @__PURE__ */ React.createElement(Th, null, "Sold as"), /* @__PURE__ */ React.createElement(ThR, { w: 130 }, "Metres per Box"), /* @__PURE__ */ React.createElement(Th, { w: 110 }))), /* @__PURE__ */ React.createElement("tbody", null, rows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 7 }, "Nothing in this range yet."), grouped.map((g) => [
-      /* The chart's own section headings, so a range reads the way the
-         printed one does rather than as one undivided list. Only when
-         there is more than one: a range with a single profile does not
-         need telling. */
-      grouped.length > 1 ? /* @__PURE__ */ React.createElement("tr", { key: g.key + "-h" }, /* @__PURE__ */ React.createElement(
-        "td",
-        {
-          colSpan: 7,
-          className: "px-3",
-          style: { paddingTop: 18, paddingBottom: 6 }
-        },
-        /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 650, fontSize: 14, color: ORANGE } }, range, " ", g.label),
-        (() => {
-          const ms = [...new Set(g.items.flatMap((p) => productFormsOf(data, p.id).map((f) => Number(f.metres)).filter((n) => n > 0)))].sort((a, b) => b - a);
-          return ms.length ? /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 2 } }, ms.map((m) => boxContentsLine(m)).join("   \xB7   ")) : null;
-        })()
-      )) : null,
-      ...g.items.map((p) => {
-        const forms = productFormsOf(data, p.id);
-        const retired = p.active === false;
-        return /* @__PURE__ */ React.createElement("tr", { key: p.id, style: { borderBottom: `1px solid ${BORDER}`, opacity: retired ? 0.5 : 1 } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3", style: { fontWeight: 600 } }, swatch(p.colour), p.colour || "\u2014", p.variant && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, fontWeight: 400 } }, " \xB7 ", p.variant), retired && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, fontWeight: 400 } }, " \xB7 retired")), /* @__PURE__ */ React.createElement("td", { className: "text-right py-2 px-3" }, nOrNull(p.thickness)), /* @__PURE__ */ React.createElement("td", { className: "text-right py-2 px-3", style: { fontWeight: 600 } }, nOrNull(p.gos)), /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 text-xs" }, p.pt || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 text-xs" }, forms.length === 0 ? /* @__PURE__ */ React.createElement("span", { style: { color: RED, fontWeight: 600 } }, "not sellable \u2014 nothing set") : forms.map((f) => /* @__PURE__ */ React.createElement("div", { key: f.id }, f.form))), /* @__PURE__ */ React.createElement("td", { className: "text-right py-2 px-3" }, forms.length === 0 ? "\u2014" : forms.map((f) => /* @__PURE__ */ React.createElement("div", { key: f.id }, /* @__PURE__ */ React.createElement(
-          "input",
-          {
-            type: "number",
-            step: "0.25",
-            defaultValue: f.metres == null ? "" : Number(f.metres),
-            onBlur: (e) => {
-              if (String(e.target.value) !== String(f.metres == null ? "" : Number(f.metres))) setMetres(f, e.target.value);
-            },
-            style: {
-              font: "inherit",
-              fontSize: 13,
-              width: 74,
-              textAlign: "right",
-              minHeight: 32,
-              padding: "4px 6px",
-              border: `1px solid ${BORDER}`,
-              borderRadius: 4
-            }
-          }
-        )))), /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 text-right" }, forms.length === 0 ? /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => addForm(p, "Box", 24) }, "Sell as a box") : /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => toggleActive(p) }, retired ? "Bring back" : "Retire")));
-      })
-    ]))), /* @__PURE__ */ React.createElement("div", { className: "mt-4" }, !adding ? /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => setAdding(true) }, "+ Add a size to ", range) : /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "flex items-end gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement("label", { className: "text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("div", null, "Base colour"), /* @__PURE__ */ React.createElement(
+      ), "metres (", Math.round(m / 0.75), " x 750mm strips)"))));
+    }), /* @__PURE__ */ React.createElement("div", { className: "mt-4" }, !adding ? /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => setAdding(true) }, "+ Add a size to ", range) : /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "flex items-end gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement("label", { className: "text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("div", null, "Base colour"), /* @__PURE__ */ React.createElement(
       "input",
       {
         value: np.colour,
