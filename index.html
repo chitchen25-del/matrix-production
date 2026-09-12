@@ -959,7 +959,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-11.21";
+  var APP_VERSION = "2026-09-11.22";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -14539,6 +14539,82 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       })(), /* @__PURE__ */ React.createElement("div", { className: "min-w-0" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm no-wrap", style: { color: INK } }, mat ? mat.name : mv.materialId), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, sourceLabel[mv.sourceType] || mv.sourceType, mv.note ? ` \u2014 ${mv.note}` : ""))), /* @__PURE__ */ React.createElement("div", { className: "text-right shrink-0" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold", style: { color: mv.qty < 0 ? RED : GREEN } }, mv.qty > 0 ? "+" : "", mv.qty), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, mv.date)));
     })));
   }
+  function MatrixOverviewView({ data, jumpToOrder }) {
+    const liveRows = (a) => (a || []).filter((x) => !x.deleted);
+    const orders = liveRows(data.orders).filter((o) => !["Shipped", "Cancelled"].includes(o.stage));
+    const cases = liveRows(data.cases);
+    const sumOf = (m) => Object.values(m || {}).reduce((t, v) => t + (Number(v) || 0), 0);
+    const rows = orders.map((o) => {
+      const mine = cases.filter((c) => c.orderId === o.id);
+      const ordered = orderTotalItems(data.lineItems, o.id);
+      const planned = mine.reduce((t, c) => t + sumOf(casePlanned(c)), 0);
+      const packed = mine.reduce((t, c) => t + sumOf(c.contents), 0);
+      const full = mine.filter((c) => sumOf(c.contents) >= (Number(c.maxSize) || 20)).length;
+      return {
+        id: o.id,
+        customer: o.customer || o.id,
+        stage: o.stage,
+        priority: o.priority,
+        ordered,
+        planned,
+        packed,
+        outstanding: Math.max(0, ordered - packed),
+        cases: mine.length,
+        casesFull: full,
+        pct: ordered > 0 ? Math.round(packed / ordered * 100) : 0,
+        planOff: planned - ordered
+      };
+    });
+    const STAGE_RANK = { Packing: 0, Manufacturing: 1, Received: 2 };
+    rows.sort((a, b) => (STAGE_RANK[a.stage] ?? 9) - (STAGE_RANK[b.stage] ?? 9) || (a.priority ?? 99) - (b.priority ?? 99) || String(a.customer).localeCompare(String(b.customer)));
+    const T = rows.reduce((t, r) => ({
+      ordered: t.ordered + r.ordered,
+      planned: t.planned + r.planned,
+      packed: t.packed + r.packed,
+      outstanding: t.outstanding + r.outstanding,
+      cases: t.cases + r.cases,
+      casesFull: t.casesFull + r.casesFull
+    }), { ordered: 0, planned: 0, packed: 0, outstanding: 0, cases: 0, casesFull: 0 });
+    const totalPct = T.ordered > 0 ? Math.round(T.packed / T.ordered * 100) : 0;
+    const offPlan = rows.filter((r) => r.planOff !== 0);
+    const shelf = liveRows(data.bondingRuns).filter((r) => !r.workNumber && (Number(r.toStock) || 0) > 0);
+    const shelfBoxes = shelf.reduce((t, r) => t + (Number(r.toStock) || 0), 0);
+    const shelfNoBay = shelf.filter((r) => !String(r.location || "").trim());
+    const reels = liveRows(data.glueLineBatches).filter((b) => b.checked === "Yes" && b.cleared !== "Yes");
+    const reelMetres = reels.reduce((t, b) => t + (Number(b.meterage) || 0), 0);
+    const openCount = openIssues(data.issues).length;
+    const Fig = ({ n, label, tone }) => /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 120px", minWidth: 110 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 26, fontWeight: 650, lineHeight: 1.1, color: tone || INK } }, n), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 2 } }, label));
+    const Num = ({ children, bold, tone }) => /* @__PURE__ */ React.createElement(
+      "td",
+      {
+        className: "text-right py-2 px-3 tabular-nums",
+        style: { fontWeight: bold ? 650 : 400, color: tone || INK, whiteSpace: "nowrap" }
+      },
+      children
+    );
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(
+      SectionHeader,
+      {
+        title: "Matrix overview",
+        subtitle: `${rows.length} live orders \xB7 ${T.ordered.toLocaleString()} boxes ordered \xB7 ${totalPct}% packed`
+      }
+    ), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-4" }, /* @__PURE__ */ React.createElement(Fig, { n: rows.length, label: "live orders" }), /* @__PURE__ */ React.createElement(Fig, { n: T.ordered.toLocaleString(), label: "boxes ordered" }), /* @__PURE__ */ React.createElement(Fig, { n: T.packed.toLocaleString(), label: "packed", tone: GREEN }), /* @__PURE__ */ React.createElement(Fig, { n: T.outstanding.toLocaleString(), label: "still to pack", tone: T.outstanding ? ORANGE : GREEN }), /* @__PURE__ */ React.createElement(Fig, { n: `${totalPct}%`, label: "of everything ordered" }), /* @__PURE__ */ React.createElement(Fig, { n: T.cases.toLocaleString(), label: "cases required" }), /* @__PURE__ */ React.createElement(Fig, { n: T.casesFull.toLocaleString(), label: "cases full" }))), /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-4", style: { borderLeft: `3px solid ${offPlan.length ? RED : GREEN}` } }, offPlan.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14 } }, "Every one of the ", rows.length, " live orders has a case plan that comes to exactly what was ordered.") : /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: RED } }, offPlan.length, " order", offPlan.length === 1 ? "" : "s", " where the plan does not come to what was ordered"), offPlan.map((r) => /* @__PURE__ */ React.createElement("div", { key: r.id, className: "text-xs", style: { color: INK_MUTED, marginTop: 3 } }, r.customer, " \u2014 ordered ", r.ordered, ", planned ", r.planned, " (", r.planOff > 0 ? "+" : "", r.planOff, ")")))), /* @__PURE__ */ React.createElement(Panel, { className: "mb-4", style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full", style: { fontSize: 13.5, borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", { style: { color: INK_MUTED, borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement(Th, null, "Customer"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Stage"), /* @__PURE__ */ React.createElement(ThR, { w: 84 }, "Ordered"), /* @__PURE__ */ React.createElement(ThR, { w: 84 }, "Planned"), /* @__PURE__ */ React.createElement(ThR, { w: 78 }, "Packed"), /* @__PURE__ */ React.createElement(ThR, { w: 92 }, "Outstanding"), /* @__PURE__ */ React.createElement(ThR, { w: 78 }, "Cases"), /* @__PURE__ */ React.createElement(ThR, { w: 64 }, "%"))), /* @__PURE__ */ React.createElement("tbody", null, rows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 8 }, "No live orders."), rows.map((r) => /* @__PURE__ */ React.createElement(
+      "tr",
+      {
+        key: r.id,
+        style: { borderBottom: `1px solid ${BORDER}`, cursor: jumpToOrder ? "pointer" : "default" },
+        onClick: () => jumpToOrder && jumpToOrder(r.id)
+      },
+      /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3", style: { fontWeight: 550 } }, r.customer, r.priority != null && r.priority !== "" && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, marginLeft: 6 } }, "P", r.priority)),
+      /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 text-xs", style: { color: STAGE_COLORS[r.stage] || INK_MUTED, fontWeight: 600 } }, r.stage),
+      /* @__PURE__ */ React.createElement(Num, null, r.ordered.toLocaleString()),
+      /* @__PURE__ */ React.createElement(Num, { tone: r.planOff ? RED : void 0, bold: !!r.planOff }, r.planned.toLocaleString()),
+      /* @__PURE__ */ React.createElement(Num, null, r.packed.toLocaleString()),
+      /* @__PURE__ */ React.createElement(Num, { tone: r.outstanding ? ORANGE : GREEN }, r.outstanding.toLocaleString()),
+      /* @__PURE__ */ React.createElement(Num, null, r.casesFull, " / ", r.cases),
+      /* @__PURE__ */ React.createElement(Num, { bold: true }, r.pct, "%")
+    ))), /* @__PURE__ */ React.createElement("tfoot", { style: { borderTop: `2px solid ${INK}` } }, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { className: "py-2.5 px-3", style: { fontWeight: 650 } }, "All live orders"), /* @__PURE__ */ React.createElement("td", null), /* @__PURE__ */ React.createElement(Num, { bold: true }, T.ordered.toLocaleString()), /* @__PURE__ */ React.createElement(Num, { bold: true, tone: T.planned === T.ordered ? void 0 : RED }, T.planned.toLocaleString()), /* @__PURE__ */ React.createElement(Num, { bold: true }, T.packed.toLocaleString()), /* @__PURE__ */ React.createElement(Num, { bold: true, tone: T.outstanding ? ORANGE : GREEN }, T.outstanding.toLocaleString()), /* @__PURE__ */ React.createElement(Num, { bold: true }, T.casesFull, " / ", T.cases), /* @__PURE__ */ React.createElement(Num, { bold: true }, totalPct, "%"))))), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-4" }, /* @__PURE__ */ React.createElement(Panel, { className: "p-4", style: { flex: "1 1 240px" } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED, fontWeight: 600 } }, "ON THE SHELF"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 650 } }, shelfBoxes.toLocaleString(), " boxes"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 4 } }, shelf.length, " box code", shelf.length === 1 ? "" : "s", " free to promise"), shelfNoBay.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: ORANGE, marginTop: 6 } }, shelfNoBay.reduce((t, r) => t + (Number(r.toStock) || 0), 0), " of them across ", shelfNoBay.length, " code", shelfNoBay.length === 1 ? "" : "s", " have no bay \u2014 nobody can be told where to find them")), /* @__PURE__ */ React.createElement(Panel, { className: "p-4", style: { flex: "1 1 240px" } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED, fontWeight: 600 } }, "READY TO BOND"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 650 } }, reels.length, " reel", reels.length === 1 ? "" : "s"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 4 } }, reelMetres.toLocaleString(), " m checked and not yet used up")), /* @__PURE__ */ React.createElement(Panel, { className: "p-4", style: { flex: "1 1 240px" } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED, fontWeight: 600 } }, "REGISTER"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 650, color: openCount ? ORANGE : GREEN } }, openCount, " open item", openCount === 1 ? "" : "s"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 4 } }, openCount ? "Things that need somebody to go and look" : "Nothing outstanding"))), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-4", style: { color: INK_MUTED } }, "Ordered comes from the order's own lines, less delivery and tape. Planned is the case plan written when the order arrived. Packed is what is actually in the cases. Shipped and cancelled orders are not counted here."));
+  }
   function MetricsView({ data, setData }) {
     const { orders, lineItems, bondingRuns, glueLineBatches, ncrs = [] } = data;
     const todayStr = daysAgoLocal(0);
@@ -18712,6 +18788,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     { key: "materials", label: "Materials", icon: IconSack },
     { key: "register", label: "Register", icon: IconAlert, badge: (data) => openIssues(data.issues).length },
     { key: "ncr", label: "NCR log", icon: IconAlert },
+    { key: "overview", label: "Matrix overview", icon: IconChart },
     { key: "metrics", label: "Metrics", icon: IconChart },
     { key: "tooling", label: "Tooling", icon: IconTool },
     { key: "admin", label: "Admin", icon: IconAlert },
@@ -18734,7 +18811,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     { label: null, keys: ["eva"] },
     { label: "Planning", section: true, prominent: true, keys: ["daily", "production", "gluelineschedule", "batches"] },
     { label: null, keys: ["materials"] },
-    { label: "Quality and reports", keys: ["register", "ncr", "metrics"] },
+    { label: "Quality and reports", keys: ["overview", "register", "ncr", "metrics"] },
     { label: null, keys: ["tooling"] },
     { label: null, keys: ["admin"] }
   ];
@@ -19780,6 +19857,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       tooling: /* @__PURE__ */ React.createElement(BaselineToolingView, { data, setData }),
       ncr: /* @__PURE__ */ React.createElement(NcrLogView, { data, setData }),
       register: /* @__PURE__ */ React.createElement(IssuesRegisterView, { data, setData }),
+      overview: /* @__PURE__ */ React.createElement(MatrixOverviewView, { data, jumpToOrder }),
       metrics: /* @__PURE__ */ React.createElement(MetricsView, { data, setData }),
       admin: syncUserRole === "standard" ? (
         // Reached via search or direct navigation, not the nav link — the nav
