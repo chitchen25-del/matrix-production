@@ -1014,7 +1014,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-12.17";
+  var APP_VERSION = "2026-09-12.19";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1222,6 +1222,15 @@
     } },
     productForms: { table: "product_forms", cols: { productId: "product_id", createdAt: "created_at" } },
     productAliases: { table: "product_aliases", cols: { productId: "product_id", createdAt: "created_at" } },
+    /* Talking about an order, against the order. Written by the customer on the
+       website and by Matrix here — one table, two front doors. */
+    orderMessages: { table: "order_messages", cols: {
+      orderId: "order_id",
+      authorSide: "author_side",
+      authorName: "author_name",
+      createdAt: "created_at",
+      readAt: "read_at"
+    } },
     productionRates: { table: "production_rates", cols: { metersPerMin: "meters_per_min" } },
     materials: { table: "materials", cols: { currentStock: "current_stock", lastStockTakeDate: "last_stock_take_date", batchCode: "batch_code" } },
     materialMovements: { table: "material_movements", cols: { materialId: "material_id", sourceType: "source_type", sourceId: "source_id" } },
@@ -1543,7 +1552,10 @@
       const { updated_at, updated_by, ...rest } = r;
       return rest;
     };
+    const OFFICE_TABLES = /* @__PURE__ */ new Set(["orders", "line_items", "order_messages"]);
+    const salesOnly = typeof localStorage !== "undefined" && localStorage.getItem("matrixSyncUserRole") === "sales";
     for (const table of Object.keys(nextTables)) {
+      if (salesOnly && !OFFICE_TABLES.has(table)) continue;
       if (skip.has(table)) {
         console.warn(`Push skipped for table "${table}": its fetch failed, so there is nothing safe to diff against.`);
         continue;
@@ -15238,6 +15250,141 @@ It stops being offered on new orders and in the client hub. Orders that already 
     }
     return best;
   }
+  function orderThreads(data) {
+    const live = (a) => (a || []).filter((x) => !x.deleted);
+    const byOrder = /* @__PURE__ */ new Map();
+    for (const m of live(data.orderMessages)) {
+      if (!byOrder.has(m.orderId)) byOrder.set(m.orderId, []);
+      byOrder.get(m.orderId).push(m);
+    }
+    const orders = new Map(live(data.orders).map((o) => [o.id, o]));
+    return [...byOrder.entries()].map(([orderId, msgs]) => {
+      const sorted = [...msgs].sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+      return {
+        orderId,
+        order: orders.get(orderId) || null,
+        messages: sorted,
+        last: sorted[sorted.length - 1],
+        /* Unread means THEY wrote it and nobody here has opened it. Our own
+           messages are never unread to us. */
+        unread: sorted.filter((m) => m.authorSide === "customer" && !m.readAt).length
+      };
+    }).sort((a, b) => b.unread - a.unread || String(b.last.createdAt).localeCompare(String(a.last.createdAt)));
+  }
+  function unreadFromCustomers(data) {
+    return (data.orderMessages || []).filter((m) => !m.deleted && m.authorSide === "customer" && !m.readAt).length;
+  }
+  function MessagesView({ data, setData, jumpToOrder }) {
+    const phone = useIsPhone();
+    const threads = orderThreads(data);
+    const [openId, setOpenId] = useState(threads.length ? threads[0].orderId : null);
+    const [draft, setDraft] = useState("");
+    const open = threads.find((t) => t.orderId === openId) || null;
+    const stamp = () => (/* @__PURE__ */ new Date()).toISOString();
+    useEffect(() => {
+      if (!open || !open.unread) return;
+      const ids = open.messages.filter((m) => m.authorSide === "customer" && !m.readAt).map((m) => m.id);
+      if (!ids.length) return;
+      const t = setTimeout(() => setData((prev) => ({
+        ...prev,
+        orderMessages: (prev.orderMessages || []).map((m) => ids.includes(m.id) ? { ...m, readAt: stamp(), updatedAt: stamp() } : m)
+      })), 900);
+      return () => clearTimeout(t);
+    }, [openId, open && open.unread]);
+    const send = () => {
+      const body = draft.trim();
+      if (!body || !open) return;
+      setData((prev) => ({
+        ...prev,
+        orderMessages: [...prev.orderMessages || [], {
+          id: "msg-" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36),
+          orderId: open.orderId,
+          body,
+          authorSide: "matrix",
+          authorName: currentActor(),
+          createdAt: stamp(),
+          readAt: null,
+          deleted: false,
+          updatedAt: stamp()
+        }],
+        ...appendLog(prev, {
+          action: "add",
+          entity: "orderMessage",
+          entityId: open.orderId,
+          summary: `Replied to ${open.order ? open.order.customer : open.orderId} about ${open.orderId}`
+        })
+      }));
+      setDraft("");
+    };
+    const when = (iso) => {
+      const d = new Date(iso);
+      if (isNaN(d)) return "";
+      return d.toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+    };
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(
+      SectionHeader,
+      {
+        title: "Messages",
+        subtitle: threads.length ? `${threads.length} order${threads.length === 1 ? "" : "s"} being talked about \xB7 ${unreadFromCustomers(data)} unread` : "Nothing from any customer yet. A question asked on the client hub lands here, against the order it is about."
+      }
+    ), threads.length === 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-6 text-center", style: { color: INK_MUTED } }, "When a customer asks something on the hub it appears here, with the order it belongs to."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 16, alignItems: "flex-start", flexDirection: phone ? "column" : "row" } }, threads.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { flex: phone ? "1 1 auto" : "0 0 300px", width: phone ? "100%" : void 0 } }, threads.map((t) => {
+      const on = t.orderId === openId;
+      return /* @__PURE__ */ React.createElement(
+        Panel,
+        {
+          key: t.orderId,
+          className: "p-3 mb-2",
+          style: { borderLeft: `3px solid ${t.unread ? ORANGE : on ? NAVY : BORDER}`, cursor: "pointer" },
+          onClick: () => {
+            setOpenId(t.orderId);
+            setDraft("");
+          }
+        },
+        /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2" }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 650, fontSize: 14 } }, t.order ? t.order.customer : t.orderId), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: {
+          color: INK_MUTED,
+          marginTop: 2,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis"
+        } }, t.orderId, " \xB7 ", t.last.authorSide === "matrix" ? "you: " : "", t.last.body)), t.unread > 0 && /* @__PURE__ */ React.createElement("span", { style: {
+          background: ORANGE,
+          color: "#fff",
+          borderRadius: 10,
+          fontSize: 11,
+          fontWeight: 700,
+          padding: "2px 7px"
+        } }, t.unread))
+      );
+    })), open && /* @__PURE__ */ React.createElement(Panel, { className: "p-4", style: { flex: 1, width: phone ? "100%" : void 0 } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 mb-3 flex-wrap" }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 650 } }, open.order ? open.order.customer : open.orderId), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, open.orderId, open.order ? ` \xB7 ${open.order.stage}` : " \xB7 order not on this device")), open.order && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => jumpToOrder && jumpToOrder(open.orderId) }, "Open the order")), /* @__PURE__ */ React.createElement("div", { style: { maxHeight: phone ? 360 : 460, overflowY: "auto", paddingRight: 4 } }, open.messages.map((m) => {
+      const ours = m.authorSide === "matrix";
+      return /* @__PURE__ */ React.createElement("div", { key: m.id, style: { display: "flex", justifyContent: ours ? "flex-end" : "flex-start", marginBottom: 9 } }, /* @__PURE__ */ React.createElement("div", { style: {
+        maxWidth: "78%",
+        padding: "9px 12px",
+        borderRadius: 10,
+        background: ours ? NAVY : "#F1F1EF",
+        color: ours ? "#fff" : INK,
+        fontSize: 14
+      } }, /* @__PURE__ */ React.createElement("div", { style: { whiteSpace: "pre-wrap" } }, m.body), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, marginTop: 4, opacity: 0.7 } }, m.authorName || (ours ? "Matrix" : "Customer"), " \xB7 ", when(m.createdAt), ours && m.readAt ? " \xB7 seen" : "")));
+    })), /* @__PURE__ */ React.createElement("div", { className: "flex items-end gap-2", style: { marginTop: 12 } }, /* @__PURE__ */ React.createElement(
+      "textarea",
+      {
+        value: draft,
+        onChange: (e) => setDraft(e.target.value),
+        rows: phone ? 3 : 2,
+        placeholder: `Reply to ${open.order ? open.order.customer : "the customer"}\u2026`,
+        style: {
+          font: "inherit",
+          fontSize: 15,
+          flex: 1,
+          padding: "9px 11px",
+          borderRadius: 6,
+          border: `1px solid ${BORDER}`,
+          background: "#fff",
+          resize: "vertical"
+        }
+      }
+    ), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: send }, "Send")), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 6 } }, "They see this in the client hub against this order. It is not an email."))));
+  }
   function ClientOrdersView({ data, setData, jumpToOrder }) {
     const phone = useIsPhone();
     const waiting = portalOrdersWaiting(data);
@@ -19749,6 +19896,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
        history and direct navigation still find them by name. */
     { key: "neworders", label: "New orders", icon: IconOrders, hidden: true },
     { key: "clientorders", label: "Client orders", icon: IconOrders, hidden: true },
+    { key: "messages", label: "Messages", icon: IconOrders, badge: (data) => unreadFromCustomers(data) },
     { key: "completed", label: "Completed orders", icon: IconCheckBox, hidden: true },
     { key: "customers", label: "Customers", icon: IconOrders, hidden: true },
     { key: "schedule", label: "Ordered by EVA size", icon: IconLink, hidden: true }
@@ -19762,7 +19910,8 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     "completed",
     "customers",
     "products",
-    "overview"
+    "overview",
+    "messages"
   ];
   var NAV_GROUPS = [
     /* A `section` group is a caption over a flat list — never collapsible, and
@@ -19773,6 +19922,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     { label: null, keys: ["eva"] },
     { label: "Planning", section: true, prominent: true, keys: ["daily", "production", "gluelineschedule", "batches"] },
     { label: null, keys: ["materials"] },
+    { label: null, keys: ["messages"] },
     { label: "Quality and reports", keys: ["overview", "register", "ncr", "metrics"] },
     { label: null, keys: ["products"] },
     { label: null, keys: ["tooling"] },
@@ -20826,6 +20976,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       ncr: /* @__PURE__ */ React.createElement(NcrLogView, { data, setData }),
       register: /* @__PURE__ */ React.createElement(IssuesRegisterView, { data, setData }),
       products: /* @__PURE__ */ React.createElement(ProductsView, { data, setData }),
+      messages: /* @__PURE__ */ React.createElement(MessagesView, { data, setData, jumpToOrder }),
       clientorders: /* @__PURE__ */ React.createElement(ClientOrdersView, { data, setData, jumpToOrder }),
       overview: /* @__PURE__ */ React.createElement(MatrixOverviewView, { data, setData, jumpToOrder }),
       metrics: /* @__PURE__ */ React.createElement(MetricsView, { data, setData }),
