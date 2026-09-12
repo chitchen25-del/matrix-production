@@ -1014,7 +1014,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-12.22";
+  var APP_VERSION = "2026-09-12.23";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1552,6 +1552,7 @@
     const okTables = [];
     const warnings = [];
     const refused = [];
+    const refusedFresh = [];
     const prevTables = dataToTables(prevData);
     const nextTables = dataToTables(nextData);
     const actor = currentSyncActor();
@@ -1580,7 +1581,15 @@
         if (changed.length) {
           const outgoing = actor ? changed.map((r) => ({ ...r, updated_by: actor })) : changed;
           const refusedIds = await upsertHealingMissingColumns(client, table, outgoing, warnings);
-          if (refusedIds && refusedIds.length) refused.push({ table, ids: refusedIds });
+          if (refusedIds && refusedIds.length) {
+            refused.push({ table, ids: refusedIds });
+            try {
+              const { data: fresh } = await client.from(table).select("*").in("id", refusedIds);
+              if (fresh && fresh.length) refusedFresh.push({ table, rows: fresh });
+            } catch (e) {
+              console.warn(`Could not pull back the newer copy of ${refusedIds.length} ${table} row(s):`, e);
+            }
+          }
         }
         if (deletedIds.length) {
           const { error } = await client.from(table).update(actor ? { deleted: true, updated_by: actor } : { deleted: true }).in("id", deletedIds);
@@ -1600,9 +1609,10 @@
       err.okTables = okTables;
       err.warnings = warnings;
       err.refused = refused;
+      err.refusedFresh = refusedFresh;
       throw err;
     }
-    return { okTables, warnings, refused };
+    return { okTables, warnings, refused, refusedFresh };
   }
   function countPendingChanges(prevData, nextData) {
     const prevTables = dataToTables(prevData);
@@ -20334,10 +20344,10 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           const prev = prevDataRef.current;
           pushSyncChanges(syncClientRef.current, prev, storedData).then((res) => {
             prevDataRef.current = advancePrevForTables(prev, data, res.okTables);
-            if (res.refused && res.refused.length) reconcileRefusedRowsRef.current(res.refused);
+            if (res.refused && res.refused.length) reconcileRefusedRowsRef.current(res.refused, res.refusedFresh);
           }).catch((err) => {
             if (err && err.okTables) prevDataRef.current = advancePrevForTables(prev, data, err.okTables);
-            if (err && err.refused && err.refused.length) reconcileRefusedRowsRef.current(err.refused);
+            if (err && err.refused && err.refused.length) reconcileRefusedRowsRef.current(err.refused, err.refusedFresh);
           });
         }
       };
@@ -20425,7 +20435,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         setSyncFailureDetail(null);
         markSynced();
         setSyncWarnings(res && res.warnings && res.warnings.length ? res.warnings : null);
-        if (res && res.refused && res.refused.length) reconcileRefusedRowsRef.current(res.refused);
+        if (res && res.refused && res.refused.length) reconcileRefusedRowsRef.current(res.refused, res.refusedFresh);
         releasePendingDeletions(Object.keys(deletedByTable));
         const retired = (res && res.warnings || []).flatMap((w) => w.retired || []);
         if (retired.length) {
@@ -20448,7 +20458,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         releasePendingDeletions(okTables);
         setPendingCount(countPendingChanges(prevDataRef.current, data));
         if (err.warnings && err.warnings.length) setSyncWarnings(err.warnings);
-        if (err.refused && err.refused.length) reconcileRefusedRowsRef.current(err.refused);
+        if (err.refused && err.refused.length) reconcileRefusedRowsRef.current(err.refused, err.refusedFresh);
         const offline = failures.length === 0 || failures.some(isNetworkFailure);
         setSyncStatus(offline ? "offline" : "connected");
         setSyncFailureDetail(failures.length ? failures : null);
@@ -20531,7 +20541,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       const res = await fetchRemoteTables(client);
       return mergeRemoteIntoData(currentData, res.data);
     };
-    const reconcileRefusedRows = async (refused) => {
+    const reconcileRefusedRows = async (refused, refusedFresh) => {
       if (!refused || !refused.length) return;
       const client = syncClientRef.current;
       if (!client) return;
@@ -20539,7 +20549,18 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       try {
         const res = await fetchRemoteTables(client);
         noteWatermarks(res);
-        const merged = mergeRemoteIntoData(dataRef.current, res.data);
+        let merged = mergeRemoteIntoData(dataRef.current, res.data);
+        for (const { table, rows } of refusedFresh || []) {
+          const entry = Object.entries(SYNC_TABLES).find(([, v]) => v.table === table);
+          if (!entry || !rows || !rows.length) continue;
+          const [key, { cols }] = entry;
+          const fresh = rows.map((r) => syncToCamelRow(r, cols));
+          const byId = new Map(fresh.map((r) => [r.id, r]));
+          merged = {
+            ...merged,
+            [key]: (merged[key] || []).map((r) => byId.get(r.id) || r).concat(fresh.filter((r) => !(merged[key] || []).some((x) => x.id === r.id)))
+          };
+        }
         skipNextPushRef.current = true;
         setDataRaw(merged);
         prevDataRef.current = merged;
@@ -20612,7 +20633,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         setSyncFailureDetail(null);
         setSyncWarnings(res.warnings && res.warnings.length ? res.warnings : null);
         markSynced();
-        if (res.refused && res.refused.length) await reconcileRefusedRows(res.refused);
+        if (res.refused && res.refused.length) await reconcileRefusedRows(res.refused, res.refusedFresh);
       } catch (e) {
         console.error("Catch-up push failed:", e);
         prevDataRef.current = advancePrevForTables(remote, merged, e.okTables || []);
@@ -20639,7 +20660,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
               setSyncFailureDetail(null);
               setSyncWarnings(pushRes.warnings && pushRes.warnings.length ? pushRes.warnings : null);
               markSynced();
-              if (pushRes.refused && pushRes.refused.length) await reconcileRefusedRows(pushRes.refused);
+              if (pushRes.refused && pushRes.refused.length) await reconcileRefusedRows(pushRes.refused, pushRes.refusedFresh);
             } catch (e) {
               console.error("Offline-recovery push failed:", e);
               prevDataRef.current = advancePrevForTables(remote2, merged2, e.okTables || []);
@@ -20768,7 +20789,13 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
             setSyncError("Signed out \u2014 your session expired. Tap Reconnect to sign back in. Nothing you've entered has been lost.");
             return;
           }
-          const email = localStorage.getItem("matrixSyncEmail") || sessionData.session.user?.email || "";
+          const sessionEmail = (sessionData.session.user?.email || "").trim();
+          const storedEmail = (localStorage.getItem("matrixSyncEmail") || "").trim();
+          if (sessionEmail && storedEmail && sessionEmail.toLowerCase() !== storedEmail.toLowerCase()) {
+            console.warn(`Stored sign-in (${storedEmail}) does not match the live session (${sessionEmail}) \u2014 using the session.`);
+          }
+          const email = sessionEmail || storedEmail;
+          if (email) localStorage.setItem("matrixSyncEmail", email);
           await finishConnecting(client, email);
         } catch (e) {
           console.error("Auto-reconnect failed:", e);
