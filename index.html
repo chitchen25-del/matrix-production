@@ -1014,7 +1014,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-12.24";
+  var APP_VERSION = "2026-09-12.25";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1229,7 +1229,8 @@
       authorSide: "author_side",
       authorName: "author_name",
       createdAt: "created_at",
-      readAt: "read_at"
+      readAt: "read_at",
+      withdrawnAt: "withdrawn_at"
     } },
     /* The acknowledgement as it was actually printed, kept so the customer can
        download the same document rather than a second render of it. */
@@ -14762,9 +14763,27 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       </table>
     </div>` : "";
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Order acknowledged ${esc(order.id)}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- iOS reads a long digit string as a phone number and renders it as a blue
+     underlined link. On a formal document the VAT and company numbers came out
+     looking like a mistake. -->
+<meta name="format-detection" content="telephone=no,date=no,address=no,email=no">
 <style>
   @page { size: A4; margin: 14mm 12mm; }
   body { font-family: Arial, Helvetica, sans-serif; color: #1a1a1a; font-size: 10pt; margin: 0; }
+  /* PRINTS AT A4, READS ON A PHONE. (12 Sep 2026)
+     Chris's test recording showed the document clipped on an iPhone: the title
+     cut off, Matrix's address column past the right edge, the Close button
+     half off the screen. It was laid out for paper and nothing else, and the
+     customer meets it on a phone first.
+     Scaling the whole document down rather than reflowing it keeps the
+     printed page identical \u2014 a document a customer might hold against an
+     invoice should not change shape depending on what opened it. */
+  @media screen and (max-width: 760px) {
+    html { -webkit-text-size-adjust: 100%; }
+    body { width: 760px; transform: scale(calc(100vw / 760)); transform-origin: top left; }
+  }
+  a[href^="tel"], a[href^="TEL"] { color: inherit; text-decoration: none; }
   .head { display: flex; gap: 18px; margin-bottom: 26px; }
   .head > div { flex: 1 1 0; }
   h1 { font-size: 21pt; font-weight: 400; letter-spacing: .01em; margin: 0 0 10px 0; line-height: 1.12; }
@@ -15309,6 +15328,26 @@ It stops being offered on new orders and in the client hub. Orders that already 
       })), 900);
       return () => clearTimeout(t);
     }, [openId, open && open.unread]);
+    const withdraw = (m) => {
+      if (m.authorSide !== "matrix") return;
+      if (!window.confirm(
+        `Withdraw this message?
+
+"${m.body}"
+
+${open.order ? open.order.customer : "The customer"} will see that it was withdrawn, not an empty space${m.readAt ? " \u2014 and they have already read it" : ""}.`
+      )) return;
+      setData((prev) => ({
+        ...prev,
+        orderMessages: (prev.orderMessages || []).map((x) => x.id === m.id ? { ...x, withdrawnAt: stamp(), updatedAt: stamp() } : x),
+        ...appendLog(prev, {
+          action: "update",
+          entity: "orderMessage",
+          entityId: m.id,
+          summary: `Withdrew a message to ${open.order ? open.order.customer : open.orderId} on ${open.orderId}` + (m.readAt ? " (already read)" : "")
+        })
+      }));
+    };
     const send = () => {
       const body = draft.trim();
       if (!body || !open) return;
@@ -15379,10 +15418,31 @@ It stops being offered on new orders and in the client hub. Orders that already 
         maxWidth: "78%",
         padding: "9px 12px",
         borderRadius: 10,
-        background: ours ? NAVY : "#F1F1EF",
-        color: ours ? "#fff" : INK,
-        fontSize: 14
-      } }, /* @__PURE__ */ React.createElement("div", { style: { whiteSpace: "pre-wrap" } }, m.body), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, marginTop: 4, opacity: 0.7 } }, m.authorName || (ours ? "Matrix" : "Customer"), " \xB7 ", when(m.createdAt), ours && m.readAt ? " \xB7 seen" : "")));
+        background: m.withdrawnAt ? "#F1F1EF" : ours ? NAVY : "#F1F1EF",
+        color: m.withdrawnAt ? INK_MUTED : ours ? "#fff" : INK,
+        fontSize: 14,
+        border: m.withdrawnAt ? `1px dashed ${BORDER}` : "none"
+      } }, /* @__PURE__ */ React.createElement("div", { style: {
+        whiteSpace: "pre-wrap",
+        fontStyle: m.withdrawnAt ? "italic" : "normal",
+        textDecoration: m.withdrawnAt ? "line-through" : "none"
+      } }, m.body), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, marginTop: 4, opacity: 0.7 } }, m.withdrawnAt ? `withdrawn ${when(m.withdrawnAt)}` : `${m.authorName || (ours ? "Matrix" : "Customer")} \xB7 ${when(m.createdAt)}${ours && m.readAt ? " \xB7 seen" : ""}`), ours && !m.withdrawnAt && /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          onClick: () => withdraw(m),
+          style: {
+            background: "none",
+            border: "none",
+            color: "#fff",
+            opacity: 0.75,
+            fontSize: 11,
+            cursor: "pointer",
+            padding: "3px 0 0",
+            textDecoration: "underline"
+          }
+        },
+        "Withdraw"
+      )));
     })), /* @__PURE__ */ React.createElement("div", { className: "flex items-end gap-2", style: { marginTop: 12 } }, /* @__PURE__ */ React.createElement(
       "textarea",
       {
