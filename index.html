@@ -1014,7 +1014,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-13.4";
+  var APP_VERSION = "2026-09-13.5";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -18640,7 +18640,36 @@ Plan it?`
       style: { width, minHeight: 40, fontSize: 16, fontWeight: 600, textAlign: "center", border: `1px solid #CFCFCA`, borderRadius: 4, background: "#fff" }
     }
   );
-  function GlueEntrySteps({ form, setForm, openRun, openReel = null, runError = "", existingBatchNumbers = [], orderOptions = [], materials = [], onStartRun, onStartReel, onFinishReel, onSaveRunSettings, onEndRun, onSubmit, error, runTotals, children, renderFullForm }) {
+  function normalWeightFor(productSize, rows) {
+    const spec = String(productSize || "").trim();
+    if (!spec) return null;
+    const vals = (rows || []).filter((r) => r && !r.deleted && String(r.productSize || "").trim() === spec).map((r) => Number(r.weightPer5m)).filter((n) => !isNaN(n) && n > 0).sort((a, b) => a - b);
+    if (vals.length >= 3) {
+      const lo = vals[0], hi = vals[vals.length - 1];
+      return {
+        lo: Math.round(lo * 10) / 10,
+        hi: Math.round(hi * 10) / 10,
+        mid: Math.round(vals[Math.floor(vals.length / 2)] * 10) / 10,
+        n: vals.length,
+        slack: 2,
+        fromHistory: true
+      };
+    }
+    const m = spec.match(/([0-9.]+)\s*x\s*([0-9.]+)/);
+    if (!m) return null;
+    const gap = Number(m[2]);
+    if (!(gap > 0)) return null;
+    const est = Math.round((9.6 + 8.6 * gap) * 10) / 10;
+    return {
+      lo: Math.round((est - 3) * 10) / 10,
+      hi: Math.round((est + 3) * 10) / 10,
+      mid: est,
+      n: 0,
+      slack: 3,
+      fromHistory: false
+    };
+  }
+  function GlueEntrySteps({ form, setForm, openRun, openReel = null, runError = "", allRows = [], existingBatchNumbers = [], orderOptions = [], materials = [], onStartRun, onStartReel, onFinishReel, onSaveRunSettings, onEndRun, onSubmit, error, runTotals, children, renderFullForm }) {
     const [everyField, setEveryField] = useState(false);
     const spec = form.range === "Custom" ? String(form.size || "").trim() : `${form.range} ${String(form.size || "").trim()}`.trim();
     const direct = form.direct === true;
@@ -18648,6 +18677,7 @@ Plan it?`
     const mpb = METRES_PER_BOX_DEFAULT(spec);
     const gluePrefix = "PBL";
     const suggestedBatch = nextBatchCode(form.date, existingBatchNumbers, { prefix: gluePrefix });
+    const [runSetup, setRunSetup] = useState(false);
     const runNeeds = (form.direct === true ? [
       ["extPinSize", "pin size"],
       ["extScrewSpeed", "screw speed"],
@@ -18656,6 +18686,128 @@ Plan it?`
       ["extPvcCode", "PVC code"]
     ] : [["glueDie", "glue die"]]).filter(([k]) => !String(form[k] || "").trim()).map(([, label]) => label);
     const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+    if (openRun) {
+      const usual = normalWeightFor(openRun.productSize, allRows);
+      const typed = Number(form.weightPer5m);
+      const odd = usual && typed > 0 && (typed < usual.lo - usual.slack || typed > usual.hi + usual.slack);
+      return /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 560 } }, /* @__PURE__ */ React.createElement("div", { style: { padding: "14px 16px", borderRadius: 6, background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, letterSpacing: ".1em", textTransform: "uppercase", opacity: 0.85 } }, "In run mode"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 19, fontWeight: 700, marginTop: 3 } }, openRun.productSize || "\u2014"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, marginTop: 3, opacity: 0.9 } }, openRun.direct ? "Direct" : `from reel ${openRun.plCode || "\u2014"}`, runTotals ? ` \xB7 ${runTotals.reels} reel${runTotals.reels === 1 ? "" : "s"}, ${runTotals.metres} m so far` : ""), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, marginTop: 8, opacity: 0.9, lineHeight: 1.45 } }, "The setup is the run's and is settled. Each reel needs only its metreage and its 5m weight.")), !openReel && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          type: "button",
+          onClick: onStartReel,
+          style: {
+            font: "inherit",
+            display: "block",
+            width: "100%",
+            marginTop: 16,
+            background: NAVY,
+            color: "#fff",
+            border: 0,
+            borderRadius: 4,
+            fontSize: 17,
+            fontWeight: 600,
+            padding: 15,
+            cursor: "pointer",
+            WebkitUserSelect: "none",
+            userSelect: "none",
+            touchAction: "manipulation"
+          }
+        },
+        "Start reel"
+      ), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 7, lineHeight: 1.45 } }, "Press it when the reel begins. Its metreage and weight are asked for when it comes off.")), openReel && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 16, padding: 15, borderRadius: 8, border: `2px solid ${NAVY}`, background: "#F7F8FC" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, letterSpacing: ".08em", textTransform: "uppercase", color: INK_MUTED } }, "Reel turning"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 3 } }, "Running ", formatRuntime((Date.now() - new Date(openReel.startedAt).getTime()) / 36e5) || "less than a minute", ". Nobody types the runtime."), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED, display: "block", marginTop: 13 } }, "Metres on the reel", /* @__PURE__ */ React.createElement(
+        TextInput,
+        {
+          value: form.meterage,
+          inputMode: "decimal",
+          placeholder: "e.g. 480",
+          style: { fontSize: 19, minHeight: 50 },
+          onChange: (e) => setForm({ ...form, meterage: e.target.value })
+        }
+      )), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED, display: "block", marginTop: 11 } }, "Weight of the 5m length (g)", /* @__PURE__ */ React.createElement(
+        TextInput,
+        {
+          value: form.weightPer5m || "",
+          inputMode: "decimal",
+          placeholder: usual ? String(usual.mid) : "e.g. 37.5",
+          style: { fontSize: 19, minHeight: 50 },
+          onChange: (e) => setForm({ ...form, weightPer5m: e.target.value })
+        }
+      )), usual && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: odd ? RED : INK_MUTED, marginTop: 4, lineHeight: 1.45 } }, odd ? `\u26A0 ${typed}g is outside the ${usual.lo}\u2013${usual.hi}g this size normally runs (${usual.n} reels). Worth a second look before it bonds \u2014 it still logs.` : `Usually ${usual.lo}\u2013${usual.hi}g for this size, from ${usual.n} reel${usual.n === 1 ? "" : "s"}.`), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED, display: "block", marginTop: 11 } }, "Batch code", /* @__PURE__ */ React.createElement(
+        TextInput,
+        {
+          value: form.batchNumber,
+          placeholder: suggestedBatch || "",
+          style: { textTransform: "uppercase" },
+          onChange: (e) => setForm({ ...form, batchNumber: e.target.value.toUpperCase() })
+        }
+      )), suggestedBatch && String(form.batchNumber || "").trim().toUpperCase() !== suggestedBatch && /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          type: "button",
+          onClick: () => setForm((f) => ({ ...f, batchNumber: suggestedBatch })),
+          style: { font: "inherit", fontSize: 13, fontWeight: 500, color: NAVY, background: "none", border: 0, cursor: "pointer", padding: "6px 0 0" }
+        },
+        "Use ",
+        suggestedBatch
+      ), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED, display: "block", marginTop: 11 } }, "Comment", /* @__PURE__ */ React.createElement(
+        TextInput,
+        {
+          value: form.comments || "",
+          placeholder: "Anything worth knowing about this reel",
+          onChange: (e) => setForm({ ...form, comments: e.target.value })
+        }
+      )), /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          type: "button",
+          disabled: !Number(form.meterage) || !String(form.batchNumber || "").trim(),
+          onClick: () => onFinishReel(form.meterage, form.batchNumber, form.weightPer5m, form.comments),
+          style: {
+            font: "inherit",
+            display: "block",
+            width: "100%",
+            marginTop: 14,
+            background: NAVY,
+            color: "#fff",
+            border: 0,
+            borderRadius: 4,
+            fontSize: 17,
+            fontWeight: 600,
+            padding: 15,
+            cursor: "pointer",
+            WebkitUserSelect: "none",
+            userSelect: "none",
+            touchAction: "manipulation",
+            opacity: Number(form.meterage) && String(form.batchNumber || "").trim() ? 1 : 0.45
+          }
+        },
+        "End reel"
+      )), error && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: RED, marginTop: 12, whiteSpace: "pre-line", lineHeight: 1.5 } }, "\u26A0 ", error), /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          type: "button",
+          onClick: onEndRun,
+          style: {
+            font: "inherit",
+            display: "block",
+            width: "100%",
+            marginTop: 18,
+            background: "none",
+            color: INK,
+            border: `1px solid ${BORDER}`,
+            borderRadius: 4,
+            fontSize: 15,
+            fontWeight: 600,
+            padding: 13,
+            cursor: "pointer",
+            WebkitUserSelect: "none",
+            userSelect: "none",
+            touchAction: "manipulation"
+          }
+        },
+        "Finish run"
+      ), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED, marginTop: 7, lineHeight: 1.45 } }, "Shuts the run down and gives the form back for a different size."));
+    }
     return /* @__PURE__ */ React.createElement("div", { className: "mx-bond-steps", style: { display: "grid", gap: "0 56px" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-bond-col" }, /* @__PURE__ */ React.createElement(
       BondStep,
       {
@@ -19857,7 +20009,7 @@ Plan it?`
       setRows((prevRows) => [...prevRows, row]);
       setForm((f) => ({ ...f, batchNumber: "", meterage: "", weightKg: "", comments: "" }));
     };
-    const finishReel = (metreage, batchCode2, weightKg, comments) => {
+    const finishReel = (metreage, batchCode2, weight5m, comments) => {
       if (!openReel) return;
       const code = String(batchCode2 || "").trim().toUpperCase();
       if (!code) {
@@ -19870,15 +20022,18 @@ Plan it?`
         return;
       }
       setRows((prevRows) => prevRows.map((b) => b.id !== openReel.id ? b : {
+        /* weightPer5m, not weightKg. The number written down is the weight in
+           grams of a 5 metre length cut off the end of the reel — the glue
+           measurement — and it goes in the column that has always held it. */
         ...b,
         batchNumber: code,
         endedAt: (/* @__PURE__ */ new Date()).toISOString(),
         meterage: Number(metreage) || 0,
-        weightKg: String(weightKg || ""),
+        weightPer5m: String(weight5m || "").trim() === "" ? null : Number(weight5m),
         comments: String(comments || ""),
         runtimeHrs: b.startedAt ? String(Math.round((Date.now() - new Date(b.startedAt).getTime()) / 36e5 * 100) / 100) : ""
       }));
-      setForm((f) => ({ ...f, batchNumber: "", meterage: "", weightKg: "", comments: "" }));
+      setForm((f) => ({ ...f, batchNumber: "", meterage: "", weightPer5m: "", weightKg: "", comments: "" }));
       setAddError("");
     };
     const addRow = () => {
@@ -20048,6 +20203,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         onFinishReel: finishReel,
         openReel,
         runError,
+        allRows: rows,
         existingBatchNumbers: rows.map((r) => r.batchNumber).filter(Boolean),
         orderOptions,
         materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS,
