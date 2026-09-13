@@ -1014,7 +1014,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-13.5";
+  var APP_VERSION = "2026-09-13.8";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -18640,6 +18640,12 @@ Plan it?`
       style: { width, minHeight: 40, fontSize: 16, fontWeight: 600, textAlign: "center", border: `1px solid #CFCFCA`, borderRadius: 4, background: "#fff" }
     }
   );
+  function minutesSinceLastReel(date, rows) {
+    const now = timeToMinutes(nowHHMM());
+    if (now == null || !date) return null;
+    const earlier = (rows || []).filter((r) => r && !r.deleted && r.date === date && r.timeOfDay).map((r) => timeToMinutes(r.timeOfDay)).filter((m) => m != null && m < now).sort((a, b) => b - a);
+    return earlier.length ? now - earlier[0] : null;
+  }
   function normalWeightFor(productSize, rows) {
     const spec = String(productSize || "").trim();
     if (!spec) return null;
@@ -18669,7 +18675,10 @@ Plan it?`
       fromHistory: false
     };
   }
-  function GlueEntrySteps({ form, setForm, openRun, openReel = null, runError = "", allRows = [], existingBatchNumbers = [], orderOptions = [], materials = [], onStartRun, onStartReel, onFinishReel, onSaveRunSettings, onEndRun, onSubmit, error, runTotals, children, renderFullForm }) {
+  function RunSetupBox({ label, k, sub, wide, form, setForm }) {
+    return /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED, display: "block", flex: wide ? "1 1 100%" : "1 1 150px" } }, label, /* @__PURE__ */ React.createElement(TextInput, { value: form[k] || "", onChange: (e) => setForm({ ...form, [k]: e.target.value }) }), sub ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: INK_MUTED, marginTop: 2 } }, sub) : null);
+  }
+  function GlueEntrySteps({ form, setForm, openRun, openReel = null, runError = "", allRows = [], nextRunCode = "", justConfirmed = null, onConfirmReel, existingBatchNumbers = [], orderOptions = [], materials = [], onStartRun, onStartReel, onFinishReel, onSaveRunSettings, onEndRun, onSubmit, error, runTotals, children, renderFullForm }) {
     const [everyField, setEveryField] = useState(false);
     const spec = form.range === "Custom" ? String(form.size || "").trim() : `${form.range} ${String(form.size || "").trim()}`.trim();
     const direct = form.direct === true;
@@ -18677,6 +18686,7 @@ Plan it?`
     const mpb = METRES_PER_BOX_DEFAULT(spec);
     const gluePrefix = "PBL";
     const suggestedBatch = nextBatchCode(form.date, existingBatchNumbers, { prefix: gluePrefix });
+    const suggestedRunPvc = pvcCodeForSpec(spec, materials);
     const [runSetup, setRunSetup] = useState(false);
     const runNeeds = (form.direct === true ? [
       ["extPinSize", "pin size"],
@@ -18686,15 +18696,45 @@ Plan it?`
       ["extPvcCode", "PVC code"]
     ] : [["glueDie", "glue die"]]).filter(([k]) => !String(form[k] || "").trim()).map(([, label]) => label);
     const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
-    if (openRun) {
-      const usual = normalWeightFor(openRun.productSize, allRows);
-      const typed = Number(form.weightPer5m);
-      const odd = usual && typed > 0 && (typed < usual.lo - usual.slack || typed > usual.hi + usual.slack);
-      return /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 560 } }, /* @__PURE__ */ React.createElement("div", { style: { padding: "14px 16px", borderRadius: 6, background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, letterSpacing: ".1em", textTransform: "uppercase", opacity: 0.85 } }, "In run mode"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 19, fontWeight: 700, marginTop: 3 } }, openRun.productSize || "\u2014"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, marginTop: 3, opacity: 0.9 } }, openRun.direct ? "Direct" : `from reel ${openRun.plCode || "\u2014"}`, runTotals ? ` \xB7 ${runTotals.reels} reel${runTotals.reels === 1 ? "" : "s"}, ${runTotals.metres} m so far` : ""), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, marginTop: 8, opacity: 0.9, lineHeight: 1.45 } }, "The setup is the run's and is settled. Each reel needs only its metreage and its 5m weight.")), !openReel && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(
+    if (runSetup && !openRun) {
+      const directRun = form.direct === true;
+      const needList = (directRun ? [
+        ["extPinSize", "pin size"],
+        ["extScrewSpeed", "screw speed"],
+        ["extLineSpeed", "line speed"],
+        ["glueDie", "glue die"],
+        ["extPvcCode", "PVC code"]
+      ] : [["plCode", "the reel it came off"], ["glueDie", "glue die"]]).filter(([k]) => !String(form[k] || "").trim()).map(([, label]) => label);
+      const ready = String(form.size || "").trim() && needList.length === 0;
+      return /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 620 } }, /* @__PURE__ */ React.createElement("div", { style: { padding: "14px 16px", borderRadius: "6px 6px 0 0", background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, letterSpacing: ".08em", textTransform: "uppercase", opacity: 0.85 } }, "Setting up a run"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 17, fontWeight: 600, marginTop: 2 } }, directRun ? "Direct" : "From a reel"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, marginTop: 4, opacity: 0.9, lineHeight: 1.45 } }, "Asked once. True of every reel this run makes. Nothing here belongs to a reel, so there is no metreage, weight or batch code on this page.")), /* @__PURE__ */ React.createElement("div", { style: { border: `1px solid ${BORDER}`, borderTop: 0, borderRadius: "0 0 6px 6px", padding: 16, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, letterSpacing: ".06em", color: INK_MUTED, marginBottom: 7 } }, "SIZE"), /* @__PURE__ */ React.createElement(GlueLineSpecFields, { values: form, setValues: setForm, listId: "size-catalog-runsetup" }), !directRun && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 16 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, letterSpacing: ".06em", color: INK_MUTED, marginBottom: 7 } }, "WHICH REEL"), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED, display: "block" } }, "PL code", /* @__PURE__ */ React.createElement(
+        TextInput,
+        {
+          value: form.plCode || "",
+          style: { textTransform: "uppercase" },
+          onChange: (e) => setForm({ ...form, plCode: e.target.value.toUpperCase() })
+        }
+      ), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: INK_MUTED, marginTop: 2 } }, "The reel this run is glueing from. It ties every box back to the extrusion that made the material."))), directRun && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 16 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, letterSpacing: ".06em", color: INK_MUTED, marginBottom: 7 } }, "EXTRUDER"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 10 } }, /* @__PURE__ */ React.createElement(RunSetupBox, { form, setForm, label: "Pin size", k: "extPinSize" }), /* @__PURE__ */ React.createElement(RunSetupBox, { form, setForm, label: "Width class", k: "extWidthCategory" }), /* @__PURE__ */ React.createElement(RunSetupBox, { form, setForm, label: "Screw speed", k: "extScrewSpeed" }), /* @__PURE__ */ React.createElement(RunSetupBox, { form, setForm, label: "Line speed", k: "extLineSpeed", sub: "11 m/min is the standard" }), /* @__PURE__ */ React.createElement(RunSetupBox, { form, setForm, label: "Extruded height", k: "extHeight" }), /* @__PURE__ */ React.createElement(RunSetupBox, { form, setForm, label: "Extruded width", k: "extWidth" }))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 16 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, letterSpacing: ".06em", color: INK_MUTED, marginBottom: 7 } }, "GLUE LINE"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 10 } }, /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED, flex: "1 1 150px" } }, "PVC code", /* @__PURE__ */ React.createElement(
+        TextInput,
+        {
+          value: form.extPvcCode || "",
+          style: { textTransform: "uppercase" },
+          onChange: (e) => setForm({ ...form, extPvcCode: e.target.value.toUpperCase() })
+        }
+      ), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: INK_MUTED, marginTop: 2 } }, pvcColourForSpec(spec) ? pvcColourForSpec(spec) + ", for this height" : "from the register", suggestedRunPvc && String(form.extPvcCode || "").trim().toUpperCase() !== suggestedRunPvc ? /* @__PURE__ */ React.createElement(
         "button",
         {
           type: "button",
-          onClick: onStartReel,
+          onClick: () => setForm((f) => ({ ...f, extPvcCode: suggestedRunPvc })),
+          style: { font: "inherit", fontSize: 12, fontWeight: 500, color: NAVY, background: "none", border: 0, cursor: "pointer", padding: "0 0 0 6px" }
+        },
+        "Use ",
+        suggestedRunPvc
+      ) : null)), /* @__PURE__ */ React.createElement(RunSetupBox, { form, setForm, label: "Glue batch", k: "glueBatch" }), /* @__PURE__ */ React.createElement(RunSetupBox, { form, setForm, label: "Glue die", k: "glueDie" }), /* @__PURE__ */ React.createElement(RunSetupBox, { form, setForm, label: "PET type", k: "petType" }))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 16 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, letterSpacing: ".06em", color: INK_MUTED, marginBottom: 7 } }, "MEASURED ON THE LINE"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 10 } }, /* @__PURE__ */ React.createElement(RunSetupBox, { form, setForm, label: "Gap", k: "gapWidth", sub: specDimensions(spec).length >= 2 ? specDimensions(spec)[1].toFixed(2) + " nominal" : "" }), /* @__PURE__ */ React.createElement(RunSetupBox, { form, setForm, label: "Height 1", k: "internalHeight" }), /* @__PURE__ */ React.createElement(RunSetupBox, { form, setForm, label: "Height 2", k: "overallHeight" }))), needList.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 16, lineHeight: 1.45 } }, "Still needed before the run can start: ", /* @__PURE__ */ React.createElement("strong", { style: { color: INK } }, needList.join(", ")), "."), runError && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: RED, marginTop: 12, whiteSpace: "pre-line", lineHeight: 1.5 } }, runError), /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          type: "button",
+          disabled: !ready,
+          onClick: onStartRun,
           style: {
             font: "inherit",
             display: "block",
@@ -18704,17 +18744,47 @@ Plan it?`
             color: "#fff",
             border: 0,
             borderRadius: 4,
-            fontSize: 17,
+            fontSize: 18,
             fontWeight: 600,
-            padding: 15,
+            padding: 16,
             cursor: "pointer",
             WebkitUserSelect: "none",
             userSelect: "none",
-            touchAction: "manipulation"
+            touchAction: "manipulation",
+            opacity: ready ? 1 : 0.45
           }
         },
-        "Start reel"
-      ), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 7, lineHeight: 1.45 } }, "Press it when the reel begins. Its metreage and weight are asked for when it comes off.")), openReel && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 16, padding: 15, borderRadius: 8, border: `2px solid ${NAVY}`, background: "#F7F8FC" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, letterSpacing: ".08em", textTransform: "uppercase", color: INK_MUTED } }, "Reel turning"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 3 } }, "Running ", formatRuntime((Date.now() - new Date(openReel.startedAt).getTime()) / 36e5) || "less than a minute", ". Nobody types the runtime."), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED, display: "block", marginTop: 13 } }, "Metres on the reel", /* @__PURE__ */ React.createElement(
+        "Start"
+      ), /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          type: "button",
+          onClick: () => setRunSetup(false),
+          style: {
+            font: "inherit",
+            display: "block",
+            width: "100%",
+            marginTop: 10,
+            background: "none",
+            color: INK_MUTED,
+            border: 0,
+            fontSize: 14,
+            padding: 10,
+            cursor: "pointer"
+          }
+        },
+        "Back, log a single reel instead"
+      )));
+    }
+    if (openRun) {
+      const usual = normalWeightFor(openRun.productSize, allRows);
+      const typed = Number(form.weightPer5m);
+      const odd = usual && typed > 0 && (typed < usual.lo - usual.slack || typed > usual.hi + usual.slack);
+      const metres2 = Number(form.meterage);
+      const sinceLast = minutesSinceLastReel(form.date || todayISO(), allRows);
+      const expectedHrs = metres2 > 0 ? metres2 / 11 / 60 : null;
+      const paceOff = expectedHrs != null && sinceLast != null && sinceLast > 0 && (expectedHrs * 60 > sinceLast * 2 || expectedHrs * 60 < sinceLast / 2);
+      return /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 560 } }, /* @__PURE__ */ React.createElement("div", { style: { padding: "13px 16px", borderRadius: "6px 6px 0 0", background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, letterSpacing: ".08em", textTransform: "uppercase", opacity: 0.85 } }, "In run mode"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15.5, marginTop: 2 } }, openRun.productSize || "-", " \xB7 ", openRun.direct ? "direct" : "from reel " + (openRun.plCode || "-"))), /* @__PURE__ */ React.createElement("div", { style: { border: `1px solid ${BORDER}`, borderTop: 0, borderRadius: "0 0 6px 6px", padding: 16, background: "#fff" } }, justConfirmed && /* @__PURE__ */ React.createElement("div", { style: { background: "#EAF3DE", borderRadius: 4, padding: "11px 12px", marginBottom: 14, color: "#173404", fontSize: 14 } }, justConfirmed.code, " entered \u2014 ", justConfirmed.metres, "m", justConfirmed.weight != null ? ", " + justConfirmed.weight + "g" : "", justConfirmed.runtimeHrs ? ", ran " + formatRuntime(justConfirmed.runtimeHrs) : ""), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, "Reel ", (runTotals ? runTotals.reels : 0) + 1, " of this run"), /* @__PURE__ */ React.createElement("div", { className: "font-mono", style: { fontSize: 27, fontWeight: 700, color: INK, margin: "4px 0 14px" } }, nextRunCode), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED, display: "block" } }, "Metres", /* @__PURE__ */ React.createElement(
         TextInput,
         {
           value: form.meterage,
@@ -18723,7 +18793,7 @@ Plan it?`
           style: { fontSize: 19, minHeight: 50 },
           onChange: (e) => setForm({ ...form, meterage: e.target.value })
         }
-      )), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED, display: "block", marginTop: 11 } }, "Weight of the 5m length (g)", /* @__PURE__ */ React.createElement(
+      )), paceOff && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: AMBER, marginTop: 4, lineHeight: 1.45 } }, "At 11 m/min that is about ", formatRuntime(expectedHrs), ", but ", formatRuntime(sinceLast / 60), " has passed since the last reel."), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED, display: "block", marginTop: 11 } }, "Weight of the 5m length (g)", /* @__PURE__ */ React.createElement(
         TextInput,
         {
           value: form.weightPer5m || "",
@@ -18732,36 +18802,19 @@ Plan it?`
           style: { fontSize: 19, minHeight: 50 },
           onChange: (e) => setForm({ ...form, weightPer5m: e.target.value })
         }
-      )), usual && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: odd ? RED : INK_MUTED, marginTop: 4, lineHeight: 1.45 } }, odd ? `\u26A0 ${typed}g is outside the ${usual.lo}\u2013${usual.hi}g this size normally runs (${usual.n} reels). Worth a second look before it bonds \u2014 it still logs.` : `Usually ${usual.lo}\u2013${usual.hi}g for this size, from ${usual.n} reel${usual.n === 1 ? "" : "s"}.`), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED, display: "block", marginTop: 11 } }, "Batch code", /* @__PURE__ */ React.createElement(
-        TextInput,
-        {
-          value: form.batchNumber,
-          placeholder: suggestedBatch || "",
-          style: { textTransform: "uppercase" },
-          onChange: (e) => setForm({ ...form, batchNumber: e.target.value.toUpperCase() })
-        }
-      )), suggestedBatch && String(form.batchNumber || "").trim().toUpperCase() !== suggestedBatch && /* @__PURE__ */ React.createElement(
-        "button",
-        {
-          type: "button",
-          onClick: () => setForm((f) => ({ ...f, batchNumber: suggestedBatch })),
-          style: { font: "inherit", fontSize: 13, fontWeight: 500, color: NAVY, background: "none", border: 0, cursor: "pointer", padding: "6px 0 0" }
-        },
-        "Use ",
-        suggestedBatch
-      ), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED, display: "block", marginTop: 11 } }, "Comment", /* @__PURE__ */ React.createElement(
+      )), usual && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: odd ? RED : INK_MUTED, marginTop: 4, lineHeight: 1.45 } }, odd ? typed + "g is outside the " + usual.lo + "-" + usual.hi + "g this size normally runs. Worth a second look, it still logs." : usual.fromHistory ? "Usually " + usual.lo + "-" + usual.hi + "g for this size, from " + usual.n + " reel" + (usual.n === 1 ? "" : "s") + "." : "No history for this size yet. About " + usual.mid + "g is what the channel width suggests."), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED, display: "block", marginTop: 11 } }, "Comment", /* @__PURE__ */ React.createElement(
         TextInput,
         {
           value: form.comments || "",
           placeholder: "Anything worth knowing about this reel",
           onChange: (e) => setForm({ ...form, comments: e.target.value })
         }
-      )), /* @__PURE__ */ React.createElement(
+      )), error && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: RED, marginTop: 12, whiteSpace: "pre-line", lineHeight: 1.5 } }, error), /* @__PURE__ */ React.createElement(
         "button",
         {
           type: "button",
-          disabled: !Number(form.meterage) || !String(form.batchNumber || "").trim(),
-          onClick: () => onFinishReel(form.meterage, form.batchNumber, form.weightPer5m, form.comments),
+          disabled: !(metres2 > 0),
+          onClick: () => onConfirmReel && onConfirmReel(form.meterage, form.weightPer5m, form.comments),
           style: {
             font: "inherit",
             display: "block",
@@ -18778,20 +18831,23 @@ Plan it?`
             WebkitUserSelect: "none",
             userSelect: "none",
             touchAction: "manipulation",
-            opacity: Number(form.meterage) && String(form.batchNumber || "").trim() ? 1 : 0.45
+            opacity: metres2 > 0 ? 1 : 0.45
           }
         },
-        "End reel"
-      )), error && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: RED, marginTop: 12, whiteSpace: "pre-line", lineHeight: 1.5 } }, "\u26A0 ", error), /* @__PURE__ */ React.createElement(
+        "Confirm reel"
+      ), /* @__PURE__ */ React.createElement(
         "button",
         {
           type: "button",
-          onClick: onEndRun,
+          onClick: () => {
+            setRunSetup(false);
+            if (onEndRun) onEndRun();
+          },
           style: {
             font: "inherit",
             display: "block",
             width: "100%",
-            marginTop: 18,
+            marginTop: 10,
             background: "none",
             color: INK,
             border: `1px solid ${BORDER}`,
@@ -18806,7 +18862,7 @@ Plan it?`
           }
         },
         "Finish run"
-      ), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED, marginTop: 7, lineHeight: 1.45 } }, "Shuts the run down and gives the form back for a different size."));
+      ), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED, marginTop: 7 } }, runTotals ? runTotals.reels + " reel" + (runTotals.reels === 1 ? "" : "s") + ", " + runTotals.metres + " m so far. " : "", "Finishing gives the form back for a different size.")));
     }
     return /* @__PURE__ */ React.createElement("div", { className: "mx-bond-steps", style: { display: "grid", gap: "0 56px" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-bond-col" }, /* @__PURE__ */ React.createElement(
       BondStep,
@@ -18842,7 +18898,7 @@ Plan it?`
       "button",
       {
         type: "button",
-        onClick: onStartRun,
+        onClick: () => setRunSetup(true),
         disabled: !String(form.size || "").trim(),
         style: {
           font: "inherit",
@@ -18969,106 +19025,7 @@ Plan it?`
         placeholder: "Comments",
         style: { font: "inherit", width: "100%", minHeight: 56, padding: "10px 12px", border: `1px solid #CFCFCA`, borderRadius: 4, background: "#fff", fontSize: 15 }
       }
-    )))), /* @__PURE__ */ React.createElement("div", { style: { gridColumn: "1 / -1" } }, children, error && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: RED, marginTop: 10, whiteSpace: "pre-line", lineHeight: 1.5 } }, "\u26A0 ", error), openRun && !openReel && onStartReel && /* @__PURE__ */ React.createElement(
-      "button",
-      {
-        type: "button",
-        onClick: onStartReel,
-        style: {
-          font: "inherit",
-          display: "block",
-          width: "100%",
-          maxWidth: 360,
-          marginTop: 18,
-          background: NAVY,
-          color: "#fff",
-          border: 0,
-          borderRadius: 4,
-          fontSize: 17,
-          fontWeight: 600,
-          padding: 14,
-          cursor: "pointer"
-        }
-      },
-      "Start reel"
-    ), openRun && openReel && onFinishReel && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 18, padding: 14, borderRadius: 8, border: `2px solid ${NAVY}`, background: "#F7F8FC" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, letterSpacing: ".08em", textTransform: "uppercase", color: INK_MUTED } }, "Reel turning"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 2 } }, "Running ", formatRuntime((Date.now() - new Date(openReel.startedAt).getTime()) / 36e5) || "less than a minute", " so far. Nobody types the runtime \u2014 it is worked out from when it started."), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr", marginTop: 12 } }, /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12, color: INK_MUTED } }, "Metres", /* @__PURE__ */ React.createElement(
-      TextInput,
-      {
-        value: form.meterage,
-        inputMode: "decimal",
-        placeholder: "e.g. 480",
-        onChange: (e) => setForm({ ...form, meterage: e.target.value })
-      }
-    )), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12, color: INK_MUTED } }, "Batch code", /* @__PURE__ */ React.createElement(
-      TextInput,
-      {
-        value: form.batchNumber,
-        placeholder: suggestedBatch || "",
-        style: { textTransform: "uppercase" },
-        onChange: (e) => setForm({ ...form, batchNumber: e.target.value.toUpperCase() })
-      }
-    ))), suggestedBatch && String(form.batchNumber || "").trim().toUpperCase() !== suggestedBatch && /* @__PURE__ */ React.createElement(
-      "button",
-      {
-        type: "button",
-        onClick: () => setForm((f) => ({ ...f, batchNumber: suggestedBatch })),
-        style: { font: "inherit", fontSize: 13, fontWeight: 500, color: NAVY, background: "none", border: 0, cursor: "pointer", padding: "6px 0 0" }
-      },
-      "Use ",
-      suggestedBatch
-    ), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12, color: INK_MUTED, display: "block", marginTop: 8 } }, "Comment", /* @__PURE__ */ React.createElement(
-      TextInput,
-      {
-        value: form.comments || "",
-        placeholder: "Anything worth knowing about this reel",
-        onChange: (e) => setForm({ ...form, comments: e.target.value })
-      }
-    )), /* @__PURE__ */ React.createElement(
-      "button",
-      {
-        type: "button",
-        disabled: !Number(form.meterage) || !String(form.batchNumber || "").trim(),
-        onClick: () => onFinishReel(form.meterage, form.batchNumber, form.weightKg, form.comments),
-        style: {
-          font: "inherit",
-          display: "block",
-          width: "100%",
-          marginTop: 12,
-          background: NAVY,
-          color: "#fff",
-          border: 0,
-          borderRadius: 4,
-          fontSize: 16,
-          fontWeight: 600,
-          padding: 13,
-          cursor: "pointer",
-          opacity: Number(form.meterage) && String(form.batchNumber || "").trim() ? 1 : 0.45
-        }
-      },
-      "End reel"
-    )), openRun && onEndRun && /* @__PURE__ */ React.createElement(
-      "button",
-      {
-        type: "button",
-        onClick: onEndRun,
-        style: {
-          font: "inherit",
-          display: "block",
-          width: "100%",
-          maxWidth: 360,
-          marginTop: 14,
-          background: "none",
-          color: INK,
-          border: `1px solid ${BORDER}`,
-          borderRadius: 4,
-          fontSize: 15,
-          fontWeight: 600,
-          padding: 12,
-          cursor: "pointer"
-        }
-      },
-      "Finish run"
-    ), /* @__PURE__ */ React.createElement(
+    )))), /* @__PURE__ */ React.createElement("div", { style: { gridColumn: "1 / -1" } }, children, error && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: RED, marginTop: 10, whiteSpace: "pre-line", lineHeight: 1.5 } }, "\u26A0 ", error), /* @__PURE__ */ React.createElement(
       "button",
       {
         type: "button",
@@ -19847,6 +19804,12 @@ Plan it?`
     const openRun = glueRuns.find((r) => !r.deleted && !r.endedAt) || null;
     const [openRunReels, setOpenRunReels] = useState(null);
     const [runError, setRunError] = useState("");
+    const [justConfirmed, setJustConfirmed] = useState(null);
+    const nextRunCode = nextBatchCode(
+      form.date || todayISO(),
+      rows.map((r) => r.batchNumber).filter(Boolean),
+      { prefix: "PBL" }
+    );
     const openRunTotals = glueRunTotals(openRun, data.glueLineBatches);
     const startRun = () => {
       if (!String(form.size || "").trim()) {
@@ -19952,88 +19915,53 @@ Plan it?`
       setData((prev) => ({ ...prev, glueRuns: (prev.glueRuns || []).map((r) => r.id === openRun.id ? { ...r, endedAt: (/* @__PURE__ */ new Date()).toISOString() } : r) }));
     };
     const openReel = (data.glueLineBatches || []).find((b) => !b.deleted && b.startedAt && !b.endedAt && !(Number(b.meterage) > 0)) || null;
-    const startReel = () => {
-      if (!String(form.size || "").trim()) {
-        setAddError("Pick a size.");
+    const confirmReel = (metreage, weight5m, comments) => {
+      if (!openRun) return;
+      const metres = Number(metreage);
+      if (!(metres > 0)) {
+        setAddError("The reel needs its metreage.");
         return;
       }
-      const needed = (form.direct === true ? [
-        ["extPinSize", "pin size"],
-        ["extScrewSpeed", "screw speed"],
-        ["extLineSpeed", "line speed"],
-        ["extPvcCode", "PVC code"],
-        ["glueDie", "glue die"]
-      ] : [["plCode", "the reel it came off"], ["glueDie", "glue die"]]).filter(([k]) => !String(form[k] || "").trim()).map(([, label]) => label);
-      if (needed.length) {
-        setAddError(`Still needed: ${needed.join(", ")}. ` + (form.direct === true ? "A direct reel carries its own extruder settings \u2014 they are the setup it was made on." : "A reel off an earlier extrusion carries that reel's code; the extruder settings came with it."));
-        return;
-      }
-      const err = validateBatchNumber(form.batchNumber, null);
+      const code = nextRunCode;
+      const err = validateBatchNumber(code, null);
       if (err) {
         setAddError(err);
         return;
       }
-      setAddError("");
-      const own = openRun ? {
+      const stampedAt = nowHHMM();
+      const theDate = form.date || todayISO();
+      const runtimeHrs = deriveRuntimeHours(stampedAt, theDate, rows);
+      const row = {
+        id: uid("gb"),
+        runId: openRun.id,
+        batchNumber: code,
         productSize: openRun.productSize || "",
         direct: openRun.direct === true,
         plCode: openRun.plCode || "",
         glueBatch: openRun.glueBatch || "",
         glueDie: openRun.glueDie || "",
         petType: openRun.petType || "",
+        gapWidth: openRun.targetGap || "",
         extPinSize: openRun.extPinSize || "",
         extWidthCategory: openRun.extWidthCategory || "",
         extScrewSpeed: openRun.extScrewSpeed || "",
         extLineSpeed: openRun.extLineSpeed || "",
         extHeight: openRun.extHeight || "",
         extWidth: openRun.extWidth || "",
-        extPvcCode: openRun.extPvcCode || ""
-      } : (() => {
-        const r = toRow(form);
-        delete r.meterage;
-        delete r.weightKg;
-        delete r.comments;
-        return r;
-      })();
-      const row = {
-        id: uid("gb"),
-        ...own,
-        batchNumber: String(form.batchNumber || "").trim(),
-        /* blank is fine here — End reel writes it */
-        ...openRun ? { runId: openRun.id } : {},
-        date: form.date || todayISO(),
-        timeOfDay: nowHHMM(),
-        startedAt: (/* @__PURE__ */ new Date()).toISOString(),
-        checked: form.checked || "No"
-      };
-      setRows((prevRows) => [...prevRows, row]);
-      setForm((f) => ({ ...f, batchNumber: "", meterage: "", weightKg: "", comments: "" }));
-    };
-    const finishReel = (metreage, batchCode2, weight5m, comments) => {
-      if (!openReel) return;
-      const code = String(batchCode2 || "").trim().toUpperCase();
-      if (!code) {
-        setAddError("The reel needs its batch code before it can be closed.");
-        return;
-      }
-      const err = validateBatchNumber(code, openReel.id);
-      if (err) {
-        setAddError(err);
-        return;
-      }
-      setRows((prevRows) => prevRows.map((b) => b.id !== openReel.id ? b : {
-        /* weightPer5m, not weightKg. The number written down is the weight in
-           grams of a 5 metre length cut off the end of the reel — the glue
-           measurement — and it goes in the column that has always held it. */
-        ...b,
-        batchNumber: code,
-        endedAt: (/* @__PURE__ */ new Date()).toISOString(),
-        meterage: Number(metreage) || 0,
+        extPvcCode: openRun.extPvcCode || "",
+        meterage: metres,
         weightPer5m: String(weight5m || "").trim() === "" ? null : Number(weight5m),
         comments: String(comments || ""),
-        runtimeHrs: b.startedAt ? String(Math.round((Date.now() - new Date(b.startedAt).getTime()) / 36e5 * 100) / 100) : ""
-      }));
-      setForm((f) => ({ ...f, batchNumber: "", meterage: "", weightPer5m: "", weightKg: "", comments: "" }));
+        checked: "Yes",
+        date: theDate,
+        timeOfDay: stampedAt,
+        runtimeHrs,
+        startedAt: null,
+        endedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+      setRows((prevRows) => [...prevRows, row]);
+      setJustConfirmed({ code, metres, weight: row.weightPer5m, runtimeHrs });
+      setForm((f) => ({ ...f, meterage: "", weightPer5m: "", comments: "", batchNumber: "" }));
       setAddError("");
     };
     const addRow = () => {
@@ -20199,11 +20127,11 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         openRun,
         runTotals: openRunTotals,
         onStartRun: startRun,
-        onStartReel: startReel,
-        onFinishReel: finishReel,
-        openReel,
+        onConfirmReel: confirmReel,
         runError,
         allRows: rows,
+        nextRunCode,
+        justConfirmed,
         existingBatchNumbers: rows.map((r) => r.batchNumber).filter(Boolean),
         orderOptions,
         materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS,
