@@ -1014,7 +1014,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-14.3";
+  var APP_VERSION = "2026-09-14.4";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -4011,12 +4011,24 @@
     products.sort((a, b) => PLAN_BAND_ORDER[a.band] - PLAN_BAND_ORDER[b.band] || a.spec.localeCompare(b.spec));
     const plan = [];
     let n = startAt;
+    let cur = null;
     for (const p of products) {
-      const cap = isReelSpec(p.spec) ? reelsPerCase(p.spec) : perCase;
       let left = p.qty;
+      if (isReelSpec(p.spec)) {
+        cur = null;
+        const cap = reelsPerCase(p.spec);
+        while (left > 0) {
+          const take = Math.min(cap, left);
+          plan.push({ caseNum: n++, spec: p.spec, qty: take, band: p.band, maxSize: cap });
+          left -= take;
+        }
+        continue;
+      }
       while (left > 0) {
-        const take = Math.min(cap, left);
-        plan.push({ caseNum: n++, spec: p.spec, qty: take, band: p.band, maxSize: cap });
+        if (!cur || cur.used >= cur.cap) cur = { caseNum: n++, cap: perCase, used: 0 };
+        const take = Math.min(cur.cap - cur.used, left);
+        plan.push({ caseNum: cur.caseNum, spec: p.spec, qty: take, band: p.band, maxSize: cur.cap });
+        cur.used += take;
         left -= take;
       }
     }
@@ -4052,18 +4064,25 @@
     const { plannable } = plannableLines(opts.data || {}, lineItems);
     const plan = buildPackingPlan(plannable, { startAt: (Number(opts.startingCaseNum) || 0) + 1 });
     const stamp = (/* @__PURE__ */ new Date()).toISOString();
-    return plan.map((p) => ({
-      id: caseRowId(orderId, p.caseNum),
+    const byCase = /* @__PURE__ */ new Map();
+    for (const p of plan) {
+      const key = Number(p.caseNum);
+      if (!byCase.has(key)) byCase.set(key, { caseNum: key, planned: {}, maxSize: Number(p.maxSize) || CASE_MAX_SIZE_DEFAULT });
+      const c = byCase.get(key);
+      c.planned[p.spec] = (Number(c.planned[p.spec]) || 0) + (Number(p.qty) || 0);
+    }
+    return [...byCase.values()].sort((a, b) => a.caseNum - b.caseNum).map((c) => ({
+      id: caseRowId(orderId, c.caseNum),
       orderId,
-      caseNum: p.caseNum,
+      caseNum: c.caseNum,
       contents: {},
       confirmed: false,
       deleted: false,
-      planned: { [p.spec]: Number(p.qty) || 0 },
+      planned: c.planned,
       /* A reel case is physically a different case, and isReelCase() reads that
          off maxSize. Without it a nine-reel case would be read as a box case by
          the packing sheet, the case map and the materials count. */
-      maxSize: Number(p.maxSize) || CASE_MAX_SIZE_DEFAULT,
+      maxSize: c.maxSize,
       planBatch: "Original",
       weight: "",
       pallet: "",
