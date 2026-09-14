@@ -1014,7 +1014,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-14.4";
+  var APP_VERSION = "2026-09-14.9";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -2709,9 +2709,19 @@
   function isReelFulfilled(runsForSpec, spec) {
     return (runsForSpec || []).some((r) => r.packageType === "Reel") || isReelSpec(spec);
   }
-  function isReelCase(maxSize) {
-    const n = Number(maxSize);
-    return n > 0 && n < CASE_MAX_SIZE_DEFAULT;
+  var BOX_CASE_SIZES = [5, 10, 15, CASE_MAX_SIZE_DEFAULT];
+  function caseKindOf(row) {
+    const k = String(row && row.kind || "").trim().toLowerCase();
+    if (k === "reel" || k === "box") return k;
+    const n = Number(row && row.maxSize);
+    return n > 0 && n < CASE_MAX_SIZE_DEFAULT ? "reel" : "box";
+  }
+  function isReelCase(row) {
+    return caseKindOf(row) === "reel";
+  }
+  function cartonFor(qty) {
+    const n = Number(qty) || 0;
+    return BOX_CASE_SIZES.find((size) => n <= size) || CASE_MAX_SIZE_DEFAULT;
   }
   function allocateCaseDetails(runs, chunks) {
     const sorted = [...runs].sort((a, b) => (a.date || "").localeCompare(b.date || "") || a._seq - b._seq);
@@ -3995,9 +4005,10 @@
   function caseRowId(orderId, caseNum) {
     return `case-${String(orderId)}-${Number(caseNum)}`;
   }
-  var PLAN_BAND_ORDER = { "12mm": 0, "10mm": 1, "7mm": 2 };
+  var PLAN_BAND_ORDER = { "rubber": 0, "12mm": 1, "10mm": 2, "7mm": 3 };
   function planBandFor(spec) {
     const c = classifySize(spec);
+    if (c === "rubber") return "rubber";
     return c === "12mm" ? "12mm" : c === "7mm" ? "7mm" : "10mm";
   }
   function buildPackingPlan(items, opts = {}) {
@@ -4011,26 +4022,70 @@
     products.sort((a, b) => PLAN_BAND_ORDER[a.band] - PLAN_BAND_ORDER[b.band] || a.spec.localeCompare(b.spec));
     const plan = [];
     let n = startAt;
-    let cur = null;
+    let open = null;
+    const pushInto = (caseObj, spec, band, qty) => {
+      plan.push({ caseNum: caseObj.caseNum, spec, qty, band, maxSize: caseObj.cap, kind: "box" });
+      caseObj.used += qty;
+    };
+    const factions = [];
     for (const p of products) {
-      let left = p.qty;
-      if (isReelSpec(p.spec)) {
-        cur = null;
+      const last = factions[factions.length - 1];
+      if (last && last.band === p.band) last.items.push(p);
+      else factions.push({ band: p.band, items: [p] });
+    }
+    for (const f of factions) {
+      const rest = [];
+      for (const p of f.items) {
+        if (!isReelSpec(p.spec)) continue;
         const cap = reelsPerCase(p.spec);
+        let left = p.qty;
         while (left > 0) {
           const take = Math.min(cap, left);
-          plan.push({ caseNum: n++, spec: p.spec, qty: take, band: p.band, maxSize: cap });
+          plan.push({ caseNum: n++, spec: p.spec, qty: take, band: p.band, maxSize: cap, kind: "reel" });
           left -= take;
         }
-        continue;
       }
-      while (left > 0) {
-        if (!cur || cur.used >= cur.cap) cur = { caseNum: n++, cap: perCase, used: 0 };
-        const take = Math.min(cur.cap - cur.used, left);
-        plan.push({ caseNum: cur.caseNum, spec: p.spec, qty: take, band: p.band, maxSize: cur.cap });
-        cur.used += take;
-        left -= take;
+      for (const p of f.items) {
+        if (isReelSpec(p.spec)) continue;
+        const over = p.qty % perCase;
+        if (!over) continue;
+        let left = over;
+        if (open && open.used < open.cap) {
+          const take = Math.min(open.cap - open.used, left);
+          pushInto(open, p.spec, p.band, take);
+          left -= take;
+          if (open.used >= open.cap) open = null;
+        }
+        if (left > 0) rest.push({ spec: p.spec, band: p.band, qty: left });
       }
+      for (const p of f.items) {
+        if (isReelSpec(p.spec)) continue;
+        const whole = Math.floor(p.qty / perCase);
+        for (let i = 0; i < whole; i++) {
+          plan.push({ caseNum: n++, spec: p.spec, qty: perCase, band: p.band, maxSize: perCase, kind: "box" });
+        }
+      }
+      for (const p of rest) {
+        let left = p.qty;
+        while (left > 0) {
+          if (!open || open.used >= open.cap) {
+            open = { caseNum: n++, cap: perCase, used: 0 };
+          }
+          const take = Math.min(open.cap - open.used, left);
+          pushInto(open, p.spec, p.band, take);
+          left -= take;
+        }
+      }
+    }
+    const usedByCase = /* @__PURE__ */ new Map();
+    for (const r of plan) {
+      if (r.kind !== "box") continue;
+      usedByCase.set(r.caseNum, (usedByCase.get(r.caseNum) || 0) + r.qty);
+    }
+    for (const [caseNum, used] of usedByCase) {
+      if (used >= perCase) continue;
+      const carton = cartonFor(used);
+      for (const r of plan) if (r.caseNum === caseNum) r.maxSize = carton;
     }
     return plan;
   }
@@ -4067,7 +4122,7 @@
     const byCase = /* @__PURE__ */ new Map();
     for (const p of plan) {
       const key = Number(p.caseNum);
-      if (!byCase.has(key)) byCase.set(key, { caseNum: key, planned: {}, maxSize: Number(p.maxSize) || CASE_MAX_SIZE_DEFAULT });
+      if (!byCase.has(key)) byCase.set(key, { caseNum: key, planned: {}, maxSize: Number(p.maxSize) || CASE_MAX_SIZE_DEFAULT, kind: p.kind === "reel" ? "reel" : "box" });
       const c = byCase.get(key);
       c.planned[p.spec] = (Number(c.planned[p.spec]) || 0) + (Number(p.qty) || 0);
     }
@@ -4079,10 +4134,11 @@
       confirmed: false,
       deleted: false,
       planned: c.planned,
-      /* A reel case is physically a different case, and isReelCase() reads that
-         off maxSize. Without it a nine-reel case would be read as a box case by
-         the packing sheet, the case map and the materials count. */
+      /* A reel case is physically a different case. `kind` records which it is
+         rather than leaving it to be inferred from capacity, which stopped
+         being safe once a box case could hold 15, 10 or 5. */
       maxSize: c.maxSize,
+      kind: c.kind,
       planBatch: "Original",
       weight: "",
       pallet: "",
@@ -7243,7 +7299,7 @@ ${line}` : line;
       });
     };
     const guessCaseType = (caseRow) => {
-      if (isReelCase(caseRow.maxSize)) return "mat-case-reel";
+      if (isReelCase(caseRow)) return "mat-case-reel";
       const contentCount = caseRow.contributions.reduce((s, c) => s + (Number(c.qty) || 0), 0);
       if (contentCount <= 5) return "mat-case-5";
       if (contentCount <= 10) return "mat-case-10";
@@ -9906,7 +9962,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
   }
   function printCaseIconSheet(order, caseRows, setData, data = null) {
     const esc = (v) => String(v ?? "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
-    const cases = [...caseRows || []].filter((c) => !c.packedOutside).sort((a, b) => a.caseNum - b.caseNum).map((c) => ({ caseNum: c.caseNum, lines: caseContentLines(c), reel: isReelCase(c.maxSize) })).filter((c) => c.lines.length > 0);
+    const cases = [...caseRows || []].filter((c) => !c.packedOutside).sort((a, b) => a.caseNum - b.caseNum).map((c) => ({ caseNum: c.caseNum, lines: caseContentLines(c), reel: isReelCase(c) })).filter((c) => c.lines.length > 0);
     const grand = cases.reduce((t, c) => t + c.lines.reduce((u, l) => u + l.qty, 0), 0);
     const maxLines = cases.reduce((m, c) => Math.max(m, c.lines.length), 1);
     const cols = maxLines > 3 ? 4 : 5;
@@ -10053,7 +10109,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
         awaited,
         planMap,
         total: v.total,
-        reel: isReelCase(c.maxSize)
+        reel: isReelCase(c)
       };
     }).filter((c) => c.cells.size > 0 || c.planMap.size > 0);
     const PALLET_CAP = { box: 32, reel: 14 };
@@ -22093,7 +22149,11 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       letterSpacing: 0.2,
       overflow: "hidden",
       transition: pullState.refreshing ? "height 0.15s ease" : "none"
-    } }, pullState.refreshing ? "\u21BB Refreshing\u2026" : pullState.distance >= 70 ? "\u2191 Release to refresh" : "\u2193 Pull to refresh"), storageFailed && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: RED, color: "#fff", borderRadius: 5, fontWeight: 700, fontSize: 13, letterSpacing: 0.3 } }, "\u26A0 THIS DEVICE'S STORAGE IS FULL \u2014 changes typed here are NOT being saved. Get this device connected to Wi-Fi and Cloud Sync immediately, or free up space, before entering anything further."), testMode && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: ORANGE, color: "#fff", borderRadius: 5, fontWeight: 700, fontSize: 13, letterSpacing: 0.3 } }, "\u26A0 TEST MODE \u2014 this is practice data only. Nothing here is real, and none of it will sync to the live system."), staleOnServer && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: "#FFF4E0", border: `1px solid ${AMBER}`, borderRadius: 5, color: INK, fontSize: 13 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, marginBottom: 2 } }, "The update can't finish \u2014 index.html hasn't been published"), "This device asked the server for ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, staleWanted), " and got", " ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, APP_VERSION), " back. That isn't a cache on this device \u2014 it's a fresh address the server answered with the old file. ", /* @__PURE__ */ React.createElement("b", null, "version.txt was pushed to the site but index.html wasn't"), ", so every device keeps being told there's an update it can never get. Push index.html and this clears itself."), updateReady && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5 flex flex-wrap items-center gap-3", style: { background: "#EEF1FA", border: `1px solid ${NAVY}`, borderRadius: 5, color: NAVY, fontSize: 13 } }, /* @__PURE__ */ React.createElement("span", { style: { flex: "1 1 260px" } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 700 } }, "New version available"), " \u2014 this device is on ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, APP_VERSION), ", latest is ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, updateLatest), ". Updating reloads the page, so finish anything you're part-way through typing first. Saved work is safe."), /* @__PURE__ */ React.createElement("button", { onClick: applyUpdate, className: "shrink-0 px-3", style: { height: 34, background: NAVY, color: "#fff", border: "none", borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: "pointer" } }, "Update now"), /* @__PURE__ */ React.createElement("button", { onClick: snoozeUpdate, className: "shrink-0 px-3", style: { height: 34, background: "none", color: NAVY, border: `1px solid ${NAVY}`, borderRadius: 6, fontSize: 13, cursor: "pointer" } }, "Later")), /* @__PURE__ */ React.createElement(ScreenErrorBoundary, { viewKey: view, key: view }, views[view]))), toast && /* @__PURE__ */ React.createElement("div", { className: "fixed bottom-5 right-5 px-4 py-2 rounded text-sm text-white shadow-lg", style: { background: NAVY } }, toast));
+    } }, pullState.refreshing ? "\u21BB Refreshing\u2026" : pullState.distance >= 70 ? "\u2191 Release to refresh" : "\u2193 Pull to refresh"), storageFailed && (() => {
+      const syncLive = ["connected", "saving", "refreshing"].includes(syncStatus) && !testMode;
+      const syncedAgo = lastSyncedAt ? formatAgo(lastSyncedAt) : null;
+      return /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: syncLive ? ORANGE : RED, color: "#fff", borderRadius: 5, fontWeight: 700, fontSize: 13, letterSpacing: 0.3 } }, "\u26A0 THIS DEVICE CAN NO LONGER KEEP ITS OWN COPY \u2014 its storage is full.", syncLive ? /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 500, display: "block", marginTop: 4 } }, "Cloud Sync is live", syncedAgo ? ` (last saved ${syncedAgo})` : "", ", so what you enter is still being saved to the cloud. The risk is closing or reloading the app before a save goes out \u2014 there is no local copy to fall back on. Keep going, but don't close the app, and get the storage cleared when you can.") : /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 500, display: "block", marginTop: 4 } }, "Cloud Sync is NOT carrying this work either, so nothing you type here is being saved anywhere. Connect Cloud Sync before entering anything further."));
+    })(), testMode && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: ORANGE, color: "#fff", borderRadius: 5, fontWeight: 700, fontSize: 13, letterSpacing: 0.3 } }, "\u26A0 TEST MODE \u2014 this is practice data only. Nothing here is real, and none of it will sync to the live system."), staleOnServer && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: "#FFF4E0", border: `1px solid ${AMBER}`, borderRadius: 5, color: INK, fontSize: 13 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, marginBottom: 2 } }, "The update can't finish \u2014 index.html hasn't been published"), "This device asked the server for ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, staleWanted), " and got", " ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, APP_VERSION), " back. That isn't a cache on this device \u2014 it's a fresh address the server answered with the old file. ", /* @__PURE__ */ React.createElement("b", null, "version.txt was pushed to the site but index.html wasn't"), ", so every device keeps being told there's an update it can never get. Push index.html and this clears itself."), updateReady && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5 flex flex-wrap items-center gap-3", style: { background: "#EEF1FA", border: `1px solid ${NAVY}`, borderRadius: 5, color: NAVY, fontSize: 13 } }, /* @__PURE__ */ React.createElement("span", { style: { flex: "1 1 260px" } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 700 } }, "New version available"), " \u2014 this device is on ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, APP_VERSION), ", latest is ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, updateLatest), ". Updating reloads the page, so finish anything you're part-way through typing first. Saved work is safe."), /* @__PURE__ */ React.createElement("button", { onClick: applyUpdate, className: "shrink-0 px-3", style: { height: 34, background: NAVY, color: "#fff", border: "none", borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: "pointer" } }, "Update now"), /* @__PURE__ */ React.createElement("button", { onClick: snoozeUpdate, className: "shrink-0 px-3", style: { height: 34, background: "none", color: NAVY, border: `1px solid ${NAVY}`, borderRadius: 6, fontSize: 13, cursor: "pointer" } }, "Later")), /* @__PURE__ */ React.createElement(ScreenErrorBoundary, { viewKey: view, key: view }, views[view]))), toast && /* @__PURE__ */ React.createElement("div", { className: "fixed bottom-5 right-5 px-4 py-2 rounded text-sm text-white shadow-lg", style: { background: NAVY } }, toast));
   }
   ReactDOM.createRoot(document.getElementById("root")).render(/* @__PURE__ */ React.createElement(App, null));
 })();
