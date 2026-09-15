@@ -1035,7 +1035,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-15.16";
+  var APP_VERSION = "2026-09-15.23";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1944,6 +1944,10 @@
     }).sort((a, b) => String(a.displayName).localeCompare(String(b.displayName)));
     return { status: candidates.length ? "candidates" : "none", candidates, typed: raw };
   }
+  function catalogueName(data, spec) {
+    const res = typeof resolveProduct === "function" ? resolveProduct(data, spec) : null;
+    return res && res.status === "exact" && res.product && res.product.displayName ? res.product.displayName : spec;
+  }
   function doubleGapOf(spec) {
     const m = String(spec || "").match(/\bD(\d+(?:\.\d+)?)\b/i);
     return m ? "D" + m[1] : null;
@@ -2221,12 +2225,33 @@
     }
     return { bondingItems, glueItems };
   }
-  function BatchPicker({ alternatives, onPick, onAddFound, onClose, knownCodes = [] }) {
+  function BatchPicker({ alternatives, onPick, onAddFound, onClose, knownCodes = [], orderBoxType = null, onConfirmCarton = null }) {
     const [addingNew, setAddingNew] = useState(false);
     const [newBoxNumber, setNewBoxNumber] = useState("");
     const [newBatchCode, setNewBatchCode] = useState("");
     const [newQty, setNewQty] = useState("");
-    return /* @__PURE__ */ React.createElement("div", { style: { border: `1px solid ${BORDER}`, borderRadius: 8, padding: 10, marginBottom: 14, background: "#FAFAF8" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, fontWeight: 600, color: INK_MUTED } }, "Other stock available for this spec"), /* @__PURE__ */ React.createElement("button", { onClick: onClose, style: { background: "none", border: "none", color: INK_MUTED, fontSize: 12, cursor: "pointer" } }, "\u2715")), alternatives.length === 0 && !addingNew && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginBottom: 8 } }, "No other genuinely available stock found for this spec."), alternatives.map((alt) => /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement("div", { style: { border: `1px solid ${BORDER}`, borderRadius: 8, padding: 10, marginBottom: 14, background: "#FAFAF8" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, fontWeight: 600, color: INK_MUTED } }, "Other stock available for this spec"), /* @__PURE__ */ React.createElement("button", { onClick: onClose, style: { background: "none", border: "none", color: INK_MUTED, fontSize: 12, cursor: "pointer" } }, "\u2715")), alternatives.length === 0 && !addingNew && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginBottom: 8 } }, "No other genuinely available stock found for this spec."), alternatives.map((alt) => alt.boxTypeIssue === "unconfirmed" ? (
+      /* Carton never recorded. Offered, but it cannot be picked until the
+         person at the shelf says which carton it is in — they can see it,
+         the app cannot. */
+      /* @__PURE__ */ React.createElement("div", { key: alt.id, style: { padding: "8px 10px", marginBottom: 6, borderRadius: 6, border: "1px solid #E8C77A", background: "#FFF6E5" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "monospace", fontWeight: 600, fontSize: 14 } }, alt.boxNumber), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: INK_MUTED } }, alt.available, " available", alt.baselineBatchCode ? ` \xB7 batch ${alt.baselineBatchCode}` : "", alt.location ? ` \xB7 ${alt.location}` : ""), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: "#8A6100", fontWeight: 600, marginTop: 4 } }, "Carton not recorded \u2014 look at the box."), orderBoxType && onConfirmCarton && (() => {
+        const mat = BOX_MATERIALS.find((m) => m.name === orderBoxType) || DEFAULT_MATERIALS.find((m) => m.name === orderBoxType);
+        return mat ? /* @__PURE__ */ React.createElement(
+          "button",
+          {
+            type: "button",
+            onClick: () => {
+              onConfirmCarton(alt.boxNumber, mat.id);
+              onPick({ ...alt, boxTypeId: mat.id, boxTypeIssue: null });
+            },
+            style: { marginTop: 6, padding: "7px 10px", borderRadius: 6, border: `1px solid ${NAVY}`, background: NAVY, color: "#fff", fontWeight: 600, fontSize: 13, cursor: "pointer" }
+          },
+          "It's a ",
+          orderBoxType,
+          " carton \u2014 use it"
+        ) : null;
+      })(), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: INK_MUTED, marginTop: 4 } }, "If it isn't, leave it \u2014 a box in the wrong carton is not stock this order can take."))
+    ) : /* @__PURE__ */ React.createElement(
       "button",
       {
         key: alt.id,
@@ -2307,7 +2332,7 @@
       "Use this"
     ))));
   }
-  function PickByPhoneView({ pendingPickItems, productSummary, pendingCaseSuggestions, setPickItemQty, setPickItemDamaged, setPickItemCase, setPickItemConfirmed, alternativeBatchesFor, swapPickItemBatch, addFoundBatchForPickItem, confirmPickAndAllocate, commitOnePick, cancelPendingPick, order }) {
+  function PickByPhoneView({ pendingPickItems, productSummary, pendingCaseSuggestions, setPickItemQty, setPickItemDamaged, setPickItemCase, setPickItemConfirmed, alternativeBatchesFor, swapPickItemBatch, addFoundBatchForPickItem, confirmPickAndAllocate, commitOnePick, cancelPendingPick, order, confirmCartonForBox = null }) {
     const confirmBox = (id) => setPickItemConfirmed(id, true);
     const unconfirmBox = (id) => setPickItemConfirmed(id, false);
     const [batchPickerOpenFor, setBatchPickerOpenFor] = useState(null);
@@ -2320,7 +2345,7 @@
       const short = !it.damaged && Number(it.confirmedQty) < Number(it.proposedQty);
       const isConfirmed = it.confirmed === true && !it.damaged;
       const caseNum = it.caseOverride ?? suggestedCase;
-      return /* @__PURE__ */ React.createElement(React.Fragment, { key: it.id }, isNewGroup && /* @__PURE__ */ React.createElement("div", { style: { background: NAVY, color: "#fff", padding: "10px 14px", borderRadius: 8, marginTop: i ? 20 : 0, marginBottom: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, fontSize: 16 } }, /* @__PURE__ */ React.createElement(Spec, { s: it.displaySpec || it.productSize, size: 14 })), summary && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, opacity: 0.85, marginTop: 2 } }, "Needs ", summary.needed ?? "\u2014", " \xB7 On the shelf ", summary.available, summary.needed != null && summary.available < summary.needed ? " \u2014 short" : "")), /* @__PURE__ */ React.createElement("div", { style: { background: "#fff", border: `2px solid ${it.damaged ? BORDER : isConfirmed ? GREEN : short ? AMBER : "#E4E4E0"}`, borderRadius: 8, padding: 16, marginBottom: 12, opacity: it.damaged ? 0.55 : 1 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "font-mono", style: { fontWeight: 600, fontSize: 18 } }, it.boxNumber), it.location && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 3 } }, "Bay ", /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { color: INK, fontWeight: 500 } }, it.location))), /* @__PURE__ */ React.createElement("div", { style: { textAlign: "right" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: INK_MUTED } }, "Expected"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 24, fontWeight: 700 } }, it.proposedQty))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: INK_MUTED, marginBottom: 6 } }, "Batch"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", borderRadius: 8, border: `1px solid ${BORDER}`, background: it.damaged ? "#F2F2F0" : it.isNewlyAdded ? "#EAF7EE" : "#fff", marginBottom: 8 } }, /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "monospace", fontWeight: 600, fontSize: 15 } }, it.baselineBatchCode || "\u2014", it.isNewlyAdded && /* @__PURE__ */ React.createElement("span", { style: { color: GREEN, fontWeight: 700, marginLeft: 6 } }, "NEW")), !it.damaged && /* @__PURE__ */ React.createElement(
+      return /* @__PURE__ */ React.createElement(React.Fragment, { key: it.id }, isNewGroup && /* @__PURE__ */ React.createElement("div", { style: { background: NAVY, color: "#fff", padding: "10px 14px", borderRadius: 8, marginTop: i ? 20 : 0, marginBottom: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, fontSize: 16 } }, /* @__PURE__ */ React.createElement(Spec, { s: it.displaySpec || it.productSize, size: 14 })), summary && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, opacity: 0.85, marginTop: 2 } }, "Needs ", summary.needed ?? "\u2014", " \xB7 On the shelf ", summary.available, summary.unconfirmedCarton > 0 ? ` \u2014 ${summary.unconfirmedCarton} need the carton confirmed` : "", summary.needed != null && summary.available < summary.needed ? " \u2014 short" : "")), /* @__PURE__ */ React.createElement("div", { style: { background: "#fff", border: `2px solid ${it.damaged ? BORDER : isConfirmed ? GREEN : short ? AMBER : "#E4E4E0"}`, borderRadius: 8, padding: 16, marginBottom: 12, opacity: it.damaged ? 0.55 : 1 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "font-mono", style: { fontWeight: 600, fontSize: 18 } }, it.boxNumber), it.location && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 3 } }, "Bay ", /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { color: INK, fontWeight: 500 } }, it.location))), /* @__PURE__ */ React.createElement("div", { style: { textAlign: "right" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: INK_MUTED } }, "Expected"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 24, fontWeight: 700 } }, it.proposedQty))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: INK_MUTED, marginBottom: 6 } }, "Batch"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", borderRadius: 8, border: `1px solid ${BORDER}`, background: it.damaged ? "#F2F2F0" : it.isNewlyAdded ? "#EAF7EE" : "#fff", marginBottom: 8 } }, /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "monospace", fontWeight: 600, fontSize: 15 } }, it.baselineBatchCode || "\u2014", it.isNewlyAdded && /* @__PURE__ */ React.createElement("span", { style: { color: GREEN, fontWeight: 700, marginLeft: 6 } }, "NEW")), !it.damaged && /* @__PURE__ */ React.createElement(
         "button",
         {
           onClick: () => setBatchPickerOpenFor(batchPickerOpenFor === it.id ? null : it.id),
@@ -2339,12 +2364,14 @@
             setBatchPickerOpenFor(null);
             unconfirmBox(it.id);
           },
-          onAddFound: (boxNumber, batchCode2, qty) => {
-            addFoundBatchForPickItem(it.id, boxNumber, batchCode2, qty);
+          onAddFound: (boxNumber, batchCode, qty) => {
+            addFoundBatchForPickItem(it.id, boxNumber, batchCode, qty);
             setBatchPickerOpenFor(null);
             unconfirmBox(it.id);
           },
-          onClose: () => setBatchPickerOpenFor(null)
+          onClose: () => setBatchPickerOpenFor(null),
+          orderBoxType: order && order.boxType ? order.boxType : null,
+          onConfirmCarton: confirmCartonForBox
         }
       ), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: INK_MUTED, marginBottom: 6 } }, "Found on shelf"), /* @__PURE__ */ React.createElement(
         "input",
@@ -2700,6 +2727,12 @@
     { key: "rubber", label: "Rubber" },
     { key: "boughtin", label: "Profitape" }
   ];
+  function productRowKey(spec) {
+    return productKey(spec);
+  }
+  function fullerSpec(a, b) {
+    return String(b || "").length > String(a || "").length ? b : a;
+  }
   function productionOutstandingRows(orders, lineItems, bondingRuns, stockPicks) {
     return productionOutstandingRowsStored(orders, lineItems, ledgerCorrectedRuns(bondingRuns), stockPicks);
   }
@@ -2709,7 +2742,9 @@
     for (const order of activeOrders) {
       for (const item of whatsLeftRows(lineItems, bondingRuns, order.id)) {
         if (item.remaining <= 0) continue;
-        const row = map.get(item.spec) || { spec: item.spec, qty: 0, ordered: 0, made: 0, orderIds: /* @__PURE__ */ new Set(), priority: null, earliestDueDate: null, breakdown: [] };
+        const key = productRowKey(item.spec);
+        const row = map.get(key) || { spec: item.spec, qty: 0, ordered: 0, made: 0, orderIds: /* @__PURE__ */ new Set(), priority: null, earliestDueDate: null, breakdown: [] };
+        row.spec = fullerSpec(row.spec, item.spec);
         row.qty += item.remaining;
         row.ordered += item.ordered;
         row.made += item.made;
@@ -2717,7 +2752,7 @@
         if (order.priority != null) row.priority = row.priority == null ? order.priority : Math.min(row.priority, order.priority);
         if (order.dueDate) row.earliestDueDate = row.earliestDueDate == null || order.dueDate < row.earliestDueDate ? order.dueDate : row.earliestDueDate;
         row.breakdown.push({ orderId: order.id, customer: order.customer, qty: item.remaining, boxType: orderBoxTypeFor(order, item.spec), dueDate: order.dueDate || null, priority: order.priority ?? null });
-        map.set(item.spec, row);
+        map.set(key, row);
       }
     }
     const shelf = boxedStockAvailable(bondingRuns, stockPicks || []);
@@ -3285,8 +3320,8 @@
     });
     return eligible[0];
   }
-  function unknownReelWarning(batchCode2, glueLineBatches) {
-    const code = (batchCode2 || "").trim();
+  function unknownReelWarning(batchCode, glueLineBatches) {
+    const code = (batchCode || "").trim();
     if (!code) return null;
     const known = (glueLineBatches || []).some((b) => !b.deleted && b.batchNumber === code);
     if (known) return null;
@@ -3354,6 +3389,28 @@
       }
     }
     return out;
+  }
+  function placeRefusalFor(going) {
+    for (const g of going || []) {
+      if (!g) continue;
+      if (g.kind === "stock" && Number(g.qty) > 0 && !g.location) {
+        return `${g.qty} box${Number(g.qty) === 1 ? "" : "es"} going to the shelf with no bay \u2014 pick a location so they can be found.`;
+      }
+      if (g.kind === "order") {
+        const want = Number(g.qty) || 0;
+        const split = Array.isArray(g.split) ? g.split : [];
+        const covered = split.reduce((t, s) => t + (Number(s.qty) || 0), 0);
+        if (covered >= want) continue;
+        const who = g.orderId + (g.customer ? ` (${g.customer})` : "");
+        const rest = want - covered;
+        if (covered > 0) {
+          const nums = split.map((s) => s.caseNum).join(", ");
+          return `${who} has room for ${covered} of these ${want} \u2014 case${split.length === 1 ? "" : "s"} ${nums}. The other ${rest} have nowhere to go: a box is on a shelf or in a case, never in between. Allocate ${covered} and send ${rest} to the shelf with a bay, or plan packing on ${g.orderId} first.`;
+        }
+        return `${who} has no case with room for ${g.spec || "this size"}, so nothing can be booked to it \u2014 a box is on a shelf or in a case, never in between. Send these to the shelf with a bay, or plan packing on ${g.orderId} first.`;
+      }
+    }
+    return "";
   }
   var PAPER_CSS = `
   @page { margin: 14mm; }
@@ -3501,6 +3558,7 @@
       `<b>${pEsc(sheet.ref)}</b>`,
       sheet.printedBy ? `Printed by ${pEsc(sheet.printedBy)}` : ""
     ])}
+    ${String(order.notes || "").trim() ? `<div class="reprint" style="display:block;font-size:11pt;margin-top:8px">NOTE: ${pEsc(String(order.notes).trim())}</div>` : ""}
     ${sheet.isReprint ? `<div class="reprint">REPRINT ${pEsc(Number(sheet.reprintCount) || 1)} &middot; same sheet, same boxes &middot; destroy any earlier copy</div>` : ""}
     <p class="p-note">This stock is <b>allocated to the order as of printing</b>. Write the real count in
       <b>Found</b>, and put each box in the <b>Case #</b> shown.
@@ -3922,7 +3980,13 @@
           let here = 0;
           for (const [box, n] of Object.entries(c.contents || {})) {
             const bs = (data.bondingRuns || []).find((r) => r && !r.deleted && String(r.boxNumber || "").trim().toUpperCase() === String(box).trim().toUpperCase());
-            if (bs && looseSpecMatch(wanted, bs.productSize)) here += Number(n) || 0;
+            if (!(bs && looseSpecMatch(wanted, bs.productSize))) continue;
+            let own = 0;
+            if (excludeSourceId) {
+              const upb = String(box).trim().toUpperCase();
+              own = (data.movements || []).filter((m) => m && !m.deleted && m.sourceId === excludeSourceId && m.orderId === o.id && Number(m.caseNum) === Number(c.caseNum) && String(m.boxNumber || "").trim().toUpperCase() === upb).reduce((t, m) => t + (m.kind === "placed" ? Number(m.qty) || 0 : m.kind === "unplaced" ? -(Number(m.qty) || 0) : 0), 0);
+            }
+            here += Math.max(0, (Number(n) || 0) - Math.max(0, own));
           }
           inCases += Math.min(here, q);
           const spaces = Math.max(0, q - here);
@@ -4805,8 +4869,8 @@
     }) };
     return { patch: working, summary, qty, partial: qty < have };
   }
-  function reelCapacityWarning(batchCode2, amountMade, metersPerBox, glueLineBatches, bondingRuns, excludeId) {
-    const code = (batchCode2 || "").trim();
+  function reelCapacityWarning(batchCode, amountMade, metersPerBox, glueLineBatches, bondingRuns, excludeId) {
+    const code = (batchCode || "").trim();
     if (!code) return null;
     const batch = (glueLineBatches || []).find((b) => !b.deleted && b.batchNumber === code);
     if (!batch || !(Number(batch.meterage) > 0)) return null;
@@ -5226,6 +5290,44 @@
   }
   function ThR({ children, w, className = "" }) {
     return /* @__PURE__ */ React.createElement("th", { className: "text-right py-2.5 px-3 " + className, style: { width: w, fontWeight: 600, fontSize: "12.5px", letterSpacing: ".01em" } }, children);
+  }
+  function Td({ children, className = "", style }) {
+    return /* @__PURE__ */ React.createElement("td", { className: "px-3 py-2 " + className, style: { fontSize: "13px", verticalAlign: "top", ...style || {} } }, children);
+  }
+  function OrderNoteField({ value, onSave }) {
+    const [draft, setDraft] = useState(String(value || ""));
+    const [saved, setSaved] = useState(false);
+    useEffect(() => {
+      setDraft(String(value || ""));
+    }, [value]);
+    const commit = () => {
+      if (draft === String(value || "")) return;
+      onSave(draft.trim());
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1800);
+    };
+    return /* @__PURE__ */ React.createElement("div", { className: "mb-3", style: { maxWidth: 560 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Note to the floor ", /* @__PURE__ */ React.createElement("span", { style: { color: LIGHTGREY } }, "\u2014 shows on the bonding line and the pick sheet"), saved && /* @__PURE__ */ React.createElement("span", { style: { color: GREEN, fontWeight: 600, marginLeft: 8 } }, "Saved")), /* @__PURE__ */ React.createElement(
+      "textarea",
+      {
+        value: draft,
+        onChange: (e) => setDraft(e.target.value),
+        onBlur: commit,
+        rows: 2,
+        placeholder: "e.g. STRONG TAPE \u2014 both lines",
+        style: {
+          width: "100%",
+          font: "inherit",
+          fontSize: 14,
+          lineHeight: 1.4,
+          padding: "8px 10px",
+          border: `1px solid ${BORDER}`,
+          borderRadius: 6,
+          background: PANEL_BG,
+          color: INK,
+          resize: "vertical"
+        }
+      }
+    ));
   }
   function Empty({ colSpan, children }) {
     return /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { colSpan, className: "text-center py-8", style: { color: INK_MUTED } }, children));
@@ -6133,7 +6235,7 @@ Here's the order:`;
         const newLineItems = parsed.lineItems.map((li, i) => ({
           id: uid("li"),
           orderId: id,
-          description: li.description || "",
+          description: catalogueName(prevData, li.description || ""),
           customerRef: li.customerRef || null,
           qty: Number(li.qty) || 0,
           unitPrice: Number(li.unitPrice) || 0
@@ -7949,7 +8051,19 @@ Read the next screen carefully before you agree to it.`
     const setPickItemCase = (boxNumber, caseNum) => setPendingPickItems((prev) => prev.map((it) => it.boxNumber === boxNumber ? { ...it, caseOverride: caseNum } : it));
     const alternativeBatchesFor = (order, productSize, excludeId) => {
       const alreadyInThisPick = new Set(pendingPickItems.map((it) => it.id));
-      return matchingBoxesFor(order).filter((c) => c.id !== excludeId && !alreadyInThisPick.has(c.id) && looseSpecMatch(c.productSize, productSize) && !c.boxTypeIssue).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+      return matchingBoxesFor(order).filter((c) => c.id !== excludeId && !alreadyInThisPick.has(c.id) && looseSpecMatch(c.productSize, productSize) && c.boxTypeIssue !== "wrong").sort((a, b) => (a.boxTypeIssue ? 1 : 0) - (b.boxTypeIssue ? 1 : 0) || (a.date || "").localeCompare(b.date || ""));
+    };
+    const confirmCartonForBox = (boxNumber, boxTypeId) => {
+      setData((prev) => ({
+        ...prev,
+        bondingRuns: (prev.bondingRuns || []).map((r) => r.boxNumber === boxNumber && !r.boxTypeId ? { ...r, boxTypeId, updatedAt: (/* @__PURE__ */ new Date()).toISOString() } : r),
+        ...appendLog(prev, {
+          action: "carton_confirmed",
+          entity: "bondingRun",
+          entityId: boxNumber,
+          summary: `Carton confirmed at the shelf for ${boxNumber}: ${boxTypeNameOf(boxTypeId) || boxTypeId}`
+        })
+      }));
     };
     const swapPickItemBatch = (oldId, newCandidate) => {
       setPendingPickItems((prev) => prev.map((it) => {
@@ -7969,7 +8083,7 @@ Read the next screen carefully before you agree to it.`
         };
       }));
     };
-    const addFoundBatchForPickItem = (oldId, boxNumber, batchCode2, qty) => {
+    const addFoundBatchForPickItem = (oldId, boxNumber, batchCode, qty) => {
       setPendingPickItems((prev) => prev.map((it) => {
         if (it.id !== oldId) return it;
         const q = Math.max(0, Number(qty) || 0);
@@ -7982,7 +8096,7 @@ Read the next screen carefully before you agree to it.`
           confirmedQty: q,
           damaged: false,
           caseOverride: null,
-          baselineBatchCode: (batchCode2 || "").trim(),
+          baselineBatchCode: (batchCode || "").trim(),
           isNewlyAdded: true
         };
       }));
@@ -8743,7 +8857,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
           placeholder: "Optional",
           onChange: (e) => updateOrder(o.id, { address: e.target.value })
         }
-      )), /* @__PURE__ */ React.createElement(AmendmentBanner, { order: o, lineItems, cases: data.cases }), /* @__PURE__ */ React.createElement(
+      )), /* @__PURE__ */ React.createElement(OrderNoteField, { value: o.notes, onSave: (notes) => updateOrder(o.id, { notes }) }), /* @__PURE__ */ React.createElement(AmendmentBanner, { order: o, lineItems, cases: data.cases }), /* @__PURE__ */ React.createElement(
         OrderLineItemsTable,
         {
           items,
@@ -8874,7 +8988,9 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
         for (const spec of new Set(pendingPickItems.map((it) => it.displaySpec || it.productSize))) {
           const li = orderItemsForPick.find((l) => looseSpecMatch(spec, l.description));
           const needed = li ? Number(li.qty) || 0 : null;
-          const available = allMatching.filter((b) => looseSpecMatch(b.productSize, spec) && stockFormMatchesLine(b, spec)).reduce((s, b) => s + Number(b.available || 0), 0);
+          const matchingHere = allMatching.filter((b) => looseSpecMatch(b.productSize, spec) && stockFormMatchesLine(b, spec) && b.boxTypeIssue !== "wrong");
+          const available = matchingHere.reduce((s, b) => s + Number(b.available || 0), 0);
+          const unconfirmedCarton = matchingHere.filter((b) => b.boxTypeIssue === "unconfirmed").reduce((s, b) => s + Number(b.available || 0), 0);
           const claim = (() => {
             const boxesHere = [...new Set((pendingPickItems || []).filter((it) => (it.displaySpec || it.productSize) === spec).map((it) => it.boxNumber))];
             const byOther = /* @__PURE__ */ new Map();
@@ -8892,7 +9008,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
             if (!other) return null;
             return { order: other, held: v.qty, boxes: v.boxes };
           })();
-          productSummary[spec] = { needed, available, claim };
+          productSummary[spec] = { needed, available, claim, unconfirmedCarton };
         }
         return /* @__PURE__ */ React.createElement("div", { className: "mt-3" }, /* @__PURE__ */ React.createElement(
           DraftRestoredBanner,
@@ -8915,6 +9031,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
             setPickItemDamaged,
             setPickItemCase,
             alternativeBatchesFor,
+            confirmCartonForBox,
             swapPickItemBatch,
             addFoundBatchForPickItem,
             confirmPickAndAllocate,
@@ -13373,7 +13490,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     const [location2, setLocation] = useState("");
     const [reel, setReel] = useState("");
     const [done, setDone] = useState(false);
-    const spec = size ? `${range === "Ken" ? "Ken PX" : range} ${size}${pt ? " " + pt : ""}${metres ? ` (${metres}m)` : ""}`.trim() : "";
+    const spec = catalogueName(data, size ? `${range === "Ken" ? "Ken PX" : range} ${size}${pt ? " " + pt : ""}${metres ? ` (${metres}m)` : ""}`.trim() : "");
     const n = Number(qty) || 0;
     const canSave = size && n > 0;
     if (done) return /* @__PURE__ */ React.createElement("div", { className: "text-center text-sm", style: { color: GREEN } }, "\u2713 ", boxNumber, " added \u2014 ", n, " \xD7 ", spec, location2 ? ` on ${location2}` : "", ". It's on the shelf now.");
@@ -13433,7 +13550,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     const [meterage, setMeterage] = useState("540");
     const [direct, setDirect] = useState(true);
     const [done, setDone] = useState(false);
-    const spec = size ? `${range} ${size}`.trim() : "";
+    const spec = catalogueName(data, size ? `${range} ${size}`.trim() : "");
     const m = Number(meterage) || 0;
     const canSave = size && m > 0;
     const glue = materialBatchCode(data.materials, "glue", null) || "";
@@ -16698,23 +16815,7 @@ Plan it?`
       })] : [];
       setNcrs((prevNcrs) => [...prevNcrs, newRow]);
       if (ncrMove.length && ncrMove[0].qty > 0) setData((prev) => recordMovements(prev, ncrMove));
-      const reelStillOpen = !!batchCode && !reelCleared && !autoClearedReel.current;
-      setForm((f) => reelStillOpen ? {
-        ...blank,
-        date: f.date,
-        range: f.range,
-        size: f.size,
-        pt: f.pt,
-        baselineBatchCode: f.baselineBatchCode,
-        evaCode: f.evaCode,
-        tapeCode: f.tapeCode,
-        metersPerBox: f.metersPerBox,
-        packageType: f.packageType,
-        boxTypeId: f.boxTypeId,
-        location: f.location,
-        checked: f.checked,
-        timeOfDay: f.timeOfDay
-      } : { ...blank, date: f.date });
+      setForm((f) => ({ ...blank, date: f.date }));
       undo.offer(`NCR for ${newRow.batchNumber}`, () => setNcrs((rows) => rows.filter((r) => r.id !== newRow.id)));
     };
     const removeRow = (id) => {
@@ -17317,7 +17418,10 @@ Plan it?`
           marginRight: 6,
           color: late ? "#fff" : NAVY,
           background: late ? RED : "rgba(42,55,123,.07)"
-        } }, r.orderId), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15 } }, r.customer), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 3, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(BoxTypeMark, { type: bt }), r.needs > 0 && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: INK_MUTED } }, "needs ", r.needs, (r.room || []).length > 0 && /* @__PURE__ */ React.createElement("span", { style: { color: NAVY, fontWeight: 600 } }, " \u2192 case ", (r.room || []).slice(0, 3).map((x) => `${x.caseNum} (${x.spaces})`).join(", "), (r.room || []).length > 3 ? "\u2026" : "")), r.extra && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: RED } }, "doesn't need this size"))), /* @__PURE__ */ React.createElement(
+        } }, r.orderId), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15 } }, r.customer), (() => {
+          const note = String(((orders || []).find((o) => o.id === r.orderId) || {}).notes || "").trim();
+          return note ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: NAVY, marginTop: 2, whiteSpace: "pre-wrap" } }, note) : null;
+        })(), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 3, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(BoxTypeMark, { type: bt }), r.needs > 0 && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: INK_MUTED } }, "needs ", r.needs, (r.room || []).length > 0 && /* @__PURE__ */ React.createElement("span", { style: { color: NAVY, fontWeight: 600 } }, " \u2192 case ", (r.room || []).slice(0, 3).map((x) => `${x.caseNum} (${x.spaces})`).join(", "), (r.room || []).length > 3 ? "\u2026" : "")), r.extra && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: RED } }, "doesn't need this size"))), /* @__PURE__ */ React.createElement(
           "input",
           {
             type: "number",
@@ -17892,7 +17996,7 @@ Plan it?`
     const [addOpen, setAddOpen] = useState(false);
     const [addError, setAddError] = useState("");
     const [pendingAdd, setPendingAdd] = useState(null);
-    const autoClearedReel2 = useRef(false);
+    const autoClearedReel = useRef(false);
     const [editError, setEditError] = useState("");
     const [justAdded, setJustAdded] = useState(null);
     const [evaRanOutPrompt, setEvaRanOutPrompt] = useDraftState("evaRanOutPrompt", null, null);
@@ -17925,13 +18029,13 @@ Plan it?`
 ` + out.map((m, i) => `${i + 1}. ${m}`).join("\n");
     };
     const validateBatchAndBox = (f, excludeId) => {
-      const batchCode2 = (f.baselineBatchCode || "").trim();
-      if (batchCode2) {
-        const matchingBatch = data.glueLineBatches.find((b) => b.batchNumber === batchCode2);
+      const batchCode = (f.baselineBatchCode || "").trim();
+      if (batchCode) {
+        const matchingBatch = data.glueLineBatches.find((b) => b.batchNumber === batchCode);
         const original = excludeId ? bondingRuns.find((r) => r.id === excludeId) : null;
-        const reelUnchanged = original && (original.baselineBatchCode || "").trim().toUpperCase() === batchCode2.toUpperCase();
+        const reelUnchanged = original && (original.baselineBatchCode || "").trim().toUpperCase() === batchCode.toUpperCase();
         if (matchingBatch && matchingBatch.cleared === "Yes" && !reelUnchanged) {
-          return `Batch ${batchCode2} is marked Reel Cleared \u2014 no longer available to bond from.` + (original ? ` This row was on ${original.baselineBatchCode || "no reel"}; put it back to keep editing.` : "");
+          return `Batch ${batchCode} is marked Reel Cleared \u2014 no longer available to bond from.` + (original ? ` This row was on ${original.baselineBatchCode || "no reel"}; put it back to keep editing.` : "");
         }
       }
       const boxCode = (f.boxNumber || "").trim();
@@ -18074,7 +18178,7 @@ Plan it?`
       });
     };
     const toRun = (f, excludeId) => ({
-      productSize: buildSpec(f),
+      productSize: catalogueName(data, buildSpec(f)),
       baselineBatchCode: f.baselineBatchCode,
       evaCode: f.evaCode,
       evaCleared: f.evaCleared === "Yes",
@@ -18095,6 +18199,7 @@ Plan it?`
       date: f.date,
       comments: f.comments
     });
+    const shelfCartonId = (f) => f && f.shelfBoxTypeId || boxTypeIdForName(data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, DEFAULT_BOX_TYPE) || "";
     const explodeAllocations = (f) => {
       const allocs = (f.allocations || []).filter((a) => a.orderId && Number(a.qty) > 0);
       if (allocs.length === 0) return null;
@@ -18132,7 +18237,7 @@ Plan it?`
              so it has been live. (11 Sep 2026) */
           workNumber: "",
           customerName: "",
-          boxTypeId: f.shelfBoxTypeId || boxTypeIdForName(data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, DEFAULT_BOX_TYPE) || ""
+          boxTypeId: shelfCartonId(f)
         });
       }
       return rows;
@@ -18151,6 +18256,14 @@ Plan it?`
       if (allocated > made) return `${allocated} boxes allocated but only ${made} were made.`;
       return "";
     };
+    const gateCarton = (f) => {
+      if ((f.packageType || "Box") !== "Box") return "";
+      const rows = explodeAllocations(f) || [{ ...f, boxTypeId: f.workNumber ? f.boxTypeId : shelfCartonId(f) }];
+      const missing = rows.filter((r) => Number(r.amountMade) > 0 && !r.boxTypeId);
+      if (!missing.length) return "";
+      const where = [...new Set(missing.map((r) => r.workNumber || "the shelf"))];
+      return `No carton recorded for ${where.join(" and ")}. Pick one \u2014 a box with no carton can't be offered to the right customer later, and somebody ends up at the shelf reading labels.`;
+    };
     const addRow = () => {
       if (!String(form.size || "").trim()) {
         setAddError("Pick a size before logging this \u2014 the size field is empty.");
@@ -18168,7 +18281,8 @@ Plan it?`
         () => gateBatchTotal(form),
         () => gateCasePlan(form),
         () => gateAgainstPlan(form),
-        () => gateLocation(form)
+        () => gateLocation(form),
+        () => gateCarton(form)
       ]);
       if (err) {
         setAddError(err);
@@ -18180,12 +18294,12 @@ Plan it?`
       const newRuns = exploded ? exploded.map((f) => ({ id: uid("br"), createdAt, ...toRun(f) })) : [{ id: uid("br"), createdAt, ...toRun({
         ...form,
         toStock: void 0,
-        boxTypeId: !form.workNumber && form.shelfBoxTypeId ? form.shelfBoxTypeId : form.boxTypeId
+        boxTypeId: form.workNumber ? form.boxTypeId : shelfCartonId(form)
       }) }];
       const going = predictRunDestinations(data, newRuns);
-      const stockNoLocation = going.some((g) => g.kind === "stock" && !g.location);
-      if (stockNoLocation) {
-        setAddError("Some boxes are going to stock but no location is set \u2014 pick a location so they can be found.");
+      const placeErr = placeRefusalFor(going);
+      if (placeErr) {
+        setAddError(placeErr);
         return;
       }
       setPendingAdd({ newRuns, going });
@@ -18194,25 +18308,25 @@ Plan it?`
       setPendingAdd(null);
       const newRun = newRuns.find((r) => r.workNumber) || newRuns[0];
       const goesToOrder = !!(newRun.workNumber && Number(newRun.onOrderQty) > 0 && newRun.boxNumber);
-      const batchCode2 = (form.baselineBatchCode || "").trim();
-      const reelCleared2 = form.reelCleared === "Yes";
-      const previousBatchCleared = batchCode2 ? batchByCode.get(batchCode2)?.cleared || "No" : null;
+      const batchCode = (form.baselineBatchCode || "").trim();
+      const reelCleared = form.reelCleared === "Yes";
+      const previousBatchCleared = batchCode ? batchByCode.get(batchCode)?.cleared || "No" : null;
       const isBox = (form.packageType || "Box") === "Box";
       setData((prevData) => {
         const runsAfter = [...prevData.bondingRuns, ...newRuns];
         let autoCleared = false;
-        autoClearedReel2.current = false;
-        if (batchCode2 && !reelCleared2) {
-          const b = prevData.glueLineBatches.find((x) => x.batchNumber === batchCode2);
-          if (b && Number(b.meterage || 0) > 0 && batchMeterageUsed(runsAfter, batchCode2) >= Number(b.meterage)) {
+        autoClearedReel.current = false;
+        if (batchCode && !reelCleared) {
+          const b = prevData.glueLineBatches.find((x) => x.batchNumber === batchCode);
+          if (b && Number(b.meterage || 0) > 0 && batchMeterageUsed(runsAfter, batchCode) >= Number(b.meterage)) {
             autoCleared = true;
-            autoClearedReel2.current = true;
+            autoClearedReel.current = true;
           }
         }
         let working = {
           ...prevData,
           bondingRuns: runsAfter,
-          glueLineBatches: batchCode2 ? prevData.glueLineBatches.map((b) => b.batchNumber === batchCode2 ? { ...b, cleared: reelCleared2 || autoCleared ? "Yes" : b.cleared || "No" } : b) : prevData.glueLineBatches
+          glueLineBatches: batchCode ? prevData.glueLineBatches.map((b) => b.batchNumber === batchCode ? { ...b, cleared: reelCleared || autoCleared ? "Yes" : b.cleared || "No" } : b) : prevData.glueLineBatches
         };
         working = recordMovements(working, newRuns.flatMap((r) => [
           moveMade({ boxNumber: r.boxNumber, spec: r.productSize, qty: Number(r.amountMade) || 0, reelCode: r.baselineBatchCode || null, source: "bonding", sourceId: r.id }),
@@ -18245,26 +18359,26 @@ Plan it?`
             ];
           })() : []
         ]));
-        if (reelCleared2 && batchCode2) {
-          const b = prevData.glueLineBatches.find((x) => x.batchNumber === batchCode2);
+        if (reelCleared && batchCode) {
+          const b = prevData.glueLineBatches.find((x) => x.batchNumber === batchCode);
           const d = b ? reelDiscrepancy(b, runsAfter) : null;
           if (d && Math.abs(d.pct) > REEL_DISCREPANCY_TOLERANCE_PCT) {
             working = raiseIssue(working, {
               kind: "count_discrepancy",
-              boxNumber: batchCode2,
-              summary: `Reel ${batchCode2} cleared with ${Math.round(Math.abs(d.leftover))}m unaccounted (${d.pct > 0 ? "+" : ""}${d.pct.toFixed(1)}%)`,
+              boxNumber: batchCode,
+              summary: `Reel ${batchCode} cleared with ${Math.round(Math.abs(d.leftover))}m unaccounted (${d.pct > 0 ? "+" : ""}${d.pct.toFixed(1)}%)`,
               detail: `Recorded ${d.recorded}m, boxes account for ${Math.round(d.used)}m. The operator cleared it, so the reel is finished and the remainder is written off \u2014 but a gap this size usually means metres-per-box is wrong on the bonding rows, or a box is pointing at the wrong reel. Worth checking before it repeats.`
             });
           }
         }
         if (autoCleared) {
-          const b = prevData.glueLineBatches.find((x) => x.batchNumber === batchCode2);
+          const b = prevData.glueLineBatches.find((x) => x.batchNumber === batchCode);
           const over = reelOverConsumption({ ...b }, runsAfter);
           working = { ...working, ...appendLog(working, {
             action: "stock_adjustment",
             entity: "glueLineBatch",
             entityId: b?.id,
-            summary: over ? `Reel ${batchCode2} cleared automatically \u2014 fully used${over.withinTolerance ? `, ${over.over}m over its recorded ${over.recorded}m (${over.pct}% \u2014 glue line measurement variance)` : `, ${over.over}m over its recorded ${over.recorded}m (${over.pct}% \u2014 beyond measurement tolerance, worth checking)`}` : `Reel ${batchCode2} cleared automatically \u2014 fully used`,
+            summary: over ? `Reel ${batchCode} cleared automatically \u2014 fully used${over.withinTolerance ? `, ${over.over}m over its recorded ${over.recorded}m (${over.pct}% \u2014 glue line measurement variance)` : `, ${over.over}m over its recorded ${over.recorded}m (${over.pct}% \u2014 beyond measurement tolerance, worth checking)`}` : `Reel ${batchCode} cleared automatically \u2014 fully used`,
             before: { cleared: b?.cleared || "No" },
             after: { cleared: "Yes" }
           }) };
@@ -18285,7 +18399,29 @@ Plan it?`
         }
         return working;
       });
-      setForm({ ...blank, date: form.date });
+      const reelFinished = (() => {
+        if (!batchCode || reelCleared) return true;
+        const b = (data.glueLineBatches || []).find((x) => x.batchNumber === batchCode);
+        const runsAfter = [...(data.bondingRuns || []).filter((r) => !r.deleted), ...newRuns];
+        return !!(b && Number(b.meterage || 0) > 0 && batchMeterageUsed(runsAfter, batchCode) >= Number(b.meterage));
+      })();
+      setForm((f) => reelFinished ? { ...blank, date: f.date } : {
+        ...blank,
+        date: f.date,
+        range: f.range,
+        size: f.size,
+        pt: f.pt,
+        baselineBatchCode: f.baselineBatchCode,
+        evaCode: f.evaCode,
+        tapeCode: f.tapeCode,
+        metersPerBox: f.metersPerBox,
+        packageType: f.packageType,
+        boxTypeId: f.boxTypeId,
+        shelfBoxTypeId: f.shelfBoxTypeId,
+        location: f.location,
+        checked: f.checked,
+        timeOfDay: f.timeOfDay
+      });
       const newEva = String(newRun.evaCode || "").trim().toUpperCase();
       const prevEva = (() => {
         if (!newEva) return null;
@@ -18303,7 +18439,7 @@ Plan it?`
         id: newRun.id,
         ids: newRuns.map((r) => r.id),
         label: newRun.boxNumber || newRun.productSize,
-        batchCode: batchCode2,
+        batchCode,
         previousBatchCleared,
         // Every carton the entry consumed, so undo gives back exactly what was
         // taken — one entry can now be several rows with different cartons.
@@ -18444,8 +18580,31 @@ Plan it?`
         return;
       }
       setEditError("");
-      const batchCode2 = (editForm.baselineBatchCode || "").trim();
-      const reelCleared2 = editForm.reelCleared === "Yes";
+      {
+        const upc = (s) => String(s || "").trim().toUpperCase();
+        const beforeRow = (data.bondingRuns || []).find((r) => r.id === editingId);
+        const afterRow = beforeRow ? { ...beforeRow, ...toRun(formForSave, editingId) } : null;
+        if (beforeRow && afterRow && afterRow.workNumber && Number(afterRow.onOrderQty) > 0) {
+          const movedOrder = !!beforeRow.workNumber && beforeRow.workNumber !== afterRow.workNumber;
+          if (movedOrder) {
+            const inOldCases = (data.movements || []).filter((m) => m && !m.deleted && m.orderId === beforeRow.workNumber && upc(m.boxNumber) === upc(beforeRow.boxNumber)).reduce((t, m) => t + (m.kind === "placed" ? Number(m.qty) || 0 : m.kind === "unplaced" ? -(Number(m.qty) || 0) : 0), 0);
+            if (inOldCases > 0) {
+              setEditError(`${inOldCases} of ${beforeRow.boxNumber} are already in ${beforeRow.workNumber}'s cases. Changing the work number here would leave them promised to ${afterRow.workNumber} while they sit in ${beforeRow.workNumber}'s case. Take them out with Stock \u2192 Wrong stock in a case, then book them.`);
+              return;
+            }
+          }
+          const delta = Number(afterRow.onOrderQty || 0) - (movedOrder ? 0 : Number(beforeRow.onOrderQty || 0));
+          if (delta > 0) {
+            const placeErr = placeRefusalFor(predictRunDestinations(data, [{ ...afterRow, onOrderQty: delta, toStock: 0 }]));
+            if (placeErr) {
+              setEditError(placeErr);
+              return;
+            }
+          }
+        }
+      }
+      const batchCode = (editForm.baselineBatchCode || "").trim();
+      const reelCleared = editForm.reelCleared === "Yes";
       setData((prevData) => {
         const before = (prevData.bondingRuns || []).find((r) => r.id === editingId);
         const after = before ? { ...before, ...toRun(formForSave, editingId) } : null;
@@ -18511,17 +18670,40 @@ Plan it?`
             });
           }
           if (before.workNumber && after.workNumber && before.workNumber !== after.workNumber && after.boxNumber) {
+            const pendingMove = [{ ...after, onOrderQty: Number(after.onOrderQty || 0), toStock: 0 }];
+            const gm = (predictRunDestinations(next, pendingMove) || []).find((x) => x && x.kind === "order" && x.orderId === after.workNumber && String(x.boxNumber || "") === String(after.boxNumber || ""));
+            const splitM = gm && Array.isArray(gm.split) && gm.split.length ? gm.split : [];
             next = recordMovements(next, [
               moveUnallocated({ boxNumber: after.boxNumber, spec: after.productSize, qty: Number(before.onOrderQty || 0), orderId: before.workNumber, source: "bonding", note: `Row moved to ${after.workNumber}` }),
-              moveAllocated({ boxNumber: after.boxNumber, spec: after.productSize, qty: Number(after.onOrderQty || 0), orderId: after.workNumber, source: "bonding", note: `Row moved from ${before.workNumber}` })
+              moveAllocated({
+                boxNumber: after.boxNumber,
+                spec: after.productSize,
+                qty: Number(after.onOrderQty || 0),
+                orderId: after.workNumber,
+                caseNum: splitM.length ? splitM[0].caseNum : null,
+                source: "bonding",
+                sourceId: after.id,
+                note: `Row moved from ${before.workNumber}`
+              }),
+              ...splitM.map((sp) => movePlaced({
+                boxNumber: after.boxNumber,
+                spec: after.productSize,
+                qty: sp.qty,
+                orderId: after.workNumber,
+                caseNum: sp.caseNum,
+                reelCode: after.baselineBatchCode || null,
+                source: "bonding",
+                sourceId: after.id,
+                note: "Placed at bonding \u2014 the case bonding named is the move"
+              }))
             ]);
           }
         }
-        if (batchCode2) {
+        if (batchCode) {
           next = applyRowsWithLog(
             next,
             "glueLineBatches",
-            (rows) => rows.map((b) => b.batchNumber === batchCode2 ? { ...b, cleared: reelCleared2 ? "Yes" : "No" } : b),
+            (rows) => rows.map((b) => b.batchNumber === batchCode ? { ...b, cleared: reelCleared ? "Yes" : "No" } : b),
             "glueLineBatch",
             (r) => `reel ${r.batchNumber || r.id}`
           );
@@ -20172,7 +20354,7 @@ Plan it?`
       }, 150);
     };
     const toRow = (f, excludeId) => ({
-      productSize: buildSpec(f),
+      productSize: catalogueName(data, buildSpec(f)),
       batchNumber: withPrefixFor(f.batchNumber, !!f.direct),
       direct: !!f.direct,
       plCode: f.direct ? "" : f.plCode || "",
@@ -20843,7 +21025,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       setForm((f) => String(f.pvcCode || "").trim() ? f : { ...f, pvcCode: suggested });
     }, [form.range, form.size, data.materials]);
     const toRow = (f) => ({
-      productSize: buildSpec(f),
+      productSize: catalogueName(data, buildSpec(f)),
       batchNumber: f.batchNumber,
       pvcCode: f.pvcCode,
       pinSize: f.pinSize,
