@@ -1035,7 +1035,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-15.7";
+  var APP_VERSION = "2026-09-15.8";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1468,22 +1468,26 @@
   }
   var MISSING_COLUMN_RE = /Could not find the '([^']+)' column/i;
   async function upsertHealingMissingColumns(client, table, rows, warnings) {
-    const allKeys = /* @__PURE__ */ new Set();
-    for (const r of rows) for (const k of Object.keys(r)) allKeys.add(k);
-    rows = rows.map((r) => {
-      let filled = null;
-      for (const k of allKeys) {
-        if (r[k] !== void 0 && r[k] !== null) continue;
-        if (!NOT_NULL_BOOLEAN_COLUMNS.has(k)) continue;
-        filled = filled || { ...r };
-        filled[k] = false;
-      }
-      return filled || r;
-    });
+    const fillNotNullBooleans = (batch) => {
+      const allKeys = /* @__PURE__ */ new Set();
+      for (const r of batch) for (const k of Object.keys(r)) allKeys.add(k);
+      const need = [...allKeys].filter((k) => NOT_NULL_BOOLEAN_COLUMNS.has(k));
+      if (!need.length) return batch;
+      return batch.map((r) => {
+        let filled = null;
+        for (const k of need) {
+          if (r[k] !== void 0 && r[k] !== null) continue;
+          filled = filled || { ...r };
+          filled[k] = false;
+        }
+        return filled || r;
+      });
+    };
     let outgoing = rows;
     const dropped = [];
     const nulled = [];
     for (let attempt = 0; attempt < 8; attempt++) {
+      outgoing = fillNotNullBooleans(outgoing);
       const { data: saved, error } = await client.from(table).upsert(outgoing).select("id");
       if (!error) {
         if (dropped.length) warnings.push({ table, dropped, message: `saved without ${dropped.join(", ")} \u2014 the database doesn't have ${dropped.length === 1 ? "that column" : "those columns"} yet` });
