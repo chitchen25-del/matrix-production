@@ -1035,7 +1035,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-15.3";
+  var APP_VERSION = "2026-09-15.4";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1505,6 +1505,41 @@
           dropped: [],
           retired,
           message: `${retired.length} reel${retired.length === 1 ? "" : "s"} already existed in the cloud (${retired.map((x) => x.code).join(", ")}) \u2014 the cloud record was completed instead of duplicated`
+        });
+        continue;
+      }
+      if (table === "cases" && /cases_order_num_idx/.test(String(error.message || ""))) {
+        const orderIds = [...new Set(outgoing.map((r) => r.order_id).filter(Boolean))];
+        const { data: theirs, error: fetchErr } = await client.from("cases").select("*").in("order_id", orderIds).eq("deleted", false);
+        if (fetchErr || !theirs) throw error;
+        const slot = (o, n) => `${o}|${Number(n)}`;
+        const bySlot = new Map(theirs.map((t) => [slot(t.order_id, t.case_num), t]));
+        const healed = [], retired = [], carried = [];
+        for (const r of outgoing) {
+          const t = bySlot.get(slot(r.order_id, r.case_num));
+          if (!t || t.id === r.id) {
+            healed.push(r);
+            continue;
+          }
+          const mine = r.contents && typeof r.contents === "object" ? r.contents : {};
+          const cloud = t.contents && typeof t.contents === "object" ? t.contents : {};
+          const merged = { ...cloud };
+          for (const [box, qty] of Object.entries(mine)) {
+            if (Object.prototype.hasOwnProperty.call(cloud, box)) continue;
+            if (!(Number(qty) > 0)) continue;
+            merged[box] = qty;
+            carried.push(`${box} x${qty} into ${r.order_id} case ${r.case_num}`);
+          }
+          healed.push({ ...t, contents: merged, updated_at: (/* @__PURE__ */ new Date()).toISOString() });
+          retired.push({ localId: r.id, cloudId: t.id, code: `${r.order_id} case ${r.case_num}` });
+        }
+        if (!retired.length) throw error;
+        outgoing = healed;
+        warnings.push({
+          table,
+          dropped: [],
+          retired,
+          message: `${retired.length} case${retired.length === 1 ? "" : "s"} (${retired.map((x) => x.code).join(", ")}) already existed in the cloud under a different record \u2014 the cloud's case was kept` + (carried.length ? `. Boxes carried across: ${carried.join(", ")}` : "")
         });
         continue;
       }
@@ -21538,10 +21573,17 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         const retired = (res && res.warnings || []).flatMap((w) => w.retired || []);
         if (retired.length) {
           setTimeout(() => setSyncWarnings((cur) => (cur || []).filter((w) => !(w.retired && w.retired.length)).length ? (cur || []).filter((w) => !(w.retired && w.retired.length)) : null), 9e4);
+          const LOCAL_LIST_FOR = { glue_line_batches: "glueLineBatches", cases: "cases" };
           setData((prev2) => {
-            const drop = new Set(retired.map((x) => x.localId));
-            const rows = (prev2.glueLineBatches || []).filter((g) => !drop.has(g.id));
-            return { ...prev2, glueLineBatches: rows };
+            let next = prev2;
+            for (const w of res && res.warnings || []) {
+              if (!w.retired || !w.retired.length) continue;
+              const key = LOCAL_LIST_FOR[w.table];
+              if (!key) continue;
+              const drop = new Set(w.retired.map((x) => x.localId));
+              next = { ...next, [key]: (next[key] || []).filter((row) => !drop.has(row.id)) };
+            }
+            return next;
           });
         }
       }).catch((err) => {
