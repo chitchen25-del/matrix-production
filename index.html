@@ -1035,7 +1035,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-15.4";
+  var APP_VERSION = "2026-09-15.5";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1468,6 +1468,7 @@
   async function upsertHealingMissingColumns(client, table, rows, warnings) {
     let outgoing = rows;
     const dropped = [];
+    const nulled = [];
     for (let attempt = 0; attempt < 8; attempt++) {
       const { data: saved, error } = await client.from(table).upsert(outgoing).select("id");
       if (!error) {
@@ -1540,6 +1541,26 @@
           dropped: [],
           retired,
           message: `${retired.length} case${retired.length === 1 ? "" : "s"} (${retired.map((x) => x.code).join(", ")}) already existed in the cloud under a different record \u2014 the cloud's case was kept` + (carried.length ? `. Boxes carried across: ${carried.join(", ")}` : "")
+        });
+        continue;
+      }
+      const nullCol = /null value in column "(.+?)" of relation/.exec(String(error.message || ""));
+      if (nullCol && !nulled.includes(nullCol[1])) {
+        const col2 = nullCol[1];
+        nulled.push(col2);
+        let touched = 0;
+        outgoing = outgoing.map((r) => {
+          if (r[col2] !== null && r[col2] !== void 0) return r;
+          touched++;
+          const copy = { ...r };
+          delete copy[col2];
+          return copy;
+        });
+        if (!touched) throw error;
+        warnings.push({
+          table,
+          dropped: [],
+          message: `${touched} row${touched === 1 ? "" : "s"} had no ${col2} \u2014 saved with the database's own default instead of an empty value`
         });
         continue;
       }
