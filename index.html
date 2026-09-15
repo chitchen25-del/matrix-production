@@ -1035,7 +1035,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-15.8";
+  var APP_VERSION = "2026-09-15.10";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1348,7 +1348,7 @@
         out.id = v;
         continue;
       }
-      if (DERIVED_BONDING_FIELDS.includes(k)) continue;
+      if (DERIVED_BONDING_FIELDS.includes(k) && !(colMap && colMap[k])) continue;
       const col = colMap[k] || syncCamelToSnake(k);
       out[col] = v === "" || v === null || v === void 0 ? NOT_NULL_BOOLEAN_COLUMNS.has(col) ? false : null : v;
     }
@@ -21665,12 +21665,23 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       const failed = [];
       for (const table of [...Object.values(SYNC_TABLES).map((t) => t.table), "extrusion_runs", "tooling"]) {
         try {
-          let q = client.from(table).select("*");
+          const PAGE = 1e3;
           const since = sinceByTable ? sinceByTable[table] : null;
-          if (since) q = q.gte("updated_at", since);
-          const { data: rows, error } = await q;
-          if (error) throw error;
-          tables[table] = rows || [];
+          const rows = [];
+          for (let from = 0; ; from += PAGE) {
+            let q = client.from(table).select("*").order("id", { ascending: true }).range(from, from + PAGE - 1);
+            if (since) q = q.gte("updated_at", since);
+            const { data: page, error } = await q;
+            if (error) throw error;
+            const got = page || [];
+            rows.push(...got);
+            if (got.length < PAGE) break;
+            if (from > 2e5) {
+              console.error(`Pull for "${table}" stopped at ${rows.length} rows \u2014 it never returned a short page.`);
+              break;
+            }
+          }
+          tables[table] = rows;
           let max = null;
           for (const r of tables[table]) {
             if (r && r.updated_at && (!max || r.updated_at > max)) max = r.updated_at;
