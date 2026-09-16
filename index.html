@@ -1035,7 +1035,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-16.5";
+  var APP_VERSION = "2026-09-16.6";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -6813,7 +6813,7 @@ Here's the order:`;
     }
     inCases.sort((a, b) => String(a.orderId).localeCompare(String(b.orderId)) || a.caseNum - b.caseNum);
     const packed = inCases.reduce((t, x) => t + x.qty, 0);
-    const p = projectBox(data.movements || [], boxNumber);
+    const p = projectBox(data.movements || [], boxNumber, data.reservations);
     const onShelfRaw = (p.made || 0) - (p.scrapped || 0) - (p.shipped || 0) - packed;
     const onShelf = Math.max(0, onShelfRaw);
     const promised = promisedOutstanding(promiseRows(data, { boxNumber }));
@@ -6830,17 +6830,25 @@ Here's the order:`;
     }
     return bits.length ? bits.join(" \xB7 ") : "nothing left";
   }
-  function projectBox(movements, boxNumber) {
+  function projectBox(movements, boxNumber, reservations = LEDGER_RESERVATIONS) {
     const rows = (movements || []).filter((m) => !m.deleted && m.boxNumber === boxNumber);
     const made = rows.filter((m) => m.kind === "made" || m.kind === "adjusted").reduce((t, m) => t + Number(m.qty || 0), 0);
     const byOrder = {};
-    {
-      const box = String(boxNumber || "").trim().toUpperCase();
-      for (const r of LEDGER_RESERVATIONS) {
+    const box = String(boxNumber || "").trim().toUpperCase();
+    const res = reservations || [];
+    if (res.length > 0) {
+      for (const r of res) {
         if (!r || r.deleted || r.state === "released") continue;
         if (String(r.boxNumber || "").trim().toUpperCase() !== box) continue;
         byOrder[r.orderId] = (byOrder[r.orderId] || 0) + (Number(r.qty) || 0);
       }
+    } else {
+      for (const r of rows) {
+        if (r.kind !== "allocated" && r.kind !== "unallocated") continue;
+        if (!r.orderId) continue;
+        byOrder[r.orderId] = (byOrder[r.orderId] || 0) + (r.kind === "allocated" ? 1 : -1) * (Number(r.qty) || 0);
+      }
+      for (const [orderId, qty] of Object.entries(byOrder)) if (qty <= 0) delete byOrder[orderId];
     }
     const allocated = Object.values(byOrder).reduce((t, q) => t + q, 0);
     const scrapped = rows.filter((m) => m.kind === "scrapped").reduce((t, m) => t + Number(m.qty || 0), 0);
@@ -6848,7 +6856,7 @@ Here's the order:`;
     return { made, allocated, scrapped, shipped, byOrder };
   }
   function adjustBatchQuantity(prev, { boxNumber, spec, newQty, note }) {
-    const p = projectBox(prev.movements, boxNumber);
+    const p = projectBox(prev.movements, boxNumber, prev.reservations);
     const delta = Number(newQty) - p.made;
     if (!delta) return prev;
     let next = recordMovement(prev, moveMade({
@@ -12670,7 +12678,7 @@ The manifest will list them as cases with no pallet, and the gross weight will b
     const byOrder = /* @__PURE__ */ new Map();
     let onShelf = 0, made = 0, scrapped = 0, free = 0;
     for (const box of boxes) {
-      const p = projectBox(data.movements, box);
+      const p = projectBox(data.movements, box, data.reservations);
       const rows = runs.filter((r) => r.boxNumber === box);
       const ledgered = p.made > 0;
       made += ledgered ? p.made : rows.reduce((t, r) => t + Number(r.amountMade || 0), 0);
@@ -12922,7 +12930,7 @@ The manifest will list them as cases with no pallet, and the gross weight will b
     for (const box of new Set(runs.map((r) => r.boxNumber).filter(Boolean))) {
       const rows = runs.filter((r) => r.boxNumber === box);
       const onRows = rows.reduce((t, r) => t + (Number(r.amountMade) || 0), 0);
-      const inLedger = projectBox(data.movements || [], box).made;
+      const inLedger = projectBox(data.movements || [], box, data.reservations).made;
       if (!inLedger) continue;
       if (onRows === inLedger) continue;
       const tmpl = rows[0] || {};
@@ -18709,7 +18717,7 @@ Plan it?`
             next = adjustBatchQuantity(next, {
               boxNumber: after.boxNumber,
               spec: after.productSize,
-              newQty: projectBox(next.movements, after.boxNumber).made + madeDelta,
+              newQty: projectBox(next.movements, after.boxNumber, next.reservations).made + madeDelta,
               note: `Bonding Line row edited \u2014 ${before.amountMade} to ${after.amountMade}`
             });
           }
