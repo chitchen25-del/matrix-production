@@ -1035,7 +1035,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-15.25";
+  var APP_VERSION = "2026-09-16.1";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -4995,7 +4995,7 @@
       if (!res || res.deleted || res.state === "released") continue;
       if (String(res.boxNumber || "").trim().toUpperCase() !== code) continue;
       const o = (data.orders || []).find((x) => x.id === res.orderId);
-      const want = o && o.boxType || DEFAULT_BOX_TYPE;
+      const want = orderBoxTypeFor(o, res.spec || "");
       promised[want] = (promised[want] || 0) + (Number(res.qty) || 0);
     }
     const free = {};
@@ -5039,6 +5039,8 @@
   }
   function orderBoxTypeFor(order, lineDescription) {
     if (isKenPin(lineDescription)) return KEN_BOX_TYPE;
+    const byRange = rangeBoxFor(lineDescription);
+    if (byRange === "Ultra SR") return byRange;
     return order && order.boxType || DEFAULT_BOX_TYPE;
   }
   function shelfBoxFitsBoxType(box, wantType) {
@@ -7890,12 +7892,13 @@ Read the next screen carefully before you agree to it.`
     };
     const boxedStock = boxedStockAvailable(data.bondingRuns, data.stockPicks || []);
     const boxTypeMismatch = (candidate, order) => {
-      if (!order.boxType) return null;
+      const want = orderBoxTypeFor(order, candidate.productSize || candidate.spec || "");
+      if (!order.boxType && want === DEFAULT_BOX_TYPE) return null;
       if (!candidate.boxTypeId) return "unconfirmed";
       const materials = data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS;
       const material = materials.find((m) => m.id === candidate.boxTypeId);
       if (!material) return "unconfirmed";
-      return material.name === order.boxType ? null : "wrong";
+      return material.name === want ? null : "wrong";
     };
     const allocatedElsewhere = (boxNumber, orderId) => {
       const held = reservationsFor(data, boxNumber);
@@ -7939,8 +7942,8 @@ Read the next screen carefully before you agree to it.`
       const exact = free.filter((b) => orderSpecs.has(normalizeSpec(b.productSize))).map(withBoxTypeFlag);
       const exactIds = new Set(exact.map((b) => b.id));
       const loose = free.filter((b) => !exactIds.has(b.id) && orderLines.some((li) => looseSpecMatch(b.productSize, li.description) && stockFormMatchesLine(b, li.description))).map((b) => ({ ...withBoxTypeFlag(b), approxMatch: true }));
-      const want = order.boxType || DEFAULT_BOX_TYPE;
       const capToCarton = (b) => {
+        const want = orderBoxTypeFor(order, b.productSize || b.spec || "");
         const room = freeInCartonFor(data, b.boxNumber, want, data.materials);
         if (room <= 0) return null;
         return room < b.available ? { ...b, available: room, cartonCapped: true } : b;
@@ -8486,10 +8489,10 @@ Read the next screen carefully before you agree to it.`
     };
     const confirmPickAndAllocate = (order, items = pendingPickItems, { receipt = true, onlyConfirmed = false, keepRest = false } = {}) => {
       {
-        const want = order.boxType || DEFAULT_BOX_TYPE;
         const mats = data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS;
         const wrong = items.filter((it) => it && !it.damaged && Number(it.confirmedQty) > 0 && (!onlyConfirmed || it.confirmed)).filter((it) => {
           const run = (data.bondingRuns || []).find((r) => r && !r.deleted && r.id === it.id);
+          const want = orderBoxTypeFor(order, run && run.productSize || it.spec || "");
           const carton = run && run.boxTypeId ? (mats.find((m) => m.id === run.boxTypeId) || {}).name || null : null;
           if (!carton) return want !== DEFAULT_BOX_TYPE;
           return carton !== want;
@@ -8499,7 +8502,7 @@ Read the next screen carefully before you agree to it.`
           const run = (data.bondingRuns || []).find((r) => r && r.id === first.id);
           const carton = run && run.boxTypeId ? (mats.find((m) => m.id === run.boxTypeId) || {}).name || "an unrecorded carton" : "an unrecorded carton";
           if (typeof window !== "undefined") window.alert(
-            `${first.boxNumber} is in ${carton} and ${order.id} (${order.customer}) takes ${want}.` + (wrong.length > 1 ? ` ${wrong.length - 1} other box${wrong.length > 2 ? "es on" : " on"} this sheet ${wrong.length > 2 ? "are" : "is"} the same.` : "") + ` Nothing has been recorded. To clear it: put ${wrong.length > 1 ? "them" : "it"} back and take ${want} boxes instead, or if the box is right and the record is wrong, correct the box type on the bonding run.`
+            `${first.boxNumber} is in ${carton} and ${order.id} (${order.customer}) takes ${orderBoxTypeFor(order, run && run.productSize || first.spec || "")}.` + (wrong.length > 1 ? ` ${wrong.length - 1} other box${wrong.length > 2 ? "es on" : " on"} this sheet ${wrong.length > 2 ? "are" : "is"} the same.` : "") + ` Nothing has been recorded. To clear it: put ${wrong.length > 1 ? "them" : "it"} back and take ${orderBoxTypeFor(order, run && run.productSize || first.spec || "")} boxes instead, or if the box is right and the record is wrong, correct the box type on the bonding run.`
           );
           return;
         }
