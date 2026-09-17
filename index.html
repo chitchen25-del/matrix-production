@@ -1035,7 +1035,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-16.6";
+  var APP_VERSION = "2026-09-16.8";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -2018,11 +2018,18 @@
     const d = manufactureDateFromCode(code, prefix);
     return d ? d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : null;
   }
+  function canonicalBoxCode(code) {
+    const c = String(code || "").trim().toUpperCase();
+    const parsed = parseCodeDate(c, "");
+    if (!parsed || !parsed.suffix) return c;
+    const stem = c.slice(0, c.length - parsed.suffix.length);
+    return stem + sortChars(parsed.suffix);
+  }
   function boxCodeNearMisses(typed, existingCodes, limit = 3) {
     const norm = (c) => String(c || "").trim().toUpperCase();
     const t = norm(typed);
     if (t.length < 4) return [];
-    const same = (a, b) => a === b || a.replace(/GBD$/, "GDB") === b.replace(/GBD$/, "GDB");
+    const same = (a, b) => a === b || canonicalBoxCode(a) === canonicalBoxCode(b);
     const codes = [...new Set((existingCodes || []).map(norm).filter(Boolean))];
     if (codes.some((c) => same(c, t))) return [];
     const out = [];
@@ -2087,6 +2094,11 @@
       }
     }
     if (opts.boxSuffix) {
+      const canon = canonicalBoxCode(trimmed);
+      const twin = (existingCodes || []).map((c) => String(c || "").trim().toUpperCase()).find((c) => c && c !== trimmed.toUpperCase() && canonicalBoxCode(c) === canon);
+      if (twin) {
+        warnings.push(`${twin} already exists \u2014 same three letters in a different order is the same box, not a new one. Check this is not that batch.`);
+      }
       if (parsed.suffix) {
         const retired = RETIRED_SUFFIX_INITIALS[parsed.suffix[0]];
         if (retired) {
@@ -18712,6 +18724,8 @@ Plan it?`
           (r) => `box ${r.boxNumber || r.id}`
         );
         if (before && after) {
+          const heldByOrder = projectBox(next.movements, after.boxNumber, next.reservations).byOrder || {};
+          const beforeOnOrder = before.workNumber ? Number(heldByOrder[before.workNumber] || 0) : Number(before.onOrderQty || 0);
           const madeDelta = Number(after.amountMade || 0) - Number(before.amountMade || 0);
           if (madeDelta && after.boxNumber) {
             next = adjustBatchQuantity(next, {
@@ -18721,7 +18735,7 @@ Plan it?`
               note: `Bonding Line row edited \u2014 ${before.amountMade} to ${after.amountMade}`
             });
           }
-          const orderDelta = Number(after.onOrderQty || 0) - Number(before.onOrderQty || 0);
+          const orderDelta = Number(after.onOrderQty || 0) - beforeOnOrder;
           const orderId = after.workNumber || before.workNumber;
           if (orderDelta > 0 && orderId && after.boxNumber) {
             const pending = [{ ...after, onOrderQty: orderDelta, toStock: 0 }];
@@ -18739,7 +18753,7 @@ Plan it?`
                 reelCode: after.baselineBatchCode || null,
                 source: "bonding",
                 sourceId: after.id,
-                note: `Bonding Line row edited \u2014 on order ${before.onOrderQty || 0} to ${after.onOrderQty || 0}`
+                note: `Bonding Line row edited \u2014 on order ${beforeOnOrder} to ${after.onOrderQty || 0}`
               }),
               ...split.map((sp) => movePlaced({
                 boxNumber: after.boxNumber,
@@ -18762,15 +18776,25 @@ Plan it?`
               orderId,
               source: "bonding",
               sourceId: after.id,
-              note: `Bonding Line row edited \u2014 on order ${before.onOrderQty} to ${after.onOrderQty}`
+              note: `Bonding Line row edited \u2014 on order ${beforeOnOrder} to ${after.onOrderQty}`
             });
           }
           if (before.workNumber && after.workNumber && before.workNumber !== after.workNumber && after.boxNumber) {
+            if (beforeOnOrder > 0) {
+              next = recordMovement(next, moveUnallocated({
+                boxNumber: after.boxNumber,
+                spec: after.productSize,
+                qty: beforeOnOrder,
+                orderId: before.workNumber,
+                source: "bonding",
+                sourceId: after.id,
+                note: `Row moved to ${after.workNumber}`
+              }));
+            }
             const pendingMove = [{ ...after, onOrderQty: Number(after.onOrderQty || 0), toStock: 0 }];
             const gm = (predictRunDestinations(next, pendingMove) || []).find((x) => x && x.kind === "order" && x.orderId === after.workNumber && String(x.boxNumber || "") === String(after.boxNumber || ""));
             const splitM = gm && Array.isArray(gm.split) && gm.split.length ? gm.split : [];
             next = recordMovements(next, [
-              moveUnallocated({ boxNumber: after.boxNumber, spec: after.productSize, qty: Number(before.onOrderQty || 0), orderId: before.workNumber, source: "bonding", note: `Row moved to ${after.workNumber}` }),
               moveAllocated({
                 boxNumber: after.boxNumber,
                 spec: after.productSize,
