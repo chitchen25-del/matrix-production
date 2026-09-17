@@ -1195,7 +1195,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-17.15";
+  var APP_VERSION = "2026-09-17.16";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -22006,6 +22006,26 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const [syncStatus, setSyncStatus] = useState("off");
     const [syncFailureDetail, setSyncFailureDetail] = useState(null);
     const [syncWarnings, setSyncWarnings] = useState(null);
+    const LOCAL_LIST_FOR_RETIRED = { glue_line_batches: "glueLineBatches", cases: "cases" };
+    const retireLocalDuplicates = (warnings) => {
+      const list = (warnings || []).filter((w) => w && w.retired && w.retired.length);
+      if (!list.length) return false;
+      setData((prev) => {
+        let next = prev;
+        for (const w of list) {
+          const key = LOCAL_LIST_FOR_RETIRED[w.table];
+          if (!key) continue;
+          const drop = new Set(w.retired.map((x) => x.localId));
+          next = { ...next, [key]: (next[key] || []).filter((row) => !drop.has(row.id)) };
+        }
+        return next;
+      });
+      setTimeout(() => setSyncWarnings((cur) => {
+        const kept = (cur || []).filter((w) => !(w.retired && w.retired.length));
+        return kept.length ? kept : null;
+      }), 9e4);
+      return true;
+    };
     const [pendingCount, setPendingCount] = useState(0);
     const [lastSyncedAt, setLastSyncedAt] = useState(() => {
       const stored = localStorage.getItem(LAST_SYNCED_KEY);
@@ -22162,22 +22182,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         setSyncWarnings(res && res.warnings && res.warnings.length ? res.warnings : null);
         if (res && res.refused && res.refused.length) reconcileRefusedRowsRef.current(res.refused, res.refusedFresh);
         releasePendingDeletions(Object.keys(deletedByTable));
-        const retired = (res && res.warnings || []).flatMap((w) => w.retired || []);
-        if (retired.length) {
-          setTimeout(() => setSyncWarnings((cur) => (cur || []).filter((w) => !(w.retired && w.retired.length)).length ? (cur || []).filter((w) => !(w.retired && w.retired.length)) : null), 9e4);
-          const LOCAL_LIST_FOR = { glue_line_batches: "glueLineBatches", cases: "cases" };
-          setData((prev2) => {
-            let next = prev2;
-            for (const w of res && res.warnings || []) {
-              if (!w.retired || !w.retired.length) continue;
-              const key = LOCAL_LIST_FOR[w.table];
-              if (!key) continue;
-              const drop = new Set(w.retired.map((x) => x.localId));
-              next = { ...next, [key]: (next[key] || []).filter((row) => !drop.has(row.id)) };
-            }
-            return next;
-          });
-        }
+        retireLocalDuplicates(res && res.warnings);
       }).catch((err) => {
         console.error("Sync push failed:", err);
         if (isAuthError(err) || (err.failures || []).some(isAuthError)) {
@@ -22190,6 +22195,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         releasePendingDeletions(okTables);
         setPendingCount(countPendingChanges(prevDataRef.current, data));
         if (err.warnings && err.warnings.length) setSyncWarnings(err.warnings);
+        retireLocalDuplicates(err.warnings);
         if (err.refused && err.refused.length) reconcileRefusedRowsRef.current(err.refused, err.refusedFresh);
         const offline = failures.length === 0 || failures.some(isNetworkFailure);
         setSyncStatus(offline ? "offline" : "connected");
@@ -22375,6 +22381,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         setPendingCount(0);
         setSyncFailureDetail(null);
         setSyncWarnings(res.warnings && res.warnings.length ? res.warnings : null);
+        retireLocalDuplicates(res.warnings);
         markSynced();
         if (res.refused && res.refused.length) await reconcileRefusedRows(res.refused, res.refusedFresh);
       } catch (e) {
@@ -22383,6 +22390,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         setPendingCount(countPendingChanges(prevDataRef.current, merged));
         if (e.failures) setSyncFailureDetail(e.failures);
         if (e.warnings && e.warnings.length) setSyncWarnings(e.warnings);
+        retireLocalDuplicates(e.warnings);
       }
       const pullAndMerge = async () => {
         try {
@@ -22402,6 +22410,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
               setPendingCount(0);
               setSyncFailureDetail(null);
               setSyncWarnings(pushRes.warnings && pushRes.warnings.length ? pushRes.warnings : null);
+              retireLocalDuplicates(pushRes.warnings);
               markSynced();
               if (pushRes.refused && pushRes.refused.length) await reconcileRefusedRows(pushRes.refused, pushRes.refusedFresh);
             } catch (e) {
@@ -22410,6 +22419,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
               setPendingCount(countPendingChanges(prevDataRef.current, merged2));
               if (e.failures) setSyncFailureDetail(e.failures);
               if (e.warnings && e.warnings.length) setSyncWarnings(e.warnings);
+              retireLocalDuplicates(e.warnings);
               const failures = e.failures || [];
               if (failures.length && !failures.some(isNetworkFailure)) setSyncStatus("connected");
             }
