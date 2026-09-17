@@ -1035,7 +1035,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-17.5";
+  var APP_VERSION = "2026-09-17.6";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -2614,13 +2614,22 @@
     }
     return out;
   }
-  function orderPickablePercent(order, lineItems, bondingRuns, stockPicks, reservations) {
-    return orderPickablePercentStored(order, lineItems, ledgerCorrectedRuns(bondingRuns), stockPicks, reservations);
+  function orderPickablePercent(order, lineItems, bondingRuns, stockPicks, reservations, materials) {
+    return orderPickablePercentStored(order, lineItems, ledgerCorrectedRuns(bondingRuns), stockPicks, reservations, materials);
   }
   function isStrongTapeOrder(order) {
     return /strong[\s_-]*tape/i.test(String(order && order.notes || ""));
   }
-  function orderPickablePercentStored(order, lineItems, bondingRuns, stockPicks, reservations) {
+  function cartonMismatch(candidate, order, materials) {
+    const want = orderBoxTypeFor(order, candidate.productSize || candidate.spec || "");
+    if (!order.boxType && want === DEFAULT_BOX_TYPE) return null;
+    if (!candidate.boxTypeId) return "unconfirmed";
+    const mats = materials && materials.length ? materials : DEFAULT_MATERIALS;
+    const material = mats.find((m) => m.id === candidate.boxTypeId);
+    if (!material) return "unconfirmed";
+    return material.name === want ? null : "wrong";
+  }
+  function orderPickablePercentStored(order, lineItems, bondingRuns, stockPicks, reservations, materials) {
     if (isStrongTapeOrder(order)) return 0;
     const items = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description) && !isSmallItem(li.description));
     const { byLineItem } = groupAssignedRunsByLineItem(bondingRuns, order.id, items);
@@ -2632,7 +2641,7 @@
       const assignedQty = runs.reduce((s, r) => s + Number(r.onOrderQty || 0), 0);
       const outstanding = Math.max(0, Number(li.qty) - assignedQty);
       if (outstanding <= 0) continue;
-      const available = mine ? mine.get(li.id) || 0 : boxed.filter((b) => looseSpecMatch(b.productSize, li.description) && stockFormMatchesLine(b, li.description)).reduce((s, b) => s + Number(b.available || 0), 0);
+      const available = mine ? mine.get(li.id) || 0 : boxed.filter((b) => looseSpecMatch(b.productSize, li.description) && stockFormMatchesLine(b, li.description) && !cartonMismatch(b, order, materials)).reduce((s, b) => s + Number(b.available || 0), 0);
       totalOutstanding += outstanding;
       totalCoverable += Math.min(outstanding, available);
     }
@@ -5462,7 +5471,7 @@
       reasons: ["fully made or allocated \u2014 nothing outstanding"]
     }));
     const reservations = shelfReservations(orders, lineItems, bondingRuns, data.stockPicks);
-    const pick = orders.filter((o) => o.stage !== "Shipped").map((o) => ({ o, pct: orderPickablePercent(o, lineItems, bondingRuns, data.stockPicks, reservations) })).filter((x) => x.pct > 0 && x.pct < 101 && orderPctComplete(lineItems, bondingRuns, x.o.id) < 100).map(({ o, pct }) => finish({
+    const pick = orders.filter((o) => o.stage !== "Shipped").map((o) => ({ o, pct: orderPickablePercent(o, lineItems, bondingRuns, data.stockPicks, reservations, data.materials) })).filter((x) => x.pct > 0 && x.pct < 101 && orderPctComplete(lineItems, bondingRuns, x.o.id) < 100).map(({ o, pct }) => finish({
       lane: "pick",
       orderId: o.id,
       ...decorate(o.id),
@@ -5864,7 +5873,7 @@
       totalItems: orderTotalItems(lineItems, o.id),
       outstanding: orderOutstanding(lineItems, bondingRuns, o.id),
       pct: orderPctComplete(lineItems, bondingRuns, o.id),
-      pickablePct: orderPickablePercent(o, lineItems, bondingRuns, data.stockPicks, reservations),
+      pickablePct: orderPickablePercent(o, lineItems, bondingRuns, data.stockPicks, reservations, data.materials),
       caseCount: orderCaseCount(o, lineItems, bondingRuns, data.cases),
       boxTypes: orderBoxTypes(o, lineItems),
       openSheet: openPickSheets(data.pickSheets, o.id)[0] || null
@@ -7976,15 +7985,7 @@ Read the next screen carefully before you agree to it.`
       });
     };
     const boxedStock = boxedStockAvailable(data.bondingRuns, data.stockPicks || []);
-    const boxTypeMismatch = (candidate, order) => {
-      const want = orderBoxTypeFor(order, candidate.productSize || candidate.spec || "");
-      if (!order.boxType && want === DEFAULT_BOX_TYPE) return null;
-      if (!candidate.boxTypeId) return "unconfirmed";
-      const materials = data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS;
-      const material = materials.find((m) => m.id === candidate.boxTypeId);
-      if (!material) return "unconfirmed";
-      return material.name === want ? null : "wrong";
-    };
+    const boxTypeMismatch = (candidate, order) => cartonMismatch(candidate, order, data.materials);
     const allocatedElsewhere = (boxNumber, orderId) => {
       const held = reservationsFor(data, boxNumber);
       if (!held.length) return false;
