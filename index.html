@@ -981,9 +981,66 @@
     }
     return [...rows.filter((f) => !f || !f.productId), ...byKey.values()];
   }
-  function loadData() {
+  var IDB_NAME = "matrixSync";
+  var IDB_STORE = "state";
+  var IDB_KEY = "v1";
+  var STORE_MODE = "localStorage";
+  var IDB_HANDLE = null;
+  var BOOT_SNAPSHOT = null;
+  var LAST_STORED_KB = null;
+  function storeMode() {
+    return STORE_MODE;
+  }
+  function storedSizeKB() {
+    return LAST_STORED_KB;
+  }
+  function idbOpen() {
+    return new Promise((resolve, reject) => {
+      if (typeof indexedDB === "undefined" || !indexedDB) return reject(new Error("no indexedDB"));
+      let req;
+      try {
+        req = indexedDB.open(IDB_NAME, 1);
+      } catch (e) {
+        return reject(e);
+      }
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error("indexedDB open failed"));
+      req.onblocked = () => reject(new Error("indexedDB blocked by another tab"));
+    });
+  }
+  function idbGet(db, key) {
+    return new Promise((resolve, reject) => {
+      let tx;
+      try {
+        tx = db.transaction(IDB_STORE, "readonly");
+      } catch (e) {
+        return reject(e);
+      }
+      const req = tx.objectStore(IDB_STORE).get(key);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error("indexedDB read failed"));
+    });
+  }
+  function idbPut(db, key, value) {
+    return new Promise((resolve, reject) => {
+      let tx;
+      try {
+        tx = db.transaction(IDB_STORE, "readwrite");
+      } catch (e) {
+        return reject(e);
+      }
+      tx.objectStore(IDB_STORE).put(value, key);
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error || new Error("indexedDB write failed"));
+      tx.onabort = () => reject(tx.error || new Error("indexedDB write aborted"));
+    });
+  }
+  function parseStored(raw) {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return DEFAULT_DATA;
       const parsed = JSON.parse(raw);
       const merged = { ...DEFAULT_DATA, ...parsed };
@@ -993,6 +1050,47 @@
     } catch {
       return DEFAULT_DATA;
     }
+  }
+  async function initStore() {
+    try {
+      const db = await idbOpen();
+      IDB_HANDLE = db;
+      STORE_MODE = "idb";
+      let raw2 = await idbGet(db, IDB_KEY);
+      if (raw2 == null) {
+        let legacy = null;
+        try {
+          legacy = localStorage.getItem(STORAGE_KEY);
+        } catch {
+        }
+        if (legacy != null) {
+          await idbPut(db, IDB_KEY, legacy);
+          raw2 = legacy;
+        }
+      }
+      if (raw2 != null && typeof raw2 !== "string") throw new Error("stored value is not a string");
+      LAST_STORED_KB = raw2 == null ? 0 : Math.round(raw2.length * 2 / 1024);
+      BOOT_SNAPSHOT = parseStored(raw2);
+      try {
+        if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
+      } catch {
+      }
+      return;
+    } catch (e) {
+      console.error("IndexedDB unavailable \u2014 falling back to localStorage:", e);
+      STORE_MODE = "localStorage";
+      IDB_HANDLE = null;
+    }
+    let raw = null;
+    try {
+      raw = localStorage.getItem(STORAGE_KEY);
+    } catch {
+    }
+    LAST_STORED_KB = raw == null ? 0 : Math.round(raw.length * 2 / 1024);
+    BOOT_SNAPSHOT = parseStored(raw);
+  }
+  function loadData() {
+    return BOOT_SNAPSHOT || DEFAULT_DATA;
   }
   var LOCAL_KEEP_DAYS = 7;
   var TOMBSTONED_TABLES = ["bondingRuns", "lineItems", "movements", "cases", "glueLineBatches"];
@@ -1040,21 +1138,64 @@
     if (clean.length === d.bondingRuns.length) return d;
     return { ...d, bondingRuns: clean };
   }
-  function saveData(data) {
+  var mxWriteInFlight = false;
+  var mxPendingWrite = null;
+  var mxPendingCallbacks = [];
+  function flushWrites() {
+    if (mxWriteInFlight || mxPendingWrite == null || !IDB_HANDLE) return;
+    const payload = mxPendingWrite;
+    mxPendingWrite = null;
+    const cbs = mxPendingCallbacks;
+    mxPendingCallbacks = [];
+    mxWriteInFlight = true;
+    idbPut(IDB_HANDLE, IDB_KEY, payload).then(() => {
+      LAST_STORED_KB = Math.round(payload.length * 2 / 1024);
+      window.__matrixStorageFailed = false;
+      cbs.forEach((cb) => {
+        try {
+          cb(true);
+        } catch {
+        }
+      });
+    }).catch((e) => {
+      console.error("IndexedDB save failed:", e);
+      window.__matrixStorageFailed = true;
+      cbs.forEach((cb) => {
+        try {
+          cb(false);
+        } catch {
+        }
+      });
+    }).then(() => {
+      mxWriteInFlight = false;
+      flushWrites();
+    });
+  }
+  function saveData(data, onResult) {
+    if (STORE_MODE === "idb" && IDB_HANDLE) {
+      mxPendingWrite = JSON.stringify(storableData(data));
+      if (onResult) mxPendingCallbacks.push(onResult);
+      flushWrites();
+      return true;
+    }
     data = localOnly(storableData(data));
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      const s = JSON.stringify(data);
+      localStorage.setItem(STORAGE_KEY, s);
+      LAST_STORED_KB = Math.round(s.length * 2 / 1024);
       window.__matrixStorageFailed = false;
+      if (onResult) onResult(true);
       return true;
     } catch (e) {
       console.error("localStorage save failed:", e);
       window.__matrixStorageFailed = true;
+      if (onResult) onResult(false);
       return false;
     }
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-17.14";
+  var APP_VERSION = "2026-09-17.15";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -21642,14 +21783,8 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const [password, setPassword] = useState("");
     const [showForm, setShowForm] = useState(false);
     const [justRefreshed, setJustRefreshed] = useState(false);
-    const localSizeKB = useMemo(() => {
-      try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        return raw ? Math.round(raw.length * 2 / 1024) : null;
-      } catch {
-        return null;
-      }
-    }, [syncStatus, justRefreshed]);
+    const localSizeKB = useMemo(() => storedSizeKB(), [syncStatus, justRefreshed]);
+    const onIdb = storeMode() === "idb";
     const prevStatusRef = useRef(syncStatus);
     useEffect(() => {
       if (prevStatusRef.current === "refreshing" && syncStatus === "connected") {
@@ -21675,7 +21810,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       }[syncStatus];
       if (rejected && syncStatus !== "offline") statusText = updateRequired ? "This app is out of date \u2014 your changes are saved on this device but NOT going to the cloud until you update" : "Saved on this device \u2014 but the cloud is refusing some of it (details below)";
       const dotColor = syncStatus === "offline" || rejected ? "#F3A6A6" : "#8FD9A8";
-      return /* @__PURE__ */ React.createElement("div", { className: "pt-3 mt-1", style: { borderTop: `1px solid #3D4676` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-1.5 text-xs mb-1", style: { color: dotColor } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 9 } }, "\u25CF"), " ", statusText), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: "#8D95C4" } }, syncEmail, syncEmail ? " \xB7 " : "", "saved on this device and backed up automatically"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: "#8D95C4" } }, "App version ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 11 } }, APP_VERSION)), localSizeKB != null && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: localSizeKB >= 4500 ? "#F3A6A6" : "#8D95C4" } }, "Stored on this device ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 11 } }, (localSizeKB / 1024).toFixed(1), " MB"), localSizeKB >= 4500 ? " \u2014 close to what the phone allows. Shipped orders are already being left in the cloud; if it keeps climbing, saving will start to fail." : ""), updateLatest && /* @__PURE__ */ React.createElement(
+      return /* @__PURE__ */ React.createElement("div", { className: "pt-3 mt-1", style: { borderTop: `1px solid #3D4676` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-1.5 text-xs mb-1", style: { color: dotColor } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 9 } }, "\u25CF"), " ", statusText), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: "#8D95C4" } }, syncEmail, syncEmail ? " \xB7 " : "", "saved on this device and backed up automatically"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: "#8D95C4" } }, "App version ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 11 } }, APP_VERSION)), localSizeKB != null && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: !onIdb && localSizeKB >= 4500 ? "#F3A6A6" : "#8D95C4" } }, "Stored on this device ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 11 } }, (localSizeKB / 1024).toFixed(1), " MB"), onIdb ? " \u2014 plenty of room." : localSizeKB >= 4500 ? " \u2014 close to what this device allows. If it keeps climbing, saving will start to fail." : " \u2014 this device is using the older, smaller storage."), updateLatest && /* @__PURE__ */ React.createElement(
         "button",
         {
           onClick: applyUpdate,
@@ -21926,7 +22061,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     };
     const [storageFailed, setStorageFailed] = useState(false);
     useEffect(() => {
-      setStorageFailed(!saveData(storedData));
+      saveData(storedData, (ok) => setStorageFailed(!ok));
     }, [storedData]);
     useEffect(() => {
       const flush = () => {
@@ -22828,7 +22963,12 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       return /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: syncLive ? ORANGE : RED, color: "#fff", borderRadius: 5, fontWeight: 700, fontSize: 13, letterSpacing: 0.3 } }, "\u26A0 THIS DEVICE CAN NO LONGER KEEP ITS OWN COPY \u2014 its storage is full.", syncLive ? /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 500, display: "block", marginTop: 4 } }, "Cloud Sync is live", syncedAgo ? ` (last saved ${syncedAgo})` : "", ", so what you enter is still being saved to the cloud. The risk is closing or reloading the app before a save goes out \u2014 there is no local copy to fall back on. Keep going, but don't close the app, and get the storage cleared when you can.") : /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 500, display: "block", marginTop: 4 } }, "Cloud Sync is NOT carrying this work either, so nothing you type here is being saved anywhere. Connect Cloud Sync before entering anything further."));
     })(), testMode && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: ORANGE, color: "#fff", borderRadius: 5, fontWeight: 700, fontSize: 13, letterSpacing: 0.3 } }, "\u26A0 TEST MODE \u2014 this is practice data only. Nothing here is real, and none of it will sync to the live system."), staleOnServer && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: "#FFF4E0", border: `1px solid ${AMBER}`, borderRadius: 5, color: INK, fontSize: 13 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, marginBottom: 2 } }, "The update can't finish \u2014 index.html hasn't been published"), "This device asked the server for ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, staleWanted), " and got", " ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, APP_VERSION), " back. That isn't a cache on this device \u2014 it's a fresh address the server answered with the old file. ", /* @__PURE__ */ React.createElement("b", null, "version.txt was pushed to the site but index.html wasn't"), ", so every device keeps being told there's an update it can never get. Push index.html and this clears itself."), updateReady && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5 flex flex-wrap items-center gap-3", style: { background: "#EEF1FA", border: `1px solid ${NAVY}`, borderRadius: 5, color: NAVY, fontSize: 13 } }, /* @__PURE__ */ React.createElement("span", { style: { flex: "1 1 260px" } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 700 } }, "New version available"), " \u2014 this device is on ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, APP_VERSION), ", latest is ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, updateLatest), ". Updating reloads the page, so finish anything you're part-way through typing first. Saved work is safe."), /* @__PURE__ */ React.createElement("button", { onClick: applyUpdate, className: "shrink-0 px-3", style: { height: 34, background: NAVY, color: "#fff", border: "none", borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: "pointer" } }, "Update now"), /* @__PURE__ */ React.createElement("button", { onClick: snoozeUpdate, className: "shrink-0 px-3", style: { height: 34, background: "none", color: NAVY, border: `1px solid ${NAVY}`, borderRadius: 6, fontSize: 13, cursor: "pointer" } }, "Later")), /* @__PURE__ */ React.createElement(ScreenErrorBoundary, { viewKey: view, key: view }, views[view]))), toast && /* @__PURE__ */ React.createElement("div", { className: "fixed bottom-5 right-5 px-4 py-2 rounded text-sm text-white shadow-lg", style: { background: NAVY } }, toast));
   }
-  ReactDOM.createRoot(document.getElementById("root")).render(/* @__PURE__ */ React.createElement(App, null));
+  var mxRoot = ReactDOM.createRoot(document.getElementById("root"));
+  initStore().catch((e) => {
+    console.error("store init failed entirely:", e);
+  }).then(() => {
+    mxRoot.render(/* @__PURE__ */ React.createElement(App, null));
+  });
 })();
 </script>
 </body>
