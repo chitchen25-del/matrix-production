@@ -1195,7 +1195,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-18.9";
+  var APP_VERSION = "2026-09-18.11";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1327,6 +1327,7 @@
        that costs a customer gets to disappear quietly either. */
     issues: { table: "issues", cols: { raisedAt: "raised_at", raisedBy: "raised_by", orderId: "order_id", boxNumber: "box_number", resolvedAt: "resolved_at", resolvedBy: "resolved_by" } },
     lineItems: { table: "line_items", cols: {
+      formId: "form_id",
       orderId: "order_id",
       unitPrice: "unit_price",
       fromOtherStock: "from_other_stock",
@@ -1340,6 +1341,7 @@
       packedOutsideQty: "packed_outside_qty"
     } },
     bondingRuns: { table: "bonding_runs", cols: {
+      formId: "form_id",
       productSize: "product_size",
       baselineBatchCode: "baseline_batch_code",
       evaCode: "eva_code",
@@ -2108,11 +2110,58 @@
     const res = typeof resolveProduct === "function" ? resolveProduct(data, spec) : null;
     return res && res.status === "exact" && res.product && res.product.displayName ? res.product.displayName : spec;
   }
+  function formIdFor(data, text, { reel = null, metres = null } = {}) {
+    const res = typeof resolveProduct === "function" ? resolveProduct(data, text) : null;
+    if (!res || res.status !== "exact" || !res.product) return null;
+    const kind = (reel == null ? isReelSpec(text) : !!reel) ? "Reel" : "Box";
+    const m = metres != null && Number(metres) > 0 ? Number(metres) : (() => {
+      const x = String(text || "").match(/\((\d+(?:\.\d+)?)\s*m\)/i);
+      return x ? Number(x[1]) : null;
+    })();
+    const forms = (data.productForms || []).filter((f) => f && !f.deleted && f.productId === res.product.id && f.form === kind);
+    const hit = m != null ? forms.filter((f) => Number(f.metres) === m) : forms;
+    return hit.length === 1 ? hit[0].id : null;
+  }
+  function formIdForRun(data, r) {
+    return formIdFor(data, r.productSize, {
+      reel: String(r.packageType || "").toLowerCase() === "reel" || isReelSpec(r.productSize),
+      metres: Number(r.metersPerBox) || null
+    });
+  }
+  function formIdForLine(data, li) {
+    return formIdFor(data, li.description, { reel: isReelSpec(li.description) });
+  }
+  function formById(data, formId) {
+    if (!formId) return null;
+    const f = (data.productForms || []).find((x) => x && !x.deleted && x.id === formId);
+    if (!f) return null;
+    const p = (data.products || []).find((x) => x && !x.deleted && x.id === f.productId) || null;
+    return { formId: f.id, productId: f.productId, form: f.form, reel: f.form === "Reel", metres: Number(f.metres) || null, product: p };
+  }
   function doubleGapOf(spec) {
     const m = String(spec || "").match(/\bD(\d+(?:\.\d+)?)\b/i);
     return m ? "D" + m[1] : null;
   }
+  var SPEC_REF_CACHE = /* @__PURE__ */ new Map();
+  function specRef(text) {
+    const t = String(text || "").replace(/\s*\*\s*$/, "").trim();
+    if (!t) return null;
+    const cat = CATALOGUE;
+    let byCat = SPEC_REF_CACHE.get(cat);
+    if (!byCat) {
+      SPEC_REF_CACHE.clear();
+      byCat = /* @__PURE__ */ new Map();
+      SPEC_REF_CACHE.set(cat, byCat);
+    }
+    if (!byCat.has(t)) byCat.set(t, cat.products.length ? formIdFor(cat, t, { reel: isReelSpec(t) }) : null);
+    return byCat.get(t);
+  }
   function looseSpecMatch(specA, specB) {
+    const a = specRef(specA), b = specRef(specB);
+    if (a && b) return refsEquivalent(CATALOGUE, a, b);
+    return sameSizeSpec(specA, specB);
+  }
+  function sameSizeSpec(specA, specB) {
     const a = specDimensions(specA), b = specDimensions(specB);
     if (a.length < 2 || b.length < 2) {
       const strip = (t) => normalizeSpec(t).replace(/\b\d-\d\s*pt\b/gi, "").replace(/\s+/g, " ").trim();
@@ -2410,7 +2459,7 @@
       if (outstanding <= 0) continue;
       let stillNeeded = outstanding;
       const fromShelf = [];
-      const candidates = shelf.filter((b) => looseSpecMatch(b.productSize, li.description) && stockFormMatchesLine(b, li.description) && !cartonMismatch(b, order, data.materials)).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+      const candidates = shelf.filter((b) => runMatchesLine(b, li) && !cartonMismatch(b, order, data.materials)).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
       for (const b of candidates) {
         if (stillNeeded <= 0) break;
         const free = Math.max(0, Number(b.available || 0) - (taken[b.boxNumber] || 0));
@@ -2423,7 +2472,7 @@
       }
       if (fromShelf.length) shelfItems.push({ lineId: li.id, spec: li.description, covered: outstanding - stillNeeded, boxes: fromShelf });
       if (stillNeeded <= 0) continue;
-      const matchingReels = availableBatches.filter((b) => b.available && looseSpecMatch(b.productSize, li.description)).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+      const matchingReels = availableBatches.filter((b) => b.available && runMatchesLine(b, li, { formCheck: false })).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
       const reelsToUse = [];
       const beforeReels = stillNeeded;
       for (const reel of matchingReels) {
@@ -2787,7 +2836,7 @@
         for (const box of shelfIndex.candidates(li.description)) {
           if (outstanding <= 0) break;
           if (box.left <= 0) continue;
-          if (!looseSpecMatch(box.productSize, li.description)) continue;
+          if (!runMatchesLine(box, li, { formCheck: false })) continue;
           if (!stockFormMatchesLine(box, li.description)) continue;
           if (!shelfBoxFitsBoxType(box, orderBoxTypeFor(order, li.description))) continue;
           const take = Math.min(box.left, outstanding);
@@ -2828,7 +2877,7 @@
       const assignedQty = runs.reduce((s, r) => s + Number(r.onOrderQty || 0), 0);
       const outstanding = Math.max(0, Number(li.qty) - assignedQty);
       if (outstanding <= 0) continue;
-      const available = mine ? mine.get(li.id) || 0 : boxed.filter((b) => looseSpecMatch(b.productSize, li.description) && stockFormMatchesLine(b, li.description) && !cartonMismatch(b, order, materials)).reduce((s, b) => s + Number(b.available || 0), 0);
+      const available = mine ? mine.get(li.id) || 0 : boxed.filter((b) => runMatchesLine(b, li) && !cartonMismatch(b, order, materials)).reduce((s, b) => s + Number(b.available || 0), 0);
       totalOutstanding += outstanding;
       totalCoverable += Math.min(outstanding, available);
     }
@@ -3039,7 +3088,7 @@
   function whatsLeftRows(lineItems, bondingRuns, orderId) {
     const items = orderLineItems(lineItems, orderId).filter((li) => !isDelivery(li.description));
     return items.map((li) => {
-      const made = bondingRuns.filter((r) => r.workNumber === orderId && looseSpecMatch(r.productSize, li.description) && stockFormMatchesLine(r, li.description)).reduce((s, r) => s + Number(r.onOrderQty || 0), 0);
+      const made = bondingRuns.filter((r) => r.workNumber === orderId && runMatchesLine(r, li)).reduce((s, r) => s + Number(r.onOrderQty || 0), 0);
       const remaining = Math.max(Number(li.qty) - made, 0);
       let status = "Not started";
       if (made >= Number(li.qty)) status = "Complete";
@@ -3076,7 +3125,10 @@
     return /\breels?\b/i.test(String(spec || ""));
   }
   function isReelFulfilled(runsForSpec, spec) {
-    return (runsForSpec || []).some((r) => r.packageType === "Reel") || isReelSpec(spec);
+    return (runsForSpec || []).some((r) => {
+      const f = r && r.formId ? formById(CATALOGUE, r.formId) : null;
+      return f ? f.reel : r.packageType === "Reel";
+    }) || isReelSpec(spec);
   }
   var BOX_CASE_SIZES = [5, 10, 15, CASE_MAX_SIZE_DEFAULT];
   function caseKindOf(row) {
@@ -3116,17 +3168,27 @@
       return { boxNumbers: boxes.join(", "), batchCodes: batches.join(", ") };
     });
   }
+  var CATALOGUE = { products: [], productForms: [] };
+  function setCatalogue(products, productForms) {
+    CATALOGUE = { products: products || [], productForms: productForms || [] };
+  }
+  function runMatchesLine(r, li, { formCheck = true } = {}) {
+    const a = r && r.formId, b = li && li.formId;
+    if (a && b) return a === b || refsEquivalent(CATALOGUE, a, b);
+    const desc = li && li.description;
+    return looseSpecMatch(r && r.productSize, desc) && (!formCheck || stockFormMatchesLine(r, desc));
+  }
   function groupAssignedRunsByLineItem(bondingRuns, orderId, items) {
     const assigned = bondingRuns.filter((r) => r.workNumber === orderId);
     const claimed = /* @__PURE__ */ new Set();
     const byLineItem = items.map((li) => ({
       li,
-      runs: assigned.filter((r) => looseSpecMatch(r.productSize, li.description) && stockFormMatchesLine(r, li.description))
+      runs: assigned.filter((r) => runMatchesLine(r, li))
     }));
     byLineItem.forEach((g) => g.runs.forEach((r) => claimed.add(r.id)));
     for (const r of assigned) {
       if (claimed.has(r.id)) continue;
-      const home = byLineItem.find((g) => looseSpecMatch(r.productSize, g.li.description) && stockFormMatchesLine(r, g.li.description));
+      const home = byLineItem.find((g) => runMatchesLine(r, g.li));
       if (home) {
         home.runs.push(r);
         claimed.add(r.id);
@@ -3205,7 +3267,7 @@
     return null;
   }
   function runsIndirect(spec, glueLineBatches) {
-    const recent = (glueLineBatches || []).filter((g) => !g.deleted && looseSpecMatch(g.productSize, spec)).sort((a, z) => String(z.date || z.batchNumber || "").localeCompare(String(a.date || a.batchNumber || ""))).slice(0, INDIRECT_HISTORY_SAMPLE);
+    const recent = (glueLineBatches || []).filter((g) => !g.deleted && sameSizeSpec(g.productSize, spec)).sort((a, z) => String(z.date || z.batchNumber || "").localeCompare(String(a.date || a.batchNumber || ""))).slice(0, INDIRECT_HISTORY_SAMPLE);
     const votes = recent.map(reelIsIndirect).filter((v) => v !== null);
     if (votes.length === 0) return runsIndirectByRule(spec);
     const indirectCount = votes.filter(Boolean).length;
@@ -3243,7 +3305,7 @@
       const scrapped = scrappedBatches.has(b.batchNumber);
       const gluedToday = String(b.date || "") === todayISO();
       const available = !b.deleted && b.checked === "Yes" && remaining > 0 && !scrapped && b.cleared !== "Yes" && !gluedToday;
-      const need = prodRows.find((r) => looseSpecMatch(b.productSize, r.spec));
+      const need = prodRows.find((r) => sameSizeSpec(b.productSize, r.spec));
       const qtyNeeded = need ? need.toMake ?? need.qty : 0;
       const metersPerBox = knownMeterageMemo(b.productSize) || METERS_PER_BOX_DEFAULT;
       const boxesInBatch = Math.floor(remaining / metersPerBox);
@@ -3369,7 +3431,7 @@
   function knownMeterageForSpec(spec, pt, allBondingRuns, lineItems) {
     const fullSpec = pt ? `${spec} ${pt}` : spec;
     const wantsReel = specIsReel(fullSpec);
-    const fromHistory = (allBondingRuns || []).filter((r) => Number(r.metersPerBox) > 0 && looseSpecMatch(r.productSize, fullSpec) && specIsReel(r.productSize) === wantsReel).map((r) => Number(r.metersPerBox));
+    const fromHistory = (allBondingRuns || []).filter((r) => Number(r.metersPerBox) > 0 && looseSpecMatch(r.productSize, fullSpec) && (r.formId && formById(CATALOGUE, r.formId) ? formById(CATALOGUE, r.formId).reel : specIsReel(r.productSize)) === wantsReel).map((r) => Number(r.metersPerBox));
     if (fromHistory.length > 0) {
       const counts = {};
       fromHistory.forEach((v) => {
@@ -3480,7 +3542,7 @@
       return { ...e, used, remaining: Math.round((Number(e.meterage || 0) - used) * 10) / 10 };
     }).filter((e) => e.remaining > 0).sort((a, z) => (a.batchNumber || "") < (z.batchNumber || "") ? -1 : 1);
     const toExtrude = (glueNeeds || []).filter((n) => runsIndirect(n.spec, glueLineBatches)).map((n) => {
-      const onFloor = waiting.filter((e) => looseSpecMatch(e.productSize, n.spec)).reduce((s, e) => s + e.remaining, 0);
+      const onFloor = waiting.filter((e) => sameSizeSpec(e.productSize, n.spec)).reduce((s, e) => s + e.remaining, 0);
       return {
         spec: n.spec,
         priority: n.priority,
@@ -3503,7 +3565,7 @@
     return demand.map((d) => {
       const metersPerBox = knownMeterageForSpec(d.spec, null, bondingRuns, lineItems) || METERS_PER_BOX_DEFAULT;
       const neededMeters = Math.ceil((d.toMake ?? d.qty) * metersPerBox);
-      const availableReels = (glueLineBatches || []).filter((g) => !g.deleted && g.cleared !== "Yes" && !scrappedBatches.has(g.batchNumber) && looseSpecMatch(g.productSize, d.spec));
+      const availableReels = (glueLineBatches || []).filter((g) => !g.deleted && g.cleared !== "Yes" && !scrappedBatches.has(g.batchNumber) && sameSizeSpec(g.productSize, d.spec));
       const reelMetres = (g) => Math.max(0, Number(g.meterage || 0) - batchMeterageUsed(bondingRuns, g.batchNumber));
       const glueLinedMeters = availableReels.reduce((s, g) => s + reelMetres(g), 0);
       const uncheckedMeters = availableReels.filter((g) => g.checked !== "Yes").reduce((s, g) => s + reelMetres(g), 0);
@@ -4214,9 +4276,30 @@
     }
     return "";
   }
+  function refsEquivalent(data, a, b) {
+    if (!a || !b) return false;
+    if (a === b) return true;
+    const fa = formById(data, a), fb = formById(data, b);
+    if (!fa || !fb || !fa.product || !fb.product) return false;
+    if (fa.reel !== fb.reel) return false;
+    if ((fa.metres || null) !== (fb.metres || null)) return false;
+    const pa = fa.product, pb = fb.product;
+    const same = (x, y) => String(x ?? "").trim().toLowerCase() === String(y ?? "").trim().toLowerCase();
+    const num = (x, y) => x == null && y == null || x != null && y != null && Number(x) === Number(y);
+    const variantOf = (p) => p.variant || doubleGapOf(p.displayName) || (/\bO\/S\b/i.test(p.displayName || "") ? "O/S" : null);
+    return same(pa.family, pb.family) && num(pa.thickness, pb.thickness) && num(pa.gos, pb.gos) && same(variantOf(pa), variantOf(pb)) && (!pa.pt || !pb.pt || same(pa.pt, pb.pt));
+  }
+  function planFormId(data, orderId, key, caseRow = null) {
+    const text = String(key || "").replace(/\s*\*\s*$/, "").trim();
+    if (!text) return null;
+    const li = (data.lineItems || []).find((l) => l && !l.deleted && l.orderId === orderId && l.description === text && l.formId);
+    if (li) return li.formId;
+    return formIdFor(data, text, { reel: isReelSpec(text) || (caseRow ? isReelCase(caseRow) : false) });
+  }
   function ordersNeedingSpec(data, spec, orderIdsToExclude = [], opts = {}) {
     const excludeSourceId = opts.excludeSourceId || null;
     const wanted = String(spec || "").trim();
+    const wantedRef = opts.formId || (wanted ? formIdFor(data, wanted, { reel: isReelSpec(wanted) }) : null);
     const exclude = new Set(orderIdsToExclude);
     const active = (data.orders || []).filter((o) => !o.deleted && o.stage !== "Shipped" && o.stage !== "Cancelled" && !exclude.has(o.id));
     if (!wanted) return { needing: [], others: active.map((o) => ({ orderId: o.id, customer: o.customer, needs: 0 })) };
@@ -4228,13 +4311,21 @@
       const room = [];
       for (const c of rows) {
         for (const [pSpec, pQty] of Object.entries(casePlanned(c))) {
-          if (!looseSpecMatch(wanted, pSpec)) continue;
+          const planRef = wantedRef ? planFormId(data, o.id, pSpec, c) : null;
+          if (wantedRef && planRef) {
+            if (!refsEquivalent(data, planRef, wantedRef)) continue;
+          } else if (!looseSpecMatch(wanted, pSpec)) continue;
+          const planIsReel = (() => {
+            const f = planRef ? formById(data, planRef) : null;
+            return f ? f.reel : isReelSpec(pSpec);
+          })();
+          if ((wantedRef && formById(data, wantedRef) ? formById(data, wantedRef).reel : isReelSpec(wanted)) !== (isReelCase(c) || planIsReel)) continue;
           const q = Number(pQty) || 0;
           planned += q;
           let here = 0;
           for (const [box, n] of Object.entries(c.contents || {})) {
             const bs = (data.bondingRuns || []).find((r) => r && !r.deleted && String(r.boxNumber || "").trim().toUpperCase() === String(box).trim().toUpperCase());
-            if (!(bs && looseSpecMatch(wanted, bs.productSize))) continue;
+            if (!(bs && looseSpecMatch(wanted, specOfBoxInCase(data, o.id, c.caseNum, box)))) continue;
             let own = 0;
             if (excludeSourceId) {
               const upb = String(box).trim().toUpperCase();
@@ -4329,7 +4420,15 @@
     }
     return { confirmedCases, caseOverrides, caseRemovals };
   }
-  function applyPatchMapsToCases(data, orderId, maps) {
+  function applyPatchMapsToCases(data, orderId, maps, meta = {}) {
+    return routeCaseEditsThroughLedger(
+      data,
+      applyPatchMapsToCasesRaw(data, orderId, maps),
+      orderId,
+      { source: meta.source || "case-map", note: meta.note || null }
+    );
+  }
+  function applyPatchMapsToCasesRaw(data, orderId, maps) {
     const stamp = (/* @__PURE__ */ new Date()).toISOString();
     const rows = [...data.cases || []];
     const idxOf = (n) => rows.findIndex((c) => !c.deleted && c.orderId === orderId && Number(c.caseNum) === Number(n));
@@ -4355,11 +4454,13 @@
     const ensure = (n) => {
       let i = idxOf(n);
       if (i < 0) {
+        const seed = seedFor(n);
         rows.push({
           id: caseRowId(orderId, n),
           orderId,
           caseNum: Number(n),
-          contents: seedFor(n),
+          contents: seed,
+          __seed: { ...seed },
           confirmed: false,
           weight: "",
           pallet: "",
@@ -4907,10 +5008,7 @@
           confirmed: !!c.confirmed,
           weight: (order.caseWeights || {})[c.caseNum],
           pallet: (order.palletAssignments || {})[c.caseNum] || "",
-          contributions: Object.entries(c.contents || {}).map(([box, qty]) => {
-            const run = (data.bondingRuns || []).find((r) => r && !r.deleted && r.boxNumber === box);
-            return { boxNumber: box, qty: Number(qty) || 0, spec: run ? run.productSize : box };
-          })
+          contributions: Object.entries(c.contents || {}).map(([box, qty]) => ({ boxNumber: box, qty: Number(qty) || 0, spec: specOfBoxInCase(data, order.id, c.caseNum, box) }))
         }));
         return {
           order,
@@ -4965,12 +5063,12 @@
           if (box && Number(r.qty) > 0) contents[box] = (contents[box] || 0) + Number(r.qty);
         }
         const sc = scalars.get(Number(c.caseNum)) || {};
-        if (!Object.keys(contents).length && !sc.weight && !sc.pallet) continue;
+        if (!sc.weight && !sc.pallet) continue;
         added.push({
           id: caseRowId(o.id, c.caseNum),
           orderId: o.id,
           caseNum: Number(c.caseNum),
-          contents: Object.keys(contents).length ? contents : null,
+          contents: null,
           confirmed: false,
           weight: sc.weight || "",
           pallet: sc.pallet || "",
@@ -6572,6 +6670,7 @@ Here's the order:`;
           orderId: id,
           description: catalogueName(prevData, li.description || ""),
           customerRef: li.customerRef || null,
+          formId: formIdForLine(prevData, { description: li.description || "" }),
           qty: Number(li.qty) || 0,
           unitPrice: Number(li.unitPrice) || 0
         }));
@@ -6813,6 +6912,32 @@ Here's the order:`;
         return `${kind} of ${qty} \xD7 ${box} on ${m.orderId}: no case number. "In a case" with no case is not a place \u2014 a box is on a shelf or it is in a numbered case.`;
       }
     }
+    if (kind === "placed") {
+      const form = placedBoxForm(prev, m);
+      const row = (prev.cases || []).find((c) => c && !c.deleted && c.orderId === m.orderId && Number(c.caseNum) === Number(m.caseNum));
+      if (form && row) {
+        const caseForm = isReelCase(row) ? "reel" : "box";
+        if (form !== caseForm) {
+          return `${qty} \xD7 ${box} ${form === "reel" ? "are reels" : "are boxes"} and ${m.orderId} case ${m.caseNum} is a ${caseForm} case. Reels and boxes never share a case, so nothing was moved. To clear it: put them in a ${form} case, or check the run was logged as the right one of Box or Reel.`;
+        }
+      }
+    }
+    return null;
+  }
+  function placedBoxForm(data, m) {
+    const byRef = (r) => {
+      const f = formById(data, r.formId);
+      return f ? f.reel ? "reel" : "box" : null;
+    };
+    const byWords = (r) => String(r.packageType || "").toLowerCase() === "reel" ? "reel" : isReelSpec(r.productSize) ? "reel" : "box";
+    const formOfRun = (r) => byRef(r) || byWords(r);
+    const box = String(m.boxNumber || "").trim().toUpperCase();
+    const runs = (data.bondingRuns || []).filter((r) => r && !r.deleted && String(r.boxNumber || "").trim().toUpperCase() === box);
+    const named = m.sourceId ? runs.find((r) => r.id === m.sourceId) : null;
+    if (named) return formOfRun(named);
+    const forms = [...new Set(runs.map(formOfRun))];
+    if (forms.length === 1) return forms[0];
+    if (m.spec) return isReelSpec(m.spec) ? "reel" : "box";
     return null;
   }
   function refuseMovement(prev, m, why) {
@@ -6860,6 +6985,52 @@ Here's the order:`;
       sourceId: r.sourceId || null
     }));
   }
+  function ledgerPlacedByOrderBox(movements) {
+    const net = /* @__PURE__ */ new Map();
+    for (const m of movements || []) {
+      if (!m || m.deleted || m.kind !== "placed" && m.kind !== "unplaced") continue;
+      if (!m.orderId || m.caseNum == null || m.caseNum === "") continue;
+      const k = `${m.orderId}|${upBox(m.boxNumber)}`;
+      net.set(k, (net.get(k) || 0) + (m.kind === "placed" ? 1 : -1) * (Number(m.qty) || 0));
+    }
+    return net;
+  }
+  function reservationsWithLedgerPlaced(reservations, movements, only = null) {
+    const net = ledgerPlacedByOrderBox(movements);
+    const groups = /* @__PURE__ */ new Map();
+    (reservations || []).forEach((r, i) => {
+      if (!r || r.deleted || r.state === "released" || !r.orderId) return;
+      const k = `${r.orderId}|${upBox(r.boxNumber)}`;
+      if (only && k !== only) return;
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(i);
+    });
+    let changed = false;
+    const out = [...reservations || []];
+    for (const [k, idxs] of groups) {
+      idxs.sort((a, b) => String(out[a].createdAt || "").localeCompare(String(out[b].createdAt || "")));
+      let pool = Math.max(0, net.get(k) || 0);
+      for (const i of idxs) {
+        const r = out[i];
+        const qty = Number(r.qty) || 0;
+        const placedQty = Math.min(pool, qty);
+        pool -= placedQty;
+        const state = placedQty >= qty && qty > 0 ? "placed" : "open";
+        if ((Number(r.placedQty) || 0) === placedQty && r.state === state) continue;
+        out[i] = { ...r, placedQty, state };
+        changed = true;
+      }
+    }
+    return changed ? out : reservations;
+  }
+  function syncReservationsToLedger(data, orderId, boxNumber) {
+    const k = `${orderId}|${upBox(boxNumber)}`;
+    const next = reservationsWithLedgerPlaced(data.reservations || [], data.movements || [], k);
+    if (next === data.reservations) return data;
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    const before = new Set(data.reservations || []);
+    return { ...data, reservations: next.map((r) => r && !before.has(r) ? { ...r, updatedAt: stamp } : r) };
+  }
   function promisedOutstanding(rows) {
     return rows.reduce((t, r) => t + Math.max(0, (Number(r.qty) || 0) - (Number(r.placedQty) || 0)), 0);
   }
@@ -6871,6 +7042,11 @@ Here's the order:`;
     return [...out.entries()].filter(([, q]) => q > 0).map(([orderId, qty]) => ({ orderId, qty }));
   }
   function applyMovementToReservation(next, row, stamp) {
+    const out = applyMovementToReservationRaw(next, row, stamp);
+    if (!row || !row.orderId || !row.boxNumber) return out;
+    return syncReservationsToLedger(out, row.orderId, row.boxNumber);
+  }
+  function applyMovementToReservationRaw(next, row, stamp) {
     const kind = row.kind;
     if (kind !== "allocated" && kind !== "unallocated" && kind !== "placed" && kind !== "unplaced") return next;
     if (!row.orderId || !row.boxNumber) return next;
@@ -6917,11 +7093,11 @@ Here's the order:`;
       return { ...next, reservations: rows };
     }
     if (kind === "unallocated") {
-      let left2 = qty;
+      let left = qty;
       for (const i of [...idxs].reverse()) {
-        if (left2 <= 0) break;
+        if (left <= 0) break;
         const have = Number(rows[i].qty) || 0;
-        const take = Math.min(have, left2);
+        const take = Math.min(have, left);
         const nowQty = have - take;
         rows[i] = nowQty > 0 ? { ...rows[i], qty: nowQty, updatedAt: stamp, updatedBy: currentActor() } : {
           ...rows[i],
@@ -6933,29 +7109,11 @@ Here's the order:`;
           updatedAt: stamp,
           updatedBy: currentActor()
         };
-        left2 -= take;
+        left -= take;
       }
       return { ...next, reservations: rows };
     }
-    const dir = kind === "placed" ? 1 : -1;
-    let left = qty;
-    const wanted = idxs.filter((i) => row.caseNum == null || rows[i].caseNum == null || Number(rows[i].caseNum) === Number(row.caseNum));
-    for (const i of wanted.length ? wanted : idxs) {
-      if (left <= 0) break;
-      const cap = dir > 0 ? (Number(rows[i].qty) || 0) - (Number(rows[i].placedQty) || 0) : Number(rows[i].placedQty) || 0;
-      const take = Math.min(cap, left);
-      if (take <= 0) continue;
-      const placedQty = (Number(rows[i].placedQty) || 0) + dir * take;
-      rows[i] = {
-        ...rows[i],
-        placedQty,
-        state: placedQty >= (Number(rows[i].qty) || 0) ? "placed" : "open",
-        updatedAt: stamp,
-        updatedBy: currentActor()
-      };
-      left -= take;
-    }
-    return { ...next, reservations: rows };
+    return next;
   }
   function applyMovementToCaseRow(next, row, stamp) {
     if (row.kind !== "placed" && row.kind !== "unplaced") return next;
@@ -7003,6 +7161,174 @@ Here's the order:`;
       ...fills && !rows[i].confirmed ? { confirmed: true } : {}
     };
     return { ...next, cases: rows };
+  }
+  var upBox = (b) => String(b || "").trim().toUpperCase();
+  function ledgerCaseContents(movements) {
+    const net = /* @__PURE__ */ new Map();
+    const spelling = /* @__PURE__ */ new Map();
+    for (const m of movements || []) {
+      if (!m || m.deleted) continue;
+      if (m.kind !== "placed" && m.kind !== "unplaced") continue;
+      if (!m.orderId || m.caseNum == null || m.caseNum === "" || !isFinite(Number(m.caseNum))) continue;
+      const raw = String(m.boxNumber || "").trim();
+      const box = raw.toUpperCase();
+      if (!box) continue;
+      if (!spelling.has(box)) spelling.set(box, raw);
+      const key = `${m.orderId}|${Number(m.caseNum)}`;
+      if (!net.has(key)) net.set(key, /* @__PURE__ */ new Map());
+      const held = net.get(key);
+      held.set(box, (held.get(box) || 0) + (m.kind === "placed" ? 1 : -1) * (Number(m.qty) || 0));
+    }
+    const byCase = /* @__PURE__ */ new Map();
+    for (const [key, held] of net) {
+      const out = {};
+      for (const [box, q] of held) if (q > 0) out[spelling.get(box) || box] = q;
+      byCase.set(key, out);
+    }
+    return byCase;
+  }
+  function sameContents(a, b) {
+    const norm = (c) => {
+      const o = {};
+      for (const [k, v] of Object.entries(c || {})) {
+        const n = Number(v) || 0;
+        if (n > 0) o[upBox(k)] = (o[upBox(k)] || 0) + n;
+      }
+      return o;
+    };
+    const x = norm(a), y = norm(b);
+    const kx = Object.keys(x), ky = Object.keys(y);
+    return kx.length === ky.length && kx.every((k) => x[k] === y[k]);
+  }
+  function casesWithLedgerContents(cases, movements) {
+    const byCase = ledgerCaseContents(movements);
+    let changed = false;
+    const next = (cases || []).map((c) => {
+      if (!c || c.deleted) return c;
+      const led = byCase.get(`${c.orderId}|${Number(c.caseNum)}`);
+      const want = led && Object.keys(led).length ? led : c.contents == null ? null : {};
+      if (want === null ? c.contents == null : c.contents != null && sameContents(c.contents, want)) return c;
+      changed = true;
+      return { ...c, contents: want };
+    });
+    return changed ? next : cases;
+  }
+  function syncCaseRowsToLedger(data, orderId) {
+    const byCase = ledgerCaseContents(data.movements);
+    let changed = false;
+    const cases = (data.cases || []).map((c) => {
+      if (!c || c.deleted || orderId && c.orderId !== orderId) return c;
+      const led = byCase.get(`${c.orderId}|${Number(c.caseNum)}`);
+      const want = led && Object.keys(led).length ? led : c.contents == null ? null : {};
+      if (want === null ? c.contents == null : c.contents != null && sameContents(c.contents, want)) return c;
+      changed = true;
+      return { ...c, contents: want, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
+    });
+    return changed ? { ...data, cases } : data;
+  }
+  function settleCaseToCount(prev, orderId, caseNum, counted, meta = {}, only = null) {
+    const held = ledgerCaseContents(prev.movements).get(`${orderId}|${Number(caseNum)}`) || {};
+    const have = {}, want = {}, spell = {};
+    for (const [k, v] of Object.entries(held)) {
+      have[upBox(k)] = Number(v) || 0;
+      spell[upBox(k)] = String(k).trim();
+    }
+    for (const [k, v] of Object.entries(counted || {})) {
+      const n = Number(v) || 0;
+      if (n <= 0 || !upBox(k)) continue;
+      want[upBox(k)] = (want[upBox(k)] || 0) + n;
+      if (!spell[upBox(k)]) spell[upBox(k)] = String(k).trim();
+    }
+    const specOf = (box) => {
+      const specs = [...new Set((prev.bondingRuns || []).filter((r) => r && !r.deleted && upBox(r.boxNumber) === box && r.productSize).map((r) => r.productSize))];
+      return specs.length === 1 ? specs[0] : null;
+    };
+    const moves = [];
+    const scope = only ? new Set([...only].map(upBox)) : null;
+    for (const box of /* @__PURE__ */ new Set([...Object.keys(have), ...Object.keys(want)])) {
+      if (scope && !scope.has(box)) continue;
+      const delta = (want[box] || 0) - (have[box] || 0);
+      if (!delta) continue;
+      const base = {
+        boxNumber: spell[box] || box,
+        spec: specOf(box),
+        qty: Math.abs(delta),
+        orderId,
+        caseNum: Number(caseNum),
+        source: meta.source || "count",
+        note: meta.note || null
+      };
+      moves.push(delta > 0 ? movePlaced(base) : moveUnplaced(base));
+    }
+    return moves.length ? recordMovements(prev, moves) : prev;
+  }
+  function routeCaseEditsThroughLedger(before, after, orderId, meta = {}) {
+    const key = (c) => `${c.orderId}|${Number(c.caseNum)}`;
+    const was = new Map((before.cases || []).filter((c) => c && !c.deleted && c.orderId === orderId).map((c) => [key(c), c]));
+    const counts = [];
+    const restored = (after.cases || []).map((c) => {
+      if (!c || c.deleted || c.orderId !== orderId) return c;
+      const old = was.get(key(c));
+      const seed = c.__seed;
+      const clean = { ...c };
+      delete clean.__seed;
+      const newlyConfirmed = !!c.confirmed && !(old && old.confirmed);
+      const baseline = old ? old.contents : newlyConfirmed ? null : seed;
+      if (c.contents != null && (newlyConfirmed || !sameContents(c.contents, baseline))) {
+        let only = null;
+        if (!newlyConfirmed) {
+          const a = {}, b = {};
+          for (const [k, v] of Object.entries(c.contents || {})) a[upBox(k)] = Number(v) || 0;
+          for (const [k, v] of Object.entries(baseline || {})) b[upBox(k)] = Number(v) || 0;
+          only = new Set([.../* @__PURE__ */ new Set([...Object.keys(a), ...Object.keys(b)])].filter((k) => (a[k] || 0) !== (b[k] || 0)));
+        }
+        counts.push({ caseNum: c.caseNum, contents: c.contents, only });
+      }
+      clean.contents = old ? old.contents : null;
+      return clean;
+    });
+    let next = { ...after, cases: restored };
+    for (const cnt of counts) next = settleCaseToCount(next, orderId, cnt.caseNum, cnt.contents, meta, cnt.only);
+    return syncCaseRowsToLedger(next, orderId);
+  }
+  function specOfBoxInCase(data, orderId, caseNum, box) {
+    const B = upBox(box);
+    const runs = (data.bondingRuns || []).filter((r) => r && !r.deleted && upBox(r.boxNumber) === B && r.productSize);
+    const placed = (data.movements || []).filter((m) => m && !m.deleted && m.kind === "placed" && m.orderId === orderId && Number(m.caseNum) === Number(caseNum) && upBox(m.boxNumber) === B);
+    for (let i = placed.length - 1; i >= 0; i--) {
+      const named = placed[i].sourceId ? runs.find((r) => r.id === placed[i].sourceId) : null;
+      if (named) return named.productSize;
+    }
+    const row = (data.cases || []).find((c) => c && !c.deleted && c.orderId === orderId && Number(c.caseNum) === Number(caseNum));
+    const reel = row ? isReelCase(row) : null;
+    const fits = (r) => {
+      if (reel == null) return true;
+      const f = formById(data, r.formId);
+      return (f ? f.reel : isReelSpec(r.productSize)) === reel;
+    };
+    const run = runs.find((r) => r.workNumber === orderId && fits(r)) || runs.find(fits);
+    if (run) return run.productSize;
+    for (let i = placed.length - 1; i >= 0; i--) if (placed[i].spec) return placed[i].spec;
+    return runs[0] ? runs[0].productSize : box;
+  }
+  function relabelCasesInLedger(data, orderId, moved) {
+    if (!moved || !moved.length) return data;
+    const byCase = ledgerCaseContents(data.movements);
+    const outs = [], ins = [];
+    for (const mv of moved) {
+      const from = Number(mv.from), to = Number(mv.to);
+      if (!isFinite(from) || !isFinite(to) || from === to) continue;
+      for (const [box, q] of Object.entries(byCase.get(`${orderId}|${from}`) || {})) {
+        const note = `Case ${from} renumbered to ${to} \u2014 same boxes, new label`;
+        const spec = specOfBoxInCase(data, orderId, from, box);
+        outs.push(moveUnplaced({ boxNumber: box, spec, qty: q, orderId, caseNum: from, source: "renumber", note }));
+        ins.push(movePlaced({ boxNumber: box, spec, qty: q, orderId, caseNum: to, source: "renumber", note }));
+      }
+    }
+    if (!outs.length) return data;
+    const keep = data.cases || [];
+    const tmp = recordMovements({ ...data, cases: keep.filter((c) => !c || c.orderId !== orderId) }, [...outs, ...ins]);
+    return syncCaseRowsToLedger({ ...tmp, cases: keep }, orderId);
   }
   function recordMovement(prev, m) {
     if (m && Number(m.qty) === 0 && m.kind !== "adjusted") return prev;
@@ -7887,7 +8213,7 @@ ${line}` : line;
         kind: c.kind || "box",
         packedOutside: !!c.packedOutside,
         confirmed: !!c.confirmed,
-        contributions: Object.entries(c.contents || {}).filter(([, q]) => (Number(q) || 0) > 0).map(([box, q]) => ({ boxNumber: box, spec: specOfBox(box), qty: Number(q) || 0, batchCode: null })),
+        contributions: Object.entries(c.contents || {}).filter(([, q]) => (Number(q) || 0) > 0).map(([box, q]) => ({ boxNumber: box, spec: specOfBoxInCase(data, order.id, c.caseNum, box), qty: Number(q) || 0, batchCode: null })),
         weight: Number(caseWeights[c.caseNum]) || 0
       })) : buildCombinedCases(byLineItem, (Number(order.startingCaseNum) || 0) + 1, packedOutsideSpecs(order, lineItems), order.caseLayout).map((c) => ({ ...c, weight: Number(caseWeights[c.caseNum]) || 0 }));
       const totalWeight = caseRows.reduce((s, r) => s + (r.weight || 0), 0);
@@ -8030,7 +8356,7 @@ To clear this: check the size and the pt, or add it as a new product before orde
         ...extrasLabel ? { amendmentLabel: extrasLabel } : {}
       };
       setData((prevData) => {
-        const withLine = { ...prevData, lineItems: [...prevData.lineItems, newLi] };
+        const withLine = { ...prevData, lineItems: [...prevData.lineItems, { ...newLi, formId: formIdForLine(prevData, newLi) }] };
         const { plannable } = plannableLines(prevData, [newLi]);
         if (!plannable.length) {
           return { ...withLine, ...appendLog(prevData, {
@@ -8218,7 +8544,7 @@ Read the next screen carefully before you agree to it.`
           updatedAt: stamp,
           updatedBy: currentActor()
         }));
-        return {
+        return relabelCasesInLedger({
           ...prevData,
           lineItems: prevData.lineItems.map((x) => x.id === id ? { ...x, qty: now } : x),
           cases: [...cases, ...added],
@@ -8228,7 +8554,7 @@ Read the next screen carefully before you agree to it.`
             entityId: li.orderId,
             summary: `${li.description} reduced ${was} \u2192 ${now}. ` + (res.deleted.length ? `Cases ${caseRunsLabel(res.deleted)} deleted. ` : "") + (res.moved.length ? `Renumbered ${res.moved.length}; reprint labels ${res.reprintFrom}-${res.reprintTo}. ` : "") + (added.length ? `Remainder appended as case${added.length === 1 ? "" : "s"} ${caseRunsLabel(added.map((a) => a.caseNum))}. ` : "") + (res.blocked.length ? `Cases ${caseRunsLabel(res.blocked.map((b) => b.caseNum))} left alone \u2014 boxes in them.` : "")
           })
-        };
+        }, li.orderId, res.moved);
       });
     };
     const boxedStock = boxedStockAvailable(data.bondingRuns, data.stockPicks || []);
@@ -8257,7 +8583,7 @@ Read the next screen carefully before you agree to it.`
         const owed = Number((p.byOrder || {})[order.id] || 0) - (placedByBox[r.boxNumber] || 0);
         const mine = Math.min(owed, Math.max(0, placeOf(ledgerView(), r.boxNumber).onShelf));
         if (mine <= 0) continue;
-        if (!orderLines.some((li) => looseSpecMatch(r.productSize, li.description))) continue;
+        if (!orderLines.some((li) => runMatchesLine(r, li, { formCheck: false }))) continue;
         promised.push(withBoxTypeFlag({
           id: r.id,
           boxNumber: r.boxNumber,
@@ -8276,7 +8602,7 @@ Read the next screen carefully before you agree to it.`
       const free = boxedStock.filter((b) => !promisedIds.has(b.id));
       const exact = free.filter((b) => orderSpecs.has(normalizeSpec(b.productSize))).map(withBoxTypeFlag);
       const exactIds = new Set(exact.map((b) => b.id));
-      const loose = free.filter((b) => !exactIds.has(b.id) && orderLines.some((li) => looseSpecMatch(b.productSize, li.description) && stockFormMatchesLine(b, li.description))).map((b) => ({ ...withBoxTypeFlag(b), approxMatch: true }));
+      const loose = free.filter((b) => !exactIds.has(b.id) && orderLines.some((li) => runMatchesLine(b, li))).map((b) => ({ ...withBoxTypeFlag(b), approxMatch: true }));
       const capToCarton = (b) => {
         const want = orderBoxTypeFor(order, b.productSize || b.spec || "");
         const room = freeInCartonFor(data, b.boxNumber, want, data.materials);
@@ -8313,7 +8639,7 @@ Read the next screen carefully before you agree to it.`
       const proposedById = {};
       const displayById = {};
       for (const b of byDate) {
-        const matchedLi = orderItemsForPick.find((li) => looseSpecMatch(b.productSize, li.description) && stockFormMatchesLine(b, li.description));
+        const matchedLi = orderItemsForPick.find((li) => runMatchesLine(b, li));
         const key = matchedLi ? matchedLi.description : b.productSize;
         displayById[b.id] = key;
         const remaining = remainingBySpec[key] ?? 0;
@@ -8372,7 +8698,7 @@ Read the next screen carefully before you agree to it.`
         }
         let remaining = Number(li.qty) - placed;
         if (remaining <= 0) continue;
-        const matchingCandidates = candidates.filter((c) => !usedIds.has(c.id) && looseSpecMatch(c.productSize, li.description) && stockFormMatchesLine(c, li.description)).filter((c) => !allocatedElsewhere(c.boxNumber, order.id)).filter((c) => !c.boxTypeIssue).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+        const matchingCandidates = candidates.filter((c) => !usedIds.has(c.id) && runMatchesLine(c, li)).filter((c) => !allocatedElsewhere(c.boxNumber, order.id)).filter((c) => !c.boxTypeIssue).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
         for (const c of matchingCandidates) {
           if (remaining <= 0) break;
           if (c.boxTypeIssue) continue;
@@ -9254,7 +9580,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
         const shelfItems = orderLineItems(lineItems, o.id).filter((li) => !isDelivery(li.description));
         const shelfMatching = matchingBoxesFor(o);
         const shelfBySpec = shelfItems.map((li) => {
-          const available = shelfMatching.filter((b) => looseSpecMatch(b.productSize, li.description) && stockFormMatchesLine(b, li.description)).reduce((s, b) => s + Number(b.available || 0), 0);
+          const available = shelfMatching.filter((b) => runMatchesLine(b, li)).reduce((s, b) => s + Number(b.available || 0), 0);
           return { spec: li.description, available };
         }).filter((r) => r.available > 0);
         return /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-3" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-2" }, "On the shelf now"), shelfBySpec.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Nothing matching this order in general stock right now.") : shelfBySpec.map((r, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "flex items-center justify-between text-sm py-1", style: { borderTop: i ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement(Spec, { s: r.spec })), /* @__PURE__ */ React.createElement("span", { className: "font-semibold" }, r.available))));
@@ -9442,7 +9768,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
         })))), !pickByPhone && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => confirmPickAndAllocate(o) }, "Confirm & allocate to order"), " ", /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: cancelPendingPick }, "Cancel")));
       })(), checkStockFor === o.id && (() => {
         const boxes = assignedBoxesFor(o);
-        const boxesForLine = (li) => boxes.filter((b) => looseSpecMatch(b.productSize, li.description) && stockFormMatchesLine(b, li.description));
+        const boxesForLine = (li) => boxes.filter((b) => runMatchesLine(b, li));
         const items2 = orderLineItems(lineItems, o.id).filter((li) => !isDelivery(li.description)).filter((li) => boxesForLine(li).length > 0);
         const matchedIds = new Set(items2.flatMap((li) => boxesForLine(li).map((b) => b.id)));
         const unmatched = boxes.filter((b) => !matchedIds.has(b.id));
@@ -9592,7 +9918,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
       const scrapped = new Set((data.ncrs || []).map((n) => n.batchNumber));
       const reels = (data.glueLineBatches || []).map((b) => glueSettingsFor(b, data.glueRuns || [])).filter((g) => !g.deleted && g.cleared !== "Yes" && !scrapped.has(g.batchNumber));
       return (spec) => {
-        const mine = reels.filter((g) => looseSpecMatch(g.productSize, spec));
+        const mine = reels.filter((g) => sameSizeSpec(g.productSize, spec));
         const left = (g) => Math.max(0, Number(g.meterage || 0) - batchMeterageUsed(data.bondingRuns, g.batchNumber));
         const ready = mine.filter((g) => g.checked === "Yes").reduce((t, g) => t + left(g), 0);
         const unchecked = mine.filter((g) => g.checked !== "Yes").reduce((t, g) => t + left(g), 0);
@@ -11190,7 +11516,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
     const caseFlags = order.caseFlags || {};
     const flagged = Object.entries(caseFlags).filter(([, v]) => v && v.length);
     const perLine = lines.map((li) => {
-      const got = (data.bondingRuns || []).filter((r) => !r.deleted && r.workNumber === order.id && looseSpecMatch(r.productSize, li.description)).reduce((t, r) => t + (Number(r.onOrderQty) || 0), 0);
+      const got = (data.bondingRuns || []).filter((r) => !r.deleted && r.workNumber === order.id && runMatchesLine(r, li, { formCheck: false })).reduce((t, r) => t + (Number(r.onOrderQty) || 0), 0);
       return { spec: li.description, ordered: Number(li.qty) || 0, got };
     }).filter((x) => x.got !== x.ordered);
     if (!flagged.length && !perLine.length) {
@@ -11917,17 +12243,20 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
     {
       const contents = Object.fromEntries(rows.filter((r) => r.boxNumber && Number(r.qty) > 0).map((r) => [String(r.boxNumber).trim(), Number(r.qty)]));
       const existing = (next.cases || []).find((c) => !c.deleted && c.orderId === order.id && Number(c.caseNum) === Number(caseNum));
-      const patch = Object.keys(contents).length ? { contents, confirmed: true, updatedAt: stamp } : { contents, confirmed: true, notes: EMPTY_ON_PURPOSE, updatedAt: stamp };
+      const patch = Object.keys(contents).length ? { confirmed: true, updatedAt: stamp } : { contents: {}, confirmed: true, notes: EMPTY_ON_PURPOSE, updatedAt: stamp };
       caseRowPatch = () => {
-        next = { ...next, cases: existing ? (next.cases || []).map((c) => c.id === existing.id ? { ...c, ...patch } : c) : [...next.cases || [], {
+        next = { ...next, cases: existing || (next.cases || []).some((c) => !c.deleted && c.orderId === order.id && Number(c.caseNum) === Number(caseNum)) ? (next.cases || []).map((c) => !c.deleted && c.orderId === order.id && Number(c.caseNum) === Number(caseNum) ? { ...c, ...patch } : c) : [...next.cases || [], {
           id: caseRowId(order.id, caseNum),
           orderId: order.id,
           caseNum: Number(caseNum),
+          contents: {},
           weight: "",
           pallet: "",
           packedOutside: false,
           ...patch
         }] };
+        next = settleCaseToCount(next, order.id, caseNum, contents, { source: "override", note: "Case counted and confirmed" });
+        next = syncCaseRowsToLedger(next, order.id);
       };
     }
     next = recordMovements(next, moves.filter((m) => m.kind !== "allocated" || m.qty > 0));
@@ -13649,12 +13978,14 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       setData((prev) => {
         let next = recordMovements(prev, res.moves.map((m) => ({ ...m, source: "case-fix" })));
         for (const fl of res.flags) next = raiseIssue(next, fl);
-        next = { ...next, cases: (next.cases || []).map((c) => !c.deleted && c.orderId === orderId && Number(c.caseNum) === Number(caseNum) ? {
-          ...c,
-          contents: Object.fromEntries(cleanFound.map((r) => [String(r.boxNumber).trim().toUpperCase(), Number(r.qty)])),
-          updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-          updatedBy: currentActor()
-        } : c) };
+        next = settleCaseToCount(
+          next,
+          orderId,
+          caseNum,
+          Object.fromEntries(cleanFound.map((r) => [String(r.boxNumber).trim().toUpperCase(), Number(r.qty)])),
+          { source: "case-fix", note: "Counted at the pallet" }
+        );
+        next = syncCaseRowsToLedger(next, orderId);
         return { ...next, ...appendLog(next, {
           action: "case_contents_corrected",
           entity: "case",
@@ -17687,13 +18018,14 @@ Plan it?`
         return n;
       });
     }, [lastRun && lastRun.id]);
-    const specRef = useRef(spec);
+    const specRef2 = useRef(spec);
     useEffect(() => {
-      if (specRef.current === spec) return;
-      specRef.current = spec;
+      if (specRef2.current === spec) return;
+      specRef2.current = spec;
       if (spec) setForm((f) => ({ ...f, metersPerBox: METRES_PER_BOX_DEFAULT(spec) }));
     }, [spec]);
-    const needing = useMemo(() => spec && data ? ordersNeedingSpec(data, spec).needing : [], [spec, data, lineItems]);
+    const offerSpec = spec && (form.packageType || "Box") === "Reel" && !isReelSpec(spec) ? `${spec} REEL` : spec;
+    const needing = useMemo(() => offerSpec && data ? ordersNeedingSpec(data, offerSpec).needing : [], [offerSpec, data, lineItems]);
     const allocs = form.allocations || [];
     const allocFor = (id) => allocs.find((a) => a.orderId === id);
     const allocated = allocs.reduce((s, a) => s + (Number(a.qty) || 0), 0);
@@ -17994,7 +18326,8 @@ Plan it?`
   }
   function BondingRestFields({ values, setValues, orderOptions, availableBatches = [], existingBoxCodes = [], allBondingRuns = [], knownBatchCodes = [], onUnknownBatch, materials = [], lineItems = [], evaRuns = [], fullData = null, excludeRunId = null }) {
     const evaCodeOptions = [...new Set((evaRuns || []).filter((r) => !r.deleted && String(r.batchNumber || "").trim()).sort((a, b) => String(b.date || "").localeCompare(String(a.date || ""))).map((r) => String(r.batchNumber).trim().toUpperCase()))].slice(0, 40);
-    const currentSpec = values.range === "Custom" ? String(values.size || "").trim() : `${values.range} ${String(values.size || "").trim()}`;
+    const currentSpecBare = values.range === "Custom" ? String(values.size || "").trim() : `${values.range} ${String(values.size || "").trim()}`;
+    const currentSpec = currentSpecBare && (values.packageType || "Box") === "Reel" && !isReelSpec(currentSpecBare) ? `${currentSpecBare} REEL` : currentSpecBare;
     const prevSpecKeyRef = useRef(currentSpec + "|" + values.pt);
     useEffect(() => {
       const key = currentSpec + "|" + values.pt;
@@ -18640,6 +18973,9 @@ Plan it?`
     };
     const toRun = (f, excludeId) => ({
       productSize: catalogueName(data, buildSpec(f)),
+      /* The catalogue reference, resolved from what the operator chose — size,
+         Box or Reel, metres — not from the stored label. (18 Sep 2026) */
+      formId: formIdForRun(data, { productSize: buildSpec(f), packageType: f.packageType || "Box", metersPerBox: f.metersPerBox }),
       baselineBatchCode: f.baselineBatchCode,
       evaCode: f.evaCode,
       evaCleared: f.evaCleared === "Yes",
@@ -22027,13 +22363,22 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         return stampUpdatedAt(prevData, nextData);
       });
     };
+    const ledgerCases = useMemo(
+      () => casesWithLedgerContents(storedData.cases || [], storedData.movements || []),
+      [storedData.cases, storedData.movements]
+    );
+    const ledgerReservations = useMemo(
+      () => reservationsWithLedgerPlaced(storedData.reservations || [], storedData.movements || []),
+      [storedData.reservations, storedData.movements]
+    );
     setLedgerMovements(storedData.movements || []);
-    setLedgerReservations(storedData.reservations || []);
-    setLedgerCaseHoldings(storedData.cases || [], storedData.orders || []);
+    setCatalogue(storedData.products || [], storedData.productForms || []);
+    setLedgerReservations(ledgerReservations);
+    setLedgerCaseHoldings(ledgerCases, storedData.orders || []);
     setBoxMaterials(storedData.materials);
     const data = useMemo(() => {
       const runs = ledgerCorrectedRuns(storedData.bondingRuns || [], storedData.movements || []);
-      const base = { ...storedData, bondingRuns: runs };
+      const base = { ...storedData, bondingRuns: runs, cases: ledgerCases, reservations: ledgerReservations };
       const cases = (base.cases || []).filter((c) => c && !c.deleted);
       if (!cases.length) return base;
       const byOrder = /* @__PURE__ */ new Map();
@@ -22062,7 +22407,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         }
         return { ...o, ...patchMapsFromCaseRecords(recs, planned), caseWeights, palletAssignments };
       }) };
-    }, [storedData]);
+    }, [storedData, ledgerCases, ledgerReservations]);
     useEffect(() => {
       const source = { ...storedData, bondingRuns: data.bondingRuns };
       const out = backfillPlannedCases(source);
