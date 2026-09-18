@@ -1195,7 +1195,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-17.16";
+  var APP_VERSION = "2026-09-17.17";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -4829,12 +4829,45 @@
       const planned = plannedCasesFor(data, order.id);
       const placed = placedBoxesByCase(data, order.id);
       const rec = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === order.id);
-      const derived = rec.length && !Object.keys(order.confirmedCases || {}).length && !Object.keys(order.caseOverrides || {}).length ? patchMapsFromCaseRecords(rec, []) : null;
-      const caseOverrides = order.caseOverrides || derived && derived.caseOverrides || {};
-      const caseRemovals = order.caseRemovals || derived && derived.caseRemovals || {};
-      const confirmedCases = order.confirmedCases || derived && derived.confirmedCases || {};
+      const derived = (() => {
+        if (!rec.length) return null;
+        try {
+          const pre = patchMapsFromCaseRecords(rec, []);
+          const dsub = subtractConfirmed(items, data.bondingRuns, pre.confirmedCases, order.id);
+          const dg = groupAssignedRunsByLineItem(dsub.runs, order.id, dsub.items);
+          const dplanned = buildCombinedCases(
+            dg.byLineItem,
+            (Number(order.startingCaseNum) || 0) + 1,
+            packedOutsideSpecs(order, data.lineItems),
+            order.caseLayout
+          );
+          return patchMapsFromCaseRecords(rec, dplanned);
+        } catch (e) {
+          if (typeof console !== "undefined" && console.warn) console.warn("patch map derivation failed in arrangedCasesForOrder for " + order.id, e);
+          return null;
+        }
+      })();
+      const caseOverrides = derived ? derived.caseOverrides : order.caseOverrides || {};
+      const caseRemovals = derived ? derived.caseRemovals : order.caseRemovals || {};
+      const confirmedCases = derived ? derived.confirmedCases : order.confirmedCases || {};
+      const caseWeightsUsed = {}, palletAssignmentsUsed = {};
+      if (rec.length) {
+        for (const c of rec) {
+          if (c.weight != null && String(c.weight).trim() !== "") caseWeightsUsed[String(c.caseNum)] = String(c.weight);
+          if (c.pallet != null && String(c.pallet).trim() !== "") palletAssignmentsUsed[String(c.caseNum)] = String(c.pallet);
+        }
+      } else {
+        Object.assign(caseWeightsUsed, order.caseWeights || {});
+        Object.assign(palletAssignmentsUsed, order.palletAssignments || {});
+      }
       const sub = subtractConfirmed(subtractPlanned(items, planned), data.bondingRuns, placed, order.id);
       const g = groupAssignedRunsByLineItem(sub.runs, order.id, sub.items);
+      const plannerRows = buildCombinedCases(
+        g.byLineItem,
+        (Number(order.startingCaseNum) || 0) + 1,
+        packedOutsideSpecs(order, data.lineItems),
+        order.caseLayout
+      );
       const smallRows = [];
       for (const { li, runs: runsForSpec } of g.byLineItem) {
         if (!isSmallItem(li.description)) continue;
@@ -4848,13 +4881,13 @@
         });
       }
       const arranged = arrangeCases({
-        caseRows: buildCombinedCases(g.byLineItem, (Number(order.startingCaseNum) || 0) + 1, packedOutsideSpecs(order, data.lineItems), order.caseLayout),
+        caseRows: plannerRows,
         orphaned: g.orphaned,
         caseOverrides,
         caseRemovals,
         confirmedCases,
-        caseWeights: order.caseWeights || {},
-        palletAssignments: order.palletAssignments || {},
+        caseWeights: caseWeightsUsed,
+        palletAssignments: palletAssignmentsUsed,
         startingCaseNum: order.startingCaseNum,
         bondingRuns: data.bondingRuns,
         orderId: order.id
