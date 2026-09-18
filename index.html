@@ -1195,7 +1195,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-18.5";
+  var APP_VERSION = "2026-09-18.9";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -2325,7 +2325,7 @@
     "petType"
   ];
   function derivedGlueRuns(reels) {
-    const rows = (reels || []).filter((r) => r && !r.deleted && r.batchNumber).slice().sort((a, b) => `${a.date || ""} ${a.timeOfDay || ""}`.localeCompare(`${b.date || ""} ${b.timeOfDay || ""}`));
+    const rows = (reels || []).filter((r) => r && !r.deleted).slice().sort((a, b) => `${a.date || ""} ${a.timeOfDay || ""}`.localeCompare(`${b.date || ""} ${b.timeOfDay || ""}`));
     const sameSetup = (a, b) => DERIVED_RUN_KEYS.every((k) => String(a[k] == null ? "" : a[k]).trim() === String(b[k] == null ? "" : b[k]).trim());
     const runs = [];
     for (const r of rows) {
@@ -13240,6 +13240,41 @@ The manifest will list them as cases with no pallet, and the gross weight will b
         ref: box
       });
     }
+    {
+      const livePromise = new Set((data.orders || []).filter((o) => o && !o.deleted && !["Shipped", "Cancelled"].includes(o.stage || "")).map((o) => o.id));
+      const inCases = /* @__PURE__ */ new Map();
+      for (const c of data.cases || []) {
+        if (!c || c.deleted || !livePromise.has(c.orderId)) continue;
+        for (const [code, n] of Object.entries(c.contents || {})) {
+          const k = `${c.orderId}|${String(code).trim().toUpperCase()}`;
+          inCases.set(k, (inCases.get(k) || 0) + (Number(n) || 0));
+        }
+      }
+      const promised = /* @__PURE__ */ new Map();
+      for (const r of data.reservations || []) {
+        if (!r || r.deleted || r.state === "released" || !livePromise.has(r.orderId)) continue;
+        const k = `${r.orderId}|${String(r.boxNumber || "").trim().toUpperCase()}`;
+        promised.set(k, (promised.get(k) || 0) + (Number(r.qty) || 0));
+      }
+      for (const k of /* @__PURE__ */ new Set([...inCases.keys(), ...promised.keys()])) {
+        const [orderId, box] = k.split("|");
+        const have = inCases.get(k) || 0;
+        const owed = promised.get(k) || 0;
+        if (have === owed) continue;
+        if (owed > have) continue;
+        add({
+          id: `promisevscases:${orderId}:${box}:${have}:${owed}`,
+          kind: "Promise lost",
+          severity: "high",
+          what: `${box}: ${have} in ${orderId}'s cases, ${owed === 0 ? "nothing promised" : `only ${owed} promised`}`,
+          detail: orderId,
+          why: "The boxes are in the case, but nothing records that they belong to this order. Anything reading promises \u2014 the pick list, what is still owed, what is free for another order \u2014 will be wrong for this box.",
+          todo: `Open ${orderId} and check the case holding ${box}. If the boxes are right where they are, the promise needs raising to ${have}.`,
+          fixHere: false,
+          ref: box
+        });
+      }
+    }
     for (const box of new Set(runs.map((r) => r.boxNumber).filter(Boolean))) {
       const p = placeOf(data, box);
       if (p.onShelfRaw >= 0) continue;
@@ -20664,14 +20699,13 @@ Plan it?`
   }
   function GlueLineView({ data, setData }) {
     const rows = (data.glueLineBatches || []).map((b) => glueSettingsFor(b, data.glueRuns));
-    const { sorted: sortedGlueRows, sortBy: glueSortBy, sortDir: glueSortDir, toggleSort: glueToggleSort } = useSortableRows(rows, "date", "desc");
     const todayStr = daysAgoLocal(0);
     const [showTodayOnly, setShowTodayOnly] = useState(false);
     const isToday = (r) => r.date === todayStr || dateFromReelCode(r.batchNumber) === todayStr;
-    const derivedRuns = React.useMemo(() => derivedGlueRuns(rows), [rows]);
     const todayCount = rows.filter(isToday).length;
-    const visibleGlueRows = showTodayOnly ? sortedGlueRows.filter(isToday) : sortedGlueRows;
-    const [glueListShown, setGlueListShown] = useState(8);
+    const visibleGlueRows = showTodayOnly ? rows.filter(isToday) : rows;
+    const visibleRuns = derivedGlueRuns(visibleGlueRows);
+    const [runsShown, setRunsShown] = useState(10);
     const listId = "size-catalog-glueline";
     const orderOptions = data.orders.map((o) => ({ value: o.id, label: `${o.id} \u2014 ${o.customer}` }));
     const isDirectRow = (r) => reelIsIndirect(r) !== true;
@@ -21132,6 +21166,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       setEditingId(null);
       setEditForm(null);
     };
+    const shownRuns = visibleRuns.filter((run, i) => i < runsShown || editingId && run.reels.some((x) => x.id === editingId));
     return /* @__PURE__ */ React.createElement("div", null, justAdded && /* @__PURE__ */ React.createElement("div", { className: "no-print fixed bottom-5 right-5 z-50 flex items-center gap-3 px-4 py-2.5 rounded shadow-lg text-sm text-white", style: { background: NAVY } }, /* @__PURE__ */ React.createElement("span", null, "Added ", justAdded.label), /* @__PURE__ */ React.createElement("button", { onClick: undoJustAdded, className: "font-semibold underline", style: { color: "#fff" } }, "Undo"), /* @__PURE__ */ React.createElement("button", { onClick: () => {
       clearTimeout(justAdded.timerId);
       setJustAdded(null);
@@ -21195,102 +21230,118 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           action: "Discard edit"
         }
       )
-    )))), derivedRuns.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5 no-print" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Runs"), derivedRuns.slice(0, 6).map((run) => /* @__PURE__ */ React.createElement("div", { key: run.id, style: { padding: "10px 0", borderTop: `1px solid #EDEDE8` } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 600 } }, /* @__PURE__ */ React.createElement(Spec, { s: run.productSize, size: 14 })), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 4, lineHeight: 1.5 } }, run.date, " \xB7 ", run.direct ? "Direct" : `from reel ${run.plCode || "\u2014"}`, run.from ? ` \xB7 ${run.from}\u2013${run.to}` : "", formatRuntime(run.runningHrs) ? ` \xB7 ran ${formatRuntime(run.runningHrs)}` : "", run.settings.extScrewSpeed ? ` \xB7 screw ${run.settings.extScrewSpeed}` : "", run.settings.extLineSpeed ? ` \xB7 ${run.settings.extLineSpeed} m/min` : "", run.settings.extPvcCode ? ` \xB7 PVC ${run.settings.extPvcCode}` : "", run.settings.glueBatch ? ` \xB7 glue ${run.settings.glueBatch}` : "")), /* @__PURE__ */ React.createElement("div", { style: { textAlign: "right", flexShrink: 0 } }, /* @__PURE__ */ React.createElement("div", { className: "font-mono", style: { fontSize: 20, fontWeight: 700 } }, run.metres.toLocaleString("en-GB")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, "m in ", run.reels.length, " reel", run.reels.length === 1 ? "" : "s"))), /* @__PURE__ */ React.createElement("div", { style: { marginLeft: 12, marginTop: 6, borderLeft: `2px solid #EDEDE8`, paddingLeft: 12 } }, run.reels.map((x) => /* @__PURE__ */ React.createElement("div", { key: x.id, style: { display: "flex", justifyContent: "space-between", gap: 10, fontSize: 13.5, padding: "2px 0" } }, /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 13 } }, x.batchNumber), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, (Number(x.meterage) || 0).toLocaleString("en-GB"), " m", x.timeOfDay ? ` \xB7 ${x.timeOfDay}` : "", formatRuntime(x.runtimeHrs) ? ` \xB7 ${formatRuntime(x.runtimeHrs)}` : ""))))))), visibleGlueRows.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5 no-print" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline justify-between gap-4 mb-1", style: { paddingBottom: 8, borderBottom: `2px solid ${NAVY_DEEP}` } }, /* @__PURE__ */ React.createElement("h2", { style: { margin: 0, fontSize: 19, fontWeight: 600, color: NAVY_DEEP } }, showTodayOnly ? "Today's reels" : "Recent reels"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 14, color: INK_MUTED } }, visibleGlueRows.length, " reel", visibleGlueRows.length === 1 ? "" : "s", ",", " ", visibleGlueRows.reduce((t, r) => t + (Number(r.meterage) || 0), 0).toLocaleString("en-GB"), " m")), visibleGlueRows.slice(0, glueListShown).map((r, i) => {
-      const checked = String(r.checked) === "Yes";
-      const col = productColourFor(r.productSize);
-      return /* @__PURE__ */ React.createElement("div", { key: r.id, className: "mx-glue-row", style: {
-        display: "grid",
-        gap: "0 18px",
-        padding: "13px 0",
-        borderBottom: i < Math.min(glueListShown, visibleGlueRows.length) - 1 ? `1px solid ${BORDER}` : "none"
-      } }, /* @__PURE__ */ React.createElement("div", { className: "font-mono", style: { fontSize: 16, fontWeight: 600, display: "flex", alignItems: "center", gap: 7, minWidth: 0 } }, /* @__PURE__ */ React.createElement("span", { title: col ? col.name + (checked ? "" : " \u2014 not yet checked") : "", style: {
+    )))), visibleGlueRows.length === 0 ? /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5 no-print" }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED } }, showTodayOnly ? "No reels logged today." : "No reels yet.")) : /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5 no-print mx-glue-runs" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline justify-between gap-4", style: { paddingBottom: 8, borderBottom: `2px solid ${NAVY_DEEP}` } }, /* @__PURE__ */ React.createElement("h2", { style: { margin: 0, fontSize: 19, fontWeight: 600, color: NAVY_DEEP } }, showTodayOnly ? "Today's reels" : "Reels", ", by run"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 14, color: INK_MUTED } }, visibleGlueRows.length, " reel", visibleGlueRows.length === 1 ? "" : "s", ",", " ", visibleGlueRows.reduce((t, r) => t + (Number(r.meterage) || 0), 0).toLocaleString("en-GB"), " m")), shownRuns.map((run, ri) => /* @__PURE__ */ React.createElement("div", { key: run.id, "data-run": run.id, style: { padding: "12px 0", borderTop: ri ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 600 } }, /* @__PURE__ */ React.createElement(Spec, { s: run.productSize, size: 14 })), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 4, lineHeight: 1.5 } }, run.date, " \xB7 ", isDirectRow(run.settings) ? "Direct" : `from reel ${plCodeOf(run.settings) || "\u2014"}`, run.from ? ` \xB7 ${run.from}\u2013${run.to}` : "", formatRuntime(run.runningHrs) ? ` \xB7 ran ${formatRuntime(run.runningHrs)}` : "", run.settings.extScrewSpeed ? ` \xB7 screw ${run.settings.extScrewSpeed}` : "", run.settings.extLineSpeed ? ` \xB7 ${run.settings.extLineSpeed} m/min` : "", run.settings.extPvcCode ? ` \xB7 PVC ${run.settings.extPvcCode}` : "", run.settings.glueBatch ? ` \xB7 glue ${run.settings.glueBatch}` : "", run.settings.glueDie ? ` \xB7 die ${run.settings.glueDie}` : "", run.settings.petType ? ` \xB7 PET ${run.settings.petType}` : "")), /* @__PURE__ */ React.createElement("div", { style: { textAlign: "right", flexShrink: 0 } }, /* @__PURE__ */ React.createElement("div", { className: "font-mono", style: { fontSize: 20, fontWeight: 700 } }, run.metres.toLocaleString("en-GB")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, "m in ", run.reels.length, " reel", run.reels.length === 1 ? "" : "s"))), /* @__PURE__ */ React.createElement("div", { style: { marginLeft: 12, marginTop: 8, borderLeft: `2px solid #EDEDE8`, paddingLeft: 12 } }, run.reels.map((x) => {
+      const isEditing = editingId === x.id;
+      const checked = String(x.checked) === "Yes";
+      const col = productColourFor(x.productSize);
+      const measured = [
+        x.gapWidth ? `gap ${x.gapWidth}` : "",
+        x.internalHeight ? `h1 ${x.internalHeight}` : "",
+        x.overallHeight ? `h2 ${x.overallHeight}` : "",
+        x.weightPer5m ? `${x.weightPer5m} g/5m` : ""
+      ].filter(Boolean).join(" \xB7 ");
+      const order = x.assignedOrderId ? data.orders.find((o) => o.id === x.assignedOrderId) : null;
+      return /* @__PURE__ */ React.createElement("div", { key: x.id, "data-reel": x.id, style: { padding: "8px 0", borderTop: `1px solid #F2F2EE`, background: isEditing ? "#FFF8EF" : void 0 } }, /* @__PURE__ */ React.createElement("div", { className: "mx-glue-reel", style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 200px", minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { className: "font-mono", style: { fontSize: 15, fontWeight: 600, display: "flex", alignItems: "center", gap: 7 } }, /* @__PURE__ */ React.createElement("span", { title: col ? col.name + (checked ? "" : " \u2014 not yet checked") : "", style: {
         width: 6,
         height: 14,
         borderRadius: 1.5,
         flexShrink: 0,
         background: checked ? col?.hex || "transparent" : "transparent",
         border: col ? `${checked ? 1 : 1.5}px solid ${checked ? "rgba(0,0,0,.22)" : col.hex}` : `1px dashed ${BORDER}`
-      } }), r.batchNumber || "(no code)"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, minWidth: 0 } }, /* @__PURE__ */ React.createElement(ProfileGlyph, { spec: r.productSize, size: 12 }), " ", shortCaseSpec(r.productSize) || r.productSize || "\u2014"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: INK_MUTED, lineHeight: 1.5, minWidth: 0 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block" } }, isDirectRow(r) ? "Direct" : `From reel ${plCodeOf(r) || "\u2014"}`, r.extPinSize ? ` \xB7 pin ${r.extPinSize}` : "", r.extLineSpeed ? ` \xB7 ${r.extLineSpeed} m/min` : ""), /* @__PURE__ */ React.createElement("span", { style: { display: "block" } }, r.extPvcCode ? /* @__PURE__ */ React.createElement(React.Fragment, null, "PVC ", /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { color: INK } }, r.extPvcCode)) : "No PVC code", r.glueBatch ? /* @__PURE__ */ React.createElement(React.Fragment, null, " \xB7 glue ", /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { color: INK } }, r.glueBatch)) : "", r.timeOfDay ? ` \xB7 ${r.timeOfDay}` : ""), r.fromRun && /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 12.5 } }, "Settings from run ", String(r.fromRun).slice(-6))), /* @__PURE__ */ React.createElement("div", { style: { textAlign: "right", whiteSpace: "nowrap" } }, /* @__PURE__ */ React.createElement("div", { className: "font-mono", style: { fontSize: 24, fontWeight: 600, lineHeight: 1 } }, (Number(r.meterage) || 0).toLocaleString("en-GB")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: INK_MUTED, marginTop: 4 } }, "metres"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, fontWeight: checked ? 600 : 400, color: checked ? GREEN : INK_MUTED, marginTop: 2 } }, checked ? "Checked" : "Not checked")));
-    }), visibleGlueRows.length > glueListShown && /* @__PURE__ */ React.createElement(
+      } }), x.batchNumber || /* @__PURE__ */ React.createElement("span", { style: { color: RED } }, "(no code)")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 2, lineHeight: 1.45 } }, /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { color: INK, fontWeight: 600 } }, (Number(x.meterage) || 0).toLocaleString("en-GB"), " m"), x.timeOfDay ? ` \xB7 ${x.timeOfDay}` : "", formatRuntime(x.runtimeHrs) ? ` \xB7 ${formatRuntime(x.runtimeHrs)}` : "", measured ? ` \xB7 ${measured}` : "", order ? ` \xB7 for ${order.id} ${order.customer}` : ""), x.comments && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 2 } }, "\u201C", x.comments, "\u201D")), !isEditing && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, flexShrink: 0 } }, /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          type: "button",
+          onClick: () => toggleRowChecked(x.id),
+          title: checked ? "Checked \u2014 tap to mark not checked" : "Tap once it has been checked",
+          style: {
+            font: "inherit",
+            fontSize: 13,
+            fontWeight: 600,
+            minHeight: 40,
+            padding: "0 12px",
+            borderRadius: 5,
+            cursor: "pointer",
+            border: `1px solid ${checked ? GREEN : BORDER}`,
+            background: checked ? GREEN : "#fff",
+            color: checked ? "#fff" : INK_MUTED
+          }
+        },
+        checked ? "\u2713 Checked" : "Not checked"
+      ), /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          type: "button",
+          onClick: () => startEdit(x),
+          title: "Edit this reel",
+          style: {
+            font: "inherit",
+            fontSize: 13,
+            fontWeight: 600,
+            minHeight: 40,
+            padding: "0 14px",
+            borderRadius: 5,
+            cursor: "pointer",
+            border: `1px solid ${NAVY}`,
+            background: "#fff",
+            color: NAVY
+          }
+        },
+        "\u270E Edit"
+      ), /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          type: "button",
+          onClick: () => printLabel(x),
+          title: "Print label",
+          style: { font: "inherit", minHeight: 40, minWidth: 40, borderRadius: 5, cursor: "pointer", border: `1px solid ${BORDER}`, background: "#fff" }
+        },
+        "\u{1F5A8}"
+      ))), isEditing && editForm && /* @__PURE__ */ React.createElement("div", { className: "mx-glue-inline-edit", style: { marginTop: 10, padding: 12, border: `1px solid ${ORANGE}`, borderRadius: 6, background: "#fff" } }, /* @__PURE__ */ React.createElement(GlueLineDirectField, { values: editForm, setValues: setEditForm }), /* @__PURE__ */ React.createElement(GlueLineSpecFields, { values: editForm, setValues: setEditForm, listId }), /* @__PURE__ */ React.createElement(GlueLineRestFields, { values: editForm, setValues: setEditForm, orderOptions, existingBatchNumbers: rows.map((r) => r.batchNumber).filter(Boolean), materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, hideMaterialsSection: true }), editError && /* @__PURE__ */ React.createElement("div", { className: "text-sm my-2", style: { color: RED, whiteSpace: "pre-line", lineHeight: 1.5 } }, "\u26A0 ", editError), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          type: "button",
+          onClick: saveEdit,
+          className: "text-sm font-semibold text-white",
+          style: { minHeight: 44, padding: "0 22px", borderRadius: 6, border: "none", background: GREEN, cursor: "pointer" }
+        },
+        "\u2713 Save"
+      ), /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          type: "button",
+          onClick: cancelEdit,
+          className: "text-sm font-semibold",
+          style: { minHeight: 44, padding: "0 18px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", color: INK, cursor: "pointer" }
+        },
+        "Cancel"
+      ), /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          type: "button",
+          onClick: () => {
+            const id = x.id;
+            cancelEdit();
+            removeRow(id);
+          },
+          className: "text-sm font-semibold",
+          style: { minHeight: 44, padding: "0 18px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", color: RED, cursor: "pointer", marginLeft: "auto" }
+        },
+        "Delete reel"
+      ))));
+    })))), visibleRuns.length > shownRuns.length && /* @__PURE__ */ React.createElement(
       "button",
       {
-        onClick: () => setGlueListShown((v) => v + 20),
+        onClick: () => setRunsShown((v) => v + 10),
         style: { font: "inherit", display: "block", width: "100%", textAlign: "left", background: "none", border: 0, color: NAVY, cursor: "pointer", padding: "14px 0 0", fontSize: 14.5 }
       },
       "Show ",
-      Math.min(20, visibleGlueRows.length - glueListShown),
-      " more of ",
-      visibleGlueRows.length
-    )), /* @__PURE__ */ React.createElement("div", { className: "desktop-only" }, /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(SortTh, { col: "batchNumber", sortBy: glueSortBy, sortDir: glueSortDir, onSort: glueToggleSort, className: "text-left px-3 py-2", style: { width: 150 } }, "Batch number"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Manufactured"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Direct"), /* @__PURE__ */ React.createElement(SortTh, { col: "productSize", sortBy: glueSortBy, sortDir: glueSortDir, onSort: glueToggleSort, className: "text-left px-3 py-2" }, "Product size"), /* @__PURE__ */ React.createElement(Th, { w: 90 }, "Gap"), /* @__PURE__ */ React.createElement(Th, { w: 90 }, "Height 1"), /* @__PURE__ */ React.createElement(Th, { w: 90 }, "Height 2"), /* @__PURE__ */ React.createElement(Th, { w: 100 }, "Die size"), /* @__PURE__ */ React.createElement(Th, { w: 100 }, "PET type"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Glue batch"), /* @__PURE__ */ React.createElement(ThR, { w: 120 }, "Weight (g/5m)"), /* @__PURE__ */ React.createElement(SortTh, { col: "meterage", sortBy: glueSortBy, sortDir: glueSortDir, onSort: glueToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 110 } }, "Meterage (m)"), /* @__PURE__ */ React.createElement(SortTh, { col: "checked", sortBy: glueSortBy, sortDir: glueSortDir, onSort: glueToggleSort, className: "text-left px-3 py-2", style: { width: 100 } }, "Checked"), /* @__PURE__ */ React.createElement(ThR, { w: 110 }, "Time of day"), /* @__PURE__ */ React.createElement(SortTh, { col: "date", sortBy: glueSortBy, sortDir: glueSortDir, onSort: glueToggleSort, startDir: "desc", className: "text-left px-3 py-2", style: { width: 110 } }, "Date"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Assigned order"), /* @__PURE__ */ React.createElement(Th, null, "Comments"), /* @__PURE__ */ React.createElement("th", { style: { width: 70 } }))), /* @__PURE__ */ React.createElement("tbody", null, visibleGlueRows.map((r, i) => {
-      const isEditing = editingId === r.id;
-      return /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}`, background: isEditing ? "#FFF8EF" : void 0 } }, isEditing ? /* @__PURE__ */ React.createElement("td", { className: "px-3 py-2", colSpan: 17 }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(GlueLineDirectField, { values: editForm, setValues: setEditForm }), /* @__PURE__ */ React.createElement(GlueLineSpecFields, { values: editForm, setValues: setEditForm, listId }), /* @__PURE__ */ React.createElement(GlueLineRestFields, { values: editForm, setValues: setEditForm, orderOptions, existingBatchNumbers: rows.map((r2) => r2.batchNumber).filter(Boolean), materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, hideMaterialsSection: true }), editError && /* @__PURE__ */ React.createElement("div", { className: "text-sm mb-2", style: { color: RED } }, "\u26A0 ", editError))) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.batchNumber || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement("span", { style: { color: manufactureDateLabel(r.batchNumber, ["PBL", "PPL"]) ? INK : INK_MUTED } }, manufactureDateLabel(r.batchNumber, ["PBL", "PPL"]) || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, isDirectRow(r) ? "Yes" : "No", !isDirectRow(r) && plCodeOf(r) && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, plCodeOf(r))), isDirectRow(r) && r.extPinSize && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "pin ", r.extPinSize)), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 no-wrap" }, /* @__PURE__ */ React.createElement(Spec, { s: r.productSize, checked: String(r.checked) === "Yes" })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.gapWidth || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.internalHeight || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.overallHeight || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.glueDie || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.petType || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.glueBatch || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, r.weightPer5m || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, r.meterage), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(ToggleSwitch, { on: r.checked === "Yes", onChange: () => toggleRowChecked(r.id) })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, r.timeOfDay ? /* @__PURE__ */ React.createElement(React.Fragment, null, r.timeOfDay, formatRuntime(r.runtimeHrs) && /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " (", formatRuntime(r.runtimeHrs), ")")) : ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.date || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(
-        "select",
-        {
-          value: r.assignedOrderId || "",
-          onChange: (e) => setRowOrder(r.id, e.target.value),
-          className: "text-xs px-1.5 py-1 outline-none bg-white",
-          style: { border: `1px solid ${BORDER}`, borderRadius: 5, maxWidth: 110 }
-        },
-        /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014 None \u2014"),
-        orderOptions.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.value, value: o.value }, o.label))
-      )), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(CommentCell, { text: r.comments }))), /* @__PURE__ */ React.createElement("td", { className: "px-2 whitespace-nowrap" }, isEditing ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: saveEdit, title: "Save", className: "opacity-60 hover:opacity-100 px-1", style: { color: GREEN } }, "\u2713"), /* @__PURE__ */ React.createElement("button", { onClick: cancelEdit, title: "Cancel", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: () => printLabel(r), title: "Print label", className: "opacity-40 hover:opacity-100 px-1" }, "\u{1F5A8}"), /* @__PURE__ */ React.createElement("button", { onClick: () => startEdit(r), title: "Edit", className: "opacity-40 hover:opacity-100 px-1" }, "\u270E"), /* @__PURE__ */ React.createElement("button", { onClick: () => removeRow(r.id), title: "Delete", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715"))));
-    }), visibleGlueRows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 16 }, "No rows yet."))))), /* @__PURE__ */ React.createElement("div", { className: "mobile-only" }, /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden" }, /* @__PURE__ */ React.createElement(
-      PhoneRecordCards,
-      {
-        rows: visibleGlueRows,
-        editingId,
-        onEdit: (r) => startEdit(r),
-        onDelete: (r) => removeRow(r.id),
-        renderEdit: () => /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(GlueLineSpecFields, { values: editForm, setValues: setEditForm, listId }), /* @__PURE__ */ React.createElement(GlueLineRestFields, { values: editForm, setValues: setEditForm, orderOptions, existingBatchNumbers: rows.map((x) => x.batchNumber).filter(Boolean), materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, hideMaterialsSection: true }), editError && /* @__PURE__ */ React.createElement("div", { className: "text-sm my-2", style: { color: RED, whiteSpace: "pre-line", lineHeight: 1.5 } }, "\u26A0 ", editError), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mt-3" }, /* @__PURE__ */ React.createElement(
-          "button",
-          {
-            onClick: saveEdit,
-            className: "flex-1 text-sm font-semibold text-white",
-            style: { minHeight: 44, borderRadius: 6, border: "none", background: GREEN }
-          },
-          "\u2713 Save"
-        ), /* @__PURE__ */ React.createElement(
-          "button",
-          {
-            onClick: cancelEdit,
-            className: "text-sm font-semibold px-4",
-            style: { minHeight: 44, borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", color: INK }
-          },
-          "Cancel"
-        ))),
-        empty: "No reel batches yet.",
-        primary: (r) => r.batchNumber || "(no code)",
-        secondary: (r) => `${r.productSize || "\u2014"} \xB7 ${r.meterage ?? "\u2014"}m \xB7 ${r.date || "\u2014"}`,
-        detail: (r) => [
-          ["Manufactured", r.date],
-          // Where the settings on this card came from. A reel made as part
-          // of a run shows the run; a reel made before runs existed, or on
-          // its own, says so rather than leaving it a mystery.
-          ["Settings from", r.fromRun ? `run ${r.fromRun.slice(-6)}` : "this reel"],
-          // Use the same helpers the rest of this screen uses. Reading
-          // r.direct alone said "No" for the 74 rows saved before that
-          // became a boolean — they carry the legacy plBaseCode:"Direct"
-          // string instead. And plBaseCode is that legacy flag, not a PL
-          // code, so showing it under "PL code" printed the word Direct.
-          ["Direct", isDirectRow(r) ? "Yes" : "No"],
-          ["PL code", plCodeOf(r)],
-          ["Product size", r.productSize],
-          ["Gap", r.gapWidth],
-          ["Height 1", r.internalHeight],
-          ["Height 2", r.overallHeight],
-          ["Die size", r.glueDie],
-          ["PET type", r.petType],
-          ["Glue batch", r.glueBatch],
-          ["Weight (g/5m)", r.weightPer5m],
-          ["Meterage (m)", r.meterage],
-          ["Checked", r.checked],
-          ["Reel cleared", r.cleared],
-          ["Time of day", r.timeOfDay],
-          ["Assigned order", r.assignedOrder],
-          ["Comments", r.comments]
-        ]
-      }
-    )))));
+      Math.min(10, visibleRuns.length - shownRuns.length),
+      " more run",
+      Math.min(10, visibleRuns.length - shownRuns.length) === 1 ? "" : "s",
+      " of ",
+      visibleRuns.length
+    ))));
   }
   function ExtrusionSpecFields({ values, setValues, listId }) {
     return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { width: 140 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Range"), /* @__PURE__ */ React.createElement(Select, { value: values.range, onChange: (e) => setValues({ ...values, range: e.target.value, size: "" }) }, Object.keys(PRODUCT_RANGES).map((r) => /* @__PURE__ */ React.createElement("option", { key: r, value: r }, r)), /* @__PURE__ */ React.createElement("option", { value: "Custom" }, "Custom / other"))), /* @__PURE__ */ React.createElement("div", { style: { width: 210 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Size"), values.range === "Custom" ? /* @__PURE__ */ React.createElement(
