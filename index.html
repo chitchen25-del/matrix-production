@@ -1195,7 +1195,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-19.4";
+  var APP_VERSION = "2026-09-19.9";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -2770,7 +2770,9 @@
       const orderSeen = /* @__PURE__ */ new Set();
       let shelfPlaced = false;
       const stockRowIdx = rows.findIndex((r) => !r.workNumber);
-      rows.forEach((r, i) => {
+      rows.forEach((r0, i) => {
+        const held = r0.workNumber ? Number(p.byOrder[r0.workNumber] || 0) : 0;
+        const r = r0.workNumber && held <= 0 ? { ...r0, bookedTo: r0.workNumber, workNumber: null } : r0;
         let onOrderQty = 0, toStock = 0;
         if (r.workNumber) {
           if (!orderSeen.has(r.workNumber)) {
@@ -2783,7 +2785,7 @@
           toStock = placeOf({ ...ledgerView(), movements }, box).available;
           shelfPlaced = true;
         }
-        if (Number(r.onOrderQty || 0) !== onOrderQty || Number(r.toStock || 0) !== toStock) patched.set(r.id, { ...r, onOrderQty, toStock });
+        if (r !== r0 || Number(r.onOrderQty || 0) !== onOrderQty || Number(r.toStock || 0) !== toStock) patched.set(r.id, { ...r, onOrderQty, toStock });
       });
       for (const [orderId, qty] of Object.entries(p.byOrder)) {
         if (qty > 0 && !orderSeen.has(orderId)) {
@@ -4751,6 +4753,39 @@
       reprintFrom: lowestChanged,
       reprintTo: lowestChanged == null ? null : newCases.length ? newCases[newCases.length - 1].caseNum : renumbered.length ? renumbered[renumbered.length - 1].caseNum : null
     };
+  }
+  function PlanSlotMover({ order, data, setData, onClose }) {
+    const rows = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === order.id).sort((a, b) => Number(a.caseNum) - Number(b.caseNum));
+    const [fromCase, setFromCase] = useState("");
+    const [spec, setSpec] = useState("");
+    const [qty, setQty] = useState("1");
+    const [toCase, setToCase] = useState("");
+    const [msg, setMsg] = useState(null);
+    const A = rows.find((c) => String(c.caseNum) === String(fromCase));
+    const lines = A ? Object.entries(casePlanned(A)) : [];
+    const apply = () => {
+      let out = null;
+      setData((prev) => {
+        const r = movePlanSlot(prev, { orderId: order.id, spec, qty, fromCase, toCase });
+        out = r;
+        return r.error ? prev : r.patch;
+      });
+      setTimeout(() => setMsg(out && out.error ? { bad: true, text: out.error } : { bad: false, text: out ? out.summary + ". Reprint the labels for both cases." : "" }), 0);
+    };
+    return /* @__PURE__ */ React.createElement("div", { className: "mt-3 p-3 rounded", style: { border: `1px solid ${NAVY}`, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: NAVY } }, "Move part of the plan between cases"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, "Only what is not yet in a case can move. The order's quantities never change; confirmed cases stay as they are."), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-2 items-end" }, /* @__PURE__ */ React.createElement(Select, { value: fromCase, onChange: (e) => {
+      setFromCase(e.target.value);
+      setSpec("");
+      setMsg(null);
+    } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "From case\u2026"), rows.filter((c) => !c.confirmed && Object.keys(casePlanned(c)).length).map((c) => /* @__PURE__ */ React.createElement("option", { key: c.id, value: c.caseNum }, "Case ", c.caseNum))), /* @__PURE__ */ React.createElement(Select, { value: spec, onChange: (e) => {
+      setSpec(e.target.value);
+      setMsg(null);
+    } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Product\u2026"), lines.map(([k, n]) => /* @__PURE__ */ React.createElement("option", { key: k, value: k }, n, " \xD7 ", k))), /* @__PURE__ */ React.createElement("input", { type: "number", min: "1", value: qty, onChange: (e) => {
+      setQty(e.target.value);
+      setMsg(null);
+    }, style: { width: 64 }, className: "border rounded px-2 py-1", "aria-label": "How many" }), /* @__PURE__ */ React.createElement(Select, { value: toCase, onChange: (e) => {
+      setToCase(e.target.value);
+      setMsg(null);
+    } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "To case\u2026"), rows.filter((c) => !c.confirmed && String(c.caseNum) !== String(fromCase)).map((c) => /* @__PURE__ */ React.createElement("option", { key: c.id, value: c.caseNum }, "Case ", c.caseNum))), /* @__PURE__ */ React.createElement(Button, { onClick: apply, disabled: !fromCase || !spec || !toCase }, "Move"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: onClose }, "Close")), msg && /* @__PURE__ */ React.createElement("div", { className: "text-sm mt-2", style: { color: msg.bad ? "#b42318" : "#067647" } }, msg.text));
   }
   function PlanAmendmentRecord({ order, lineItems, cases, onAppend }) {
     const planned = (cases || []).filter((c) => !c.deleted && c.orderId === order.id && hasCasePlan(c));
@@ -7165,6 +7200,104 @@ Here's the order:`;
     const x = norm(a), y = norm(b);
     const kx = Object.keys(x), ky = Object.keys(y);
     return kx.length === ky.length && kx.every((k) => x[k] === y[k]);
+  }
+  function movePlanSlot(data, { orderId, spec, qty, fromCase, toCase }) {
+    const q = Math.round(Number(qty) || 0);
+    const from = Number(fromCase), to = Number(toCase);
+    if (!(q > 0)) return { error: "Say how many to move." };
+    if (from === to) return { error: "Choose a different case to move to." };
+    const order = (data.orders || []).find((o) => o && o.id === orderId && !o.deleted);
+    if (!order || order.stage === "Shipped" || order.stage === "Cancelled") return { error: `${orderId} is not a live order.` };
+    const rows = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === orderId);
+    const A = rows.find((c) => Number(c.caseNum) === from), B = rows.find((c) => Number(c.caseNum) === to);
+    if (!A) return { error: `There is no case ${from} on ${orderId}.` };
+    if (!B) return { error: `There is no case ${to} on ${orderId}.` };
+    const lock = (c) => `Case ${c.caseNum} on ${orderId} is confirmed, so its plan is locked. To change it, stand at the case, photograph it and send the photo to Claude.`;
+    if (A.confirmed) return { error: lock(A) };
+    if (B.confirmed) return { error: lock(B) };
+    const planA = casePlanned(A);
+    const key = Object.keys(planA).find((k) => String(k).trim() === String(spec).trim());
+    if (!key) return { error: `Case ${from} has no ${spec} planned.` };
+    const heldA = Object.entries(ledgerCaseContents(data.movements || []).get(`${orderId}|${from}`) || {}).filter(([box]) => {
+      const s2 = specOfBoxInCase(data, orderId, from, box) || "";
+      return isReelSpec(s2) === isReelSpec(key) && looseSpecMatch(s2, key);
+    }).reduce((t, [, n]) => t + (Number(n) || 0), 0);
+    const free = Math.max(0, (Number(planA[key]) || 0) - heldA);
+    if (q > free) return { error: `Only ${free} of the ${planA[key]} \xD7 ${key} planned for case ${from} ${free === 1 ? "is" : "are"} still unfilled \u2014 ${heldA} ${heldA === 1 ? "is" : "are"} already in it and stay${heldA === 1 ? "s" : ""} there.` };
+    if (isReelSpec(key) !== isReelCase(B)) return { error: `Case ${to} is a ${isReelCase(B) ? "reel" : "box"} case; ${key} is ${isReelSpec(key) ? "a reel" : "boxes"}.` };
+    const planB = casePlanned(B);
+    const plannedB = Object.values(planB).reduce((t, n) => t + (Number(n) || 0), 0);
+    const cap = Number(B.maxSize) || CASE_MAX_SIZE_DEFAULT;
+    if (plannedB + q > cap) return { error: `Case ${to} is planned for ${plannedB} of ${cap}; there is room for ${Math.max(0, cap - plannedB)}, not ${q}.` };
+    const stamp = (/* @__PURE__ */ new Date()).toISOString(), who = currentActor();
+    const nextA = { ...planA, [key]: (Number(planA[key]) || 0) - q };
+    if (nextA[key] <= 0) delete nextA[key];
+    const nextB = { ...planB, [key]: (Number(planB[key]) || 0) + q };
+    const cases = (data.cases || []).map((c) => c === A ? { ...c, planned: nextA, updatedAt: stamp, updatedBy: who } : c === B ? { ...c, planned: nextB, updatedAt: stamp, updatedBy: who } : c);
+    const summary = `Plan moved on ${orderId}: ${q} \xD7 ${key} from case ${from} to case ${to}`;
+    const patch = { ...data, cases, ...appendLog(data, {
+      action: "plan_slot_moved",
+      entity: "order",
+      entityId: orderId,
+      summary,
+      before: { [from]: planA, [to]: planB },
+      after: { [from]: nextA, [to]: nextB }
+    }) };
+    return { patch, summary };
+  }
+  function planOrderMismatches(data, orderId) {
+    const cases = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === orderId);
+    if (!cases.some((c) => Object.keys(casePlanned(c)).length)) return [];
+    const ordered = /* @__PURE__ */ new Map(), planned = /* @__PURE__ */ new Map();
+    const mine = (data.lineItems || []).filter((li) => li && !li.deleted && li.orderId === orderId);
+    for (const li of plannableLines(data, mine).plannable) {
+      const k = String(li.description || "").trim();
+      ordered.set(k, (ordered.get(k) || 0) + (Number(li.qty) || 0));
+    }
+    for (const c of cases) for (const [k0, q] of Object.entries(casePlanned(c))) {
+      const k = String(k0).trim();
+      planned.set(k, (planned.get(k) || 0) + (Number(q) || 0));
+    }
+    const out = [];
+    for (const k of /* @__PURE__ */ new Set([...ordered.keys(), ...planned.keys()])) {
+      const o = ordered.get(k) || 0, pq = planned.get(k) || 0;
+      if (o !== pq) out.push({ spec: k, ordered: o, planned: pq });
+    }
+    return out;
+  }
+  function planOrderRefusal(prev, next) {
+    if (!prev || !next || prev === next) return null;
+    if (prev.cases === next.cases && prev.lineItems === next.lineItems && prev.orders === next.orders) return null;
+    const touched = /* @__PURE__ */ new Set();
+    const diffIds = (a, b, key) => {
+      const m = new Map((a || []).filter(Boolean).map((r) => [r.id, r]));
+      for (const r of b || []) {
+        if (!r) continue;
+        const o = m.get(r.id);
+        if (o !== r) touched.add(r[key]);
+        m.delete(r.id);
+      }
+      for (const r of m.values()) touched.add(r[key]);
+    };
+    if (prev.cases !== next.cases) diffIds(prev.cases, next.cases, "orderId");
+    if (prev.lineItems !== next.lineItems) diffIds(prev.lineItems, next.lineItems, "orderId");
+    for (const orderId of touched) {
+      if (!orderId) continue;
+      const o = (next.orders || []).find((x) => x && x.id === orderId);
+      if (!o || o.deleted || o.stage === "Shipped" || o.stage === "Cancelled") continue;
+      const before = new Set(planOrderMismatches(prev, orderId).map((m) => `${m.spec}|${m.ordered}|${m.planned}`));
+      const fresh = planOrderMismatches(next, orderId).filter((m) => !before.has(`${m.spec}|${m.ordered}|${m.planned}`));
+      if (fresh.length) {
+        const m = fresh[0];
+        return {
+          kind: "plan_order_mismatch",
+          orderId,
+          summary: `${orderId}: the case plan would no longer match the order`,
+          message: `Nothing was changed. On ${orderId} the order says ${m.ordered} \xD7 ${m.spec} but the case plan would hold ${m.planned}.${fresh.length > 1 ? ` (${fresh.length - 1} more product${fresh.length > 2 ? "s" : ""} the same.)` : ""} The order says how many; the plan only says where. Change the quantity through the order's amendment so the plan follows it.`
+        };
+      }
+    }
+    return null;
   }
   function confirmedCaseLockRefusal(prev, next) {
     if (!prev || !next || prev === next) return null;
@@ -12131,52 +12264,62 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
       const otherConfirmed = Object.entries(o0 && o0.confirmedCases || {}).filter(([n, v]) => Number(n) !== caseNum && v && typeof v === "object" && v.boxes && Number(v.boxes[code]) > 0).reduce((t, [, v]) => t + Number(v.boxes[code]), 0);
       const needTotal = otherConfirmed + qty;
       const mine = runs.find((x) => !x.deleted && x.boxNumber === code && x.workNumber === order.id);
-      let shortfall = needTotal - (mine ? Number(mine.onOrderQty || 0) : 0);
       const known = runs.find((x) => !x.deleted && x.boxNumber === code && x.productSize) || other.find((x) => !x.deleted && (x.boxNumber === code || "OS-" + String(x.id).replace(/^os-/, "").toUpperCase() === code));
       const spec = r.spec || mine && mine.productSize || known && (known.productSize || known.productSpec) || code;
+      const heldHere = (prev.movements || []).filter((m) => m && !m.deleted && m.orderId === order.id && Number(m.caseNum) === Number(caseNum) && String(m.boxNumber || "").trim().toUpperCase() === code.toUpperCase()).reduce((t, m) => t + (m.kind === "placed" ? Number(m.qty) || 0 : m.kind === "unplaced" ? -(Number(m.qty) || 0) : 0), 0);
+      let shortfall = Math.max(0, qty - heldHere);
       if (shortfall > 0) {
-        const stock = runs.find((x) => !x.deleted && x.boxNumber === code && !x.workNumber && Number(x.toStock || 0) > 0);
-        if (stock) {
-          const take = Math.min(shortfall, Number(stock.toStock || 0));
-          runs = runs.map((x) => x.id === stock.id ? { ...x, amountMade: Number(x.amountMade || 0) - take, toStock: Number(x.toStock || 0) - take, updatedAt: stamp } : x);
+        const free = Math.max(0, placeOf(prev, code).available || 0);
+        shortfall -= Math.min(shortfall, free);
+      }
+      if (shortfall > 0) {
+        const elsewhere = /* @__PURE__ */ new Map();
+        for (const m of prev.movements || []) {
+          if (!m || m.deleted || m.caseNum == null || m.caseNum === "" || !m.orderId) continue;
+          if (String(m.boxNumber || "").trim().toUpperCase() !== code.toUpperCase()) continue;
+          if (m.kind !== "placed" && m.kind !== "unplaced") continue;
+          if (m.orderId === order.id && Number(m.caseNum) === Number(caseNum)) continue;
+          const key = `${m.orderId}|${Number(m.caseNum)}`;
+          elsewhere.set(key, (elsewhere.get(key) || 0) + (m.kind === "placed" ? 1 : -1) * (Number(m.qty) || 0));
+        }
+        const order2 = [...elsewhere.entries()].filter(([, n]) => n > 0).sort(([ka], [kb]) => {
+          const [oa, ca] = ka.split("|"), [ob, cb] = kb.split("|");
+          return (oa === order.id) - (ob === order.id) || Number(cb) - Number(ca);
+        });
+        for (const [key, n] of order2) {
+          if (shortfall <= 0) break;
+          const [oid, cn] = key.split("|");
+          const take = Math.min(shortfall, n);
+          moves.push(moveUnplaced({
+            boxNumber: code,
+            spec,
+            qty: take,
+            orderId: oid,
+            caseNum: Number(cn),
+            source: "override",
+            note: `Packing override: in ${order.id} case ${caseNum}`
+          }));
           shortfall -= take;
-          logs.push({ action: "split", entity: "bondingRun", entityId: stock.id, summary: `Packing override: ${take} of ${code} moved from stock to ${order.id}, case ${caseNum}` });
+          extraFlags.push(`${take} of ${code} taken out of ${oid} case ${cn} \u2014 it is in this case${oid === order.id ? "" : `, so ${oid} is now short and needs re-picking`}.`);
+          logs.push({ action: "split", entity: "bondingRun", entityId: code, summary: `Packing override: ${take} of ${code} moved from ${oid} case ${cn} to ${order.id}, case ${caseNum}` });
         }
-        if (shortfall > 0) {
-          for (const theirs of runs.filter((x) => !x.deleted && x.boxNumber === code && x.workNumber && x.workNumber !== order.id && Number(x.onOrderQty || 0) > 0)) {
-            if (shortfall <= 0) break;
-            const take = Math.min(shortfall, Number(theirs.onOrderQty || 0));
-            runs = runs.map((x) => x.id === theirs.id ? { ...x, amountMade: Number(x.amountMade || 0) - take, onOrderQty: Number(x.onOrderQty || 0) - take, updatedAt: stamp } : x);
-            shortfall -= take;
-            extraFlags.push(`${take} of ${code} taken from ${theirs.workNumber} \u2014 it is in this case, so ${theirs.workNumber} is now short and needs re-picking.`);
-            logs.push({ action: "split", entity: "bondingRun", entityId: theirs.id, summary: `Packing override: ${take} of ${code} moved from ${theirs.workNumber} to ${order.id}, case ${caseNum}` });
-          }
+      }
+      if (shortfall > 0) {
+        const os = other.find((x) => !x.deleted && (x.boxNumber === code || "OS-" + String(x.id).replace(/^os-/, "").toUpperCase() === code) && Number(x.qty) > 0);
+        if (os) {
+          const take = Math.min(shortfall, Number(os.qty || 0));
+          other = other.map((x) => x.id === os.id ? { ...x, qty: Number(x.qty || 0) - take, updatedAt: stamp } : x);
+          moves.push(moveMade({ boxNumber: code, spec, qty: take, source: "override", sourceId: os.id, note: `From Other Stock into ${order.id} case ${caseNum} (packing override)` }));
+          shortfall -= take;
+          logs.push({ action: "add", entity: "bondingRun", entityId: code, summary: `Packing override: ${take} \xD7 ${os.productSpec} taken from Other Stock into ${order.id}, case ${caseNum}` });
         }
-        if (shortfall > 0) {
-          const os = other.find((x) => !x.deleted && (x.boxNumber === code || "OS-" + String(x.id).replace(/^os-/, "").toUpperCase() === code) && Number(x.qty) > 0);
-          if (os) {
-            const take = Math.min(shortfall, Number(os.qty || 0));
-            other = other.map((x) => x.id === os.id ? { ...x, qty: Number(x.qty || 0) - take, updatedAt: stamp } : x);
-            shortfall -= take;
-            logs.push({ action: "add", entity: "bondingRun", entityId: code, summary: `Packing override: ${take} \xD7 ${os.productSpec} taken from Other Stock into ${order.id}, case ${caseNum}` });
-          }
-        }
-        if (shortfall > 0) {
-          extraFlags.push(`${shortfall} of ${code} was not on record anywhere \u2014 recorded as in this case; check its reel and date against the paper.`);
-          logs.push({ action: "add", entity: "bondingRun", entityId: code, summary: `Packing override: ${shortfall} of ${code} recorded into ${order.id}, case ${caseNum} \u2014 not previously on record` });
-        }
-        moves.push(moveAllocated({
-          boxNumber: code,
-          spec,
-          qty: needTotal - (mine ? Number(mine.onOrderQty || 0) : 0),
-          orderId: order.id,
-          caseNum,
-          source: "override",
-          note: `Packing override, case ${caseNum}`
-        }));
-        if (mine) {
-          runs = runs.map((x) => x.id === mine.id ? { ...x, onOrderQty: needTotal, amountMade: needTotal, toStock: 0, updatedAt: stamp } : x);
-        } else {
+      }
+      if (shortfall > 0) {
+        const found = shortfall;
+        moves.push(moveMade({ boxNumber: code, spec, qty: found, source: "override", note: `Found by packing override in ${order.id} case ${caseNum} \u2014 not on record anywhere` }));
+        extraFlags.push(`${found} of ${code} was not on record anywhere \u2014 recorded as found in this case; check its reel and date against the paper.`);
+        logs.push({ action: "add", entity: "bondingRun", entityId: code, summary: `Packing override: ${found} of ${code} recorded as found in ${order.id}, case ${caseNum}` });
+        if (!runs.some((x) => !x.deleted && String(x.boxNumber || "").trim().toUpperCase() === code.toUpperCase())) {
           const src = known && known.productSize ? known : null;
           runs = [...runs, {
             id: uid("br"),
@@ -12185,8 +12328,8 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
             baselineBatchCode: src ? src.baselineBatchCode || "" : "",
             evaCode: src ? src.evaCode || "" : "",
             tapeCode: src ? src.tapeCode || "" : "",
-            amountMade: needTotal,
-            onOrderQty: needTotal,
+            amountMade: found,
+            onOrderQty: 0,
             toStock: 0,
             workNumber: order.id,
             customerName: order.customer || "",
@@ -12728,6 +12871,7 @@ This changes the order quantities. It is recorded in the change log and can be r
   }
   function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = null, highlightKey = null, onAllocateBoxes = null }) {
     const [overrideOn, setOverrideOn] = useState(false);
+    const [planMoverOn, setPlanMoverOn] = useState(false);
     const { requirePassword: requireAdmin, modal: adminModal } = useAdminPasswordGate();
     const { lineItems, bondingRuns } = data;
     const orderId = order.id;
@@ -12924,7 +13068,7 @@ This changes the order quantities. It is recorded in the change log and can be r
       },
       /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: INK } }, "Paper & adjustments", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontWeight: 400 } }, " \u2014 print the list or the case map, packing override", manualCount || Object.keys(caseOverrides).length ? `, ${[manualCount ? `${manualCount} cases packed before the app` : null, Object.keys(caseOverrides).length ? `${Object.keys(caseOverrides).length} box${Object.keys(caseOverrides).length === 1 ? "" : "es"} moved by hand` : null].filter(Boolean).join(", ")}` : "")),
       /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 12 } }, toolsOpen ? "hide" : "show")
-    ), toolsOpen && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-4 flex-wrap" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => printPackingList(order, caseRows, setData) }, "\u{1F5A8} Print packing list"), /* @__PURE__ */ React.createElement(CaseMapPrintChooser, { order, caseRows, setData, data }), !overrideOn ? /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => requireAdmin(() => setOverrideOn(true)) }, "\u{1F512} Packing override") : /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setOverrideOn(false) }, "Turn override off")), /* @__PURE__ */ React.createElement(CaseMapPrint, { order, cases: caseRows }), overrideOn ? /* @__PURE__ */ React.createElement("div", { className: "mt-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Corrections \u2014 orders packed before the app"), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-4 flex-wrap text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("label", { htmlFor: "starting-case-num" }, "Already picked and packed outside the app up to case #"), /* @__PURE__ */ React.createElement(
+    ), toolsOpen && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-4 flex-wrap" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => printPackingList(order, caseRows, setData) }, "\u{1F5A8} Print packing list"), /* @__PURE__ */ React.createElement(CaseMapPrintChooser, { order, caseRows, setData, data }), !planMoverOn && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => requireAdmin(() => setPlanMoverOn(true)) }, "\u{1F512} Move plan between cases"), !overrideOn ? /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => requireAdmin(() => setOverrideOn(true)) }, "\u{1F512} Packing override") : /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setOverrideOn(false) }, "Turn override off")), planMoverOn && /* @__PURE__ */ React.createElement(PlanSlotMover, { order, data, setData, onClose: () => setPlanMoverOn(false) }), /* @__PURE__ */ React.createElement(CaseMapPrint, { order, cases: caseRows }), overrideOn ? /* @__PURE__ */ React.createElement("div", { className: "mt-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Corrections \u2014 orders packed before the app"), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-4 flex-wrap text-xs", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("label", { htmlFor: "starting-case-num" }, "Already picked and packed outside the app up to case #"), /* @__PURE__ */ React.createElement(
       "input",
       {
         id: "starting-case-num",
@@ -13573,25 +13717,6 @@ The manifest will list them as cases with no pallet, and the gross weight will b
         todo: "Put them back on the shelf, or onto the order that replaced it.",
         fixHere: true,
         ref: r.boxNumber || r.id
-      });
-    }
-    for (const box of new Set(runs.map((r) => r.boxNumber).filter(Boolean))) {
-      const rows = runs.filter((r) => r.boxNumber === box);
-      const onRows = rows.reduce((t, r) => t + (Number(r.amountMade) || 0), 0);
-      const inLedger = projectBox(data.movements || [], box, data.reservations).made;
-      if (!inLedger) continue;
-      if (onRows === inLedger) continue;
-      const tmpl = rows[0] || {};
-      add({
-        id: `rowvsledger:${box}:${onRows}:${inLedger}`,
-        kind: "Row and ledger differ",
-        severity: "high",
-        what: `${box}: the bonding ${rows.length === 1 ? "row says" : "rows say"} ${onRows} made, the ledger says ${inLedger}`,
-        detail: `${rows.length} row${rows.length === 1 ? "" : "s"} \xB7 ${tmpl.productSize || ""}`,
-        why: "Every figure for this box \u2014 what is on the shelf, what is free to promise, what still needs making \u2014 is worked out from the ledger. While the row disagrees, the two screens showing this box will not match.",
-        todo: "Count the box. Then correct whichever is wrong: the row in Bonding, or an adjustment in Box History with the reason.",
-        fixHere: true,
-        ref: box
       });
     }
     {
@@ -14494,12 +14619,6 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       if (!window.confirm(`Scrap ${n} \xD7 ${r.boxNumber}? Reason: ${d.reason.trim()}`)) return;
       setData((prev) => {
         let next = recordMovement(prev, moveScrapped({ boxNumber: r.boxNumber, spec: r.productSize, qty: n, orderId: r.workNumber || null, source: "move", note: d.reason.trim() }));
-        next = { ...next, bondingRuns: (next.bondingRuns || []).map((x) => x.id === r.id ? {
-          ...x,
-          amountMade: Math.max(0, (Number(x.amountMade) || 0) - n),
-          onOrderQty: x.workNumber ? Math.max(0, (Number(x.onOrderQty) || 0) - n) : x.onOrderQty,
-          toStock: x.workNumber ? x.toStock : Math.max(0, (Number(x.toStock) || 0) - n)
-        } : x) };
         next = raiseIssue(next, { kind: "other", boxNumber: r.boxNumber, summary: `${n} of ${r.boxNumber} scrapped`, detail: d.reason.trim() });
         return { ...next, ...appendLog(next, {
           action: "stock_adjustment",
@@ -14750,7 +14869,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       { label: "Baseline batch", value: bondingMatch.baselineBatchCode, mono: true },
       { label: "EVA code", value: bondingMatch.evaCode, mono: true },
       { label: "Tape code", value: bondingMatch.tapeCode, mono: true },
-      { label: "Amount made", value: bondingMatch.amountMade },
+      { label: "Bonded", value: bondingMatch.amountMade },
       { label: "Meters per box", value: bondingMatch.metersPerBox },
       { label: "Meterage used", value: bondingMatch.amountMade && bondingMatch.metersPerBox ? `${bondingMatch.amountMade * bondingMatch.metersPerBox}m` : null },
       { label: "On order", value: bondingMatch.onOrderQty },
@@ -15043,7 +15162,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     extrusionBatch: "extrusion"
   };
   var CHANGE_FIELD_LABELS = {
-    amountMade: "Amount made",
+    amountMade: "Bonded",
     reelsMade: "Reels made",
     productSize: "Product",
     boxNumber: "Box code",
@@ -19673,7 +19792,7 @@ Plan it?`
         },
         title: "Select all rows currently showing stock"
       }
-    )), /* @__PURE__ */ React.createElement(SortTh, { col: "productSize", sortBy: bondSortBy, sortDir: bondSortDir, onSort: bondToggleSort, className: "text-left px-3 py-2" }, "Product size"), /* @__PURE__ */ React.createElement(Th, { w: 160 }, "Baseline batch"), /* @__PURE__ */ React.createElement(SortTh, { col: "boxNumber", sortBy: bondSortBy, sortDir: bondSortDir, onSort: bondToggleSort, className: "text-left px-3 py-2", style: { width: 150 } }, "Batch code"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Manufactured"), /* @__PURE__ */ React.createElement(SortTh, { col: "amountMade", sortBy: bondSortBy, sortDir: bondSortDir, onSort: bondToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 100 } }, "Amount made"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "On order"), /* @__PURE__ */ React.createElement(Th, { w: 130 }, "EVA code"), /* @__PURE__ */ React.createElement(Th, { w: 130 }, "Tape code"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "To stock"), /* @__PURE__ */ React.createElement(Th, { w: 140 }, "Customer"), /* @__PURE__ */ React.createElement(Th, { w: 130 }, "Work number"), /* @__PURE__ */ React.createElement(ThR, { w: 100 }, "Meters/box"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Location"), /* @__PURE__ */ React.createElement(Th, { w: 90 }, "Checked"), /* @__PURE__ */ React.createElement(ThR, { w: 110 }, "Time of day"), /* @__PURE__ */ React.createElement(SortTh, { col: "date", sortBy: bondSortBy, sortDir: bondSortDir, onSort: bondToggleSort, startDir: "desc", className: "text-left px-3 py-2", style: { width: 140 } }, "Date"), /* @__PURE__ */ React.createElement(SortTh, { col: "meterageUsed", sortBy: bondSortBy, sortDir: bondSortDir, onSort: bondToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 110 } }, "Meterage used"), /* @__PURE__ */ React.createElement(Th, null, "Comments"), /* @__PURE__ */ React.createElement("th", { style: { width: 70 } }))), /* @__PURE__ */ React.createElement("tbody", null, visibleBondingRuns.map((r, i) => {
+    )), /* @__PURE__ */ React.createElement(SortTh, { col: "productSize", sortBy: bondSortBy, sortDir: bondSortDir, onSort: bondToggleSort, className: "text-left px-3 py-2" }, "Product size"), /* @__PURE__ */ React.createElement(Th, { w: 160 }, "Baseline batch"), /* @__PURE__ */ React.createElement(SortTh, { col: "boxNumber", sortBy: bondSortBy, sortDir: bondSortDir, onSort: bondToggleSort, className: "text-left px-3 py-2", style: { width: 150 } }, "Batch code"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Manufactured"), /* @__PURE__ */ React.createElement(SortTh, { col: "amountMade", sortBy: bondSortBy, sortDir: bondSortDir, onSort: bondToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 100 } }, "Bonded"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "On order"), /* @__PURE__ */ React.createElement(Th, { w: 130 }, "EVA code"), /* @__PURE__ */ React.createElement(Th, { w: 130 }, "Tape code"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "To stock"), /* @__PURE__ */ React.createElement(Th, { w: 140 }, "Customer"), /* @__PURE__ */ React.createElement(Th, { w: 130 }, "Work number"), /* @__PURE__ */ React.createElement(ThR, { w: 100 }, "Meters/box"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Location"), /* @__PURE__ */ React.createElement(Th, { w: 90 }, "Checked"), /* @__PURE__ */ React.createElement(ThR, { w: 110 }, "Time of day"), /* @__PURE__ */ React.createElement(SortTh, { col: "date", sortBy: bondSortBy, sortDir: bondSortDir, onSort: bondToggleSort, startDir: "desc", className: "text-left px-3 py-2", style: { width: 140 } }, "Date"), /* @__PURE__ */ React.createElement(SortTh, { col: "meterageUsed", sortBy: bondSortBy, sortDir: bondSortDir, onSort: bondToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 110 } }, "Meterage used"), /* @__PURE__ */ React.createElement(Th, null, "Comments"), /* @__PURE__ */ React.createElement("th", { style: { width: 70 } }))), /* @__PURE__ */ React.createElement("tbody", null, visibleBondingRuns.map((r, i) => {
       const isEditing = editingId === r.id;
       return /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}`, background: isEditing ? "#FFF8EF" : void 0 } }, isEditing ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-2" }), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-2", colSpan: 19 }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(BondingSpecFields, { values: editForm, setValues: setEditForm, listId: "size-catalog-bonding" }), /* @__PURE__ */ React.createElement(BondingRestFields, { values: editForm, setValues: setEditForm, orderOptions, availableBatches, existingBoxCodes: bondingRuns.map((r2) => r2.boxNumber).filter(Boolean), allBondingRuns: bondingRuns, knownBatchCodes, onUnknownBatch: handleUnknownBatch, materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, lineItems: data.lineItems, evaRuns: data.evaRuns, fullData: data, excludeRunId: editingId }), editError && /* @__PURE__ */ React.createElement("div", { ref: editErrorRef, className: "text-sm mb-2", style: { color: RED, whiteSpace: "pre-line", lineHeight: 1.5 } }, "\u26A0 ", editError)))) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-center" }, Number(r.toStock) > 0 && /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: selectedForRemoval.has(r.id), onChange: () => toggleSelectedForRemoval(r.id) })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 no-wrap" }, /* @__PURE__ */ React.createElement(Spec, { s: r.productSize, checked: String(r.checked) === "Yes" })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.baselineBatchCode ? (() => {
         const batch = batchByCode.get(r.baselineBatchCode);
@@ -19734,7 +19853,7 @@ Plan it?`
           ["Reel batch", r.baselineBatchCode],
           ["EVA code", r.evaCode],
           ["Tape code", r.tapeCode],
-          ["Amount made", r.amountMade],
+          ["Bonded", r.amountMade],
           ["On order", r.onOrderQty],
           ["To stock", r.toStock],
           ["Customer", runCustomer(data.orders, r)],
@@ -22387,14 +22506,14 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const setData = (updater) => {
       setDataRaw((prevData) => {
         const nextData = typeof updater === "function" ? updater(prevData) : updater;
-        const locked = confirmedCaseLockRefusal(prevData, nextData);
+        const locked = confirmedCaseLockRefusal(prevData, nextData) || planOrderRefusal(prevData, nextData);
         if (locked) {
           try {
             setTimeout(() => window.alert(locked.message), 0);
           } catch (e) {
           }
           return raiseIssue(prevData, {
-            kind: "confirmed_case_locked",
+            kind: locked.kind || "confirmed_case_locked",
             orderId: locked.orderId,
             boxNumber: null,
             summary: locked.summary,
