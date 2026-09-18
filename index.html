@@ -1195,7 +1195,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-18.11";
+  var APP_VERSION = "2026-09-19.4";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1306,23 +1306,9 @@
        is a PROJECTION over this, never stored. Appends from two devices merge
        trivially, so none of the tombstone/key-merge trouble applies here. */
     movements: { table: "movements", cols: { boxNumber: "box_number", orderId: "order_id", caseNum: "case_num", reelCode: "reel_code", sourceId: "source_id" } },
-    /* THE PROMISES. A reservation is a DECISION somebody made, not an
-       observation of the world, which is why it never belonged in the movements
-       ledger. `allocated`/`unallocated` were re-derived on every render, so the
-       answer moved under you: two screens could disagree about whose box it was
-       and neither was wrong. One row per promise, issued and closed. */
-    reservations: { table: "reservations", cols: {
-      boxNumber: "box_number",
-      orderId: "order_id",
-      caseNum: "case_num",
-      placedQty: "placed_qty",
-      sourceId: "source_id",
-      createdAt: "created_at",
-      createdBy: "created_by",
-      closedAt: "closed_at",
-      closedBy: "closed_by",
-      closedReason: "closed_reason"
-    } },
+    /* THE PROMISES table (`reservations`) is RETIRED, 19 Sep 2026 — no longer
+       pushed or pulled. Nothing reads or writes it; the table stays in Supabase,
+       untouched, until it is archived and dropped. */
     /* The register of loud flags. The app never blocks an operator, but nothing
        that costs a customer gets to disappear quietly either. */
     issues: { table: "issues", cols: { raisedAt: "raised_at", raisedBy: "raised_by", orderId: "order_id", boxNumber: "box_number", resolvedAt: "resolved_at", resolvedBy: "resolved_by" } },
@@ -1575,6 +1561,9 @@
     for (const [key, { table, cols }] of Object.entries(SYNC_TABLES)) {
       const strip = key === "ncrs" ? (r) => {
         const { productSpec, ...clean } = r;
+        return clean;
+      } : key === "cases" ? (r) => {
+        const { contents, ...clean } = r;
         return clean;
       } : (r) => r;
       out[table] = (data[key] || []).map((r) => syncToSnakeRow(strip(r), cols));
@@ -2436,17 +2425,16 @@
     return Math.max(orderTotalItems(lineItems, orderId) - orderMadeQty(bondingRuns, lineItems, orderId), 0);
   }
   function computeMakeLists(order, data) {
-    const items = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description));
+    const items = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description) && !isSmallItem(li.description));
     const availableBatches = batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || [], data.stockPicks || []);
     const shelf = isStrongTapeOrder(order) ? [] : boxedStockAvailable(data.bondingRuns, data.stockPicks || []);
     const taken = {};
-    const placedBySpec = {};
+    const inCasePool = [];
     for (const c of data.cases || []) {
       if (!c || c.deleted || c.orderId !== order.id) continue;
       for (const [box, q] of Object.entries(c.contents || {})) {
-        const run = (data.bondingRuns || []).find((r) => !r.deleted && r.boxNumber === box);
-        const spec = run ? run.productSize : box;
-        placedBySpec[spec] = (placedBySpec[spec] || 0) + (Number(q) || 0);
+        const n = Number(q) || 0;
+        if (n > 0) inCasePool.push({ spec: specOfBoxInCase(data, order.id, c.caseNum, box) || box, left: n });
       }
     }
     const bondingItems = [];
@@ -2454,7 +2442,14 @@
     const shelfItems = [];
     for (const li of items) {
       let inCases = 0;
-      for (const [spec, q] of Object.entries(placedBySpec)) if (looseSpecMatch(spec, li.description)) inCases += q;
+      const wantReel = isReelSpec(li.description);
+      for (const e of inCasePool) {
+        if (inCases >= Number(li.qty) || e.left <= 0) continue;
+        if (isReelSpec(e.spec) !== wantReel || !looseSpecMatch(e.spec, li.description)) continue;
+        const take = Math.min(e.left, Number(li.qty) - inCases);
+        e.left -= take;
+        inCases += take;
+      }
       const outstanding = Math.max(0, Number(li.qty) - inCases);
       if (outstanding <= 0) continue;
       let stillNeeded = outstanding;
@@ -4308,7 +4303,7 @@
     for (const o of active) {
       const rows = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === o.id);
       let planned = 0, inCases = 0;
-      const room = [];
+      const room = [], lockedGaps = [];
       for (const c of rows) {
         for (const [pSpec, pQty] of Object.entries(casePlanned(c))) {
           const planRef = wantedRef ? planFormId(data, o.id, pSpec, c) : null;
@@ -4353,6 +4348,7 @@
           customer: o.customer,
           needs: outstanding,
           room,
+          lockedGaps,
           priority: o.priority ?? null,
           dueDate: o.dueDate || null
         });
@@ -5137,6 +5133,67 @@
     }).sort((a, b) => b.sameSize - a.sameSize || a.caseNum - b.caseNum);
   }
   function moveBoxRow(data, rowId, dest) {
+    const row = (data.bondingRuns || []).find((r) => r.id === rowId && !r.deleted);
+    const toOrder = dest && dest.toOrderId || null;
+    if (!row || !toOrder || toOrder === (row.workNumber || null)) return moveBoxRowToCase(data, rowId, dest);
+    const have = row.workNumber ? Number(row.onOrderQty) || 0 : Number(row.toStock) || 0;
+    const qty = dest.qty == null || dest.qty === "" ? have : Math.round(Number(dest.qty) || 0);
+    if (!(qty > 0) || qty > have || !(data.orders || []).some((o) => o.id === toOrder && !o.deleted)) return moveBoxRowToCase(data, rowId, dest);
+    const need = (ordersNeedingSpec(data, row.productSize, [], { formId: row.formId || void 0 }).needing || []).find((n) => n.orderId === toOrder);
+    if (!need) return { error: `${toOrder} needs no more ${row.productSize} \u2014 its cases already hold everything that was ordered.` };
+    if (qty > need.needs) return { error: `${toOrder} needs only ${need.needs} more ${row.productSize} \u2014 ordered less what is already in its cases. Move ${need.needs}, not ${qty}.` };
+    const typed = dest.caseNum != null && String(dest.caseNum).trim() !== "" ? Number(dest.caseNum) : null;
+    let plan;
+    if (typed != null) {
+      const r = need.room.find((x) => x.caseNum === typed);
+      if (!r && (need.lockedGaps || []).some((x) => x.caseNum === typed)) return { error: `Case ${typed} on ${toOrder} is confirmed, so it is locked. To change it, stand at the case, photograph what is in it and send the photo to Claude.` };
+      if (!r) return { error: `Case ${typed} on ${toOrder} has no room planned for ${row.productSize}. ${need.room.length ? `The plan has room in case ${need.room.map((x) => x.caseNum).join(", ")}.` : ""}` };
+      if (r.spaces < qty) return { error: `Case ${typed} on ${toOrder} has room for ${r.spaces} of ${row.productSize}, not ${qty}.` };
+      plan = [{ caseNum: typed, qty }];
+    } else {
+      plan = [];
+      let left = qty;
+      for (const r of need.room) {
+        if (left <= 0) break;
+        const q = Math.min(r.spaces, left);
+        if (q > 0) {
+          plan.push({ caseNum: r.caseNum, qty: q });
+          left -= q;
+        }
+      }
+      if (left > 0) {
+        const lg = need.lockedGaps || [];
+        return { error: `${toOrder}'s case plan has room for only ${qty - left} of ${row.productSize}.${lg.length ? ` The rest of its gap is in confirmed case${lg.length > 1 ? "s" : ""} ${lg.map((x) => x.caseNum).join(", ")}, which are locked \u2014 a photo of the case is needed to change it.` : ""}` };
+      }
+    }
+    let working = data, res = null;
+    const parts = [];
+    for (const step of plan) {
+      res = moveBoxRowToCase(working, rowId, { ...dest, qty: step.qty, caseNum: step.caseNum });
+      if (res.error) return res;
+      working = res.patch;
+      parts.push(`${step.qty} into case ${step.caseNum}`);
+    }
+    const summary = plan.length === 1 ? res.summary : `Moved ${qty} \xD7 ${row.boxNumber || row.id} to order ${toOrder}: ${parts.join(", ")}${qty < have ? ` (${have - qty} left where it was)` : ""}`;
+    return { patch: working, summary, qty, partial: qty < have, cases: plan };
+  }
+  function planForMove(data, row, toOrder, qty) {
+    if (!row || !toOrder) return null;
+    const need = (ordersNeedingSpec(data, row.productSize, [], { formId: row.formId || void 0 }).needing || []).find((n) => n.orderId === toOrder);
+    if (!need) return { needs: 0, cases: [] };
+    const cases = [];
+    let left = Math.min(Number(qty) || 0, need.needs);
+    for (const r of need.room) {
+      if (left <= 0) break;
+      const q = Math.min(r.spaces, left);
+      if (q > 0) {
+        cases.push({ caseNum: r.caseNum, qty: q });
+        left -= q;
+      }
+    }
+    return { needs: need.needs, cases };
+  }
+  function moveBoxRowToCase(data, rowId, dest) {
     const runs = data.bondingRuns || [];
     const row = runs.find((r) => r.id === rowId && !r.deleted);
     if (!row) return { error: "That box row no longer exists." };
@@ -5151,6 +5208,9 @@
     if (toOrder === fromOrder && !reCase) return { error: fromOrder ? "It's already on that order \u2014 pick a case to move it between cases." : "It's already on the shelf." };
     if (toOrder && !(data.orders || []).some((o) => o.id === toOrder && !o.deleted)) return { error: `Order ${toOrder} not found.` };
     if (!toOrder && !String(dest.location || row.location || "").trim()) return { error: "Pick a shelf location for boxes going back to stock." };
+    if (toOrder && !reCase && (dest.caseNum == null || String(dest.caseNum).trim() === "")) {
+      return { error: `No case on ${toOrder} to put these in.` };
+    }
     const customer = toOrder ? (data.orders || []).find((o) => o.id === toOrder)?.customer || "" : "";
     const moved = {
       ...row,
@@ -5189,9 +5249,53 @@
       if (refusal) return { error: refusal };
     }
     const facts = [];
-    if (!reCase) {
-      if (fromOrder) facts.push(moveUnallocated({ boxNumber: box, spec, qty, orderId: fromOrder, source: "move", sourceId: row.id }));
-      if (toOrder) facts.push(moveAllocated({ boxNumber: box, spec, qty, orderId: toOrder, source: "move", sourceId: row.id }));
+    if (reCase) {
+      const want = dest.caseNum != null ? Number(dest.caseNum) : null;
+      const held = /* @__PURE__ */ new Map();
+      for (const m of data.movements || []) {
+        if (!m || m.deleted || m.orderId !== toOrder || m.caseNum == null || m.caseNum === "") continue;
+        if (String(m.boxNumber || "").trim().toUpperCase() !== String(box || "").trim().toUpperCase()) continue;
+        if (m.kind !== "placed" && m.kind !== "unplaced") continue;
+        const n = Number(m.caseNum);
+        held.set(n, (held.get(n) || 0) + (m.kind === "placed" ? 1 : -1) * (Number(m.qty) || 0));
+      }
+      const elsewhere = [...held.entries()].filter(([n, q]) => n !== want && q > 0).reduce((t, [, q]) => t + q, 0);
+      if (elsewhere < qty) return { error: `Only ${elsewhere} of ${box} are in other cases on ${toOrder} \u2014 can't move ${qty} into case ${want}.` };
+      let left = qty;
+      for (const n of [...held.keys()].sort((a, b) => a - b)) {
+        if (left <= 0 || n === want) continue;
+        const take = Math.min(Math.max(0, held.get(n)), left);
+        if (take <= 0) continue;
+        facts.push(moveUnplaced({ boxNumber: box, spec, qty: take, orderId: toOrder, caseNum: n, source: "move", sourceId: row.id, note: `Re-cased to case ${want}` }));
+        left -= take;
+      }
+    }
+    if (!reCase && fromOrder) {
+      const held = /* @__PURE__ */ new Map();
+      for (const m of data.movements || []) {
+        if (!m || m.deleted || m.orderId !== fromOrder || m.caseNum == null || m.caseNum === "") continue;
+        if (String(m.boxNumber || "").trim().toUpperCase() !== String(box || "").trim().toUpperCase()) continue;
+        if (m.kind !== "placed" && m.kind !== "unplaced") continue;
+        const n = Number(m.caseNum);
+        held.set(n, (held.get(n) || 0) + (m.kind === "placed" ? 1 : -1) * (Number(m.qty) || 0));
+      }
+      let left = qty;
+      for (const n of [...held.keys()].sort((a, b) => b - a)) {
+        if (left <= 0) break;
+        const take = Math.min(Math.max(0, held.get(n)), left);
+        if (take <= 0) continue;
+        facts.push(moveUnplaced({
+          boxNumber: box,
+          spec,
+          qty: take,
+          orderId: fromOrder,
+          caseNum: n,
+          source: "move",
+          sourceId: row.id,
+          note: toOrder ? `Moved to ${toOrder}` : "Moved back to the shelf"
+        }));
+        left -= take;
+      }
     }
     const chosenCase = toOrder && dest.caseNum != null && String(dest.caseNum).trim() !== "" ? Number(dest.caseNum) : null;
     const caseMaps = [];
@@ -5220,7 +5324,7 @@
         splitOut = split;
         return o;
       }) };
-      if (splitOut) caseMaps.push({ caseOverrides: { [box]: splitOut } });
+      if (splitOut && !reCase) caseMaps.push({ caseOverrides: { [box]: splitOut } });
       facts.push(movePlaced({ boxNumber: box, spec, qty, orderId: toOrder, caseNum: chosenCase, source: "move", sourceId: row.id }));
       let confirmedWrite = null;
       working = { ...working, orders: (working.orders || []).map((o) => {
@@ -5333,10 +5437,7 @@
   function setLedgerMovements(m) {
     LEDGER_MOVEMENTS = m || [];
   }
-  var LEDGER_RESERVATIONS = [];
-  function setLedgerReservations(r) {
-    LEDGER_RESERVATIONS = r || [];
-  }
+  var NO_PROMISES = [];
   var LEDGER_CASE_HOLDINGS = /* @__PURE__ */ new Map();
   function caseHoldingsFrom(cases, orders) {
     const gone = new Set((orders || []).filter((o) => o && (o.stage === "Shipped" || o.stage === "Cancelled")).map((o) => o.id));
@@ -5358,7 +5459,7 @@
     LEDGER_ORDERS = orders || [];
   }
   function ledgerView() {
-    return { movements: LEDGER_MOVEMENTS, cases: LEDGER_CASES, orders: LEDGER_ORDERS, reservations: LEDGER_RESERVATIONS };
+    return { movements: LEDGER_MOVEMENTS, cases: LEDGER_CASES, orders: LEDGER_ORDERS, reservations: NO_PROMISES };
   }
   var BOX_MATERIALS = DEFAULT_MATERIALS;
   function setBoxMaterials(m) {
@@ -6951,7 +7052,7 @@ Here's the order:`;
     });
   }
   function reservationsFor(data, boxNumber) {
-    return (data.reservations || []).filter((r) => r && !r.deleted && r.state !== "released" && String(r.boxNumber || "").trim().toUpperCase() === String(boxNumber || "").trim().toUpperCase());
+    return [];
   }
   function freeToPromise(data, boxNumber) {
     return placeOf(data, boxNumber).available;
@@ -6965,71 +7066,7 @@ Here's the order:`;
     return [...out.entries()].map(([id, qty]) => ({ orderId: id, qty }));
   }
   function promiseRows(data, filter = {}) {
-    const norm = (s) => String(s || "").trim().toUpperCase();
-    const wantBox = filter.boxNumber ? norm(filter.boxNumber) : null;
-    const live = (data.reservations || []).filter((r) => r && !r.deleted && r.state !== "released");
-    const keep = (r) => (!wantBox || norm(r.boxNumber) === wantBox) && (!filter.orderId || r.orderId === filter.orderId) && (filter.caseNum == null || Number(r.caseNum) === Number(filter.caseNum)) && (!filter.spec || looseSpecMatch(filter.spec, r.spec || ""));
-    return live.filter(keep).map((r) => ({
-      boxNumber: norm(r.boxNumber),
-      orderId: r.orderId,
-      caseNum: r.caseNum == null ? null : Number(r.caseNum),
-      spec: r.spec || null,
-      qty: Number(r.qty) || 0,
-      placedQty: Number(r.placedQty) || 0,
-      /* When the promise was made. The report of boxes promised and not yet
-         carried sorts on it — oldest first, because a box promised on Monday
-         is a different problem from one promised an hour ago. It used to read
-         the movement's `at`; the reservation's own createdAt is the same fact,
-         first-hand. */
-      since: r.createdAt || null,
-      sourceId: r.sourceId || null
-    }));
-  }
-  function ledgerPlacedByOrderBox(movements) {
-    const net = /* @__PURE__ */ new Map();
-    for (const m of movements || []) {
-      if (!m || m.deleted || m.kind !== "placed" && m.kind !== "unplaced") continue;
-      if (!m.orderId || m.caseNum == null || m.caseNum === "") continue;
-      const k = `${m.orderId}|${upBox(m.boxNumber)}`;
-      net.set(k, (net.get(k) || 0) + (m.kind === "placed" ? 1 : -1) * (Number(m.qty) || 0));
-    }
-    return net;
-  }
-  function reservationsWithLedgerPlaced(reservations, movements, only = null) {
-    const net = ledgerPlacedByOrderBox(movements);
-    const groups = /* @__PURE__ */ new Map();
-    (reservations || []).forEach((r, i) => {
-      if (!r || r.deleted || r.state === "released" || !r.orderId) return;
-      const k = `${r.orderId}|${upBox(r.boxNumber)}`;
-      if (only && k !== only) return;
-      if (!groups.has(k)) groups.set(k, []);
-      groups.get(k).push(i);
-    });
-    let changed = false;
-    const out = [...reservations || []];
-    for (const [k, idxs] of groups) {
-      idxs.sort((a, b) => String(out[a].createdAt || "").localeCompare(String(out[b].createdAt || "")));
-      let pool = Math.max(0, net.get(k) || 0);
-      for (const i of idxs) {
-        const r = out[i];
-        const qty = Number(r.qty) || 0;
-        const placedQty = Math.min(pool, qty);
-        pool -= placedQty;
-        const state = placedQty >= qty && qty > 0 ? "placed" : "open";
-        if ((Number(r.placedQty) || 0) === placedQty && r.state === state) continue;
-        out[i] = { ...r, placedQty, state };
-        changed = true;
-      }
-    }
-    return changed ? out : reservations;
-  }
-  function syncReservationsToLedger(data, orderId, boxNumber) {
-    const k = `${orderId}|${upBox(boxNumber)}`;
-    const next = reservationsWithLedgerPlaced(data.reservations || [], data.movements || [], k);
-    if (next === data.reservations) return data;
-    const stamp = (/* @__PURE__ */ new Date()).toISOString();
-    const before = new Set(data.reservations || []);
-    return { ...data, reservations: next.map((r) => r && !before.has(r) ? { ...r, updatedAt: stamp } : r) };
+    return [];
   }
   function promisedOutstanding(rows) {
     return rows.reduce((t, r) => t + Math.max(0, (Number(r.qty) || 0) - (Number(r.placedQty) || 0)), 0);
@@ -7042,77 +7079,6 @@ Here's the order:`;
     return [...out.entries()].filter(([, q]) => q > 0).map(([orderId, qty]) => ({ orderId, qty }));
   }
   function applyMovementToReservation(next, row, stamp) {
-    const out = applyMovementToReservationRaw(next, row, stamp);
-    if (!row || !row.orderId || !row.boxNumber) return out;
-    return syncReservationsToLedger(out, row.orderId, row.boxNumber);
-  }
-  function applyMovementToReservationRaw(next, row, stamp) {
-    const kind = row.kind;
-    if (kind !== "allocated" && kind !== "unallocated" && kind !== "placed" && kind !== "unplaced") return next;
-    if (!row.orderId || !row.boxNumber) return next;
-    const box = String(row.boxNumber).trim().toUpperCase();
-    const qty = Number(row.qty) || 0;
-    if (!qty) return next;
-    const rows = [...next.reservations || []];
-    const mine = (i) => {
-      const r = rows[i];
-      return r && !r.deleted && r.state !== "released" && String(r.boxNumber || "").trim().toUpperCase() === box && r.orderId === row.orderId;
-    };
-    const idxs = rows.map((_, i) => i).filter(mine).sort((a, b) => String(rows[a].createdAt || "").localeCompare(String(rows[b].createdAt || "")));
-    if (kind === "allocated") {
-      const same = idxs.find((i) => Number(rows[i].caseNum) === Number(row.caseNum ?? NaN));
-      if (same != null && row.caseNum != null) {
-        rows[same] = { ...rows[same], qty: (Number(rows[same].qty) || 0) + qty, updatedAt: stamp, updatedBy: currentActor() };
-      } else if (row.caseNum == null && idxs.length && rows[idxs[0]].caseNum == null) {
-        const i = idxs[0];
-        rows[i] = { ...rows[i], qty: (Number(rows[i].qty) || 0) + qty, updatedAt: stamp, updatedBy: currentActor() };
-      } else {
-        rows.push({
-          id: uid("res"),
-          boxNumber: box,
-          orderId: row.orderId,
-          caseNum: row.caseNum ?? null,
-          spec: row.spec || null,
-          qty,
-          placedQty: 0,
-          state: "open",
-          source: row.source || "app",
-          sourceId: row.sourceId || null,
-          note: row.note || null,
-          createdAt: stamp,
-          createdBy: currentActor(),
-          closedAt: null,
-          closedBy: null,
-          closedReason: null,
-          deleted: false,
-          deletedAt: null,
-          updatedAt: stamp,
-          updatedBy: currentActor()
-        });
-      }
-      return { ...next, reservations: rows };
-    }
-    if (kind === "unallocated") {
-      let left = qty;
-      for (const i of [...idxs].reverse()) {
-        if (left <= 0) break;
-        const have = Number(rows[i].qty) || 0;
-        const take = Math.min(have, left);
-        const nowQty = have - take;
-        rows[i] = nowQty > 0 ? { ...rows[i], qty: nowQty, updatedAt: stamp, updatedBy: currentActor() } : {
-          ...rows[i],
-          qty: have,
-          state: "released",
-          closedAt: stamp,
-          closedBy: currentActor(),
-          closedReason: row.note || "Released",
-          updatedAt: stamp,
-          updatedBy: currentActor()
-        };
-        left -= take;
-      }
-      return { ...next, reservations: rows };
-    }
     return next;
   }
   function applyMovementToCaseRow(next, row, stamp) {
@@ -7200,13 +7166,67 @@ Here's the order:`;
     const kx = Object.keys(x), ky = Object.keys(y);
     return kx.length === ky.length && kx.every((k) => x[k] === y[k]);
   }
+  function confirmedCaseLockRefusal(prev, next) {
+    if (!prev || !next || prev === next) return null;
+    if (prev.cases === next.cases && prev.movements === next.movements) return null;
+    const locked = (prev.cases || []).filter((c) => c && !c.deleted && c.confirmed);
+    if (!locked.length) return null;
+    const before = ledgerCaseContents(prev.movements || []);
+    const after = prev.movements === next.movements ? before : ledgerCaseContents(next.movements || []);
+    const nextRows = new Map((next.cases || []).filter((c) => c).map((c) => [c.id, c]));
+    for (const c of locked) {
+      const key = `${c.orderId}|${Number(c.caseNum)}`;
+      const now = nextRows.get(c.id);
+      const where = `Case ${c.caseNum} on ${c.orderId}`;
+      const tail = " It is confirmed, so it is locked. To change it, stand at the case, photograph what is in it and send the photo to Claude.";
+      if (!now || now.deleted) return { orderId: c.orderId, summary: `${where} is confirmed \u2014 removing it was refused`, message: `${where} was not removed.${tail}` };
+      if (!now.confirmed) return { orderId: c.orderId, summary: `${where} is confirmed \u2014 taking the confirmation off was refused`, message: `${where} is still confirmed.${tail}` };
+      const was = {}, now2 = {};
+      for (const [k, v] of Object.entries(before.get(key) || {})) was[upBox(k)] = (was[upBox(k)] || 0) + (Number(v) || 0);
+      for (const [k, v] of Object.entries(after.get(key) || {})) now2[upBox(k)] = (now2[upBox(k)] || 0) + (Number(v) || 0);
+      const lost = Object.keys(was).find((b) => (now2[b] || 0) < was[b]);
+      if (lost) {
+        return {
+          orderId: c.orderId,
+          summary: `${where} is confirmed \u2014 taking ${lost} out of it was refused`,
+          message: `Nothing was changed: the ${was[lost]} \xD7 ${lost} confirmed in ${where} stay there.${tail} Boxes can still be added to fill the case.`
+        };
+      }
+      const added = Object.keys(now2).filter((b) => (now2[b] || 0) > (was[b] || 0));
+      if (added.length) {
+        const plan = Object.entries(casePlanned(now || c)).map(([spec, q]) => ({ spec, q: Number(q) || 0, held: 0 }));
+        const lineFor = (box) => {
+          const spec = specOfBoxInCase(next, c.orderId, c.caseNum, box) || "";
+          return plan.find((l) => isReelSpec(l.spec) === isReelSpec(spec) && looseSpecMatch(spec, l.spec)) || null;
+        };
+        for (const [b, q] of Object.entries(now2)) {
+          const l = lineFor(b);
+          if (l) l.held += q;
+        }
+        for (const b of added) {
+          const l = lineFor(b);
+          if (!l) return {
+            orderId: c.orderId,
+            summary: `${where} is confirmed \u2014 ${b} is not on its plan`,
+            message: `Nothing was changed: ${b} is not a product the plan has due in ${where}.`
+          };
+          if (l.held > l.q) return {
+            orderId: c.orderId,
+            summary: `${where} is confirmed \u2014 more ${l.spec} than its plan`,
+            message: `Nothing was changed: ${where} is planned for ${l.q} \xD7 ${l.spec}; this would make it ${l.held}. Only ${Math.max(0, l.q - (l.held - ((now2[b] || 0) - (was[b] || 0))))} more are due there.`
+          };
+        }
+      }
+    }
+    return null;
+  }
   function casesWithLedgerContents(cases, movements) {
     const byCase = ledgerCaseContents(movements);
     let changed = false;
     const next = (cases || []).map((c) => {
       if (!c || c.deleted) return c;
       const led = byCase.get(`${c.orderId}|${Number(c.caseNum)}`);
-      const want = led && Object.keys(led).length ? led : c.contents == null ? null : {};
+      const want = led && Object.keys(led).length ? led : c.confirmed ? {} : null;
       if (want === null ? c.contents == null : c.contents != null && sameContents(c.contents, want)) return c;
       changed = true;
       return { ...c, contents: want };
@@ -7219,7 +7239,7 @@ Here's the order:`;
     const cases = (data.cases || []).map((c) => {
       if (!c || c.deleted || orderId && c.orderId !== orderId) return c;
       const led = byCase.get(`${c.orderId}|${Number(c.caseNum)}`);
-      const want = led && Object.keys(led).length ? led : c.contents == null ? null : {};
+      const want = led && Object.keys(led).length ? led : c.confirmed ? {} : null;
       if (want === null ? c.contents == null : c.contents != null && sameContents(c.contents, want)) return c;
       changed = true;
       return { ...c, contents: want, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
@@ -7332,6 +7352,7 @@ Here's the order:`;
   }
   function recordMovement(prev, m) {
     if (m && Number(m.qty) === 0 && m.kind !== "adjusted") return prev;
+    if (m && (m.kind === "allocated" || m.kind === "unallocated")) return prev;
     const why = movementRefusal(prev, m);
     if (why) return refuseMovement(prev, m, why);
     const stamp = (/* @__PURE__ */ new Date()).toISOString();
@@ -7390,6 +7411,7 @@ Here's the order:`;
     let trial = prev;
     for (const m of rows) {
       if (m && Number(m.qty) === 0 && m.kind !== "adjusted") continue;
+      if (m && (m.kind === "allocated" || m.kind === "unallocated")) continue;
       const why = movementRefusal(trial, m);
       if (why) return refuseMovement(prev, m, `${why} Nothing from this batch of ${rows.length} was recorded.`);
       trial = recordMovement(trial, m);
@@ -7413,8 +7435,8 @@ Here's the order:`;
     const p = projectBox(data.movements || [], boxNumber, data.reservations);
     const onShelfRaw = (p.made || 0) - (p.scrapped || 0) - (p.shipped || 0) - packed;
     const onShelf = Math.max(0, onShelfRaw);
-    const promised = promisedOutstanding(promiseRows(data, { boxNumber }));
-    const available = Math.max(0, onShelf - promised);
+    const promised = 0;
+    const available = onShelf;
     const bays = [...new Set((data.bondingRuns || []).filter((r) => r && !r.deleted && String(r.boxNumber || "").trim().toUpperCase() === want).map((r) => String(r.location || "").trim()).filter((loc) => BOX_LOCATIONS.includes(loc)))].sort();
     return { inCases, packed, onShelf, onShelfRaw, promised, available, bays, unplaced: bays.length ? 0 : onShelf };
   }
@@ -7427,26 +7449,16 @@ Here's the order:`;
     }
     return bits.length ? bits.join(" \xB7 ") : "nothing left";
   }
-  function projectBox(movements, boxNumber, reservations = LEDGER_RESERVATIONS) {
+  function projectBox(movements, boxNumber) {
     const rows = (movements || []).filter((m) => !m.deleted && m.boxNumber === boxNumber);
     const made = rows.filter((m) => m.kind === "made" || m.kind === "adjusted").reduce((t, m) => t + Number(m.qty || 0), 0);
     const byOrder = {};
-    const box = String(boxNumber || "").trim().toUpperCase();
-    const res = reservations || [];
-    if (res.length > 0) {
-      for (const r of res) {
-        if (!r || r.deleted || r.state === "released") continue;
-        if (String(r.boxNumber || "").trim().toUpperCase() !== box) continue;
-        byOrder[r.orderId] = (byOrder[r.orderId] || 0) + (Number(r.qty) || 0);
-      }
-    } else {
-      for (const r of rows) {
-        if (r.kind !== "allocated" && r.kind !== "unallocated") continue;
-        if (!r.orderId) continue;
-        byOrder[r.orderId] = (byOrder[r.orderId] || 0) + (r.kind === "allocated" ? 1 : -1) * (Number(r.qty) || 0);
-      }
-      for (const [orderId, qty] of Object.entries(byOrder)) if (qty <= 0) delete byOrder[orderId];
+    for (const r of rows) {
+      if (r.kind !== "placed" && r.kind !== "unplaced") continue;
+      if (!r.orderId || r.caseNum == null || r.caseNum === "") continue;
+      byOrder[r.orderId] = (byOrder[r.orderId] || 0) + (r.kind === "placed" ? 1 : -1) * (Number(r.qty) || 0);
     }
+    for (const [orderId, qty] of Object.entries(byOrder)) if (qty <= 0) delete byOrder[orderId];
     const allocated = Object.values(byOrder).reduce((t, q) => t + q, 0);
     const scrapped = rows.filter((m) => m.kind === "scrapped").reduce((t, m) => t + Number(m.qty || 0), 0);
     const shipped = rows.filter((m) => m.kind === "shipped").reduce((t, m) => t + Number(m.qty || 0), 0);
@@ -9301,6 +9313,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
           moves.push(moveAllocated({ boxNumber: it.boxNumber, spec: it.productSize || r?.productSize, qty: taken, orderId: order.id, reelCode: r?.baselineBatchCode || it.baselineBatchCode || null, source: "pick" }));
         }
         for (const dmg of newDamagedPicks) moves.push(moveScrapped({ boxNumber: dmg.boxNumber, spec: dmg.productSpec, qty: Number(dmg.qtyPicked), source: "pick", note: dmg.comments }));
+        const unplacedPicks = [];
         for (const it of toApply) {
           const r = prevData.bondingRuns.find((row) => row.id === it.id);
           const taken = it.isNewlyAdded ? Number(it.confirmedQty) : Math.min(Number(it.confirmedQty), Number(r?.toStock || 0));
@@ -9312,7 +9325,10 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
             continue;
           }
           const split = pendingCaseSuggestions[it.boxNumber];
-          if (!Array.isArray(split)) continue;
+          if (!Array.isArray(split) || !split.length) {
+            unplacedPicks.push({ boxNumber: it.boxNumber, qty: taken });
+            continue;
+          }
           let left = taken;
           for (const s of split) {
             if (left <= 0) break;
@@ -9323,6 +9339,15 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
           }
         }
         result = recordMovements(result, moves);
+        for (const u of unplacedPicks) {
+          result = raiseIssue(result, {
+            kind: "pick_no_case",
+            orderId: order.id,
+            boxNumber: u.boxNumber,
+            summary: `${u.qty} of ${u.boxNumber} were picked for ${order.id} with no case chosen \u2014 not moved`,
+            detail: `A box is either on a shelf or in a case. This pick named no case for ${u.boxNumber}, so nothing was recorded and the ${u.qty} boxes still read as on the shelf. Put them in a case from the case map, or pick them again choosing the case.`
+          });
+        }
         return result;
       });
       if (shortfalls.length > 0) {
@@ -14549,7 +14574,9 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         }
       )), toShelf && /* @__PURE__ */ React.createElement("div", { style: { width: 130 } }, /* @__PURE__ */ React.createElement(Select, { value: d.location, onChange: (e) => setDraft(r, { location: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Which shelf?"), BOX_LOCATIONS.map((loc) => /* @__PURE__ */ React.createElement("option", { key: loc, value: loc }, loc)))), d.to && d.to !== "__shelf__" && d.to !== "__scrap__" && (() => {
         const cases = openCasesForOrder(data, d.to, r.productSize);
-        return /* @__PURE__ */ React.createElement("div", { style: { width: 170 } }, /* @__PURE__ */ React.createElement(Select, { value: d.caseNum || "", onChange: (e) => setDraft(r, { caseNum: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Case: let the app decide"), cases.map((c2) => /* @__PURE__ */ React.createElement("option", { key: c2.caseNum, value: c2.caseNum }, "Case ", c2.caseNum, " \u2014 ", c2.planned, " of ", c2.capacity, c2.sameSize ? " \xB7 same size" : "", c2.why ? ` \xB7 ${c2.why}` : ""))));
+        const auto = planForMove(data, r, d.to, d.qty === "" ? holds(r) : d.qty);
+        const autoText = !auto || !auto.cases.length ? "No room planned for this size" : "Plan: " + auto.cases.map((c2) => `case ${c2.caseNum}${auto.cases.length > 1 ? ` \xD7${c2.qty}` : ""}`).join(", ");
+        return /* @__PURE__ */ React.createElement("div", { style: { width: 200 } }, /* @__PURE__ */ React.createElement(Select, { value: d.caseNum || "", onChange: (e) => setDraft(r, { caseNum: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, autoText), cases.map((c2) => /* @__PURE__ */ React.createElement("option", { key: c2.caseNum, value: c2.caseNum }, "Case ", c2.caseNum, " \u2014 ", c2.planned, " of ", c2.capacity, c2.sameSize ? " \xB7 same size" : "", c2.why ? ` \xB7 ${c2.why}` : ""))));
       })(), d.to === "__scrap__" && /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 200px", minWidth: 0 } }, /* @__PURE__ */ React.createElement(TextInput, { value: d.reason || "", placeholder: "Why? (goes on the NCR)", onChange: (e) => setDraft(r, { reason: e.target.value }) })), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => d.to === "__scrap__" ? scrap(r) : move(r), disabled: !d.to }, d.to === "__scrap__" ? "Scrap" : "Move")), d.qty !== "" && Number(d.qty) > 0 && Number(d.qty) < have && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, have - Number(d.qty), " will stay where ", have - Number(d.qty) === 1 ? "it is" : "they are", "."));
     }), error && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: RED } }, error));
   }
@@ -22360,6 +22387,20 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const setData = (updater) => {
       setDataRaw((prevData) => {
         const nextData = typeof updater === "function" ? updater(prevData) : updater;
+        const locked = confirmedCaseLockRefusal(prevData, nextData);
+        if (locked) {
+          try {
+            setTimeout(() => window.alert(locked.message), 0);
+          } catch (e) {
+          }
+          return raiseIssue(prevData, {
+            kind: "confirmed_case_locked",
+            orderId: locked.orderId,
+            boxNumber: null,
+            summary: locked.summary,
+            detail: locked.message
+          });
+        }
         return stampUpdatedAt(prevData, nextData);
       });
     };
@@ -22367,13 +22408,9 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       () => casesWithLedgerContents(storedData.cases || [], storedData.movements || []),
       [storedData.cases, storedData.movements]
     );
-    const ledgerReservations = useMemo(
-      () => reservationsWithLedgerPlaced(storedData.reservations || [], storedData.movements || []),
-      [storedData.reservations, storedData.movements]
-    );
+    const ledgerReservations = NO_PROMISES;
     setLedgerMovements(storedData.movements || []);
     setCatalogue(storedData.products || [], storedData.productForms || []);
-    setLedgerReservations(ledgerReservations);
     setLedgerCaseHoldings(ledgerCases, storedData.orders || []);
     setBoxMaterials(storedData.materials);
     const data = useMemo(() => {
@@ -22801,7 +22838,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           };
         }
         skipNextPushRef.current = true;
-        setDataRaw(merged);
+        setDataRaw(syncCaseRowsToLedger(merged, null));
         prevDataRef.current = merged;
         setPendingCount(0);
         markSynced();
@@ -22829,7 +22866,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         noteWatermarks(res);
         const remote = res.data;
         skipNextPushRef.current = true;
-        setDataRaw((prevData) => mergeRemoteIntoData(prevData, remote));
+        setDataRaw((prevData) => syncCaseRowsToLedger(mergeRemoteIntoData(prevData, remote), null));
         setSyncStatus("connected");
         flash("Refreshed from cloud");
       } catch (e) {
@@ -22858,7 +22895,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       }
       skipNextPushRef.current = true;
       const merged = mergeRemoteIntoData(dataRef.current, remote);
-      setDataRaw(merged);
+      setDataRaw(syncCaseRowsToLedger(merged, null));
       localStorage.setItem(SYNC_PREF_KEY, "true");
       localStorage.setItem("matrixSyncEmail", email);
       setSyncEmail(email);
@@ -22890,7 +22927,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           const remote2 = res.data;
           skipNextPushRef.current = true;
           const merged2 = mergeRemoteIntoData(dataRef.current, remote2);
-          setDataRaw(merged2);
+          setDataRaw(syncCaseRowsToLedger(merged2, null));
           markSynced();
           if (syncStatusRef.current === "offline") {
             try {
