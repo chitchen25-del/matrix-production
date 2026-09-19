@@ -1195,7 +1195,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-19.21";
+  var APP_VERSION = "2026-09-19.22";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1281,7 +1281,7 @@
     return `${days}d ago`;
   }
   var SYNC_TABLES = {
-    orders: { table: "orders", cols: { orderDate: "order_date", dueDate: "due_date", shippedDate: "shipped_date" } },
+    orders: { table: "orders", cols: { orderDate: "order_date", dueDate: "due_date", shippedDate: "shipped_date", customerId: "customer_id" } },
     /* A case is a RECORD, not a number that other data hangs off. Weight and
        pallet used to be keyed by case NUMBER — and numbers move whenever
        something is packed, confirmed or displaced, so 14.18 kg recorded against
@@ -2128,6 +2128,60 @@
   }
   function formIdForLine(data, li) {
     return formIdFor(data, li.description, { reel: isReelSpec(li.description) });
+  }
+  var custNorm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  function findCustomer(data, name) {
+    const n = custNorm(name);
+    if (!n) return null;
+    return (data.customers || []).find((c) => c && !c.deleted && custNorm(c.companyName) === n) || null;
+  }
+  function nearCustomer(data, name) {
+    const n = custNorm(name);
+    if (!n || findCustomer(data, name)) return null;
+    const lev = (a, b) => {
+      const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+      for (let j = 1; j <= b.length; j++) d[0][j] = j;
+      for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      return d[a.length][b.length];
+    };
+    let best = null;
+    for (const c of data.customers || []) {
+      if (!c || c.deleted) continue;
+      const m = custNorm(c.companyName);
+      if (!m) continue;
+      const close = m.length >= 4 && n.length >= 4 && (m.includes(n) || n.includes(m)) || lev(m, n) <= 2;
+      if (close && (!best || Math.abs(m.length - n.length) < Math.abs(custNorm(best.companyName).length - n.length))) best = c;
+    }
+    return best;
+  }
+  function fillCustomerReferences(d) {
+    if (!d || !Array.isArray(d.orders) || !d.orders.some((o) => o && !o.deleted && !o.customerId && String(o.customer || "").trim())) return d;
+    let customers = d.customers || [];
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    const orders = d.orders.map((o) => {
+      if (!o || o.deleted || o.customerId || !String(o.customer || "").trim()) return o;
+      let c = customers.find((x) => x && !x.deleted && custNorm(x.companyName) === custNorm(o.customer));
+      if (!c) {
+        const id = "cust-" + String(o.customer).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+        c = customers.find((x) => x && x.id === id) || { id, companyName: String(o.customer).trim(), createdAt: stamp, updatedAt: stamp, updatedBy: currentActor(), deleted: false };
+        if (!customers.includes(c)) customers = [...customers, c];
+      }
+      return { ...o, customerId: c.id };
+    });
+    return { ...d, orders, customers };
+  }
+  function ordersWithCustomer(orders, customers) {
+    const byId = new Map((customers || []).filter((c) => c && !c.deleted).map((c) => [c.id, c]));
+    let changed = false;
+    const out = (orders || []).map((o) => {
+      const c = o && o.customerId && byId.get(o.customerId);
+      if (!c) return o;
+      const customer = c.companyName || o.customer, address = String(o.address || "").trim() ? o.address : c.address || "";
+      if (customer === o.customer && address === o.address) return o;
+      changed = true;
+      return { ...o, customer, address };
+    });
+    return changed ? out : orders;
   }
   function runsNamedByReference(runs) {
     const forms = CATALOGUE && CATALOGUE.productForms ? CATALOGUE.productForms : [];
@@ -7061,11 +7115,17 @@ Here's the order:`;
     const handleConfirm = () => {
       if (!parsed || !boxType) return;
       if (unresolvedLines(data, parsed.lineItems).length) return;
+      let custName = parsed.customer.trim();
+      const near = nearCustomer(data, custName);
+      if (near && window.confirm(`Is "${custName}" the same customer as "${near.companyName}", already on file?
+
+OK = yes, use ${near.companyName}
+Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       setData((prevData) => {
         const id = nextOrderId(prevData.orders);
         const newOrder = {
           id,
-          customer: parsed.customer.trim(),
+          customer: custName,
           address: parsed.address || "",
           reference: parsed.reference || "",
           currency: parsed.currency || "GBP",
@@ -10450,10 +10510,16 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
     }));
     const addOrder = () => {
       if (!newOrder.customer.trim() || !newOrder.boxType) return;
+      let custName = newOrder.customer.trim();
+      const near = nearCustomer(data, custName);
+      if (near && window.confirm(`Is "${custName}" the same customer as "${near.companyName}", already on file?
+
+OK = yes, use ${near.companyName}
+Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       const id = nextOrderId(allOrders);
       setOrders((prevOrders) => [...prevOrders, {
         id,
-        customer: newOrder.customer.trim(),
+        customer: custName,
         address: newOrder.address || "",
         reference: newOrder.reference,
         currency: newOrder.currency || "GBP",
@@ -22946,7 +23012,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const setData = (updater) => {
       setDataRaw((prevStored) => {
         const prevData = withLedgerFigures(prevStored);
-        const nextData = fillProductReferences(typeof updater === "function" ? updater(prevData) : updater);
+        const nextData = fillCustomerReferences(fillProductReferences(typeof updater === "function" ? updater(prevData) : updater));
         const locked = confirmedCaseLockRefusal(prevData, nextData) || planOrderRefusal(prevData, nextData) || identityGateRefusal(prevData, nextData);
         if (locked) {
           try {
@@ -22977,6 +23043,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       const runs = ledgerCorrectedRuns(runsNamedByReference(storedData.bondingRuns || []), storedData.movements || []);
       const base = {
         ...withGlueRunSettings(withMaterialFigures(storedData)),
+        orders: ordersWithCustomer(storedData.orders, storedData.customers),
         bondingRuns: runs,
         cases: ledgerCases,
         reservations: ledgerReservations,
