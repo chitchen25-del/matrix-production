@@ -1195,7 +1195,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-19.20";
+  var APP_VERSION = "2026-09-19.21";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -2162,10 +2162,14 @@
     }
     return keys.size === 1 ? [...keys][0] : null;
   }
-  function movementFormId(data, m, runsById, formsByCode) {
+  function movementFormId(data, m, runsById, formsByCode, inCaseForm) {
     if (!m) return null;
     const run = m.sourceId && runsById.get(m.sourceId);
     if (run && run.formId) return run.formId;
+    if (m.orderId && m.caseNum != null && m.caseNum !== "") {
+      const f = inCaseForm.get(`${m.orderId}|${Number(m.caseNum)}|${String(m.boxNumber || "").trim().toUpperCase()}`);
+      if (f) return f;
+    }
     const set = formsByCode.get(String(m.boxNumber || "").trim().toUpperCase());
     return set && set.size === 1 ? [...set][0] : null;
   }
@@ -2183,10 +2187,12 @@
           formsByCode.get(k).add(r.formId);
         }
       }
+      const inCaseForm = /* @__PURE__ */ new Map();
+      for (const m of movements) if (m && !m.deleted && m.formId && m.kind === "placed" && m.orderId && m.caseNum != null) inCaseForm.set(`${m.orderId}|${Number(m.caseNum)}|${String(m.boxNumber || "").trim().toUpperCase()}`, m.formId);
       let changed = false;
       const out = movements.map((m) => {
         if (!m || m.formId) return m;
-        const f = movementFormId(d, m, runsById, formsByCode);
+        const f = movementFormId(d, m, runsById, formsByCode, inCaseForm);
         if (!f) return m;
         changed = true;
         return { ...m, formId: f };
@@ -7651,6 +7657,47 @@ Here's the order:`;
           orderId,
           summary: `${orderId}: the case plan would no longer match the order`,
           message: `Nothing was changed. On ${orderId} the order says ${m.ordered} \xD7 ${m.spec} but the case plan would hold ${m.planned}.${fresh.length > 1 ? ` (${fresh.length - 1} more product${fresh.length > 2 ? "s" : ""} the same.)` : ""} The order says how many; the plan only says where. Change the quantity through the order's amendment so the plan follows it.`
+        };
+      }
+    }
+    return null;
+  }
+  function identityGateRefusal(prev, next) {
+    if (!prev || !next || prev === next) return null;
+    if (!(next.products || []).length || !(next.productForms || []).length) return null;
+    const isNew = (prevRows, r) => r && !r.deleted && !(prevRows || []).some((x) => x && x.id === r.id);
+    if (next.glueLineBatches !== prev.glueLineBatches) {
+      for (const b of next.glueLineBatches || []) {
+        if (!isNew(prev.glueLineBatches, b) || b.sizeKey) continue;
+        const name = b.productSize || ((next.glueRuns || []).find((r) => r.id === b.runId) || {}).productSize || "(no size)";
+        return {
+          kind: "not_in_catalogue",
+          orderId: null,
+          summary: `Reel ${b.batchNumber || ""} \u2014 ${name} is not in the catalogue`,
+          message: `Nothing was saved: ${name} is not a size in the product catalogue. The glue line is the gate \u2014 add the size to the catalogue (Products) first, then log the reel.`
+        };
+      }
+    }
+    if (next.bondingRuns !== prev.bondingRuns) {
+      for (const r of next.bondingRuns || []) {
+        if (!isNew(prev.bondingRuns, r) || r.formId || isSmallItem(r.productSize || "")) continue;
+        return {
+          kind: "not_in_catalogue",
+          orderId: null,
+          summary: `${r.boxNumber || "A run"} \u2014 ${r.productSize || "no product"} is not in the catalogue`,
+          message: `Nothing was saved: ${r.productSize || "this product"} ${r.packageType === "Reel" ? "as a reel " : ""}is not in the product catalogue. Add it (Products) first, then log the run.`
+        };
+      }
+    }
+    if (next.movements !== prev.movements) {
+      for (const m of next.movements || []) {
+        if (!isNew(prev.movements, m) || m.formId) continue;
+        if (/^PROFILE-/i.test(String(m.boxNumber || "")) || isSmallItem(m.spec || "")) continue;
+        return {
+          kind: "not_in_catalogue",
+          orderId: m.orderId || null,
+          summary: `${m.boxNumber} \u2014 no catalogue product for this movement`,
+          message: `Nothing was saved: the app cannot tell which catalogue product ${m.boxNumber} is. Check the box code is right, or ask for it to be added to the catalogue.`
         };
       }
     }
@@ -22899,8 +22946,8 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const setData = (updater) => {
       setDataRaw((prevStored) => {
         const prevData = withLedgerFigures(prevStored);
-        const nextData = typeof updater === "function" ? updater(prevData) : updater;
-        const locked = confirmedCaseLockRefusal(prevData, nextData) || planOrderRefusal(prevData, nextData);
+        const nextData = fillProductReferences(typeof updater === "function" ? updater(prevData) : updater);
+        const locked = confirmedCaseLockRefusal(prevData, nextData) || planOrderRefusal(prevData, nextData) || identityGateRefusal(prevData, nextData);
         if (locked) {
           try {
             setTimeout(() => window.alert(locked.message), 0);
@@ -22914,7 +22961,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
             detail: locked.message
           });
         }
-        return retireFossils(stampUpdatedAt(prevData, fillProductReferences(nextData)));
+        return retireFossils(stampUpdatedAt(prevData, nextData));
       });
     };
     const ledgerCases = useMemo(
