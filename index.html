@@ -1195,7 +1195,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-19.16";
+  var APP_VERSION = "2026-09-19.17";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -2127,6 +2127,35 @@
   }
   function formIdForLine(data, li) {
     return formIdFor(data, li.description, { reel: isReelSpec(li.description) });
+  }
+  function mergeSplitRuns(rows) {
+    const groups = /* @__PURE__ */ new Map(), idOf = {};
+    for (const r of rows || []) {
+      const key = [r.boxTypeId || "", r.packageType || "Box", r.formId || "", r.productSize || ""].join("|");
+      let g = groups.get(key);
+      if (!g) {
+        g = { first: r, parts: [] };
+        groups.set(key, g);
+      }
+      g.parts.push(r);
+      idOf[r.id] = g.first.id;
+    }
+    const out = [];
+    for (const { first, parts } of groups.values()) {
+      const made = parts.reduce((t, p) => t + (Number(p.amountMade) || 0), 0);
+      const orders = [...new Set(parts.filter((p) => p.workNumber).map((p) => p.workNumber))];
+      const allToOne = orders.length === 1 && parts.every((p) => p.workNumber === orders[0]);
+      out.push({
+        ...first,
+        amountMade: made,
+        workNumber: allToOne ? orders[0] : null,
+        customerName: allToOne ? parts.find((p) => p.workNumber)?.customerName || first.customerName || "" : "",
+        onOrderQty: parts.reduce((t, p) => t + (p.workNumber ? Number(p.onOrderQty) || 0 : 0), 0),
+        toStock: parts.reduce((t, p) => t + (p.workNumber ? 0 : Number(p.toStock ?? p.amountMade) || 0), 0),
+        location: parts.map((p) => p.location).find(Boolean) || first.location || ""
+      });
+    }
+    return { rows: out, idOf };
   }
   function catalogueBoxFacts(data, spec) {
     const formId = formIdFor(data, spec, { reel: false });
@@ -5262,6 +5291,67 @@
     }).sort((a, b) => b.sameSize - a.sameSize || a.caseNum - b.caseNum);
   }
   function moveBoxRow(data, rowId, dest) {
+    if (String(rowId || "").includes("~") && !(data.bondingRuns || []).some((r) => r.id === rowId)) {
+      const [baseId, fromOrder] = String(rowId).split("~");
+      const base = (data.bondingRuns || []).find((r) => r.id === baseId && !r.deleted);
+      if (!base) return { error: "That box row no longer exists." };
+      const box = String(base.boxNumber || "").trim().toUpperCase();
+      const held = /* @__PURE__ */ new Map();
+      for (const m of data.movements || []) {
+        if (!m || m.deleted || m.orderId !== fromOrder || m.caseNum == null || m.caseNum === "") continue;
+        if (String(m.boxNumber || "").trim().toUpperCase() !== box || m.kind !== "placed" && m.kind !== "unplaced") continue;
+        held.set(Number(m.caseNum), (held.get(Number(m.caseNum)) || 0) + (m.kind === "placed" ? 1 : -1) * (Number(m.qty) || 0));
+      }
+      const have2 = [...held.values()].reduce((t, q) => t + Math.max(0, q), 0);
+      const qty2 = dest.qty == null || dest.qty === "" ? have2 : Math.round(Number(dest.qty) || 0);
+      if (!(qty2 > 0) || qty2 > have2) return { error: `${fromOrder} holds ${have2} of ${box}; can't move ${qty2}.` };
+      const toOrder2 = dest.toOrderId || null;
+      if (toOrder2 === fromOrder) return { error: "Choose a different order, or use Move between cases." };
+      if (!toOrder2 && !String(dest.location || base.location || "").trim()) return { error: "Pick a shelf location for boxes going back to stock." };
+      const facts = [];
+      let left = qty2;
+      for (const cn of [...held.keys()].sort((a, b) => b - a)) {
+        if (left <= 0) break;
+        const take = Math.min(Math.max(0, held.get(cn)), left);
+        if (take <= 0) continue;
+        facts.push(moveUnplaced({
+          boxNumber: box,
+          spec: base.productSize,
+          qty: take,
+          orderId: fromOrder,
+          caseNum: cn,
+          source: "move",
+          sourceId: base.id,
+          note: toOrder2 ? `Moved to ${toOrder2}` : "Moved back to the shelf"
+        }));
+        left -= take;
+      }
+      let working2 = recordMovements(data, facts);
+      let summary2 = `Moved ${qty2} \xD7 ${box} off ${fromOrder}`;
+      if (toOrder2) {
+        const need2 = (ordersNeedingSpec(working2, base.productSize, [], { formId: base.formId || void 0 }).needing || []).find((x) => x.orderId === toOrder2);
+        if (!need2) return { error: `${toOrder2} needs no more ${base.productSize} \u2014 its cases already hold everything that was ordered.` };
+        if (qty2 > need2.needs) return { error: `${toOrder2} needs only ${need2.needs} more ${base.productSize}.` };
+        const put = [];
+        let l2 = qty2;
+        for (const r of need2.room) {
+          if (l2 <= 0) break;
+          const q = Math.min(r.spaces, l2);
+          if (q > 0) {
+            put.push(movePlaced({ boxNumber: box, spec: base.productSize, qty: q, orderId: toOrder2, caseNum: r.caseNum, source: "move", sourceId: base.id, note: `Moved from ${fromOrder}` }));
+            l2 -= q;
+          }
+        }
+        if (l2 > 0) return { error: `${toOrder2}'s case plan has room for only ${qty2 - l2} of ${base.productSize}.` };
+        working2 = recordMovements(working2, put);
+        summary2 += ` to ${toOrder2}: ${put.map((m) => `${m.qty} into case ${m.caseNum}`).join(", ")}`;
+      } else {
+        const loc = String(dest.location || base.location || "").trim();
+        if (loc && loc !== base.location) working2 = { ...working2, bondingRuns: working2.bondingRuns.map((r) => r.id === base.id ? { ...r, location: loc } : r) };
+        summary2 += ` back to the shelf at ${loc}`;
+      }
+      return { patch: working2, summary: summary2, qty: qty2, partial: qty2 < have2 };
+    }
     const row = (data.bondingRuns || []).find((r) => r.id === rowId && !r.deleted);
     const toOrder = dest && dest.toOrderId || null;
     if (!row || !toOrder || toOrder === (row.workNumber || null)) return moveBoxRowToCase(data, rowId, dest);
@@ -14851,11 +14941,27 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         setError(trial.error);
         return;
       }
+      const locked = confirmedCaseLockRefusal(data, trial.patch);
+      if (locked) {
+        setError(locked.message);
+        return;
+      }
       if (!window.confirm(`${trial.summary}?`)) return;
+      let realError = null;
       setData((prev) => {
         const res = moveBoxRow(prev, r.id, dest);
-        return res.error ? prev : res.patch;
+        if (res.error) {
+          realError = res.error;
+          return prev;
+        }
+        return res.patch;
       });
+      setTimeout(() => {
+        if (realError) {
+          setDone(null);
+          setError(realError);
+        }
+      }, 0);
       setDone(trial.summary);
       setDrafts((x) => {
         const n = { ...x };
@@ -19451,10 +19557,12 @@ Plan it?`
       }
       setPendingAdd({ newRuns, going });
     };
-    const performAdd = ({ newRuns, going }) => {
+    const performAdd = ({ newRuns: destinations, going }) => {
       setPendingAdd(null);
-      const newRun = newRuns.find((r) => r.workNumber) || newRuns[0];
-      const goesToOrder = !!(newRun.workNumber && Number(newRun.onOrderQty) > 0 && newRun.boxNumber);
+      const { rows: newRuns, idOf } = mergeSplitRuns(destinations);
+      const firstToOrder = destinations.find((d) => d.workNumber && Number(d.onOrderQty) > 0);
+      const newRun = firstToOrder && newRuns.find((r) => r.id === idOf[firstToOrder.id]) || newRuns[0];
+      const goesToOrder = !!(firstToOrder && newRun.boxNumber);
       const batchCode = (form.baselineBatchCode || "").trim();
       const reelCleared = form.reelCleared === "Yes";
       const previousBatchCleared = batchCode ? batchByCode.get(batchCode)?.cleared || "No" : null;
@@ -19475,37 +19583,40 @@ Plan it?`
           bondingRuns: runsAfter,
           glueLineBatches: batchCode ? prevData.glueLineBatches.map((b) => b.batchNumber === batchCode ? { ...b, cleared: reelCleared || autoCleared ? "Yes" : b.cleared || "No" } : b) : prevData.glueLineBatches
         };
-        working = recordMovements(working, newRuns.flatMap((r) => [
-          moveMade({ boxNumber: r.boxNumber, spec: r.productSize, qty: Number(r.amountMade) || 0, reelCode: r.baselineBatchCode || null, source: "bonding", sourceId: r.id }),
-          ...r.workNumber && Number(r.onOrderQty) > 0 ? (() => {
-            const g = (going || []).find((x) => x && x.kind === "order" && x.orderId === r.workNumber && String(x.boxNumber || "") === String(r.boxNumber || ""));
-            const split = g && Array.isArray(g.split) && g.split.length ? g.split : [];
-            const firstCase = split.length ? split[0].caseNum : g && g.cases && g.cases.length ? Number(g.cases[0]) : null;
-            return [
-              moveAllocated({
-                boxNumber: r.boxNumber,
-                spec: r.productSize,
-                qty: Number(r.onOrderQty),
-                orderId: r.workNumber,
-                caseNum: firstCase,
-                reelCode: r.baselineBatchCode || null,
-                source: "bonding",
-                sourceId: r.id
-              }),
-              ...split.map((sp) => movePlaced({
-                boxNumber: r.boxNumber,
-                spec: r.productSize,
-                qty: sp.qty,
-                orderId: r.workNumber,
-                caseNum: sp.caseNum,
-                reelCode: r.baselineBatchCode || null,
-                source: "bonding",
-                sourceId: r.id,
-                note: "Placed at bonding \u2014 the case bonding named is the move"
-              }))
-            ];
-          })() : []
-        ]));
+        working = recordMovements(working, [
+          ...newRuns.map((r) => moveMade({ boxNumber: r.boxNumber, spec: r.productSize, qty: Number(r.amountMade) || 0, reelCode: r.baselineBatchCode || null, source: "bonding", sourceId: r.id })),
+          ...destinations.flatMap((r0) => {
+            const r = { ...r0, id: idOf[r0.id] || r0.id };
+            return r.workNumber && Number(r.onOrderQty) > 0 ? (() => {
+              const g = (going || []).find((x) => x && x.kind === "order" && x.orderId === r.workNumber && String(x.boxNumber || "") === String(r.boxNumber || ""));
+              const split = g && Array.isArray(g.split) && g.split.length ? g.split : [];
+              const firstCase = split.length ? split[0].caseNum : g && g.cases && g.cases.length ? Number(g.cases[0]) : null;
+              return [
+                moveAllocated({
+                  boxNumber: r.boxNumber,
+                  spec: r.productSize,
+                  qty: Number(r.onOrderQty),
+                  orderId: r.workNumber,
+                  caseNum: firstCase,
+                  reelCode: r.baselineBatchCode || null,
+                  source: "bonding",
+                  sourceId: r.id
+                }),
+                ...split.map((sp) => movePlaced({
+                  boxNumber: r.boxNumber,
+                  spec: r.productSize,
+                  qty: sp.qty,
+                  orderId: r.workNumber,
+                  caseNum: sp.caseNum,
+                  reelCode: r.baselineBatchCode || null,
+                  source: "bonding",
+                  sourceId: r.id,
+                  note: "Placed at bonding \u2014 the case bonding named is the move"
+                }))
+              ];
+            })() : [];
+          })
+        ]);
         if (reelCleared && batchCode) {
           const b = prevData.glueLineBatches.find((x) => x.batchNumber === batchCode);
           const d = b ? reelDiscrepancy(b, runsAfter) : null;
@@ -19536,12 +19647,12 @@ Plan it?`
             if (r.boxTypeId && made > 0) working = { ...working, ...recordMaterialMovement(working, r.boxTypeId, -made, "auto_box", r.id, r.boxNumber || r.id) };
           }
         }
-        if (newRuns.length > 1) {
+        if (destinations.length > 1) {
           working = { ...working, ...appendLog(working, {
             action: "split",
             entity: "bondingRun",
             entityId: newRun.id,
-            summary: `Logged box ${newRun.boxNumber || newRun.id} split at entry across ${newRuns.filter((r) => r.workNumber).length} order${newRuns.filter((r) => r.workNumber).length === 1 ? "" : "s"} (${newRuns.filter((r) => r.workNumber).map((r) => `${r.onOrderQty} to ${r.workNumber}`).join(", ")})${newRuns.some((r) => !r.workNumber) ? `, ${newRuns.find((r) => !r.workNumber).toStock} left to stock` : ""}`
+            summary: `Logged box ${newRun.boxNumber || newRun.id} across ${destinations.filter((r) => r.workNumber).length} order${destinations.filter((r) => r.workNumber).length === 1 ? "" : "s"} (${destinations.filter((r) => r.workNumber).map((r) => `${r.onOrderQty} to ${r.workNumber}`).join(", ")})${destinations.some((r) => !r.workNumber) ? `, ${destinations.find((r) => !r.workNumber).toStock} left to stock` : ""} \u2014 one record${newRuns.length > 1 ? ` per carton (${newRuns.length})` : ""}`
           }) };
         }
         return working;
@@ -19594,7 +19705,7 @@ Plan it?`
         timerId
       });
       if (goesToOrder && typeof jumpToPacking === "function") {
-        jumpToPacking(newRun.workNumber, [newRun.boxNumber]);
+        jumpToPacking(firstToOrder.workNumber, [newRun.boxNumber]);
       }
     };
     const undoJustAdded = () => {
