@@ -1195,7 +1195,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-19.22";
+  var APP_VERSION = "2026-09-19.23";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1312,6 +1312,7 @@
     /* The register of loud flags. The app never blocks an operator, but nothing
        that costs a customer gets to disappear quietly either. */
     issues: { table: "issues", cols: { raisedAt: "raised_at", raisedBy: "raised_by", orderId: "order_id", boxNumber: "box_number", resolvedAt: "resolved_at", resolvedBy: "resolved_by" } },
+    discrepancyDismissals: { table: "discrepancy_dismissals", cols: { dismissedBy: "dismissed_by", dismissedAt: "dismissed_at", deletedAt: "deleted_at" } },
     lineItems: { table: "line_items", cols: {
       formId: "form_id",
       orderId: "order_id",
@@ -14005,26 +14006,57 @@ The manifest will list them as cases with no pallet, and the gross weight will b
   }
   var DISCREPANCY_DISMISSALS_KEY = "matrixDiscrepancyDismissals";
   var DISCREPANCY_SEEN_KEY = "matrixDiscrepancySeen";
+  var DISMISSALS = {};
+  var DISMISSAL_SETDATA = null;
+  function setDismissalsFromData(rows, setData) {
+    const m = {};
+    for (const r of rows || []) if (r && !r.deleted && r.id) m[r.id] = { at: r.dismissedAt, by: r.dismissedBy, reason: r.reason || "" };
+    DISMISSALS = m;
+    if (setData) DISMISSAL_SETDATA = setData;
+  }
   function readDiscrepancyDismissals() {
-    try {
-      return JSON.parse(localStorage.getItem(DISCREPANCY_DISMISSALS_KEY) || "{}");
-    } catch {
-      return {};
-    }
+    return DISMISSALS;
   }
   function writeDiscrepancyDismissal(id, reason) {
-    try {
-      const all = readDiscrepancyDismissals();
-      all[id] = { at: (/* @__PURE__ */ new Date()).toISOString(), by: currentActor(), reason: String(reason || "").trim() };
-      localStorage.setItem(DISCREPANCY_DISMISSALS_KEY, JSON.stringify(all));
-    } catch {
-    }
+    if (!DISMISSAL_SETDATA || !id) return;
+    const at = (/* @__PURE__ */ new Date()).toISOString(), by = currentActor();
+    DISMISSALS = { ...DISMISSALS, [id]: { at, by, reason: String(reason || "").trim() } };
+    DISMISSAL_SETDATA((prev) => {
+      const rows = prev.discrepancyDismissals || [];
+      const row = { id, reason: String(reason || "").trim(), dismissedBy: by, dismissedAt: at, deleted: false, deletedAt: null };
+      return { ...prev, discrepancyDismissals: rows.some((r) => r.id === id) ? rows.map((r) => r.id === id ? { ...r, ...row } : r) : [...rows, row] };
+    });
   }
   function clearDiscrepancyDismissal(id) {
+    if (!DISMISSAL_SETDATA || !id) return;
+    const next = { ...DISMISSALS };
+    delete next[id];
+    DISMISSALS = next;
+    DISMISSAL_SETDATA((prev) => ({ ...prev, discrepancyDismissals: (prev.discrepancyDismissals || []).map((r) => r.id === id ? { ...r, deleted: true, deletedAt: (/* @__PURE__ */ new Date()).toISOString() } : r) }));
+  }
+  function migrateLocalDismissals(setData) {
+    let local = {};
     try {
-      const all = readDiscrepancyDismissals();
-      delete all[id];
-      localStorage.setItem(DISCREPANCY_DISMISSALS_KEY, JSON.stringify(all));
+      local = JSON.parse(localStorage.getItem(DISCREPANCY_DISMISSALS_KEY) || "{}");
+    } catch {
+      return;
+    }
+    const ids = Object.keys(local || {});
+    if (!ids.length) return;
+    setData((prev) => {
+      const rows = prev.discrepancyDismissals || [];
+      const add = ids.filter((id) => !rows.some((r) => r.id === id)).map((id) => ({
+        id,
+        reason: local[id].reason || "",
+        dismissedBy: local[id].by || null,
+        dismissedAt: local[id].at || (/* @__PURE__ */ new Date()).toISOString(),
+        deleted: false,
+        deletedAt: null
+      }));
+      return add.length ? { ...prev, discrepancyDismissals: [...rows, ...add] } : prev;
+    });
+    try {
+      localStorage.removeItem(DISCREPANCY_DISMISSALS_KEY);
     } catch {
     }
   }
@@ -14454,7 +14486,7 @@ The manifest will list them as cases with no pallet, and the gross weight will b
     return out;
   }
   function DiscrepanciesView({ data, onLookUp }) {
-    const [dismissals, setDismissals] = useState(() => readDiscrepancyDismissals());
+    const dismissals = readDiscrepancyDismissals();
     const [showDismissed, setShowDismissed] = useState(false);
     const all = useMemo(() => findDiscrepancies(data), [data]);
     const live = all.filter((f) => !dismissals[f.id]);
@@ -14469,11 +14501,9 @@ The manifest will list them as cases with no pallet, and the gross weight will b
 Why is this alright? (kept with the date, and it comes back if the data changes)`);
       if (reason === null) return;
       writeDiscrepancyDismissal(f.id, reason);
-      setDismissals(readDiscrepancyDismissals());
     };
     const restore = (f) => {
       clearDiscrepancyDismissal(f.id);
-      setDismissals(readDiscrepancyDismissals());
     };
     return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Discrepancies", subtitle: "Problems the app can see in its own records. Worked out fresh every time \u2014 fix the thing and the line disappears on its own." }), live.length === 0 && !showDismissed && /* @__PURE__ */ React.createElement(Panel, { className: "p-5 text-sm", style: { color: INK_MUTED } }, "\u2713 Nothing to chase. Every box adds up, every batch exists, every order is real."), shown.map((f) => /* @__PURE__ */ React.createElement(Panel, { key: f.id, className: "p-4 mb-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-start justify-between gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0, flex: "1 1 320px" } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 flex-wrap mb-1" }, /* @__PURE__ */ React.createElement("span", { style: {
       fontSize: 10.5,
@@ -23009,6 +23039,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       return () => document.removeEventListener("wheel", guard, { capture: true });
     }, []);
     const [storedData, setDataRaw] = useState(() => retireFossils(loadData()));
+    const setDataRef = useRef(null);
     const setData = (updater) => {
       setDataRaw((prevStored) => {
         const prevData = withLedgerFigures(prevStored);
@@ -23030,6 +23061,10 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         return retireFossils(stampUpdatedAt(prevData, nextData));
       });
     };
+    setDataRef.current = setData;
+    useEffect(() => {
+      migrateLocalDismissals(setData);
+    }, []);
     const ledgerCases = useMemo(
       () => casesWithLedgerContents(storedData.cases || [], storedData.movements || []),
       [storedData.cases, storedData.movements]
@@ -23079,6 +23114,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         return { ...o, ...patchMapsFromCaseRecords(recs, planned), caseWeights, palletAssignments };
       }) };
     }, [storedData, ledgerCases, ledgerReservations]);
+    setDismissalsFromData(storedData.discrepancyDismissals, (u) => setDataRef.current && setDataRef.current(u));
     useEffect(() => {
       const source = { ...storedData, bondingRuns: data.bondingRuns };
       const out = backfillPlannedCases(source);
