@@ -1195,7 +1195,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-19.11";
+  var APP_VERSION = "2026-09-19.12";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -5116,8 +5116,9 @@
              "10/20" (19 Sep 2026). */
           maxSize: Number(c.maxSize) || CASE_MAX_SIZE_DEFAULT,
           confirmed: !!c.confirmed,
-          weight: (order.caseWeights || {})[c.caseNum],
-          pallet: (order.palletAssignments || {})[c.caseNum] || "",
+          /* The case row's own weight and pallet — the only record since 19 Sep. */
+          weight: c.weight != null && String(c.weight).trim() !== "" ? c.weight : void 0,
+          pallet: c.pallet || "",
           contributions: Object.entries(c.contents || {}).map(([box, qty]) => ({ boxNumber: box, qty: Number(qty) || 0, spec: specOfBoxInCase(data, order.id, c.caseNum, box) }))
         }));
         return {
@@ -7280,6 +7281,45 @@ Here's the order:`;
     const kx = Object.keys(x), ky = Object.keys(y);
     return kx.length === ky.length && kx.every((k) => x[k] === y[k]);
   }
+  function withLedgerFigures(d) {
+    if (!d || !Array.isArray(d.bondingRuns) || !d.bondingRuns.length) return d;
+    let view;
+    try {
+      view = ledgerCorrectedRuns(d.bondingRuns, d.movements || []);
+    } catch (e) {
+      return d;
+    }
+    const byId = new Map(view.map((r) => [r.id, r]));
+    return { ...d, bondingRuns: d.bondingRuns.map((r) => {
+      const v = r && byId.get(r.id);
+      if (!v) return r;
+      const onOrderQty = Number(v.onOrderQty) || 0, toStock = Number(v.toStock) || 0;
+      return r.onOrderQty === onOrderQty && r.toStock === toStock ? r : { ...r, onOrderQty, toStock };
+    }) };
+  }
+  var FOSSIL_ORDER_FIELDS = ["caseOverrides", "caseRemovals", "confirmedCases", "caseWeights", "palletAssignments"];
+  var FOSSIL_RUN_FIELDS = ["onOrderQty", "toStock"];
+  function retireFossils(d) {
+    if (!d || typeof d !== "object") return d;
+    let orders = d.orders, runs = d.bondingRuns;
+    if (Array.isArray(orders) && orders.some((o) => o && FOSSIL_ORDER_FIELDS.some((f) => f in o))) {
+      orders = orders.map((o) => {
+        if (!o || !FOSSIL_ORDER_FIELDS.some((f) => f in o)) return o;
+        const c = { ...o };
+        for (const f of FOSSIL_ORDER_FIELDS) delete c[f];
+        return c;
+      });
+    }
+    if (Array.isArray(runs) && runs.some((r) => r && FOSSIL_RUN_FIELDS.some((f) => f in r))) {
+      runs = runs.map((r) => {
+        if (!r || !FOSSIL_RUN_FIELDS.some((f) => f in r)) return r;
+        const c = { ...r };
+        for (const f of FOSSIL_RUN_FIELDS) delete c[f];
+        return c;
+      });
+    }
+    return orders === d.orders && runs === d.bondingRuns ? d : { ...d, orders, bondingRuns: runs };
+  }
   function movePlanSlot(data, { orderId, spec, qty, fromCase, toCase }) {
     const q = Math.round(Number(qty) || 0);
     const from = Number(fromCase), to = Number(toCase);
@@ -8404,7 +8444,12 @@ ${line}` : line;
           before: { stage: order.stage },
           after: { stage: patch.stage }
         }) : {};
-        return { ...prevData, orders: next2, ...logPatch };
+        let movements = prevData.movements;
+        if (order && order.stage === "Shipped" && patch.stage && patch.stage !== "Shipped") {
+          const stamp = (/* @__PURE__ */ new Date()).toISOString(), who = currentActor();
+          movements = (prevData.movements || []).map((m) => m && !m.deleted && m.kind === "shipped" && m.orderId === id ? { ...m, deleted: true, deletedAt: stamp, updatedAt: stamp, updatedBy: who, note: `${m.note ? m.note + " \xB7 " : ""}Withdrawn \u2014 ${id} moved back to ${patch.stage}` } : m);
+        }
+        return { ...prevData, orders: next2, movements, ...logPatch };
       });
     };
     const guessCaseType = (caseRow) => {
@@ -8489,14 +8534,26 @@ ${line}` : line;
     const confirmShip = () => {
       if (!shipConfirm) return;
       const { order, manifest, caseTypeAssignments } = shipConfirm;
-      updateOrder(order.id, { stage: "Shipped", shippingManifest: manifest });
       setShippedPrintJob({ order: { ...order, shippingManifest: manifest, shippedDate: todayISO() } });
       setData((prevData) => {
-        let working = prevData;
+        const stamp = (/* @__PURE__ */ new Date()).toISOString();
+        let working = {
+          ...prevData,
+          orders: (prevData.orders || []).map((o) => o.id === order.id ? { ...o, stage: "Shipped", shippingManifest: manifest, shippedDate: todayISO(), updatedAt: stamp } : o),
+          ...appendLog(prevData, {
+            action: "stage_change",
+            entity: "order",
+            entityId: order.id,
+            summary: `${order.id} moved ${order.stage} \u2192 Shipped`,
+            before: { stage: order.stage },
+            after: { stage: "Shipped" }
+          })
+        };
         const goneCases = (working.cases || []).filter((c) => c && !c.deleted && c.orderId === order.id);
+        const heldNow = ledgerCaseContents(working.movements || []);
         const departures = [];
         for (const c of goneCases) {
-          for (const [box, qty] of Object.entries(c.contents || {})) {
+          for (const [box, qty] of Object.entries(heldNow.get(`${order.id}|${Number(c.caseNum)}`) || {})) {
             const n = Number(qty) || 0;
             if (n > 0) departures.push(moveShipped({
               boxNumber: box,
@@ -22581,9 +22638,10 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       document.addEventListener("wheel", guard, { capture: true, passive: true });
       return () => document.removeEventListener("wheel", guard, { capture: true });
     }, []);
-    const [storedData, setDataRaw] = useState(loadData);
+    const [storedData, setDataRaw] = useState(() => retireFossils(loadData()));
     const setData = (updater) => {
-      setDataRaw((prevData) => {
+      setDataRaw((prevStored) => {
+        const prevData = withLedgerFigures(prevStored);
         const nextData = typeof updater === "function" ? updater(prevData) : updater;
         const locked = confirmedCaseLockRefusal(prevData, nextData) || planOrderRefusal(prevData, nextData);
         if (locked) {
@@ -22591,7 +22649,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
             setTimeout(() => window.alert(locked.message), 0);
           } catch (e) {
           }
-          return raiseIssue(prevData, {
+          return raiseIssue(prevStored, {
             kind: locked.kind || "confirmed_case_locked",
             orderId: locked.orderId,
             boxNumber: null,
@@ -22599,7 +22657,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
             detail: locked.message
           });
         }
-        return stampUpdatedAt(prevData, nextData);
+        return retireFossils(stampUpdatedAt(prevData, nextData));
       });
     };
     const ledgerCases = useMemo(
@@ -23036,7 +23094,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           };
         }
         skipNextPushRef.current = true;
-        setDataRaw(syncCaseRowsToLedger(merged, null));
+        setDataRaw(retireFossils(syncCaseRowsToLedger(merged, null)));
         prevDataRef.current = merged;
         setPendingCount(0);
         markSynced();
@@ -23064,7 +23122,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         noteWatermarks(res);
         const remote = res.data;
         skipNextPushRef.current = true;
-        setDataRaw((prevData) => syncCaseRowsToLedger(mergeRemoteIntoData(prevData, remote), null));
+        setDataRaw((prevData) => retireFossils(syncCaseRowsToLedger(mergeRemoteIntoData(prevData, remote), null)));
         setSyncStatus("connected");
         flash("Refreshed from cloud");
       } catch (e) {
@@ -23093,7 +23151,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       }
       skipNextPushRef.current = true;
       const merged = mergeRemoteIntoData(dataRef.current, remote);
-      setDataRaw(syncCaseRowsToLedger(merged, null));
+      setDataRaw(retireFossils(syncCaseRowsToLedger(merged, null)));
       localStorage.setItem(SYNC_PREF_KEY, "true");
       localStorage.setItem("matrixSyncEmail", email);
       setSyncEmail(email);
@@ -23125,7 +23183,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           const remote2 = res.data;
           skipNextPushRef.current = true;
           const merged2 = mergeRemoteIntoData(dataRef.current, remote2);
-          setDataRaw(syncCaseRowsToLedger(merged2, null));
+          setDataRaw(retireFossils(syncCaseRowsToLedger(merged2, null)));
           markSynced();
           if (syncStatusRef.current === "offline") {
             try {
