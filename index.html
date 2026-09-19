@@ -1195,7 +1195,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-19.12";
+  var APP_VERSION = "2026-09-19.14";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1565,6 +1565,14 @@
       } : key === "cases" ? (r) => {
         const { contents, ...clean } = r;
         return clean;
+      } : key === "materials" ? (r) => {
+        const { currentStock, ...clean } = r;
+        return clean;
+      } : key === "glueLineBatches" ? (r) => {
+        if (!r.runId) return r;
+        const c = { ...r };
+        for (const k of GLUE_REEL_FROM_RUN_KEYS) delete c[k];
+        return c;
       } : (r) => r;
       out[table] = (data[key] || []).map((r) => syncToSnakeRow(strip(r), cols));
     }
@@ -7281,7 +7289,37 @@ Here's the order:`;
     const kx = Object.keys(x), ky = Object.keys(y);
     return kx.length === ky.length && kx.every((k) => x[k] === y[k]);
   }
-  function withLedgerFigures(d) {
+  function materialStockFrom(movements, materialId) {
+    let t = 0;
+    for (const m of movements || []) if (m && !m.deleted && m.materialId === materialId) t += Number(m.qty) || 0;
+    return t;
+  }
+  var GLUE_REEL_FROM_RUN_KEYS = [...GLUE_RUN_SETTING_KEYS, "productSize"];
+  function withGlueRunSettings(d) {
+    if (!d || !Array.isArray(d.glueLineBatches) || !(d.glueRuns || []).length) return d;
+    let changed = false;
+    const out = d.glueLineBatches.map((b) => {
+      if (!b || !b.runId || !glueRunOf(b, d.glueRuns)) return b;
+      const r = glueSettingsFor(b, d.glueRuns);
+      if (!r.productSize) {
+        const run = glueRunOf(b, d.glueRuns);
+        if (run && run.productSize) r.productSize = run.productSize;
+      }
+      delete r.fromRun;
+      changed = true;
+      return r;
+    });
+    return changed ? { ...d, glueLineBatches: out } : d;
+  }
+  function withMaterialFigures(d) {
+    if (!d || !Array.isArray(d.materials) || !d.materials.length) return d;
+    return { ...d, materials: d.materials.map((m) => {
+      const n = materialStockFrom(d.materialMovements, m.id);
+      return m.currentStock === n ? m : { ...m, currentStock: n };
+    }) };
+  }
+  function withLedgerFigures(d0) {
+    const d = withGlueRunSettings(withMaterialFigures(d0));
     if (!d || !Array.isArray(d.bondingRuns) || !d.bondingRuns.length) return d;
     let view;
     try {
@@ -7318,7 +7356,26 @@ Here's the order:`;
         return c;
       });
     }
-    return orders === d.orders && runs === d.bondingRuns ? d : { ...d, orders, bondingRuns: runs };
+    let reels = d.glueLineBatches;
+    const runIds = new Set((d.glueRuns || []).filter((r) => r && !r.deleted).map((r) => r.id));
+    if (Array.isArray(reels) && runIds.size && reels.some((b) => b && b.runId && runIds.has(b.runId) && GLUE_REEL_FROM_RUN_KEYS.some((k) => k in b))) {
+      reels = reels.map((b) => {
+        if (!b || !b.runId || !runIds.has(b.runId)) return b;
+        const c = { ...b };
+        for (const k of GLUE_REEL_FROM_RUN_KEYS) delete c[k];
+        return c;
+      });
+    }
+    let materials = d.materials;
+    if (Array.isArray(materials) && materials.some((m) => m && "currentStock" in m)) {
+      materials = materials.map((m) => {
+        if (!m || !("currentStock" in m)) return m;
+        const c = { ...m };
+        delete c.currentStock;
+        return c;
+      });
+    }
+    return orders === d.orders && runs === d.bondingRuns && materials === d.materials && reels === d.glueLineBatches ? d : { ...d, orders, bondingRuns: runs, materials, glueLineBatches: reels };
   }
   function movePlanSlot(data, { orderId, spec, qty, fromCase, toCase }) {
     const q = Math.round(Number(qty) || 0);
@@ -7947,7 +8004,8 @@ ${line}` : line;
       date: todayISO()
     };
     return {
-      materials: materials.map((m) => m.id === materialId ? { ...m, currentStock: Number(m.currentStock || 0) + qty } : m),
+      materials,
+      // the stock is the sum of the movements (19 Sep 2026) — nothing else to update
       materialMovements: [...data.materialMovements || [], movement]
     };
   }
@@ -12438,16 +12496,6 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
           shortfall -= take;
           extraFlags.push(`${take} of ${code} taken out of ${oid} case ${cn} \u2014 it is in this case${oid === order.id ? "" : `, so ${oid} is now short and needs re-picking`}.`);
           logs.push({ action: "split", entity: "bondingRun", entityId: code, summary: `Packing override: ${take} of ${code} moved from ${oid} case ${cn} to ${order.id}, case ${caseNum}` });
-        }
-      }
-      if (shortfall > 0) {
-        const os = other.find((x) => !x.deleted && (x.boxNumber === code || "OS-" + String(x.id).replace(/^os-/, "").toUpperCase() === code) && Number(x.qty) > 0);
-        if (os) {
-          const take = Math.min(shortfall, Number(os.qty || 0));
-          other = other.map((x) => x.id === os.id ? { ...x, qty: Number(x.qty || 0) - take, updatedAt: stamp } : x);
-          moves.push(moveMade({ boxNumber: code, spec, qty: take, source: "override", sourceId: os.id, note: `From Other Stock into ${order.id} case ${caseNum} (packing override)` }));
-          shortfall -= take;
-          logs.push({ action: "add", entity: "bondingRun", entityId: code, summary: `Packing override: ${take} \xD7 ${os.productSpec} taken from Other Stock into ${order.id}, case ${caseNum}` });
         }
       }
       if (shortfall > 0) {
@@ -21616,23 +21664,12 @@ Plan it?`
       const theDate = form.date || todayISO();
       const runtimeHrs = deriveRuntimeHours(stampedAt, theDate, rows);
       const row = {
+        /* Only what is this reel's own (19 Sep 2026). Its setup is the run's,
+           read through glueSettingsFor wherever the reel is shown or used. */
         id: uid("gb"),
         runId: openRun.id,
         batchNumber: code,
-        productSize: openRun.productSize || "",
-        direct: openRun.direct === true,
-        plCode: openRun.plCode || "",
-        glueBatch: openRun.glueBatch || "",
-        glueDie: openRun.glueDie || "",
-        petType: openRun.petType || "",
         gapWidth: openRun.targetGap || "",
-        extPinSize: openRun.extPinSize || "",
-        extWidthCategory: openRun.extWidthCategory || "",
-        extScrewSpeed: openRun.extScrewSpeed || "",
-        extLineSpeed: openRun.extLineSpeed || "",
-        extHeight: openRun.extHeight || "",
-        extWidth: openRun.extWidth || "",
-        extPvcCode: openRun.extPvcCode || "",
         meterage: metres,
         weightPer5m: String(weight5m || "").trim() === "" ? null : Number(weight5m),
         comments: String(comments || ""),
@@ -22671,7 +22708,14 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     setBoxMaterials(storedData.materials);
     const data = useMemo(() => {
       const runs = ledgerCorrectedRuns(storedData.bondingRuns || [], storedData.movements || []);
-      const base = { ...storedData, bondingRuns: runs, cases: ledgerCases, reservations: ledgerReservations };
+      const base = {
+        ...withGlueRunSettings(withMaterialFigures(storedData)),
+        bondingRuns: runs,
+        cases: ledgerCases,
+        reservations: ledgerReservations,
+        stockPicks: NO_PROMISES,
+        otherStock: NO_PROMISES
+      };
       const cases = (base.cases || []).filter((c) => c && !c.deleted);
       if (!cases.length) return base;
       const byOrder = /* @__PURE__ */ new Map();
