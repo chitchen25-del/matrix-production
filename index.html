@@ -1195,7 +1195,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-19.9";
+  var APP_VERSION = "2026-09-19.11";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -4607,7 +4607,83 @@
       const carton = cartonFor(used);
       for (const r of plan) if (r.caseNum === caseNum) r.maxSize = carton;
     }
-    return plan;
+    return arrangeBoxesThenReels(plan, perCase, startAt);
+  }
+  function arrangeBoxesThenReels(plan, perCase = CASE_MAX_SIZE_DEFAULT, startAt = 1) {
+    const boxRows = plan.filter((r) => r.kind !== "reel");
+    const reelRows = plan.filter((r) => r.kind === "reel");
+    const boxCases = [];
+    const seen = /* @__PURE__ */ new Map();
+    for (const r of boxRows) {
+      if (!seen.has(r.caseNum)) {
+        const c2 = { oldNum: r.caseNum, rows: [], used: 0 };
+        seen.set(r.caseNum, c2);
+        boxCases.push(c2);
+      }
+      const c = seen.get(r.caseNum);
+      c.rows.push(r);
+      c.used += Number(r.qty) || 0;
+    }
+    const full = boxCases.filter((c) => c.used >= perCase), part = boxCases.filter((c) => c.used < perCase);
+    const out = [];
+    let n = startAt;
+    for (const c of [...full, ...part]) {
+      const size = c.used >= perCase ? perCase : cartonFor(c.used);
+      for (const r of c.rows) out.push({ ...r, caseNum: n, maxSize: size, kind: "box" });
+      n++;
+    }
+    const reelTotals = [];
+    for (const r of reelRows) {
+      const t = reelTotals.find((x) => x.spec === r.spec);
+      if (t) t.qty += Number(r.qty) || 0;
+      else reelTotals.push({ spec: r.spec, band: r.band, qty: Number(r.qty) || 0, cap: reelsPerCase(r.spec) });
+    }
+    const caps = [...new Set(reelTotals.map((t) => t.cap))].sort((a, b) => a - b);
+    const fullsBySize = [], partsBySize = [];
+    for (const cap of caps) {
+      const group = reelTotals.filter((t) => t.cap === cap);
+      const fulls = [], left = [];
+      for (const t of group) {
+        for (let i = 0; i < Math.floor(t.qty / cap); i++) fulls.push([{ spec: t.spec, band: t.band, qty: cap }]);
+        if (t.qty % cap) left.push({ spec: t.spec, band: t.band, qty: t.qty % cap });
+      }
+      let open = null, openUsed = 0;
+      for (const l of left) {
+        let q = l.qty;
+        while (q > 0) {
+          if (!open || openUsed >= cap) {
+            open = [];
+            openUsed = 0;
+            fulls.push(open);
+          }
+          const take = Math.min(cap - openUsed, q);
+          open.push({ spec: l.spec, band: l.band, qty: take });
+          openUsed += take;
+          q -= take;
+        }
+      }
+      const last = fulls[fulls.length - 1];
+      const lastQty = last ? last.reduce((t, r) => t + r.qty, 0) : 0;
+      if (last && lastQty < cap) {
+        fulls.pop();
+        partsBySize.push({ cap, rows: last, qty: lastQty });
+      }
+      fullsBySize.push({ cap, cases: fulls });
+    }
+    const p12 = partsBySize.find((x) => x.cap === 9), p10 = partsBySize.find((x) => x.cap === 10);
+    let parts = partsBySize;
+    if (p12 && p10 && 10 * p12.qty + 9 * p10.qty <= 90) {
+      parts = [{ cap: p12.qty + p10.qty, rows: [...p12.rows, ...p10.rows], qty: p12.qty + p10.qty, mixed: true }];
+    }
+    for (const f of fullsBySize) for (const c of f.cases) {
+      for (const r of c) out.push({ caseNum: n, spec: r.spec, qty: r.qty, band: r.band, maxSize: f.cap, kind: "reel" });
+      n++;
+    }
+    for (const pc of parts) {
+      for (const r of pc.rows) out.push({ caseNum: n, spec: r.spec, qty: r.qty, band: r.band, maxSize: pc.cap, kind: "reel" });
+      n++;
+    }
+    return out;
   }
   function plannableLines(data, lineItems) {
     const plannable = [], excluded = [];
@@ -5035,7 +5111,10 @@
       if (planned.length) {
         const rows = rec.map((c) => ({
           caseNum: Number(c.caseNum),
-          maxSize: CASE_MAX_SIZE_DEFAULT,
+          /* The case's own size — a part case is a 15, 10 or 5, a reel case 9 or
+             10. This read 20 for every case, so ProPack's case 9 (a 15) showed
+             "10/20" (19 Sep 2026). */
+          maxSize: Number(c.maxSize) || CASE_MAX_SIZE_DEFAULT,
           confirmed: !!c.confirmed,
           weight: (order.caseWeights || {})[c.caseNum],
           pallet: (order.palletAssignments || {})[c.caseNum] || "",
