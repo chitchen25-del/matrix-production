@@ -1195,7 +1195,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-19.17";
+  var APP_VERSION = "2026-09-19.19";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1305,7 +1305,7 @@
     /* The movement ledger: one append-only row per physical event. Current state
        is a PROJECTION over this, never stored. Appends from two devices merge
        trivially, so none of the tombstone/key-merge trouble applies here. */
-    movements: { table: "movements", cols: { boxNumber: "box_number", orderId: "order_id", caseNum: "case_num", reelCode: "reel_code", sourceId: "source_id" } },
+    movements: { table: "movements", cols: { boxNumber: "box_number", orderId: "order_id", caseNum: "case_num", reelCode: "reel_code", sourceId: "source_id", formId: "form_id" } },
     /* THE PROMISES table (`reservations`) is RETIRED, 19 Sep 2026 — no longer
        pushed or pulled. Nothing reads or writes it; the table stays in Supabase,
        untouched, until it is archived and dropped. */
@@ -1371,7 +1371,8 @@
       petType: "pet_type",
       glueBatch: "glue_batch",
       weightPer5m: "weight_per_5m",
-      runtimeHrs: "runtime_hrs"
+      runtimeHrs: "runtime_hrs",
+      sizeKey: "size_key"
     } },
     stockPicks: { table: "stock_picks", cols: { boxNumber: "box_number", productSpec: "product_spec", qtyPicked: "qty_picked", datePicked: "date_picked", pickedFor: "picked_for" } },
     otherStock: { table: "other_stock", cols: { productSpec: "product_spec", boxNumber: "box_number", dateAdded: "date_added" } },
@@ -2127,6 +2128,84 @@
   }
   function formIdForLine(data, li) {
     return formIdFor(data, li.description, { reel: isReelSpec(li.description) });
+  }
+  function runsNamedByReference(runs) {
+    const forms = CATALOGUE && CATALOGUE.productForms ? CATALOGUE.productForms : [];
+    const products = CATALOGUE && CATALOGUE.products ? CATALOGUE.products : [];
+    if (!forms.length || !products.length) return runs;
+    const formById2 = new Map(forms.filter((f) => f && !f.deleted).map((f) => [f.id, f]));
+    const prodById = new Map(products.filter((p) => p && !p.deleted).map((p) => [p.id, p]));
+    let changed = false;
+    const out = (runs || []).map((r) => {
+      const f = r && r.formId && formById2.get(r.formId);
+      const p = f && prodById.get(f.productId);
+      if (!p || !p.displayName) return r;
+      const name = String(f.form).toLowerCase() === "reel" ? `${p.displayName} REEL` : p.displayName;
+      const packageType = String(f.form).toLowerCase() === "reel" ? "Reel" : r.packageType || "Box";
+      if (r.productSize === name && r.packageType === packageType) return r;
+      changed = true;
+      return { ...r, productSize: name, packageType, storedName: r.productSize };
+    });
+    return changed ? out : runs;
+  }
+  function sizeKeyOfProduct(p) {
+    return p && p.id ? String(p.id).replace(/-(2-3pt|3-4pt|6pt)$/, "") : null;
+  }
+  function glueSizeKey(data, name) {
+    const n = String(name || "").trim();
+    if (!n) return null;
+    const tries = [n, ...["2-3pt", "3-4pt", "6pt"].map((pt) => `${n} ${pt}`)];
+    const keys = /* @__PURE__ */ new Set();
+    for (const t of tries) {
+      const res = resolveProduct(data, t);
+      if (res && res.status === "exact" && res.product) keys.add(sizeKeyOfProduct(res.product));
+    }
+    return keys.size === 1 ? [...keys][0] : null;
+  }
+  function movementFormId(data, m, runsById, formsByCode) {
+    if (!m) return null;
+    const run = m.sourceId && runsById.get(m.sourceId);
+    if (run && run.formId) return run.formId;
+    const set = formsByCode.get(String(m.boxNumber || "").trim().toUpperCase());
+    return set && set.size === 1 ? [...set][0] : null;
+  }
+  function fillProductReferences(d) {
+    if (!d) return d;
+    let movements = d.movements, reels = d.glueLineBatches;
+    if (Array.isArray(movements) && movements.some((m) => m && !m.formId)) {
+      const runsById = /* @__PURE__ */ new Map(), formsByCode = /* @__PURE__ */ new Map();
+      for (const r of d.bondingRuns || []) {
+        if (!r || r.deleted) continue;
+        runsById.set(r.id, r);
+        if (r.formId && r.boxNumber) {
+          const k = String(r.boxNumber).trim().toUpperCase();
+          if (!formsByCode.has(k)) formsByCode.set(k, /* @__PURE__ */ new Set());
+          formsByCode.get(k).add(r.formId);
+        }
+      }
+      let changed = false;
+      const out = movements.map((m) => {
+        if (!m || m.formId) return m;
+        const f = movementFormId(d, m, runsById, formsByCode);
+        if (!f) return m;
+        changed = true;
+        return { ...m, formId: f };
+      });
+      if (changed) movements = out;
+    }
+    if (Array.isArray(reels) && reels.some((b) => b && !b.sizeKey)) {
+      let changed = false;
+      const out = reels.map((b) => {
+        if (!b || b.sizeKey) return b;
+        const name = b.productSize || ((d.glueRuns || []).find((r) => r.id === b.runId) || {}).productSize;
+        const k = glueSizeKey(d, name);
+        if (!k) return b;
+        changed = true;
+        return { ...b, sizeKey: k };
+      });
+      if (changed) reels = out;
+    }
+    return movements === d.movements && reels === d.glueLineBatches ? d : { ...d, movements, glueLineBatches: reels };
   }
   function mergeSplitRuns(rows) {
     const groups = /* @__PURE__ */ new Map(), idOf = {};
@@ -22829,7 +22908,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
             detail: locked.message
           });
         }
-        return retireFossils(stampUpdatedAt(prevData, nextData));
+        return retireFossils(stampUpdatedAt(prevData, fillProductReferences(nextData)));
       });
     };
     const ledgerCases = useMemo(
@@ -22842,7 +22921,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     setLedgerCaseHoldings(ledgerCases, storedData.orders || []);
     setBoxMaterials(storedData.materials);
     const data = useMemo(() => {
-      const runs = ledgerCorrectedRuns(storedData.bondingRuns || [], storedData.movements || []);
+      const runs = ledgerCorrectedRuns(runsNamedByReference(storedData.bondingRuns || []), storedData.movements || []);
       const base = {
         ...withGlueRunSettings(withMaterialFigures(storedData)),
         bondingRuns: runs,
