@@ -1195,7 +1195,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-19.14";
+  var APP_VERSION = "2026-09-19.15";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -2127,6 +2127,12 @@
   }
   function formIdForLine(data, li) {
     return formIdFor(data, li.description, { reel: isReelSpec(li.description) });
+  }
+  function catalogueBoxFacts(data, spec) {
+    const formId = formIdFor(data, spec, { reel: false });
+    const form = formId ? formById(data, formId) : null;
+    const metres = form && Number(form.metres) > 0 ? Number(form.metres) : null;
+    return { formId: formId || null, metres, name: catalogueName(data, spec) };
   }
   function formById(data, formId) {
     if (!formId) return null;
@@ -19301,31 +19307,45 @@ Plan it?`
         return res.patch;
       });
     };
-    const toRun = (f, excludeId) => ({
-      productSize: catalogueName(data, buildSpec(f)),
-      /* The catalogue reference, resolved from what the operator chose — size,
-         Box or Reel, metres — not from the stored label. (18 Sep 2026) */
-      formId: formIdForRun(data, { productSize: buildSpec(f), packageType: f.packageType || "Box", metersPerBox: f.metersPerBox }),
-      baselineBatchCode: f.baselineBatchCode,
-      evaCode: f.evaCode,
-      evaCleared: f.evaCleared === "Yes",
-      tapeCode: f.tapeCode,
-      amountMade: Number(f.amountMade) || 0,
-      onOrderQty: Number(f.onOrderQty) || 0,
-      toStock: f.toStock !== void 0 && f.toStock !== "" ? Math.max(0, Number(f.toStock) || 0) : Math.max(0, (Number(f.amountMade) || 0) - (f.workNumber ? Number(f.onOrderQty) || 0 : 0)),
-      customerName: f.customerName,
-      workNumber: f.workNumber || null,
-      metersPerBox: Number(f.metersPerBox) || 0,
-      boxNumber: f.boxNumber,
-      packageType: f.packageType || "Box",
-      boxTypeId: f.boxTypeId || null,
-      checked: f.checked || "No",
-      location: f.location || "",
-      timeOfDay: f.timeOfDay || "",
-      runtimeHrs: deriveRuntimeHours(f.timeOfDay, f.date, excludeId ? bondingRuns.filter((r) => r.id !== excludeId) : bondingRuns),
-      date: f.date,
-      comments: f.comments
-    });
+    const catalogueForm = (f) => {
+      const bare = buildSpec({ ...f, metersPerBox: "" });
+      const fid = formIdFor(data, bare, { reel: String(f.packageType || "Box").toLowerCase() === "reel" });
+      const form2 = fid ? formById(data, fid) : null;
+      return form2 && Number(form2.metres) > 0 ? { formId: fid, metres: Number(form2.metres) } : null;
+    };
+    const toRun = (f0, excludeId) => {
+      const cf = catalogueForm(f0);
+      const f = cf ? { ...f0, metersPerBox: cf.metres } : f0;
+      return {
+        productSize: catalogueName(data, buildSpec(f)),
+        /* The catalogue reference, resolved from what the operator chose — size,
+           Box or Reel, metres — not from the stored label. (18 Sep 2026) */
+        formId: cf ? cf.formId : formIdForRun(data, { productSize: buildSpec(f), packageType: f.packageType || "Box", metersPerBox: f.metersPerBox }),
+        baselineBatchCode: f.baselineBatchCode,
+        evaCode: f.evaCode,
+        evaCleared: f.evaCleared === "Yes",
+        tapeCode: f.tapeCode,
+        amountMade: Number(f.amountMade) || 0,
+        onOrderQty: Number(f.onOrderQty) || 0,
+        toStock: f.toStock !== void 0 && f.toStock !== "" ? Math.max(0, Number(f.toStock) || 0) : Math.max(0, (Number(f.amountMade) || 0) - (f.workNumber ? Number(f.onOrderQty) || 0 : 0)),
+        customerName: f.customerName,
+        workNumber: f.workNumber || null,
+        metersPerBox: Number(f.metersPerBox) || 0,
+        boxNumber: f.boxNumber,
+        packageType: f.packageType || "Box",
+        boxTypeId: f.boxTypeId || null,
+        checked: f.checked || "No",
+        location: f.location || "",
+        timeOfDay: f.timeOfDay || "",
+        runtimeHrs: deriveRuntimeHours(f.timeOfDay, f.date, excludeId ? bondingRuns.filter((r) => r.id !== excludeId) : bondingRuns),
+        date: f.date,
+        comments: f.comments
+      };
+    };
+    React.useEffect(() => {
+      const cf = catalogueForm(form);
+      if (cf && Number(form.metersPerBox) !== cf.metres) setForm((f) => ({ ...f, metersPerBox: cf.metres }));
+    }, [form.range, form.size, form.pt, form.packageType, data.productForms]);
     const shelfCartonId = (f) => f && f.shelfBoxTypeId || boxTypeIdForName(data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, DEFAULT_BOX_TYPE) || "";
     const explodeAllocations = (f) => {
       const allocs = (f.allocations || []).filter((a) => a.orderId && Number(a.qty) > 0);
@@ -20988,9 +21008,11 @@ Plan it?`
       setBoxDupeError({ ...boxDupeError, [size]: "" });
       let productSize = `${range} ${size}`;
       if (pt && !productSize.includes(pt)) productSize += ` ${pt}`;
+      const facts = catalogueBoxFacts(data, productSize);
       const newRun = {
         id: uid("br"),
-        productSize,
+        productSize: facts.name || productSize,
+        formId: facts.formId,
         baselineBatchCode: "",
         evaCode: "",
         tapeCode: "",
@@ -20999,7 +21021,7 @@ Plan it?`
         toStock: qty,
         customerName: "",
         workNumber: null,
-        metersPerBox: 24,
+        metersPerBox: facts.metres || METERS_PER_BOX_DEFAULT,
         boxNumber: boxCode,
         packageType: "Box",
         checked: "Yes",
@@ -21031,9 +21053,11 @@ Plan it?`
       setCustomError("");
       let productSize = `${range} ${size}`;
       if (pt && !productSize.includes(pt)) productSize += ` ${pt}`;
+      const facts = catalogueBoxFacts(data, productSize);
       const newRun = {
         id: uid("br"),
-        productSize,
+        productSize: facts.name || productSize,
+        formId: facts.formId,
         baselineBatchCode: "",
         evaCode: "",
         tapeCode: "",
@@ -21042,7 +21066,7 @@ Plan it?`
         toStock: qty,
         customerName: "",
         workNumber: null,
-        metersPerBox: 24,
+        metersPerBox: facts.metres || METERS_PER_BOX_DEFAULT,
         boxNumber: boxCode,
         packageType: "Box",
         checked: "Yes",
