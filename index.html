@@ -8330,7 +8330,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-20.28";
+  var APP_VERSION = "2026-09-20.29";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -16076,7 +16076,11 @@ The manifest will list them as cases with no pallet, and the gross weight will b
     const dismissed = readDiscrepancyDismissals();
     return findDiscrepancies(data).filter((f) => !seen[f.id] && !dismissed[f.id]);
   }
-  function DiscrepanciesView({ data, onLookUp }) {
+  function orderOfDiscrepancy(f) {
+    const m = `${f.id || ""} ${f.detail || ""} ${f.what || ""}`.match(/WO-\d{3,}/);
+    return m ? m[0] : null;
+  }
+  function DiscrepanciesView({ data, onLookUp, jumpToOrder }) {
     const dismissals = readDiscrepancyDismissals();
     const [showDismissed, setShowDismissed] = useState(false);
     const all = useMemo(() => findDiscrepancies(data), [data]);
@@ -16086,6 +16090,28 @@ The manifest will list them as cases with no pallet, and the gross weight will b
     useEffect(() => {
       markDiscrepanciesSeen(all.map((f) => f.id));
     }, [all]);
+    const groups = useMemo(() => {
+      const byOrder = /* @__PURE__ */ new Map();
+      const loose = [];
+      for (const f of shown) {
+        const id = orderOfDiscrepancy(f);
+        if (!id) {
+          loose.push(f);
+          continue;
+        }
+        if (!byOrder.has(id)) byOrder.set(id, []);
+        byOrder.get(id).push(f);
+      }
+      const out = [...byOrder].map(([orderId, rows]) => {
+        const o = (data.orders || []).find((x) => x && x.id === orderId && !x.deleted) || null;
+        return { key: orderId, orderId, order: o, title: orderId, customer: o ? o.customer : "not an order on the books", rows };
+      }).sort((a, b) => b.rows.length - a.rows.length || String(a.orderId).localeCompare(String(b.orderId)));
+      if (loose.length) out.push({ key: "__loose", orderId: null, order: null, title: "Not about one order", customer: "reels, batches and box codes", rows: loose });
+      return out;
+    }, [shown, data.orders]);
+    const [openGroups, setOpenGroups] = useState({});
+    const autoOpen = shown.length > 0 && shown.length <= 12;
+    const toggleGroup = (k) => setOpenGroups((g) => ({ ...g, [k]: g[k] === void 0 ? !autoOpen : !g[k] }));
     const dismiss = (f) => {
       const reason = window.prompt(`Set aside: ${f.what}
 
@@ -16096,20 +16122,45 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     const restore = (f) => {
       clearDiscrepancyDismissal(f.id);
     };
-    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Discrepancies", subtitle: "Problems the app can see in its own records. Worked out fresh every time \u2014 fix the thing and the line disappears on its own." }), live.length === 0 && !showDismissed && /* @__PURE__ */ React.createElement(Panel, { className: "p-5 text-sm", style: { color: INK_MUTED } }, "\u2713 Nothing to chase. Every box adds up, every batch exists, every order is real."), shown.map((f) => /* @__PURE__ */ React.createElement(Panel, { key: f.id, className: "p-4 mb-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-start justify-between gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0, flex: "1 1 320px" } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 flex-wrap mb-1" }, /* @__PURE__ */ React.createElement("span", { style: {
-      fontSize: 10.5,
-      letterSpacing: ".06em",
-      textTransform: "uppercase",
-      fontWeight: 700,
-      color: f.severity === "high" ? RED : INK_MUTED
-    } }, f.kind), /* @__PURE__ */ React.createElement("span", { style: {
-      fontSize: 10.5,
-      padding: "1px 7px",
-      borderRadius: 20,
-      background: f.fixHere ? "#EEF1F8" : "#FFF4E0",
-      color: f.fixHere ? NAVY : "#8A6D1F",
-      fontWeight: 600
-    } }, f.fixHere ? "fixable here" : "needs the factory")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, fontWeight: 600 } }, f.what), f.detail && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-0.5", style: { color: INK_MUTED } }, f.detail), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: INK_MUTED } }, f.why), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK } }, /* @__PURE__ */ React.createElement("b", null, "Do:"), " ", f.todo), dismissals[f.id] && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: INK_MUTED } }, "Set aside ", new Date(dismissals[f.id].at).toLocaleDateString(), dismissals[f.id].reason ? ` \u2014 ${dismissals[f.id].reason}` : "")), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 no-print" }, f.ref && onLookUp && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => onLookUp(f.ref) }, "Look up"), dismissals[f.id] ? /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => restore(f) }, "Put back") : /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => dismiss(f) }, "Set aside"))))), hidden.length > 0 && /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Discrepancies", subtitle: "Problems the app can see in its own records. Worked out fresh every time \u2014 fix the thing and the line disappears on its own." }), live.length === 0 && !showDismissed && /* @__PURE__ */ React.createElement(Panel, { className: "p-5 text-sm", style: { color: INK_MUTED } }, "\u2713 Nothing to chase. Every box adds up, every batch exists, every order is real."), shown.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { margin: "0 0 14px", fontSize: 15, color: INK } }, /* @__PURE__ */ React.createElement("b", null, shown.length), " ", shown.length === 1 ? "problem" : "problems", " across ", /* @__PURE__ */ React.createElement("b", null, groups.filter((g) => g.orderId).length), " ", groups.filter((g) => g.orderId).length === 1 ? "order" : "orders", shown.filter((f) => f.fixHere).length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, " \xB7 ", /* @__PURE__ */ React.createElement("b", null, shown.filter((f) => f.fixHere).length), " can be settled at the screen")), groups.map((g) => {
+      const open = openGroups[g.key] === void 0 ? autoOpen : openGroups[g.key];
+      const high = g.rows.filter((f) => f.severity === "high").length;
+      return /* @__PURE__ */ React.createElement(Panel, { key: g.key, className: "mb-3", style: { padding: 0, overflow: "hidden" } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between gap-3 flex-wrap", style: { padding: "12px 14px" } }, /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          onClick: () => toggleGroup(g.key),
+          className: "text-left",
+          style: { background: "none", border: 0, padding: 0, cursor: "pointer", minWidth: 0, flex: "1 1 240px", font: "inherit" }
+        },
+        /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline gap-2 flex-wrap" }, /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { fontSize: 15, fontWeight: 600, color: NAVY } }, g.title), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15, fontWeight: 600, color: INK } }, g.customer)),
+        /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: INK_MUTED, marginTop: 2 } }, g.rows.length, " ", g.rows.length === 1 ? "problem" : "problems", high > 0 && /* @__PURE__ */ React.createElement("span", { style: { color: RED, fontWeight: 600 } }, " \xB7 ", high, " worth chasing first"), " \xB7 ", open ? "tap to close" : "tap to see them")
+      ), g.orderId && g.order && jumpToOrder && /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => jumpToOrder(g.orderId, g.order.stage) }, "Open ", g.orderId)), open && Object.entries(g.rows.reduce((acc, f) => {
+        (acc[f.kind] = acc[f.kind] || []).push(f);
+        return acc;
+      }, {})).sort((a, b) => b[1].length - a[1].length).map(([kind, rows]) => /* @__PURE__ */ React.createElement("div", { key: kind, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { style: { padding: "12px 14px 8px", background: "#FAFAF8" } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 flex-wrap" }, /* @__PURE__ */ React.createElement("span", { style: {
+        fontSize: 10.5,
+        letterSpacing: ".06em",
+        textTransform: "uppercase",
+        fontWeight: 700,
+        color: rows[0].severity === "high" ? RED : INK_MUTED
+      } }, kind), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: INK_MUTED } }, rows.length, " ", rows.length === 1 ? "box" : "boxes"), /* @__PURE__ */ React.createElement("span", { style: {
+        fontSize: 10.5,
+        padding: "1px 7px",
+        borderRadius: 20,
+        background: rows[0].fixHere ? "#EEF1F8" : "#FFF4E0",
+        color: rows[0].fixHere ? NAVY : "#8A6D1F",
+        fontWeight: 600
+      } }, rows[0].fixHere ? "fixable here" : "needs the factory")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 6, lineHeight: 1.5, maxWidth: "80ch" } }, rows[0].why), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK, marginTop: 3, lineHeight: 1.5, maxWidth: "80ch" } }, /* @__PURE__ */ React.createElement("b", null, "Do:"), " ", rows.length === 1 ? rows[0].todo : `${String(rows[0].todo).split(". ")[0].split(rows[0].ref || "\0")[0].replace(/\s+(holding|for|of|on)\s*$/i, "")}, for each box below.`)), rows.map((f) => /* @__PURE__ */ React.createElement(
+        "div",
+        {
+          key: f.id,
+          className: "flex items-center justify-between gap-3 flex-wrap",
+          style: { borderTop: `1px solid ${BORDER}`, padding: "9px 14px" }
+        },
+        /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0, flex: "1 1 260px" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14.5, fontWeight: 600, color: INK } }, f.what), f.detail && f.detail !== g.orderId && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED, marginTop: 1 } }, f.detail), dismissals[f.id] && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: INK_MUTED, marginTop: 2 } }, "Set aside ", new Date(dismissals[f.id].at).toLocaleDateString(), dismissals[f.id].reason ? ` \u2014 ${dismissals[f.id].reason}` : "")),
+        /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 no-print", style: { flexWrap: "wrap" } }, f.ref && onLookUp && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => onLookUp(f.ref) }, "Look up ", f.ref), dismissals[f.id] ? /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => restore(f) }, "Put back") : /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => dismiss(f) }, "Set aside"))
+      )))));
+    }), hidden.length > 0 && /* @__PURE__ */ React.createElement(
       "button",
       {
         onClick: () => setShowDismissed((v) => !v),
@@ -16393,7 +16444,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       "Clear it"
     ))) : /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Only an admin can clear this, and only by recording what was done."))))), closed.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-6" }, /* @__PURE__ */ React.createElement("button", { onClick: () => setShowClosed(!showClosed), className: "text-sm font-semibold", style: { background: "none", border: "none", color: NAVY, cursor: "pointer", padding: 0 } }, showClosed ? "Hide" : "Show", " ", closed.length, " cleared"), showClosed && closed.map((i) => /* @__PURE__ */ React.createElement("div", { key: i.id, className: "mt-2 px-3 py-2", style: { border: `1px solid ${BORDER}`, borderRadius: 6, fontSize: 13 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("b", null, i.summary), " ", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\xB7 ", KIND[i.kind] || i.kind)), /* @__PURE__ */ React.createElement("div", { style: { color: GREEN } }, "\u2713 ", i.resolution, " ", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014 ", i.resolvedBy, ", ", when(i.resolvedAt)))))));
   }
-  function StockSection({ data, setData, initialQuery, initialTab }) {
+  function StockSection({ data, setData, initialQuery, initialTab, jumpToOrder }) {
     const [tab, setTab] = useState(initialTab || "history");
     const [lookUp, setLookUp] = useState(null);
     const stockAdmin = isAdminDevice();
@@ -16428,7 +16479,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         background: tab === t.key ? "rgba(255,255,255,0.25)" : "#FBEAEA",
         color: tab === t.key ? "#fff" : RED
       } }, openCount)
-    ))), tab === "history" && /* @__PURE__ */ React.createElement(BoxHistoryView, { data, setData, initialQuery: lookUp || initialQuery }), tab === "boxes" && /* @__PURE__ */ React.createElement(LiveBoxStockView, { data }), tab === "reels" && /* @__PURE__ */ React.createElement(LiveReelStockView, { data }), tab === "waiting" && /* @__PURE__ */ React.createElement(PromisedNotPackedView, { data }), tab === "wrongcase" && /* @__PURE__ */ React.createElement(WrongStockInCaseView, { data, setData }), tab === "discrepancies" && /* @__PURE__ */ React.createElement(DiscrepanciesView, { data, onLookUp: (ref) => {
+    ))), tab === "history" && /* @__PURE__ */ React.createElement(BoxHistoryView, { data, setData, initialQuery: lookUp || initialQuery }), tab === "boxes" && /* @__PURE__ */ React.createElement(LiveBoxStockView, { data }), tab === "reels" && /* @__PURE__ */ React.createElement(LiveReelStockView, { data }), tab === "waiting" && /* @__PURE__ */ React.createElement(PromisedNotPackedView, { data }), tab === "wrongcase" && /* @__PURE__ */ React.createElement(WrongStockInCaseView, { data, setData }), tab === "discrepancies" && /* @__PURE__ */ React.createElement(DiscrepanciesView, { data, jumpToOrder, onLookUp: (ref) => {
       setLookUp(ref);
       setTab("history");
     } }), tab === "stocktaker" && stockAdmin && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "mb-4 p-3", style: { background: "#F7F8FC", border: `1px solid ${NAVY}`, borderLeft: `4px solid ${NAVY}`, borderRadius: 4, fontSize: 13.5, color: INK_MUTED, lineHeight: 1.5 } }, "For a full count only. To add one batch that has turned up, type its code into History and movement \u2014 it will offer to add it as a box or a reel."), /* @__PURE__ */ React.createElement(StockTakerView, { data, setData })));
@@ -25303,7 +25354,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       gluelineschedule: /* @__PURE__ */ React.createElement(GlueLineScheduleView, { data, setData }),
       bonding: /* @__PURE__ */ React.createElement(BondingLineView, { data, setData, jumpToPacking }),
       eva: /* @__PURE__ */ React.createElement(EvaLineView, { data, setData }),
-      stock: /* @__PURE__ */ React.createElement(StockSection, { data, setData, initialQuery: searchJump?.view === "stock" ? searchJump.query : null, initialTab: stockTab }),
+      stock: /* @__PURE__ */ React.createElement(StockSection, { data, setData, initialQuery: searchJump?.view === "stock" ? searchJump.query : null, initialTab: stockTab, jumpToOrder }),
       materials: /* @__PURE__ */ React.createElement(MaterialsView, { data, setData }),
       tooling: /* @__PURE__ */ React.createElement(BaselineToolingView, { data, setData }),
       ncr: /* @__PURE__ */ React.createElement(NcrLogView, { data, setData }),
