@@ -949,7 +949,9 @@
     materials: DEFAULT_MATERIALS,
     materialMovements: [],
     evaRuns: [],
-    workCentres: DEFAULT_WORK_CENTRES
+    workCentres: DEFAULT_WORK_CENTRES,
+    scheduleSettings: []
+    // never a default row — see DEFAULT_SCHEDULE_SETTINGS
   };
   function normalizeTooling(t) {
     if (!t) return DEFAULT_TOOLING;
@@ -1201,7 +1203,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-20.4";
+  var APP_VERSION = "2026-09-20.6";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -1445,6 +1447,16 @@
       openedAt: "opened_at"
     } },
     productionRates: { table: "production_rates", cols: { metersPerMin: "meters_per_min" } },
+    /* How the schedule is tailored (20 Sep 2026) — one shared row, id "default". */
+    scheduleSettings: { table: "schedule_settings", cols: {
+      glueOrder: "glue_order",
+      joinMinutes: "join_minutes",
+      overmakePct: "overmake_pct",
+      sizeChangeMin: "size_change_min",
+      widthChangeMin: "width_change_min",
+      saturdayGlueHours: "saturday_glue_hours",
+      saturdayBondHours: "saturday_bond_hours"
+    } },
     materials: { table: "materials", cols: { currentStock: "current_stock", lastStockTakeDate: "last_stock_take_date", batchCode: "batch_code" } },
     materialMovements: { table: "material_movements", cols: { materialId: "material_id", sourceType: "source_type", sourceId: "source_id" } },
     // reelsMade is the only numeric here. Screw speed, line speed and width are
@@ -18357,19 +18369,35 @@ Plan it?`
     const sane = (h) => h != null && h >= 0.05 && h <= 12;
     const forms = new Map((data.productForms || []).filter((f) => f && !f.deleted).map((f) => [f.id, f]));
     const prods = new Map((data.products || []).filter((p) => p && !p.deleted).map((p) => [p.id, p]));
-    const runs = (data.bondingRuns || []).filter((r) => r && !r.deleted && !r.packingOnly && !r._synth && num(r.amountMade) > 0);
-    const timed = runs.filter((r) => sane(num(r.runtimeHrs)));
+    const rows = (data.bondingRuns || []).filter((r) => r && !r.deleted && !r.packingOnly && !r._synth && num(r.amountMade) > 0);
+    const runMap = /* @__PURE__ */ new Map();
+    for (const r of rows) {
+      const code = String(r.boxNumber || "").trim().toUpperCase();
+      const key = code ? `${r.date || ""}|${code}` : `id|${r.id}`;
+      if (!runMap.has(key)) runMap.set(key, { rows: [], boxes: 0, metres: 0, hours: null, formId: null, productSize: null });
+      const run = runMap.get(key), f = r.formId && forms.get(r.formId);
+      const mpb = num(r.metersPerBox) || f && num(f.metres) || 0;
+      run.rows.push(r);
+      run.boxes += num(r.amountMade);
+      run.metres += num(r.amountMade) * mpb;
+      const h = num(r.runtimeHrs);
+      if (sane(h) && (run.hours == null || h > run.hours)) run.hours = h;
+      if (!run.formId && r.formId) run.formId = r.formId;
+      if (!run.productSize && r.productSize) run.productSize = r.productSize;
+    }
+    const allRuns = [...runMap.values()];
+    const timed = allRuns.filter((r) => r.hours != null);
     const groups = /* @__PURE__ */ new Map();
     for (const r of timed) {
       const f = r.formId && forms.get(r.formId);
       const p = f && prods.get(f.productId);
       const key = f ? f.id : `name:${r.productSize}`;
       const label = p ? `${p.displayName}${String(f.form).toLowerCase() === "reel" ? " REEL" : ""}` : r.productSize || "(no product)";
-      const metres = num(r.metersPerBox) || f && num(f.metres) || 0;
+      const metres = r.boxes && r.metres ? r.metres / r.boxes : f && num(f.metres) || 0;
       if (!groups.has(key)) groups.set(key, { key, label, form: f ? f.form : /reel/i.test(r.productSize || "") ? "Reel" : "Box", metres, boxesPerHour: [], metresPerHour: [] });
-      const g = groups.get(key), h = num(r.runtimeHrs);
-      g.boxesPerHour.push(num(r.amountMade) / h);
-      if (metres) g.metresPerHour.push(num(r.amountMade) * metres / h);
+      const g = groups.get(key);
+      g.boxesPerHour.push(r.boxes / r.hours);
+      if (r.metres) g.metresPerHour.push(r.metres / r.hours);
     }
     const byProduct = [...groups.values()].map((g) => ({
       key: g.key,
@@ -18379,11 +18407,7 @@ Plan it?`
       boxes: stats(g.boxesPerHour),
       metres: stats(g.metresPerHour)
     })).filter((g) => g.boxes).sort((a, b) => b.boxes.n - a.boxes.n || a.label.localeCompare(b.label));
-    const bondingOverall = stats(timed.map((r) => {
-      const f = r.formId && forms.get(r.formId);
-      const m = num(r.metersPerBox) || f && num(f.metres) || 0;
-      return m ? num(r.amountMade) * m / num(r.runtimeHrs) : null;
-    }).filter((x) => x != null));
+    const bondingOverall = stats(timed.filter((r) => r.metres).map((r) => r.metres / r.hours));
     const reels = (data.glueLineBatches || []).filter((b) => b && !b.deleted && num(b.meterage) > 0);
     const gtimed = reels.filter((b) => sane(num(b.runtimeHrs)));
     const sizes = /* @__PURE__ */ new Map();
@@ -18394,20 +18418,44 @@ Plan it?`
     }
     const bySize = [...sizes.values()].map((g) => ({ key: g.key, label: g.label, metres: stats(g.vals) })).filter((g) => g.metres).sort((a, b) => b.metres.n - a.metres.n || a.label.localeCompare(b.label));
     return {
-      bonding: { overall: bondingOverall, byProduct, timed: timed.length, untimed: runs.length - timed.length },
+      bonding: { overall: bondingOverall, byProduct, timed: timed.length, untimed: allRuns.length - timed.length, rows: rows.length, runs: allRuns.length },
       glue: { overall: stats(gtimed.map((b) => num(b.meterage) / num(b.runtimeHrs))), bySize, timed: gtimed.length, untimed: reels.length - gtimed.length }
     };
   }
   var WORK_HOURS = { 1: [8, 17], 2: [8, 17], 3: [8, 17], 4: [8, 17], 5: [8, 14] };
-  function nextWorkMoment(t) {
+  var DEFAULT_SCHEDULE_SETTINGS = {
+    id: "default",
+    glueOrder: "priority",
+    joinMinutes: 20,
+    overmakePct: 10,
+    sizeChangeMin: 20,
+    widthChangeMin: 25,
+    saturdayGlueHours: 0,
+    saturdayBondHours: 0
+  };
+  function scheduleSettingsOf(data) {
+    const row = (data && data.scheduleSettings || []).find((r) => r && r.id === "default" && !r.deleted) || {};
+    const out = { ...DEFAULT_SCHEDULE_SETTINGS };
+    for (const k of Object.keys(DEFAULT_SCHEDULE_SETTINGS)) {
+      if (k === "id" || row[k] == null || row[k] === "") continue;
+      out[k] = k === "glueOrder" ? String(row[k]) : isFinite(Number(row[k])) ? Number(row[k]) : out[k];
+    }
+    if (!["priority", "join", "size_once"].includes(out.glueOrder)) out.glueOrder = "priority";
+    return { ...out, updatedAt: row.updatedAt || null, updatedBy: row.updatedBy || null, stored: !!row.id };
+  }
+  function workCalendar(saturdayHours) {
+    const h = Number(saturdayHours) || 0;
+    return h > 0 ? { ...WORK_HOURS, 6: [8, 8 + Math.min(12, h)] } : WORK_HOURS;
+  }
+  function nextWorkMoment(t, cal = WORK_HOURS) {
     let d = new Date(t);
     for (let i = 0; i < 14; i++) {
-      const h = WORK_HOURS[d.getDay()];
+      const h = cal[d.getDay()];
       if (h) {
         const start = new Date(d);
         start.setHours(h[0], 0, 0, 0);
         const end = new Date(d);
-        end.setHours(h[1], 0, 0, 0);
+        end.setHours(Math.floor(h[1]), Math.round(h[1] % 1 * 60), 0, 0);
         if (d < start) return start;
         if (d < end) return d;
       }
@@ -18417,27 +18465,87 @@ Plan it?`
     }
     return d;
   }
-  function addWorkHours(t, hours) {
-    let d = nextWorkMoment(t), left = Math.max(0, Number(hours) || 0) * 36e5;
+  function addWorkHours(t, hours, cal = WORK_HOURS) {
+    let d = nextWorkMoment(t, cal), left = Math.max(0, Number(hours) || 0) * 36e5;
     while (left > 0) {
-      const h = WORK_HOURS[d.getDay()];
+      const h = cal[d.getDay()];
       const end = new Date(d);
-      end.setHours(h[1], 0, 0, 0);
+      end.setHours(Math.floor(h[1]), Math.round(h[1] % 1 * 60), 0, 0);
       const room = end - d;
       if (left <= room) return new Date(d.getTime() + left);
       left -= room;
-      d = nextWorkMoment(new Date(end.getTime() + 1));
+      d = nextWorkMoment(new Date(end.getTime() + 1), cal);
     }
     return d;
   }
+  function nextWorkingMorning(t, cal = WORK_HOURS) {
+    const d = new Date(t);
+    d.setDate(d.getDate() + 1);
+    d.setHours(0, 0, 0, 0);
+    return nextWorkMoment(d, cal);
+  }
+  function glueSizeOfProduct(p) {
+    const k = sizeKeyOfProduct(p);
+    return k ? k.replace(/^smart-formes-/, "px-plus-") : null;
+  }
+  function glueLineSequence(demand, current, opts = {}) {
+    const mode = opts.glueOrder || "priority";
+    const joinMinutes = Number(opts.joinMinutes) || 0;
+    const rateOf = opts.rateOf || (() => 690);
+    const tiers = [...new Set(demand.map((x) => x.tier))].sort((a, b) => a - b);
+    const byTierSize = /* @__PURE__ */ new Map();
+    for (const x of demand) {
+      const k = `${x.tier}|${x.size}`;
+      if (!byTierSize.has(k)) byTierSize.set(k, { need: 0, orders: [] });
+      const e = byTierSize.get(k);
+      e.need += x.metres;
+      if (!e.orders.includes(x.orderId)) e.orders.push(x.orderId);
+    }
+    const steps = [], covered = /* @__PURE__ */ new Map();
+    let onLine = current ? { size: current.size || null, width: current.width || null } : { size: null, width: null };
+    const widthRank = { "10mm": 0, "7mm": 1, "12mm": 2 };
+    for (const tier of tiers) {
+      const bySize = /* @__PURE__ */ new Map();
+      for (const x of demand.filter((d) => d.tier === tier)) {
+        if (covered.has(`${tier}|${x.size}`) || bySize.has(x.size)) continue;
+        const e = byTierSize.get(`${tier}|${x.size}`);
+        bySize.set(x.size, { size: x.size, label: x.label, width: x.width, gap: x.gap, die: x.die, need: e.need, orders: e.orders.slice(), tier });
+      }
+      const items = [...bySize.values()].sort((a, b) => (a.width === onLine.width ? -1 : widthRank[a.width] ?? 9) - (b.width === onLine.width ? -1 : widthRank[b.width] ?? 9) || (a.size === onLine.size ? 0 : 1) - (b.size === onLine.size ? 0 : 1) || (a.gap ?? 99) - (b.gap ?? 99) || String(a.size).localeCompare(String(b.size)));
+      for (const it of items) {
+        const change = !onLine.size ? null : it.width !== onLine.width ? "width" : it.size !== onLine.size ? "size" : null;
+        const step = { ...it, metres: it.need, joined: [], change };
+        if (mode !== "priority") {
+          let addedHours = 0;
+          for (const later of tiers.filter((t) => t > tier)) {
+            const k = `${later}|${it.size}`, e = byTierSize.get(k);
+            if (!e || covered.has(k)) continue;
+            const h = e.need / rateOf(it.size);
+            if (mode === "join" && (addedHours + h) * 60 > joinMinutes + 1e-9) break;
+            addedHours += h;
+            step.metres += e.need;
+            covered.set(k, step);
+            for (const o of e.orders) step.joined.push({ orderId: o, tier: later });
+          }
+        }
+        steps.push(step);
+        onLine = { size: it.size, width: it.width };
+      }
+    }
+    return { steps, covered };
+  }
   function orderFinishDates(data, now = /* @__PURE__ */ new Date()) {
+    const cfg = scheduleSettingsOf(data);
+    const over = 1 + Math.max(0, cfg.overmakePct) / 100;
+    const glueCal = workCalendar(cfg.saturdayGlueHours), bondCal = workCalendar(cfg.saturdayBondHours);
     const rates = measuredRates(data);
     const forms = new Map((data.productForms || []).filter((f) => f && !f.deleted).map((f) => [f.id, f]));
     const prods = new Map((data.products || []).filter((p) => p && !p.deleted).map((p) => [p.id, p]));
     const bondByForm = new Map(rates.bonding.byProduct.filter((g) => g.boxes && g.boxes.n >= 3).map((g) => [g.key, g.boxes.median]));
     const glueBySize = new Map(rates.glue.bySize.filter((g) => g.metres && g.metres.n >= 3).map((g) => [g.key, g.metres.median]));
-    const bondMph = rates.bonding.overall && rates.bonding.overall.median || 460;
+    const bondMph = rates.bonding.overall && rates.bonding.overall.median || 580;
     const glueMph = rates.glue.overall && rates.glue.overall.median || 690;
+    const glueRateOf = (size) => glueBySize.get(size) || glueMph;
     const runs = (data.bondingRuns || []).filter((r) => r && !r.deleted && !r._synth && r.boxNumber && r.formId);
     const formOfBox = /* @__PURE__ */ new Map();
     for (const r of runs) formOfBox.set(String(r.boxNumber).trim().toUpperCase(), r.formId);
@@ -18449,12 +18557,18 @@ Plan it?`
         shelf.set(f, (shelf.get(f) || 0) + n);
       }
     }
+    const poolSize = (k) => k ? String(k).replace(/^smart-formes-/, "px-plus-") : k;
     const reelLeft = /* @__PURE__ */ new Map();
     for (const b of data.glueLineBatches || []) {
       if (!b || b.deleted || String(b.cleared || "").toLowerCase() === "yes" || !b.sizeKey) continue;
       const left = Math.max(0, (Number(b.meterage) || 0) - batchMeterageUsed(data.bondingRuns || [], b.batchNumber));
-      if (left) reelLeft.set(b.sizeKey, (reelLeft.get(b.sizeKey) || 0) + left);
+      if (left) {
+        const k = poolSize(b.sizeKey);
+        reelLeft.set(k, (reelLeft.get(k) || 0) + left);
+      }
     }
+    const lastReel = (data.glueLineBatches || []).filter((b) => b && !b.deleted && b.sizeKey && (b.endedAt || b.date)).sort((a, b) => String(b.endedAt || b.date).localeCompare(String(a.endedAt || a.date)))[0] || null;
+    const current = lastReel ? { size: poolSize(lastReel.sizeKey), width: classifySize(lastReel.productSize) } : null;
     const held = ledgerCaseContents(data.movements || []);
     const inCases = (orderId, formId) => {
       let t = 0;
@@ -18464,11 +18578,11 @@ Plan it?`
       }
       return t;
     };
-    const live = (data.orders || []).filter((o) => o && !o.deleted && o.stage !== "Shipped" && o.stage !== "Cancelled").sort((a, b) => (Number(a.priority) || 99) - (Number(b.priority) || 99) || String(a.dueDate || "9999").localeCompare(String(b.dueDate || "9999")) || a.id.localeCompare(b.id));
-    let glueClock = nextWorkMoment(now), bondClock = nextWorkMoment(now);
-    const out = [];
-    for (const o of live) {
-      let bondHours = 0, glueHours = 0, units = 0, fromShelf = 0, unknown = 0;
+    const tierOf = (o) => Number(o.priority) || 99;
+    const live = (data.orders || []).filter((o) => o && !o.deleted && o.stage !== "Shipped" && o.stage !== "Cancelled").sort((a, b) => tierOf(a) - tierOf(b) || String(a.dueDate || "9999").localeCompare(String(b.dueDate || "9999")) || a.id.localeCompare(b.id));
+    const rows = [], demand = [], bondJobs = [];
+    live.forEach((o, rank) => {
+      let bondHours = 0, glueHours = 0, units = 0, fromShelf = 0, unknown = 0, notScheduled = 0;
       const lines = (data.lineItems || []).filter((l) => l && !l.deleted && l.orderId === o.id && Number(l.qty) > 0 && !isDelivery(l.description) && !isSmallItem(l.description));
       const perForm = /* @__PURE__ */ new Map();
       for (const l of lines) {
@@ -18487,30 +18601,40 @@ Plan it?`
           fromShelf += take;
         }
         if (!need) continue;
-        units += need;
-        const f = forms.get(formId), metresEach = f && Number(f.metres) || 24;
-        bondHours += bondByForm.has(formId) ? need / bondByForm.get(formId) : need * metresEach / bondMph;
-        const p = f && prods.get(f.productId), size = p && sizeKeyOfProduct(p);
-        let metres = need * metresEach;
-        const onHand = size ? reelLeft.get(size) || 0 : 0, use = Math.min(metres, onHand);
-        if (use) {
-          reelLeft.set(size, onHand - use);
-          metres -= use;
+        const f = forms.get(formId), p = f && prods.get(f.productId);
+        const width = p ? classifySize(p.displayName) : null;
+        if (width === "rubber") {
+          notScheduled += need;
+          continue;
         }
-        if (metres > 0) glueHours += metres / (glueBySize.get(size) || glueMph);
+        units += need;
+        const metresEach = f && Number(f.metres) || 24;
+        const hours = bondByForm.has(formId) ? need / bondByForm.get(formId) : need * metresEach / bondMph;
+        bondHours += hours;
+        const size = p && glueSizeOfProduct(p);
+        const reel = need * metresEach * over;
+        const onHand = size ? reelLeft.get(size) || 0 : 0, use = Math.min(reel, onHand);
+        if (use) reelLeft.set(size, onHand - use);
+        const toGlue = reel - use;
+        if (use > 0) bondJobs.push({ orderId: o.id, rank, size: null, hours: hours * use / reel });
+        if (toGlue > 0) {
+          glueHours += toGlue / glueRateOf(size);
+          const label = String(p ? p.displayName : f.id).replace(/\s*\b(2-3pt|3-4pt|6pt)\b/i, "").replace(/^Smart Formes\b/, "PX Plus").trim();
+          const dies = p ? glueDiesForSpec(label) : [];
+          demand.push({
+            size,
+            width,
+            gap: p && p.gos != null ? Number(p.gos) : null,
+            label,
+            die: dies[0] ? dies[0].label : null,
+            metres: toGlue,
+            orderId: o.id,
+            tier: tierOf(o)
+          });
+          bondJobs.push({ orderId: o.id, rank, size, hours: hours * toGlue / reel });
+        }
       }
-      let finish = null, glueEnd = null;
-      if (glueHours > 0) {
-        glueEnd = addWorkHours(glueClock, glueHours);
-        glueClock = glueEnd;
-      }
-      if (bondHours > 0) {
-        const start = glueEnd && glueEnd > bondClock ? glueEnd : bondClock;
-        finish = addWorkHours(start, bondHours);
-        bondClock = finish;
-      }
-      const due = o.dueDate ? /* @__PURE__ */ new Date(`${o.dueDate}T17:00:00`) : null;
-      out.push({
+      rows.push({
         orderId: o.id,
         customer: o.customer,
         priority: o.priority || null,
@@ -18518,27 +18642,166 @@ Plan it?`
         units,
         fromShelf,
         unknown,
+        notScheduled,
         glueHours,
-        bondHours,
-        finish,
-        late: !!(due && finish && finish > due),
-        overdueNow: !!(due && due < now)
+        bondHours
       });
+    });
+    const { steps, covered } = glueLineSequence(demand, current, { glueOrder: cfg.glueOrder, joinMinutes: cfg.joinMinutes, rateOf: glueRateOf });
+    let glueClock = nextWorkMoment(now, glueCal), changeHours = 0;
+    const sizeReady = /* @__PURE__ */ new Map();
+    for (const s of steps) {
+      const ch = s.change === "width" ? cfg.widthChangeMin / 60 : s.change === "size" ? cfg.sizeChangeMin / 60 : 0;
+      changeHours += ch;
+      s.changeMinutes = Math.round(ch * 60);
+      s.start = addWorkHours(glueClock, ch, glueCal);
+      s.hours = s.metres / glueRateOf(s.size);
+      s.end = addWorkHours(s.start, s.hours, glueCal);
+      glueClock = s.end;
+      sizeReady.set(`${s.tier}|${s.size}`, s.end);
     }
+    for (const [key, step] of covered) sizeReady.set(key, step.end);
+    const orderTier = new Map(live.map((o) => [o.id, tierOf(o)]));
+    const glueDone = /* @__PURE__ */ new Map();
+    for (const j of bondJobs) {
+      if (!j.size) {
+        j.ready = nextWorkMoment(now, bondCal);
+        continue;
+      }
+      const end = sizeReady.get(`${orderTier.get(j.orderId)}|${j.size}`);
+      j.ready = nextWorkingMorning(end, bondCal);
+      if (!glueDone.has(j.orderId) || glueDone.get(j.orderId) < end) glueDone.set(j.orderId, end);
+    }
+    let bondClock = nextWorkMoment(now, bondCal);
+    const pending = bondJobs.slice().sort((a, b) => a.rank - b.rank);
+    const finish = /* @__PURE__ */ new Map();
+    while (pending.length) {
+      const i = pending.findIndex((j2) => j2.ready <= bondClock);
+      if (i < 0) {
+        const soonest = pending.reduce((m, j2) => j2.ready < m ? j2.ready : m, pending[0].ready);
+        bondClock = nextWorkMoment(soonest, bondCal);
+        continue;
+      }
+      const j = pending.splice(i, 1)[0];
+      j.start = bondClock;
+      j.end = addWorkHours(bondClock, j.hours, bondCal);
+      bondClock = j.end;
+      if (!finish.has(j.orderId) || finish.get(j.orderId) < j.end) finish.set(j.orderId, j.end);
+    }
+    const out = rows.map((r) => {
+      const f = finish.get(r.orderId) || null;
+      const due = r.dueDate ? /* @__PURE__ */ new Date(`${r.dueDate}T17:00:00`) : null;
+      return {
+        ...r,
+        finish: f,
+        glueDone: glueDone.get(r.orderId) || null,
+        late: !!(due && f && f > due),
+        overdueNow: !!(due && due < now)
+      };
+    });
     return {
+      settings: cfg,
       orders: out,
+      glueSteps: steps,
+      glueChangeHours: changeHours,
+      current: lastReel ? { label: lastReel.productSize, width: current.width } : null,
       glueFree: glueClock,
       bondFree: bondClock,
-      glueBacklog: out.reduce((t, x) => t + x.glueHours, 0),
+      glueBacklog: steps.reduce((t, s) => t + s.hours, 0) + changeHours,
       bondBacklog: out.reduce((t, x) => t + x.bondHours, 0)
     };
   }
-  function FinishDatesView({ data }) {
+  function ScheduleSettingsPanel({ data, setData }) {
+    const cfg = scheduleSettingsOf(data);
+    const [open, setOpen] = useState(false);
+    const [draft, setDraft] = useState({});
+    const save = (patch) => {
+      if (!setData) return;
+      setData((prev) => {
+        const rows = prev.scheduleSettings || [];
+        const base = { ...DEFAULT_SCHEDULE_SETTINGS, ...rows.find((r) => r.id === "default") || {} };
+        const row = { ...base, ...patch, id: "default", deleted: false };
+        return { ...prev, scheduleSettings: rows.some((r) => r.id === "default") ? rows.map((r) => r.id === "default" ? row : r) : [...rows, row] };
+      });
+    };
+    const num = (key, label, unit, max) => {
+      const shown = draft[key] ?? String(cfg[key]);
+      const commit = () => {
+        if (draft[key] == null) return;
+        const n = Number(draft[key]);
+        setDraft((d) => {
+          const x = { ...d };
+          delete x[key];
+          return x;
+        });
+        if (!isFinite(n) || n < 0 || max != null && n > max || n === cfg[key]) return;
+        save({ [key]: n });
+      };
+      return /* @__PURE__ */ React.createElement("label", { className: "flex items-center justify-between gap-3 py-1.5", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("span", { className: "text-sm" }, label), /* @__PURE__ */ React.createElement("span", { className: "flex items-center gap-1.5" }, /* @__PURE__ */ React.createElement(
+        "input",
+        {
+          type: "number",
+          inputMode: "decimal",
+          min: "0",
+          max,
+          value: shown,
+          "aria-label": label,
+          onChange: (e) => setDraft((d) => ({ ...d, [key]: e.target.value })),
+          onBlur: commit,
+          onKeyDown: (e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+          },
+          style: { width: 72, fontSize: 16, textAlign: "right", height: 34, borderRadius: 6, border: `1px solid ${BORDER}`, padding: "0 8px" }
+        }
+      ), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, width: 34 } }, unit)));
+    };
+    const modes = [
+      { key: "priority", label: "Priority first", note: "Each priority's sizes are set up for that priority. A size wanted at two priorities is set up twice." },
+      { key: "join", label: "Join small amounts", note: `While a size is set up, also run a later order's need for it if that adds no more than ${cfg.joinMinutes} min.` },
+      { key: "size_once", label: "Each size once", note: "Run every order's need the first time a size is set up. Fewest changeovers; later orders' metres can hold up more urgent ones." }
+    ];
+    const changedBy = cfg.updatedBy ? ` Last changed by ${cfg.updatedBy}${cfg.updatedAt ? " on " + new Date(cfg.updatedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : ""}.` : "";
+    const isDefault = Object.keys(DEFAULT_SCHEDULE_SETTINGS).every((k) => k === "id" || cfg[k] === DEFAULT_SCHEDULE_SETTINGS[k]);
+    return /* @__PURE__ */ React.createElement("div", { className: "mb-4 rounded", style: { border: `1px solid ${BORDER}`, background: "#fff" } }, /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => setOpen((v) => !v), className: "w-full flex items-center justify-between px-3 py-2 text-sm", style: { fontWeight: 600 } }, /* @__PURE__ */ React.createElement("span", null, "Tailor the plan"), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontWeight: 400 } }, modes.find((m) => m.key === cfg.glueOrder).label, " \xB7 make ", cfg.overmakePct, "% extra \xB7 changes ", cfg.sizeChangeMin, "/", cfg.widthChangeMin, " min", cfg.saturdayGlueHours || cfg.saturdayBondHours ? " \xB7 Saturday on" : "", " ", open ? "\u25B4" : "\u25BE")), open && /* @__PURE__ */ React.createElement("div", { className: "px-3 pb-3" }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, "Shared \u2014 every device plans the same way.", changedBy), /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: INK_MUTED } }, "Glue line order"), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-2 mb-1" }, modes.map((m) => /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        key: m.key,
+        type: "button",
+        "aria-pressed": cfg.glueOrder === m.key,
+        onClick: () => cfg.glueOrder !== m.key && save({ glueOrder: m.key }),
+        className: "px-3 text-sm",
+        style: {
+          minHeight: 34,
+          borderRadius: 4,
+          fontWeight: 600,
+          background: cfg.glueOrder === m.key ? NAVY : "#fff",
+          color: cfg.glueOrder === m.key ? "#fff" : INK,
+          border: `1px solid ${cfg.glueOrder === m.key ? NAVY : BORDER}`
+        }
+      },
+      m.label
+    ))), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, modes.find((m) => m.key === cfg.glueOrder).note), cfg.glueOrder === "join" && num("joinMinutes", "Join a later order's need if it adds no more than", "min", 480), num("overmakePct", "Make extra for bonding set-up scrap", "%", 100), num("sizeChangeMin", "Glue line size change", "min", 240), num("widthChangeMin", "Glue line width change (7 / 10 / 12mm)", "min", 240), num("saturdayGlueHours", "Saturday on the glue line (0 = none)", "h", 12), num("saturdayBondHours", "Saturday on bonding (0 = none)", "h", 12), !isDefault && /* @__PURE__ */ React.createElement("div", { className: "mt-2" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => save({
+      glueOrder: DEFAULT_SCHEDULE_SETTINGS.glueOrder,
+      joinMinutes: DEFAULT_SCHEDULE_SETTINGS.joinMinutes,
+      overmakePct: DEFAULT_SCHEDULE_SETTINGS.overmakePct,
+      sizeChangeMin: DEFAULT_SCHEDULE_SETTINGS.sizeChangeMin,
+      widthChangeMin: DEFAULT_SCHEDULE_SETTINGS.widthChangeMin,
+      saturdayGlueHours: 0,
+      saturdayBondHours: 0
+    }) }, "Back to the standard settings"))));
+  }
+  function FinishDatesView({ data, setData }) {
     const r = useMemo(() => orderFinishDates(data, /* @__PURE__ */ new Date()), [data]);
+    const [showAllSteps, setShowAllSteps] = useState(false);
     const day = (d) => d ? d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }) + " " + d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : "\u2014";
     const h1 = (x) => x ? (Math.round(x * 10) / 10).toLocaleString("en-GB") : "\u2014";
+    const cfg = r.settings;
     const lateCount = r.orders.filter((o) => o.late).length;
-    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "When orders finish", subtitle: "Every live order, most urgent first, laid against the working week (Mon\u2013Thu 8\u20135, Fri 8\u20132) at the rates the lines actually run. Packing is not counted; a Saturday run brings things forward." }), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "p-3 rounded", style: { border: `1px solid ${BORDER}`, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Glue line work waiting"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 700 } }, h1(r.glueBacklog), " h"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "clear by ", day(r.glueFree))), /* @__PURE__ */ React.createElement("div", { className: "p-3 rounded", style: { border: `1px solid ${BORDER}`, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Bonding work waiting"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 700 } }, h1(r.bondBacklog), " h"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "clear by ", day(r.bondFree))), /* @__PURE__ */ React.createElement("div", { className: "p-3 rounded", style: { border: `1px solid ${lateCount ? RED : BORDER}`, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Will miss their due date"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: lateCount ? RED : GREEN } }, lateCount), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "of ", r.orders.length, " live orders"))), /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { color: INK_MUTED, textAlign: "left" } }, /* @__PURE__ */ React.createElement("th", { className: "py-1" }, "Order"), /* @__PURE__ */ React.createElement("th", null, "Customer"), /* @__PURE__ */ React.createElement("th", null, "Priority"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Still to make"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "From the shelf"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Glue h"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Bonding h"), /* @__PURE__ */ React.createElement("th", null, "Expected finish"), /* @__PURE__ */ React.createElement("th", null, "Due"))), /* @__PURE__ */ React.createElement("tbody", null, r.orders.map((o) => /* @__PURE__ */ React.createElement("tr", { key: o.orderId, style: { borderTop: `1px solid ${BORDER}`, background: o.late ? "#FDECEA" : void 0 } }, /* @__PURE__ */ React.createElement("td", { className: "py-1", style: { fontWeight: 600 } }, o.orderId), /* @__PURE__ */ React.createElement("td", null, o.customer), /* @__PURE__ */ React.createElement("td", null, o.priority || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, o.units, o.unknown ? ` (+${o.unknown} not in the catalogue)` : ""), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, o.fromShelf || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, h1(o.glueHours)), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, h1(o.bondHours)), /* @__PURE__ */ React.createElement("td", { style: { color: o.late ? RED : INK, fontWeight: o.late ? 700 : 400 } }, o.finish ? day(o.finish) : "nothing left to make"), /* @__PURE__ */ React.createElement("td", { style: { color: o.overdueNow ? RED : INK } }, o.dueDate || "\u2014")))))));
+    const changes = r.glueSteps.filter((s) => s.change).length;
+    const steps = showAllSteps ? r.glueSteps : r.glueSteps.slice(0, 15);
+    const changeText = (s) => s.change === "width" ? `width change, ${s.changeMinutes} min` : s.change === "size" ? `size change, ${s.changeMinutes} min` : "\u2014";
+    const week = `Mon\u2013Thu 8\u20135, Fri 8\u20132${cfg.saturdayGlueHours || cfg.saturdayBondHours ? `, Saturday: glue line ${cfg.saturdayGlueHours} h, bonding ${cfg.saturdayBondHours} h` : ""}`;
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "When orders finish", subtitle: `Every live order, most urgent first, laid against the working week (${week}) at the rates the lines actually run. Glue bonds the next working day. Packing is not counted.` }), /* @__PURE__ */ React.createElement(ScheduleSettingsPanel, { data, setData }), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "p-3 rounded", style: { border: `1px solid ${BORDER}`, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Glue line work waiting"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 700 } }, h1(r.glueBacklog), " h"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, r.glueSteps.length, " set-ups, ", changes, " changeover", changes === 1 ? "" : "s", " (", h1(r.glueChangeHours), " h) \xB7 clear by ", day(r.glueFree))), /* @__PURE__ */ React.createElement("div", { className: "p-3 rounded", style: { border: `1px solid ${BORDER}`, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Bonding work waiting"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 700 } }, h1(r.bondBacklog), " h"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "clear by ", day(r.bondFree))), /* @__PURE__ */ React.createElement("div", { className: "p-3 rounded", style: { border: `1px solid ${lateCount ? RED : BORDER}`, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Will miss their due date"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: lateCount ? RED : GREEN } }, lateCount), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "of ", r.orders.length, " live orders"))), /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { color: INK_MUTED, textAlign: "left" } }, /* @__PURE__ */ React.createElement("th", { className: "py-1" }, "Order"), /* @__PURE__ */ React.createElement("th", null, "Customer"), /* @__PURE__ */ React.createElement("th", null, "Priority"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Still to make"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "From the shelf"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Glue h"), /* @__PURE__ */ React.createElement("th", { className: "pl-3" }, "Glue done"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Bonding h"), /* @__PURE__ */ React.createElement("th", { className: "pl-3" }, "Expected finish"), /* @__PURE__ */ React.createElement("th", null, "Due"))), /* @__PURE__ */ React.createElement("tbody", null, r.orders.map((o) => /* @__PURE__ */ React.createElement("tr", { key: o.orderId, style: { borderTop: `1px solid ${BORDER}`, background: o.late ? "#FDECEA" : void 0 } }, /* @__PURE__ */ React.createElement("td", { className: "py-1", style: { fontWeight: 600 } }, o.orderId), /* @__PURE__ */ React.createElement("td", null, o.customer), /* @__PURE__ */ React.createElement("td", null, o.priority || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, o.units, o.unknown ? ` (+${o.unknown} not in the catalogue)` : "", o.notScheduled ? ` (+${o.notScheduled} Exceed, not on either line)` : ""), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, o.fromShelf || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, h1(o.glueHours)), /* @__PURE__ */ React.createElement("td", { className: "pl-3" }, o.glueDone ? day(o.glueDone) : "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, h1(o.bondHours)), /* @__PURE__ */ React.createElement("td", { className: "pl-3", style: { color: o.late ? RED : INK, fontWeight: o.late ? 700 : 400 } }, o.finish ? day(o.finish) : "nothing left to make"), /* @__PURE__ */ React.createElement("td", { style: { color: o.overdueNow ? RED : INK } }, o.dueDate || "\u2014")))))), /* @__PURE__ */ React.createElement("div", { className: "mt-6" }, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Glue line \u2014 suggested running order", subtitle: `Grouped by width and then gap so the changes are fewest. Metres include ${cfg.overmakePct}% extra for bonding set-up scrap. PET restocks are not counted.${r.current ? ` On the line last: ${r.current.label}.` : ""}` }), r.glueSteps.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: INK_MUTED } }, "Nothing needs glue-lining \u2014 reel on hand covers every order.") : /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { color: INK_MUTED, textAlign: "left" } }, /* @__PURE__ */ React.createElement("th", { className: "py-1" }, "#"), /* @__PURE__ */ React.createElement("th", null, "Size"), /* @__PURE__ */ React.createElement("th", null, "Width"), /* @__PURE__ */ React.createElement("th", null, "Die"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Metres"), /* @__PURE__ */ React.createElement("th", { className: "pl-3" }, "Before it"), /* @__PURE__ */ React.createElement("th", null, "Start"), /* @__PURE__ */ React.createElement("th", null, "Off the line"), /* @__PURE__ */ React.createElement("th", null, "Priority"), /* @__PURE__ */ React.createElement("th", null, "For"))), /* @__PURE__ */ React.createElement("tbody", null, steps.map((s, i) => /* @__PURE__ */ React.createElement("tr", { key: `${s.tier}|${s.size}`, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-1" }, i + 1), /* @__PURE__ */ React.createElement("td", { style: { fontWeight: 600 } }, s.label), /* @__PURE__ */ React.createElement("td", null, s.width || "\u2014"), /* @__PURE__ */ React.createElement("td", null, s.die || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "text-right", style: { fontWeight: 600 } }, Math.round(s.metres).toLocaleString("en-GB")), /* @__PURE__ */ React.createElement("td", { className: "pl-3", style: { color: s.change === "width" ? ORANGE : INK_MUTED } }, changeText(s)), /* @__PURE__ */ React.createElement("td", null, day(s.start)), /* @__PURE__ */ React.createElement("td", null, day(s.end)), /* @__PURE__ */ React.createElement("td", null, s.tier === 99 ? "none set" : s.tier), /* @__PURE__ */ React.createElement("td", null, s.orders.join(", "), s.joined.length ? /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, ` \xB7 also ${s.joined.map((j) => `${j.orderId} (${j.tier === 99 ? "no priority" : "P" + j.tier})`).join(", ")}`) : null)))))), r.glueSteps.length > 15 && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setShowAllSteps((v) => !v) }, showAllSteps ? "Show the first 15" : `Show all ${r.glueSteps.length} set-ups`)));
   }
   function MeasuredRatesPanel({ data }) {
     const r = useMemo(() => measuredRates(data), [data.bondingRuns, data.glueLineBatches, data.productForms, data.products]);
@@ -24387,7 +24650,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         navigateTo(v);
         setOpenGroup(groupForView(v));
       } }),
-      finish: /* @__PURE__ */ React.createElement(FinishDatesView, { data }),
+      finish: /* @__PURE__ */ React.createElement(FinishDatesView, { data, setData }),
       daily: /* @__PURE__ */ React.createElement(
         TodayView,
         {
