@@ -778,7 +778,17 @@
   function normalizeSpec(s) {
     return (s || "").replace(/\(\s*\d+(\.\d+)?\s*m\s*\)/gi, "").replace(/\breel\b/gi, "").replace(/\s+/g, " ").trim().toLowerCase();
   }
+  var SPEC_DIMENSIONS_CACHE = /* @__PURE__ */ new Map();
   function specDimensions(spec) {
+    const t = String(spec || "");
+    const had = SPEC_DIMENSIONS_CACHE.get(t);
+    if (had !== void 0) return had;
+    const out = specDimensionsFresh(t);
+    if (SPEC_DIMENSIONS_CACHE.size > 2e4) SPEC_DIMENSIONS_CACHE.clear();
+    SPEC_DIMENSIONS_CACHE.set(t, out);
+    return out;
+  }
+  function specDimensionsFresh(spec) {
     return (String(spec || "").replace(/\bD\s?\d+(\.\d+)?\b/gi, " ").match(/\d+\.\d+/g) || []).slice(0, 2).map(Number);
   }
   function isOffCentre(spec) {
@@ -828,8 +838,15 @@
       }
     };
   }
+  var PRODUCT_KEY_CACHE = /* @__PURE__ */ new Map();
   function productKey(text) {
-    return String(text || "").toUpperCase().replace(/\((\d+(\.\d+)?)M\)/g, "").replace(/\bREELS?\b/g, "").replace(/MM\b/g, "").replace(/[^A-Z0-9.]/g, "");
+    const t = String(text || "");
+    const had = PRODUCT_KEY_CACHE.get(t);
+    if (had !== void 0) return had;
+    const key = t.toUpperCase().replace(/\((\d+(\.\d+)?)M\)/g, "").replace(/\bREELS?\b/g, "").replace(/MM\b/g, "").replace(/[^A-Z0-9.]/g, "");
+    if (PRODUCT_KEY_CACHE.size > 2e4) PRODUCT_KEY_CACHE.clear();
+    PRODUCT_KEY_CACHE.set(t, key);
+    return key;
   }
   function productParts(text) {
     const t = String(text || "");
@@ -843,7 +860,24 @@
       reel: /reel/i.test(t)
     };
   }
+  var RESOLVE_CACHE = { products: null, aliases: null, lengths: "", byText: /* @__PURE__ */ new Map() };
   function resolveProduct(data, text) {
+    const pArr = data && data.products || null, aArr = data && data.productAliases || null;
+    const lens = `${(pArr || []).length}/${(aArr || []).length}`;
+    if (RESOLVE_CACHE.products !== pArr || RESOLVE_CACHE.aliases !== aArr || RESOLVE_CACHE.lengths !== lens) {
+      RESOLVE_CACHE.products = pArr;
+      RESOLVE_CACHE.aliases = aArr;
+      RESOLVE_CACHE.lengths = lens;
+      RESOLVE_CACHE.byText = /* @__PURE__ */ new Map();
+    }
+    const memo = RESOLVE_CACHE.byText, memoKey = String(text || "");
+    if (memo.has(memoKey)) return memo.get(memoKey);
+    const answer = resolveProductFresh(data, text);
+    if (memo.size > 2e4) memo.clear();
+    memo.set(memoKey, answer);
+    return answer;
+  }
+  function resolveProductFresh(data, text) {
     const products = (data && data.products || []).filter((p) => !p.deleted);
     const aliases = (data && data.productAliases || []).filter((a) => !a.deleted);
     const raw = String(text || "").trim();
@@ -876,12 +910,23 @@
     const hit = m != null ? forms.filter((f) => Number(f.metres) === m) : forms;
     return hit.length === 1 ? hit[0].id : null;
   }
+  var FORM_INDEX = { forms: null, products: null, lengths: "", byId: /* @__PURE__ */ new Map() };
   function formById(data, formId) {
     if (!formId) return null;
-    const f = (data.productForms || []).find((x) => x && !x.deleted && x.id === formId);
-    if (!f) return null;
-    const p = (data.products || []).find((x) => x && !x.deleted && x.id === f.productId) || null;
-    return { formId: f.id, productId: f.productId, form: f.form, reel: f.form === "Reel", metres: Number(f.metres) || null, product: p };
+    const fArr = data.productForms || null, pArr = data.products || null;
+    const lens = `${(fArr || []).length}/${(pArr || []).length}`;
+    if (FORM_INDEX.forms !== fArr || FORM_INDEX.products !== pArr || FORM_INDEX.lengths !== lens) {
+      FORM_INDEX.forms = fArr;
+      FORM_INDEX.products = pArr;
+      FORM_INDEX.lengths = lens;
+      const byProduct = /* @__PURE__ */ new Map();
+      for (const x of pArr || []) if (x && !x.deleted) byProduct.set(x.id, x);
+      const byId = /* @__PURE__ */ new Map();
+      for (const f of fArr || []) if (f && !f.deleted && !byId.has(f.id))
+        byId.set(f.id, { formId: f.id, productId: f.productId, form: f.form, reel: f.form === "Reel", metres: Number(f.metres) || null, product: byProduct.get(f.productId) || null });
+      FORM_INDEX.byId = byId;
+    }
+    return FORM_INDEX.byId.get(formId) || null;
   }
   function doubleGapOf(spec) {
     const m = String(spec || "").match(/\bD(\d+(?:\.\d+)?)\b/i);
@@ -3094,8 +3139,23 @@
     }
     return byCase;
   }
+  var BOX_ROWS_INDEX = { movements: null, length: -1, byBox: /* @__PURE__ */ new Map() };
+  function liveRowsByBox(movements) {
+    if (BOX_ROWS_INDEX.movements === movements && BOX_ROWS_INDEX.length === (movements || []).length) return BOX_ROWS_INDEX.byBox;
+    const byBox = /* @__PURE__ */ new Map();
+    for (const m of movements || []) {
+      if (!m || m.deleted) continue;
+      const key = m.boxNumber;
+      if (!byBox.has(key)) byBox.set(key, []);
+      byBox.get(key).push(m);
+    }
+    BOX_ROWS_INDEX.movements = movements;
+    BOX_ROWS_INDEX.length = (movements || []).length;
+    BOX_ROWS_INDEX.byBox = byBox;
+    return byBox;
+  }
   function projectBox(movements, boxNumber) {
-    const rows = (movements || []).filter((m) => !m.deleted && m.boxNumber === boxNumber);
+    const rows = liveRowsByBox(movements).get(boxNumber) || [];
     const made = rows.filter((m) => m.kind === "made" || m.kind === "adjusted").reduce((t, m) => t + Number(m.qty || 0), 0);
     const byOrder = {};
     for (const r of rows) {
@@ -3109,19 +3169,33 @@
     const shipped = rows.filter((m) => m.kind === "shipped").reduce((t, m) => t + Number(m.qty || 0), 0);
     return { made, allocated, scrapped, shipped, byOrder };
   }
-  function placeOf(data, boxNumber) {
-    const want = String(boxNumber || "").trim().toUpperCase();
+  var CASE_BOX_INDEX = { cases: null, orders: null, lengths: "", byBox: /* @__PURE__ */ new Map() };
+  function caseHoldingsByBox(data) {
+    const cArr = data.cases || null, oArr = data.orders || null;
+    const lens = `${(cArr || []).length}/${(oArr || []).length}`;
+    if (CASE_BOX_INDEX.cases === cArr && CASE_BOX_INDEX.orders === oArr && CASE_BOX_INDEX.lengths === lens) return CASE_BOX_INDEX.byBox;
     const goneOrders = new Set((data.orders || []).filter((o) => o && (o.stage === "Shipped" || o.stage === "Cancelled")).map((o) => o.id));
-    const inCases = [];
+    const byBox = /* @__PURE__ */ new Map();
     for (const c of data.cases || []) {
       if (!c || c.deleted || goneOrders.has(c.orderId)) continue;
       for (const [box, qty] of Object.entries(c.contents || {})) {
-        if (String(box).trim().toUpperCase() !== want) continue;
         const n = Number(qty) || 0;
-        if (n > 0) inCases.push({ orderId: c.orderId, caseNum: Number(c.caseNum), qty: n });
+        if (n <= 0) continue;
+        const key = String(box).trim().toUpperCase();
+        if (!byBox.has(key)) byBox.set(key, []);
+        byBox.get(key).push({ orderId: c.orderId, caseNum: Number(c.caseNum), qty: n });
       }
     }
-    inCases.sort((a, b) => String(a.orderId).localeCompare(String(b.orderId)) || a.caseNum - b.caseNum);
+    for (const list of byBox.values()) list.sort((a, b) => String(a.orderId).localeCompare(String(b.orderId)) || a.caseNum - b.caseNum);
+    CASE_BOX_INDEX.cases = cArr;
+    CASE_BOX_INDEX.orders = oArr;
+    CASE_BOX_INDEX.lengths = lens;
+    CASE_BOX_INDEX.byBox = byBox;
+    return byBox;
+  }
+  function placeOf(data, boxNumber) {
+    const want = String(boxNumber || "").trim().toUpperCase();
+    const inCases = (caseHoldingsByBox(data).get(want) || []).map((x) => ({ ...x }));
     const packed = inCases.reduce((t, x) => t + x.qty, 0);
     const p = projectBox(data.movements || [], boxNumber, data.reservations);
     const onShelfRaw = (p.made || 0) - (p.scrapped || 0) - (p.shipped || 0) - packed;
@@ -8256,7 +8330,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-20.26";
+  var APP_VERSION = "2026-09-20.28";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -9661,37 +9735,8 @@ ${line}` : line;
       const d = /* @__PURE__ */ new Date();
       const dateLine = d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" });
       const fri = d.getDay() === 5;
-      return /* @__PURE__ */ React.createElement("header", { style: { marginBottom: 4 } }, /* @__PURE__ */ React.createElement("h1", { style: { fontSize: 34, lineHeight: 1.05, letterSpacing: "-0.022em", fontWeight: 600, margin: 0, color: NAVY_DEEP } }, dateLine), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6, fontSize: 15, color: INK_MUTED } }, "Bonding runs what was glued ", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, "yesterday"), ". Reels on the rack, matched against what's still outstanding, urgent first."), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 2, fontSize: 14, color: INK_MUTED } }, fri ? "Line stops 14:00 today." : "Line stops 17:00 today."));
+      return /* @__PURE__ */ React.createElement("header", { style: { marginBottom: 4 } }, /* @__PURE__ */ React.createElement("h1", { style: { fontSize: "clamp(25px, 6.4vw, 34px)", lineHeight: 1.1, letterSpacing: "-0.022em", fontWeight: 600, margin: 0, color: NAVY_DEEP } }, dateLine), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6, fontSize: 15, color: INK_MUTED } }, "Bonding runs what was glued ", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, "yesterday"), ". Reels on the rack, matched against what's still outstanding, urgent first."), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 2, fontSize: 14, color: INK_MUTED } }, fri ? "Line stops 14:00 today." : "Line stops 17:00 today."));
     })(), planMoves && planMoves.later.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-3" }, /* @__PURE__ */ React.createElement(PlanSlipsLine, { slips: planMoves, compact: true })), (() => {
-      const fresh = newDiscrepancies(data);
-      if (fresh.length === 0) return null;
-      const n = fresh.length;
-      const words = ["", "One thing doesn't", "Two things don't", "Three things don't", "Four things don't", "Five things don't"][n] || `${n} things don't`;
-      return /* @__PURE__ */ React.createElement(
-        "button",
-        {
-          onClick: () => jumpToDiscrepancies && jumpToDiscrepancies(),
-          className: "no-print",
-          style: {
-            font: "inherit",
-            display: "flex",
-            gap: 14,
-            alignItems: "baseline",
-            width: "100%",
-            textAlign: "left",
-            margin: "22px 0 0",
-            background: "none",
-            border: 0,
-            borderLeft: `3px solid ${RED}`,
-            padding: "2px 0 2px 14px",
-            cursor: "pointer",
-            color: INK
-          }
-        },
-        /* @__PURE__ */ React.createElement("span", { style: { fontSize: 26, fontWeight: 600, color: RED, lineHeight: 1 } }, n),
-        /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, words, " add up"), " that weren't there last time you looked.", " ", fresh.slice(0, 2).map((f) => f.what).join(", and "), n > 2 ? `, and ${n - 2} more.` : ".")
-      );
-    })(), (() => {
       const today = todayISO();
       const runs = (data.bondingRuns || []).filter((r) => !r.deleted && !r.packingOnly && r.date === today);
       const boxes = runs.reduce((s, r) => s + (Number(r.amountMade) || 0), 0);
@@ -9705,28 +9750,6 @@ ${line}` : line;
       if (reels > 0) bits.push(`${reels} reel${reels === 1 ? "" : "s"} glued${metres > 0 ? ` (${Math.round(metres)}m)` : ""}`);
       if (evaReels > 0) bits.push(`${evaReels} EVA reel${evaReels === 1 ? "" : "s"} made`);
       return /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5", style: { borderLeft: `4px solid ${GREEN}` } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1.5", style: { color: INK_MUTED } }, "Done today"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 17, fontWeight: 600, color: INK, lineHeight: 1.4 } }, bits.join(" \xB7 ")), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1.5", style: { color: INK_MUTED } }, "Everything below is what's still to do."));
-    })(), /* @__PURE__ */ React.createElement("details", { className: "no-print", style: { marginTop: 26, fontSize: 14, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("summary", { style: { cursor: "pointer", color: NAVY, listStyle: "none" } }, "How this is worked out"), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8, lineHeight: 1.6, maxWidth: "62ch" } }, "Three things, every time: ", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, "the reels actually in the rack"), " (checked, not cleared, not scrapped, with metres still left on them),", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, " what's still left to make"), " on live orders after everything already bonded is taken off, and ", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, "which orders are urgent"), " \u2014 priority first, then due date. Nothing here is a target or an estimate. Every line is a real reel or a real shortfall, and each one says why it's on the list.")), /* @__PURE__ */ React.createElement(EvaRackPanel, { rack: evaRack, setData }), (() => {
-      const rows = (data.orders || []).filter((o) => o && !o.deleted && o.stage !== "Shipped" && o.stage !== "Cancelled").map((o) => {
-        const ordered = orderTotalItems(data.lineItems, o.id);
-        const cs = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === o.id);
-        let planned = 0, packed = 0;
-        for (const c of cs) {
-          for (const q of Object.values(casePlanned(c))) planned += Number(q) || 0;
-          for (const q of Object.values(c.contents || {})) packed += Number(q) || 0;
-        }
-        return { o, ordered, planned, packed, cases: cs.length, off: ordered !== planned };
-      }).filter((r) => r.ordered > 0 || r.planned > 0).sort((a, b) => (b.off ? 1 : 0) - (a.off ? 1 : 0) || String(a.o.id).localeCompare(String(b.o.id)));
-      if (!rows.length) return null;
-      const bad = rows.filter((r) => r.off);
-      return /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-6", style: { borderLeft: `4px solid ${bad.length ? RED : GREEN}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1", style: { color: bad.length ? RED : GREEN } }, bad.length ? `${bad.length} order${bad.length === 1 ? "" : "s"} don\u2019t add up` : "Every live order adds up"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED, maxWidth: 620 } }, "Ordered against what the cases promise. A difference here is a fault to find, never a case to add. Packed short of planned is just work still to do."), /* @__PURE__ */ React.createElement("div", { className: "desktop-only" }, /* @__PURE__ */ React.createElement("table", { className: "text-sm", style: { width: "100%", maxWidth: 640 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { className: "text-xs uppercase tracking-wide", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement(Th, null, "Order"), /* @__PURE__ */ React.createElement(Th, null, "Customer"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Ordered"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Planned"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Packed"))), /* @__PURE__ */ React.createElement("tbody", null, rows.map((r) => /* @__PURE__ */ React.createElement("tr", { key: r.o.id, style: { borderTop: `1px solid ${BORDER}`, background: r.off ? "#FBEAEA" : void 0 } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs font-semibold" }, r.o.id)), /* @__PURE__ */ React.createElement("td", null, r.o.customer), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, r.ordered), /* @__PURE__ */ React.createElement("td", { className: "text-right", style: { color: r.off ? RED : INK, fontWeight: r.off ? 700 : 400 } }, r.planned), /* @__PURE__ */ React.createElement("td", { className: "text-right", style: { color: r.packed >= r.planned && r.planned > 0 ? GREEN : INK } }, r.packed)))))), /* @__PURE__ */ React.createElement("div", { className: "mobile-only" }, rows.map((r) => /* @__PURE__ */ React.createElement("div", { key: r.o.id, style: {
-        borderTop: `1px solid ${BORDER}`,
-        padding: "8px 0",
-        background: r.off ? "#FBEAEA" : void 0
-      } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline justify-between gap-2" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs font-semibold" }, r.o.id), /* @__PURE__ */ React.createElement("span", { className: "text-sm text-right", style: { color: INK } }, r.o.customer)), /* @__PURE__ */ React.createElement("div", { className: "flex mt-1.5", style: { gap: 10 } }, [
-        ["Ordered", r.ordered, INK, 400],
-        ["Planned", r.planned, r.off ? RED : INK, r.off ? 700 : 400],
-        ["Packed", r.packed, r.packed >= r.planned && r.planned > 0 ? GREEN : INK, 400]
-      ].map(([label, val, colour, weight]) => /* @__PURE__ */ React.createElement("div", { key: label, style: { flex: 1 } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs uppercase tracking-wide", style: { color: INK_MUTED } }, label), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 17, fontWeight: weight, color: colour } }, val))))))));
     })(), /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 760, marginBottom: 34 } }, /* @__PURE__ */ React.createElement(PlanLane, { title: "Bond today", colour: NAVY, verb: "ready to bond", tasks: plan.bond, jumpToOrder }), /* @__PURE__ */ React.createElement(PlanLane, { title: "Glue line", colour: ORANGE, verb: "waiting on glue line", tasks: plan.glue, jumpToOrder }), /* @__PURE__ */ React.createElement(PlanLane, { title: "Pick from the shelf", colour: "#2E8B57", verb: "pickable", tasks: plan.pick, jumpToOrder }), /* @__PURE__ */ React.createElement(PlanLane, { title: "Ready to ship", colour: GREEN, verb: "ready to ship", tasks: plan.ship, jumpToOrder })), dueRows.length > 0 && (() => {
       const onPlan = /* @__PURE__ */ new Map();
       const note = (id, word) => {
@@ -9766,7 +9789,64 @@ ${line}` : line;
         return o > 0 ? ` (oldest ${o} day${o === 1 ? "" : "s"} ago)` : " today";
       })()} minus what's been bonded since${unverifiedBoxes > 0 ? `; ${unverifiedBoxes} box${unverifiedBoxes === 1 ? "" : "es"} above sit on dies never counted` : ""}.`;
       return `${countNote} ${yieldNote}`;
-    })())))), /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-3", style: { color: INK_MUTED, borderTop: `1px solid ${BORDER}`, paddingTop: 20 } }, "By size"), byCategory.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-sm py-8", style: { color: INK_MUTED } }, "Nothing outstanding across any size right now."), /* @__PURE__ */ React.createElement("div", { className: "grid gap-4", style: { gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" } }, byCategory.map((c) => /* @__PURE__ */ React.createElement(Panel, { key: c.key, className: "p-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between mb-1" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold", style: { color: NAVY } }, c.label), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, c.rows.length, " product", c.rows.length === 1 ? "" : "s", " \xB7 ", c.totalQty, " needed")), /* @__PURE__ */ React.createElement("div", { className: "mb-3" }, c.urgent.map((r) => /* @__PURE__ */ React.createElement("div", { key: r.spec, className: "flex items-center justify-between text-xs py-1", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("span", { className: "no-wrap", style: { maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis" } }, /* @__PURE__ */ React.createElement(Spec, { s: r.spec })), /* @__PURE__ */ React.createElement("span", { className: "font-medium" }, r.toMake ?? r.qty))), c.rows.length > c.urgent.length && /* @__PURE__ */ React.createElement("div", { className: "text-xs pt-1", style: { color: INK_MUTED } }, "+", c.rows.length - c.urgent.length, " more")), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => jumpToProduction(c.key) }, "Print ", c.label)))));
+    })())))), /* @__PURE__ */ React.createElement("details", { className: "no-print", style: { marginTop: 26, fontSize: 14, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("summary", { style: { cursor: "pointer", color: NAVY, listStyle: "none" } }, "How this is worked out"), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8, lineHeight: 1.6, maxWidth: "62ch" } }, "Three things, every time: ", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, "the reels actually in the rack"), " (checked, not cleared, not scrapped, with metres still left on them),", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, " what's still left to make"), " on live orders after everything already bonded is taken off, and ", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, "which orders are urgent"), " \u2014 priority first, then due date. Nothing here is a target or an estimate. Every line is a real reel or a real shortfall, and each one says why it's on the list.")), /* @__PURE__ */ React.createElement(EvaRackPanel, { rack: evaRack, setData }), (() => {
+      const rows = (data.orders || []).filter((o) => o && !o.deleted && o.stage !== "Shipped" && o.stage !== "Cancelled").map((o) => {
+        const ordered = orderTotalItems(data.lineItems, o.id);
+        const cs = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === o.id);
+        let planned = 0, packed = 0;
+        for (const c of cs) {
+          for (const q of Object.values(casePlanned(c))) planned += Number(q) || 0;
+          for (const q of Object.values(c.contents || {})) packed += Number(q) || 0;
+        }
+        return { o, ordered, planned, packed, cases: cs.length, off: ordered !== planned };
+      }).filter((r) => r.ordered > 0 || r.planned > 0).sort((a, b) => (b.off ? 1 : 0) - (a.off ? 1 : 0) || String(a.o.id).localeCompare(String(b.o.id)));
+      if (!rows.length) return null;
+      const bad = rows.filter((r) => r.off);
+      return /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-6", style: { borderLeft: `4px solid ${bad.length ? RED : GREEN}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1", style: { color: bad.length ? RED : GREEN } }, bad.length ? `${bad.length} order${bad.length === 1 ? "" : "s"} don\u2019t add up` : "Every live order adds up"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED, maxWidth: 620 } }, "Ordered against what the cases promise. A difference here is a fault to find, never a case to add. Packed short of planned is just work still to do."), /* @__PURE__ */ React.createElement("div", { className: "desktop-only" }, /* @__PURE__ */ React.createElement("table", { className: "text-sm", style: { width: "100%", maxWidth: 640 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { className: "text-xs uppercase tracking-wide", style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement(Th, null, "Order"), /* @__PURE__ */ React.createElement(Th, null, "Customer"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Ordered"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Planned"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Packed"))), /* @__PURE__ */ React.createElement("tbody", null, rows.map((r) => /* @__PURE__ */ React.createElement("tr", { key: r.o.id, style: { borderTop: `1px solid ${BORDER}`, background: r.off ? "#FBEAEA" : void 0 } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs font-semibold" }, r.o.id)), /* @__PURE__ */ React.createElement("td", null, r.o.customer), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, r.ordered), /* @__PURE__ */ React.createElement("td", { className: "text-right", style: { color: r.off ? RED : INK, fontWeight: r.off ? 700 : 400 } }, r.planned), /* @__PURE__ */ React.createElement("td", { className: "text-right", style: { color: r.packed >= r.planned && r.planned > 0 ? GREEN : INK } }, r.packed)))))), /* @__PURE__ */ React.createElement("div", { className: "mobile-only" }, rows.map((r) => /* @__PURE__ */ React.createElement("div", { key: r.o.id, style: {
+        borderTop: `1px solid ${BORDER}`,
+        padding: "8px 0",
+        background: r.off ? "#FBEAEA" : void 0
+      } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline justify-between gap-2" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs font-semibold" }, r.o.id), /* @__PURE__ */ React.createElement("span", { className: "text-sm text-right", style: { color: INK } }, r.o.customer)), /* @__PURE__ */ React.createElement("div", { className: "flex mt-1.5", style: { gap: 10 } }, [
+        ["Ordered", r.ordered, INK, 400],
+        ["Planned", r.planned, r.off ? RED : INK, r.off ? 700 : 400],
+        ["Packed", r.packed, r.packed >= r.planned && r.planned > 0 ? GREEN : INK, 400]
+      ].map(([label, val, colour, weight]) => /* @__PURE__ */ React.createElement("div", { key: label, style: { flex: 1 } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs uppercase tracking-wide", style: { color: INK_MUTED } }, label), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 17, fontWeight: weight, color: colour } }, val))))))));
+    })(), (() => {
+      const fresh = newDiscrepancies(data);
+      if (fresh.length === 0) return null;
+      const n = fresh.length;
+      const words = ["", "One thing doesn't", "Two things don't", "Three things don't", "Four things don't", "Five things don't"][n] || `${n} things don't`;
+      return /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          onClick: () => jumpToDiscrepancies && jumpToDiscrepancies(),
+          className: "no-print",
+          style: {
+            font: "inherit",
+            display: "flex",
+            gap: 14,
+            alignItems: "baseline",
+            width: "100%",
+            textAlign: "left",
+            margin: "22px 0 0",
+            background: "none",
+            border: 0,
+            borderLeft: `3px solid ${RED}`,
+            padding: "2px 0 2px 14px",
+            cursor: "pointer",
+            color: INK
+          }
+        },
+        /* @__PURE__ */ React.createElement("span", { style: { fontSize: 26, fontWeight: 600, color: RED, lineHeight: 1 } }, n),
+        /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, words, " add up"), " that weren't there last time you looked.", " ", fresh.slice(0, 2).map((f) => f.what).join(", and "), n > 2 ? `, and ${n - 2} more.` : ".")
+      );
+    })(), /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-3", style: { color: INK_MUTED, borderTop: `1px solid ${BORDER}`, paddingTop: 20 } }, "By size"), byCategory.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-sm py-8", style: { color: INK_MUTED } }, "Nothing outstanding across any size right now."), /* @__PURE__ */ React.createElement("div", { className: "grid gap-4", style: { gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" } }, byCategory.map((c) => /* @__PURE__ */ React.createElement(Panel, { key: c.key, className: "p-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between mb-1" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold", style: { color: NAVY } }, c.label), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, c.rows.length, " product", c.rows.length === 1 ? "" : "s", " \xB7 ", c.totalQty, " needed")), /* @__PURE__ */ React.createElement("div", { className: "mb-3" }, c.urgent.map((r) => /* @__PURE__ */ React.createElement("div", { key: r.spec, className: "flex items-center justify-between text-xs py-1", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("span", { className: "no-wrap", style: { maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis" } }, /* @__PURE__ */ React.createElement(Spec, { s: r.spec })), /* @__PURE__ */ React.createElement("span", { className: "font-medium" }, r.toMake ?? r.qty))), c.rows.length > c.urgent.length && /* @__PURE__ */ React.createElement("div", { className: "text-xs pt-1", style: { color: INK_MUTED } }, "+", c.rows.length - c.urgent.length, " more")), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => jumpToProduction(c.key) }, "Print ", c.label)))));
+  }
+  function plainDate(d, { withTime = false } = {}) {
+    const t = d instanceof Date ? d : d ? new Date(String(d).length <= 10 ? String(d) + "T12:00:00" : d) : null;
+    if (!t || isNaN(t.getTime())) return "\u2014";
+    const day = t.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+    return withTime ? `${day} ${t.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}` : day;
   }
   function Dashboard({ data, jumpToOrder, goTo }) {
     const [sortBy, setSortBy] = useState("urgent");
@@ -9774,6 +9854,13 @@ ${line}` : line;
     const { lineItems, bondingRuns } = data;
     const orders = data.orders.filter((o) => o.stage !== "Shipped").filter((o) => stageFilter === "all" || o.stage === stageFilter);
     const reservations = shelfReservations(data.orders, lineItems, bondingRuns, data.stockPicks);
+    const promiseByOrder = useMemo(() => {
+      try {
+        return new Map(orderFinishDates(data, /* @__PURE__ */ new Date()).orders.map((r) => [r.orderId, r]));
+      } catch (e) {
+        return /* @__PURE__ */ new Map();
+      }
+    }, [data]);
     const rows = orders.map((o) => ({
       ...o,
       totalItems: orderTotalItems(lineItems, o.id),
@@ -9782,7 +9869,8 @@ ${line}` : line;
       pickablePct: orderPickablePercent(o, lineItems, bondingRuns, data.stockPicks, reservations, data.materials),
       caseCount: orderCaseCount(o, lineItems, bondingRuns, data.cases),
       boxTypes: orderBoxTypes(o, lineItems),
-      openSheet: openPickSheets(data.pickSheets, o.id)[0] || null
+      openSheet: openPickSheets(data.pickSheets, o.id)[0] || null,
+      promise: promiseByOrder.get(o.id) || null
     }));
     rows.sort((a, b) => {
       if (sortBy === "id") return a.id.localeCompare(b.id, void 0, { numeric: true });
@@ -9801,7 +9889,7 @@ ${line}` : line;
       SectionHeader,
       {
         title: "Orders",
-        subtitle: "Every order on the books. Click a card to open it.",
+        subtitle: "Every order on the books, most urgent first. Tap a card to open it.",
         right: (
           /* Three buttons on one unwrapped line put "Customers" 52px off the
              right of a phone. Wrap, and they stack instead. (11 Sep 2026) */
@@ -9850,7 +9938,7 @@ ${line}` : line;
           title: `Open order ${o.id}`
         },
         /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between gap-2.5", style: { padding: "14px 18px 0" } }, /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { fontSize: 12.5, fontWeight: 500, color: NAVY } }, o.id), /* @__PURE__ */ React.createElement(StageRule, { stage: o.stage })),
-        /* @__PURE__ */ React.createElement("div", { style: { padding: "6px 18px 0" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 19, fontWeight: 600, lineHeight: 1.15, letterSpacing: "-0.018em", color: INK } }, o.customer), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-x-4 gap-y-1 flex-wrap", style: { marginTop: 8, fontSize: 13.5, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("span", { style: { color: o.priority === 1 ? RED : INK_MUTED, fontWeight: o.priority === 1 ? 600 : 400 } }, o.priority ? `Priority ${o.priority}` : "No priority"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, o.totalItems), " boxes ordered"), isStrongTapeOrder(o) && /* @__PURE__ */ React.createElement("span", { title: "Made fresh on the bonding line \u2014 nothing from stock", style: { color: RED, fontWeight: 700, fontSize: 12, letterSpacing: "0.04em" } }, "STRONG TAPE \xB7 made fresh"), o.caseCount > 0 && /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, o.caseCount), " case", o.caseCount === 1 ? "" : "s")), o.openSheet && /* @__PURE__ */ React.createElement("div", { style: {
+        /* @__PURE__ */ React.createElement("div", { style: { padding: "6px 18px 0" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 19, fontWeight: 600, lineHeight: 1.15, letterSpacing: "-0.018em", color: INK } }, o.customer), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-x-4 gap-y-1 flex-wrap", style: { marginTop: 8, fontSize: 13.5, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("span", { style: { color: o.priority === 1 ? RED : INK_MUTED, fontWeight: o.priority === 1 ? 600 : 400 } }, o.priority ? `Priority ${o.priority}` : "No priority"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, o.totalItems), " boxes ordered"), isStrongTapeOrder(o) && /* @__PURE__ */ React.createElement("span", { title: "Made fresh on the bonding line \u2014 nothing from stock", style: { color: RED, fontWeight: 700, fontSize: 12, letterSpacing: "0.04em" } }, "STRONG TAPE \xB7 made fresh"), o.caseCount > 0 && /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, o.caseCount), " case", o.caseCount === 1 ? "" : "s")), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10, fontSize: 15, display: "flex", flexWrap: "wrap", columnGap: 20, rowGap: 4 } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Due", " ", /* @__PURE__ */ React.createElement("span", { style: { color: o.promise && o.promise.overdueNow ? RED : INK, fontWeight: 600 } }, o.dueDate ? plainDate(o.dueDate) : "not set")), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Ready", " ", /* @__PURE__ */ React.createElement("span", { style: { color: o.promise && o.promise.late ? RED : INK, fontWeight: 600 } }, o.promise ? plainDate(o.promise.ready) : "\u2014")), o.promise && o.promise.late && /* @__PURE__ */ React.createElement("span", { style: { color: RED, fontWeight: 600 } }, "late")), o.openSheet && /* @__PURE__ */ React.createElement("div", { style: {
           marginTop: 8,
           display: "flex",
           alignItems: "center",
@@ -9860,7 +9948,7 @@ ${line}` : line;
           borderRadius: 4,
           background: "#FFF4D6",
           border: `1px solid ${AMBER}`
-        } }, /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { fontSize: 12.5, fontWeight: 600, color: "#7A5600" } }, o.openSheet.ref), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: "#7A5600" } }, "out on the floor", o.openSheet.printedBy ? ` \u2014 ${o.openSheet.printedBy}` : "", o.openSheet.printedAt ? `, ${String(o.openSheet.printedAt).slice(0, 10)}` : "")), (o.boxTypes || []).length > 0 && /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-x-4 gap-y-1 flex-wrap", style: { marginTop: 6 } }, o.boxTypes.map((t) => /* @__PURE__ */ React.createElement(BoxTypeMark, { key: t, type: t })))),
+        } }, /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { fontSize: 12.5, fontWeight: 600, color: "#7A5600" } }, o.openSheet.ref), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: "#7A5600" } }, "out on the floor", o.openSheet.printedBy ? ` \u2014 ${o.openSheet.printedBy}` : "", o.openSheet.printedAt ? `, ${plainDate(String(o.openSheet.printedAt).slice(0, 10))}` : "")), (o.boxTypes || []).length > 0 && /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-x-4 gap-y-1 flex-wrap", style: { marginTop: 6 } }, o.boxTypes.map((t) => /* @__PURE__ */ React.createElement(BoxTypeMark, { key: t, type: t })))),
         /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "center", padding: "16px 0 4px" } }, /* @__PURE__ */ React.createElement(OrderDial, { madePct: seg.madePct, stockPct: seg.stockPct, ready: seg.ready, uid: o.id.replace(/[^A-Za-z0-9]/g, "") })),
         /* @__PURE__ */ React.createElement("div", { style: { height: 3, background: DIAL_TODO, display: "flex", margin: "0 18px" } }, /* @__PURE__ */ React.createElement("div", { style: { width: seg.madePct + "%", background: DIAL_MADE } }), /* @__PURE__ */ React.createElement("div", { style: { width: seg.stockPct + "%", background: DIAL_STOCK } })),
         /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, padding: "14px 18px 8px", textAlign: "center" } }, [
@@ -9868,9 +9956,9 @@ ${line}` : line;
           { label: "Ready to pick", value: seg.stockUnits, colour: DIAL_STOCK },
           { label: "Still to make", value: seg.makeUnits, colour: INK }
         ].map((k) => /* @__PURE__ */ React.createElement("div", { key: k.label }, /* @__PURE__ */ React.createElement("div", { className: "font-mono", style: { fontSize: 22, fontWeight: 600, lineHeight: 1, color: k.value > 0 ? k.colour : "#B9BBC2" } }, k.value), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: INK_MUTED, marginTop: 4, lineHeight: 1.25 } }, k.label)))),
-        /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10.5, color: INK_MUTED, padding: "0 18px 16px", textAlign: "center", lineHeight: 1.3 } }, "First is recorded. The other two are worked out from stock and demand.")
+        /* @__PURE__ */ React.createElement("div", { style: { paddingBottom: 14 } })
       );
-    }), rows.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-sm py-8", style: { color: INK_MUTED } }, "No orders yet.")));
+    }), rows.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-sm py-8", style: { color: INK_MUTED } }, "No orders yet.")), rows.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 14, fontSize: 13, color: INK_MUTED, lineHeight: 1.45 } }, "Made or assigned is what was recorded. Ready to pick and still to make are worked out from stock and demand, and ready to ship comes from the schedule."));
   }
   var CLAUDE_ORDER_PROMPT = `I need order data in this exact JSON format for Matrix Engineering's production system.
 Return ONLY the JSON, no other text, no markdown code fences:
@@ -13493,7 +13581,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     const who = (s) => s.forIds.map((id) => ({ id, name: cust.get(id) || id, late: late.has(id) }));
     const changeText = (s) => s.change === "width" ? `width change ${s.changeMinutes} min` : s.change === "size" ? `size change ${s.changeMinutes} min` : "no change";
     const lastEnd = steps.length ? steps[steps.length - 1].end : null;
-    return /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5 print-only-block", style: { borderLeft: `4px solid ${NAVY}` } }, /* @__PURE__ */ React.createElement("div", { className: "mb-2", style: { borderBottom: `1px solid ${BORDER}`, paddingBottom: 6 } }, /* @__PURE__ */ React.createElement("div", { className: "text-base font-semibold", style: { color: INK } }, "Glue line make list", scheduleOrder ? ` \u2014 ${scheduleOrder.id} ${scheduleOrder.customer}` : " \u2014 every live order"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Printed ", todayISO(), " \xB7 ", steps.length, " set-up", steps.length === 1 ? "" : "s", " \xB7 ", totalM.toLocaleString("en-GB"), "m", lastEnd ? ` \xB7 off the line by ${dayText(lastEnd)} ${time(lastEnd)}` : "")), /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between mb-2 flex-wrap gap-2 no-print" }, /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "The same running order as When orders finish. Metres include ", cfg.overmakePct, "% for bonding set-up; changes ", cfg.sizeChangeMin, " min (size) and ", cfg.widthChangeMin, " min (width); rates as the line actually runs.", plan.current ? ` On the line last: ${plan.current.label}.` : ""), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => printAndLog(
+    return /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5 print-only-block", style: { borderLeft: `4px solid ${NAVY}` } }, /* @__PURE__ */ React.createElement("div", { className: "mb-2", style: { borderBottom: `1px solid ${BORDER}`, paddingBottom: 6 } }, /* @__PURE__ */ React.createElement("div", { className: "text-base font-semibold", style: { color: INK } }, "Glue line make list", scheduleOrder ? ` \u2014 ${scheduleOrder.id} ${scheduleOrder.customer}` : " \u2014 every live order"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Printed ", todayISO(), " \xB7 ", steps.length, " set-up", steps.length === 1 ? "" : "s", " \xB7 ", totalM.toLocaleString("en-GB"), "m", lastEnd ? ` \xB7 off the line by ${dayText(lastEnd)} ${time(lastEnd)}` : "")), /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between mb-2 flex-wrap gap-2 no-print" }, /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "The same running order as the Schedule screen. Metres include ", cfg.overmakePct, "% for bonding set-up; changes ", cfg.sizeChangeMin, " min (size) and ", cfg.widthChangeMin, " min (width); rates as the line actually runs.", plan.current ? ` On the line last: ${plan.current.label}.` : ""), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => printAndLog(
       setData,
       "glue line make list",
       "glueLine",
@@ -19474,6 +19562,7 @@ Plan it?`
     }) }, "Back to the standard settings"))));
   }
   function FinishDatesView({ data, setData }) {
+    const phone = useIsPhone();
     const r = useMemo(() => orderFinishDates(data, /* @__PURE__ */ new Date()), [data]);
     useDailyPlanSnapshot(data, setData, r);
     const slips = useMemo(() => planSlips(data, r, /* @__PURE__ */ new Date()), [r, data.planSnapshots]);
@@ -19486,7 +19575,7 @@ Plan it?`
     const steps = showAllSteps ? r.glueSteps : r.glueSteps.slice(0, 15);
     const changeText = (s) => s.change === "width" ? `width change, ${s.changeMinutes} min` : s.change === "size" ? `size change, ${s.changeMinutes} min` : "\u2014";
     const week = `Mon\u2013Thu 8\u20135, Fri 8\u20132${cfg.saturdayGlueHours || cfg.saturdayBondHours ? `, Saturday: glue line ${cfg.saturdayGlueHours} h, bonding ${cfg.saturdayBondHours} h` : ""}`;
-    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "When orders finish", subtitle: `Every live order, most urgent first, laid against the working week (${week}) at the rates the lines actually run. Glue bonds the next working day. Ready to ship allows ${cfg.packingDays} working day${cfg.packingDays === 1 ? "" : "s"} for packing after the last box is bonded.` }), /* @__PURE__ */ React.createElement(PlanSlipsLine, { slips }), /* @__PURE__ */ React.createElement(ScheduleSettingsPanel, { data, setData }), /* @__PURE__ */ React.createElement(LineDownPanel, { data, setData }), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "p-3 rounded", style: { border: `1px solid ${BORDER}`, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Glue line work waiting"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 700 } }, h1(r.glueBacklog), " h"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, r.glueSteps.length, " set-ups, ", changes, " changeover", changes === 1 ? "" : "s", " (", h1(r.glueChangeHours), " h) \xB7 clear by ", day(r.glueFree))), /* @__PURE__ */ React.createElement("div", { className: "p-3 rounded", style: { border: `1px solid ${BORDER}`, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Bonding work waiting"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 700 } }, h1(r.bondBacklog), " h"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "clear by ", day(r.bondFree))), /* @__PURE__ */ React.createElement("div", { className: "p-3 rounded", style: { border: `1px solid ${lateCount ? RED : BORDER}`, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Will miss their due date"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: lateCount ? RED : GREEN } }, lateCount), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "of ", r.orders.length, " live orders"))), /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { color: INK_MUTED, textAlign: "left" } }, /* @__PURE__ */ React.createElement("th", { className: "py-1" }, "Order"), /* @__PURE__ */ React.createElement("th", null, "Customer"), /* @__PURE__ */ React.createElement("th", null, "Priority"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Still to make"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "From the shelf"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Glue h"), /* @__PURE__ */ React.createElement("th", { className: "pl-3" }, "Glue done"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Bonding h"), /* @__PURE__ */ React.createElement("th", { className: "pl-3" }, "Last box bonded"), /* @__PURE__ */ React.createElement("th", { className: "pl-3" }, "Ready to ship"), /* @__PURE__ */ React.createElement("th", null, "Due"))), /* @__PURE__ */ React.createElement("tbody", null, r.orders.map((o) => /* @__PURE__ */ React.createElement("tr", { key: o.orderId, style: { borderTop: `1px solid ${BORDER}`, background: o.late ? "#FDECEA" : void 0 } }, /* @__PURE__ */ React.createElement("td", { className: "py-1", style: { fontWeight: 600 } }, o.orderId), /* @__PURE__ */ React.createElement("td", null, o.customer), /* @__PURE__ */ React.createElement("td", null, o.priority || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, o.units, o.unknown ? ` (+${o.unknown} not in the catalogue)` : "", o.notScheduled ? ` (+${o.notScheduled} Exceed, not on either line)` : ""), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, o.fromShelf || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, h1(o.glueHours)), /* @__PURE__ */ React.createElement("td", { className: "pl-3" }, o.glueDone ? day(o.glueDone) : "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, h1(o.bondHours)), /* @__PURE__ */ React.createElement("td", { className: "pl-3" }, o.finish ? day(o.finish) : "nothing left to make"), /* @__PURE__ */ React.createElement("td", { className: "pl-3", style: { color: o.late ? RED : INK, fontWeight: o.late ? 700 : 400 } }, o.ready.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })), /* @__PURE__ */ React.createElement("td", { style: { color: o.overdueNow ? RED : INK } }, o.dueDate || "\u2014")))))), /* @__PURE__ */ React.createElement("div", { className: "mt-6" }, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Glue line \u2014 suggested running order", subtitle: `Grouped by width and then gap so the changes are fewest. Metres include ${cfg.overmakePct}% extra for bonding set-up scrap. PET restocks are not counted.${r.current ? ` On the line last: ${r.current.label}.` : ""}` }), r.glueSteps.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: INK_MUTED } }, "Nothing needs glue-lining \u2014 reel on hand covers every order.") : /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { color: INK_MUTED, textAlign: "left" } }, /* @__PURE__ */ React.createElement("th", { className: "py-1" }, "#"), /* @__PURE__ */ React.createElement("th", null, "Size"), /* @__PURE__ */ React.createElement("th", null, "Width"), /* @__PURE__ */ React.createElement("th", null, "Die"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Metres"), /* @__PURE__ */ React.createElement("th", { className: "pl-3" }, "Before it"), /* @__PURE__ */ React.createElement("th", null, "Start"), /* @__PURE__ */ React.createElement("th", null, "Off the line"), /* @__PURE__ */ React.createElement("th", null, "Priority"), /* @__PURE__ */ React.createElement("th", null, "For"))), /* @__PURE__ */ React.createElement("tbody", null, steps.map((s, i) => /* @__PURE__ */ React.createElement("tr", { key: `${s.tier}|${s.size}`, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-1" }, i + 1), /* @__PURE__ */ React.createElement("td", { style: { fontWeight: 600 } }, s.label), /* @__PURE__ */ React.createElement("td", null, s.width || "\u2014"), /* @__PURE__ */ React.createElement("td", null, s.die || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "text-right", style: { fontWeight: 600 } }, Math.round(s.metres).toLocaleString("en-GB")), /* @__PURE__ */ React.createElement("td", { className: "pl-3", style: { color: s.change === "width" ? ORANGE : INK_MUTED } }, changeText(s)), /* @__PURE__ */ React.createElement("td", null, day(s.start)), /* @__PURE__ */ React.createElement("td", null, day(s.end)), /* @__PURE__ */ React.createElement("td", null, s.tier === 99 ? "none set" : s.tier), /* @__PURE__ */ React.createElement("td", null, s.orders.join(", "), s.joined.length ? /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, ` \xB7 also ${s.joined.map((j) => `${j.orderId} (${j.tier === 99 ? "no priority" : "P" + j.tier})`).join(", ")}`) : null)))))), r.glueSteps.length > 15 && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setShowAllSteps((v) => !v) }, showAllSteps ? "Show the first 15" : `Show all ${r.glueSteps.length} set-ups`)));
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Schedule", subtitle: "Every live order, most urgent first, at the rates the lines actually run." }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, margin: "-8px 0 14px", lineHeight: 1.5 } }, "Working week ", week, ". Glue bonds the next working day, then ", cfg.packingDays, " working day", cfg.packingDays === 1 ? "" : "s", " to pack."), /* @__PURE__ */ React.createElement(PlanSlipsLine, { slips }), /* @__PURE__ */ React.createElement(ScheduleSettingsPanel, { data, setData }), /* @__PURE__ */ React.createElement(LineDownPanel, { data, setData }), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "p-3 rounded", style: { border: `1px solid ${BORDER}`, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Glue line work waiting"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 700 } }, h1(r.glueBacklog), " h"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, r.glueSteps.length, " set-ups, ", changes, " changeover", changes === 1 ? "" : "s", " (", h1(r.glueChangeHours), " h) \xB7 clear by ", day(r.glueFree))), /* @__PURE__ */ React.createElement("div", { className: "p-3 rounded", style: { border: `1px solid ${BORDER}`, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Bonding work waiting"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 700 } }, h1(r.bondBacklog), " h"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "clear by ", day(r.bondFree))), /* @__PURE__ */ React.createElement("div", { className: "p-3 rounded", style: { border: `1px solid ${lateCount ? RED : BORDER}`, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Will miss their due date"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: lateCount ? RED : GREEN } }, lateCount), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "of ", r.orders.length, " live orders"))), phone ? /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 10 } }, r.orders.map((o) => /* @__PURE__ */ React.createElement("div", { key: o.orderId, style: { border: `1px solid ${o.late ? RED : BORDER}`, borderRadius: 5, background: "#fff", padding: "12px 14px" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" } }, /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { fontWeight: 600, color: NAVY } }, o.orderId), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: INK_MUTED } }, o.priority ? `Priority ${o.priority}` : "No priority")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 17, fontWeight: 600, color: INK, lineHeight: 1.2, marginTop: 2 } }, o.customer), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8, fontSize: 15, display: "flex", flexWrap: "wrap", columnGap: 18, rowGap: 4 } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Ready ", /* @__PURE__ */ React.createElement("span", { style: { color: o.late ? RED : INK, fontWeight: 600 } }, plainDate(o.ready))), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Due ", /* @__PURE__ */ React.createElement("span", { style: { color: o.overdueNow ? RED : INK, fontWeight: 600 } }, plainDate(o.dueDate)))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8, fontSize: 14, color: INK_MUTED, lineHeight: 1.5 } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 600 } }, o.units), " still to make", o.fromShelf ? /* @__PURE__ */ React.createElement(React.Fragment, null, " \xB7 ", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 600 } }, o.fromShelf), " from the shelf") : null, o.unknown ? /* @__PURE__ */ React.createElement(React.Fragment, null, " \xB7 ", o.unknown, " not in the catalogue") : null, o.notScheduled ? /* @__PURE__ */ React.createElement(React.Fragment, null, " \xB7 ", o.notScheduled, " Exceed, not on either line") : null), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6, fontSize: 13.5, color: INK_MUTED, lineHeight: 1.5 } }, "Glue ", h1(o.glueHours), " h, done ", o.glueDone ? plainDate(o.glueDone, { withTime: true }) : "\u2014", /* @__PURE__ */ React.createElement("br", null), "Bonding ", h1(o.bondHours), " h, last box ", o.finish ? plainDate(o.finish, { withTime: true }) : "nothing left to make")))) : /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full", style: { borderCollapse: "collapse", fontSize: 14 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { color: INK_MUTED, textAlign: "left", fontSize: 12.5 } }, /* @__PURE__ */ React.createElement("th", { style: { padding: "6px 12px 6px 0" } }, "Order"), /* @__PURE__ */ React.createElement("th", { style: { padding: "6px 12px 6px 0", minWidth: 190 } }, "Customer"), /* @__PURE__ */ React.createElement("th", { style: { padding: "6px 12px 6px 0", textAlign: "right" } }, "Priority"), /* @__PURE__ */ React.createElement("th", { style: { padding: "6px 12px 6px 0", textAlign: "right" } }, "Still to", /* @__PURE__ */ React.createElement("br", null), "make"), /* @__PURE__ */ React.createElement("th", { style: { padding: "6px 12px 6px 0", textAlign: "right" } }, "From the", /* @__PURE__ */ React.createElement("br", null), "shelf"), /* @__PURE__ */ React.createElement("th", { style: { padding: "6px 12px 6px 0", textAlign: "right" } }, "Glue", /* @__PURE__ */ React.createElement("br", null), "hours"), /* @__PURE__ */ React.createElement("th", { style: { padding: "6px 12px 6px 0", whiteSpace: "nowrap" } }, "Glue done"), /* @__PURE__ */ React.createElement("th", { style: { padding: "6px 12px 6px 0", textAlign: "right" } }, "Bonding", /* @__PURE__ */ React.createElement("br", null), "hours"), /* @__PURE__ */ React.createElement("th", { style: { padding: "6px 12px 6px 0", whiteSpace: "nowrap" } }, "Last box bonded"), /* @__PURE__ */ React.createElement("th", { style: { padding: "6px 12px 6px 0", whiteSpace: "nowrap" } }, "Ready to ship"), /* @__PURE__ */ React.createElement("th", { style: { padding: "6px 0", whiteSpace: "nowrap" } }, "Due"))), /* @__PURE__ */ React.createElement("tbody", null, r.orders.map((o) => /* @__PURE__ */ React.createElement("tr", { key: o.orderId, style: { borderTop: `1px solid ${BORDER}`, background: o.late ? "#FDECEA" : void 0 } }, /* @__PURE__ */ React.createElement("td", { style: { padding: "8px 12px 8px 0", fontWeight: 600, whiteSpace: "nowrap" } }, o.orderId), /* @__PURE__ */ React.createElement("td", { style: { padding: "8px 12px 8px 0" } }, o.customer), /* @__PURE__ */ React.createElement("td", { style: { padding: "8px 12px 8px 0", textAlign: "right" } }, o.priority || "\u2014"), /* @__PURE__ */ React.createElement("td", { style: { padding: "8px 12px 8px 0", textAlign: "right" } }, o.units, o.unknown ? ` (+${o.unknown} not in the catalogue)` : "", o.notScheduled ? ` (+${o.notScheduled} Exceed, not on either line)` : ""), /* @__PURE__ */ React.createElement("td", { style: { padding: "8px 12px 8px 0", textAlign: "right" } }, o.fromShelf || "\u2014"), /* @__PURE__ */ React.createElement("td", { style: { padding: "8px 12px 8px 0", textAlign: "right" } }, h1(o.glueHours)), /* @__PURE__ */ React.createElement("td", { style: { padding: "8px 12px 8px 0", whiteSpace: "nowrap" } }, o.glueDone ? plainDate(o.glueDone, { withTime: true }) : "\u2014"), /* @__PURE__ */ React.createElement("td", { style: { padding: "8px 12px 8px 0", textAlign: "right" } }, h1(o.bondHours)), /* @__PURE__ */ React.createElement("td", { style: { padding: "8px 12px 8px 0", whiteSpace: "nowrap" } }, o.finish ? plainDate(o.finish, { withTime: true }) : "nothing left to make"), /* @__PURE__ */ React.createElement("td", { style: { padding: "8px 12px 8px 0", whiteSpace: "nowrap", color: o.late ? RED : INK, fontWeight: o.late ? 700 : 500 } }, plainDate(o.ready)), /* @__PURE__ */ React.createElement("td", { style: { padding: "8px 0", whiteSpace: "nowrap", color: o.overdueNow ? RED : INK, fontWeight: o.overdueNow ? 700 : 400 } }, plainDate(o.dueDate))))))), /* @__PURE__ */ React.createElement("div", { className: "mt-6" }, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Glue line \u2014 suggested running order", subtitle: `Grouped by width and then gap so the changes are fewest. Metres include ${cfg.overmakePct}% extra for bonding set-up scrap. PET restocks are not counted.${r.current ? ` On the line last: ${r.current.label}.` : ""}` }), r.glueSteps.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: INK_MUTED } }, "Nothing needs glue-lining \u2014 reel on hand covers every order.") : /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { color: INK_MUTED, textAlign: "left" } }, /* @__PURE__ */ React.createElement("th", { className: "py-1" }, "#"), /* @__PURE__ */ React.createElement("th", null, "Size"), /* @__PURE__ */ React.createElement("th", null, "Width"), /* @__PURE__ */ React.createElement("th", null, "Die"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Metres"), /* @__PURE__ */ React.createElement("th", { className: "pl-3" }, "Before it"), /* @__PURE__ */ React.createElement("th", null, "Start"), /* @__PURE__ */ React.createElement("th", null, "Off the line"), /* @__PURE__ */ React.createElement("th", null, "Priority"), /* @__PURE__ */ React.createElement("th", null, "For"))), /* @__PURE__ */ React.createElement("tbody", null, steps.map((s, i) => /* @__PURE__ */ React.createElement("tr", { key: `${s.tier}|${s.size}`, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-1" }, i + 1), /* @__PURE__ */ React.createElement("td", { style: { fontWeight: 600 } }, s.label), /* @__PURE__ */ React.createElement("td", null, s.width || "\u2014"), /* @__PURE__ */ React.createElement("td", null, s.die || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "text-right", style: { fontWeight: 600 } }, Math.round(s.metres).toLocaleString("en-GB")), /* @__PURE__ */ React.createElement("td", { className: "pl-3", style: { color: s.change === "width" ? ORANGE : INK_MUTED } }, changeText(s)), /* @__PURE__ */ React.createElement("td", null, day(s.start)), /* @__PURE__ */ React.createElement("td", null, day(s.end)), /* @__PURE__ */ React.createElement("td", null, s.tier === 99 ? "none set" : s.tier), /* @__PURE__ */ React.createElement("td", null, s.orders.join(", "), s.joined.length ? /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, ` \xB7 also ${s.joined.map((j) => `${j.orderId} (${j.tier === 99 ? "no priority" : "P" + j.tier})`).join(", ")}`) : null)))))), r.glueSteps.length > 15 && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setShowAllSteps((v) => !v) }, showAllSteps ? "Show the first 15" : `Show all ${r.glueSteps.length} set-ups`)));
   }
   function MeasuredRatesPanel({ data }) {
     const r = useMemo(() => measuredRates(data), [data.bondingRuns, data.glueLineBatches, data.productForms, data.products]);
@@ -21612,7 +21701,7 @@ Plan it?`
       maxHeight: "85vh",
       overflowY: "auto",
       border: `1px solid ${BORDER}`
-    } }, /* @__PURE__ */ React.createElement("div", { className: "px-4 py-3", style: { borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Before this is saved"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 17, fontWeight: 600, marginTop: 2 } }, "Where these boxes are going"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, pendingAdd.newRuns[0]?.boxNumber || "no box code", " \xB7 ", pendingAdd.newRuns[0]?.productSize || "")), /* @__PURE__ */ React.createElement("div", { className: "px-4 py-3" }, pendingAdd.going.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: AMBER } }, "\u26A0 Nothing is going anywhere \u2014 no order quantity and nothing to stock."), pendingAdd.going.filter((g) => g.kind === "order").map((g, i) => /* @__PURE__ */ React.createElement("div", { key: "o" + i, className: "mb-3 px-3 py-2", style: { background: "#F4F6FB", borderRadius: 5, border: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, letterSpacing: ".06em", color: INK_MUTED } }, "ON ORDER"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 600, marginTop: 2 } }, g.qty, " \xD7 ", g.customer || g.orderId), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-0.5", style: { color: INK_MUTED } }, g.orderId), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, marginTop: 6 } }, g.cases.length ? /* @__PURE__ */ React.createElement(React.Fragment, null, g.cases.length === 1 ? "Expected case " : "Expected cases ", /* @__PURE__ */ React.createElement("b", null, caseRangeLabel(g.cases))) : /* @__PURE__ */ React.createElement("span", { style: { color: AMBER } }, "No case worked out yet \u2014 check the Packing List")), g.cases.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, "Expected, not fixed \u2014 a case moved by hand on the Packing List can differ."))), pendingAdd.going.filter((g) => g.kind === "stock").map((g, i) => /* @__PURE__ */ React.createElement("div", { key: "s" + i, className: "mb-3 px-3 py-2", style: { background: "#F5F5F2", borderRadius: 5, border: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, letterSpacing: ".06em", color: INK_MUTED } }, "TO STOCK"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 600, marginTop: 2 } }, g.qty, " box", g.qty === 1 ? "" : "es", " \u2192 ", g.location || "no location")))), /* @__PURE__ */ React.createElement("div", { className: "px-4 py-3 flex gap-2 justify-end", style: { borderTop: `1px solid ${BORDER}`, background: "#FAFAF8" } }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setPendingAdd(null) }, "Go back and change it"), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => performAdd(pendingAdd) }, "That's right \u2014 save it"))))), /* @__PURE__ */ React.createElement(SectionHeader, { title: "Bonding", subtitle: "One row per run. Work Number links straight to a real order \u2014 Meterage Used is calculated for you. A box only counts toward Live Stock and picking once Checked is set to Yes." }), (() => {
+    } }, /* @__PURE__ */ React.createElement("div", { className: "px-4 py-3", style: { borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Before this is saved"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 17, fontWeight: 600, marginTop: 2 } }, "Where these boxes are going"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, pendingAdd.newRuns[0]?.boxNumber || "no box code", " \xB7 ", pendingAdd.newRuns[0]?.productSize || "")), /* @__PURE__ */ React.createElement("div", { className: "px-4 py-3" }, pendingAdd.going.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: AMBER } }, "\u26A0 Nothing is going anywhere \u2014 no order quantity and nothing to stock."), pendingAdd.going.filter((g) => g.kind === "order").map((g, i) => /* @__PURE__ */ React.createElement("div", { key: "o" + i, className: "mb-3 px-3 py-2", style: { background: "#F4F6FB", borderRadius: 5, border: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, letterSpacing: ".06em", color: INK_MUTED } }, "ON ORDER"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 600, marginTop: 2 } }, g.qty, " \xD7 ", g.customer || g.orderId), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-0.5", style: { color: INK_MUTED } }, g.orderId), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, marginTop: 6 } }, g.cases.length ? /* @__PURE__ */ React.createElement(React.Fragment, null, g.cases.length === 1 ? "Expected case " : "Expected cases ", /* @__PURE__ */ React.createElement("b", null, caseRangeLabel(g.cases))) : /* @__PURE__ */ React.createElement("span", { style: { color: AMBER } }, "No case worked out yet \u2014 check the Packing List")), g.cases.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, "Expected, not fixed \u2014 a case moved by hand on the Packing List can differ."))), pendingAdd.going.filter((g) => g.kind === "stock").map((g, i) => /* @__PURE__ */ React.createElement("div", { key: "s" + i, className: "mb-3 px-3 py-2", style: { background: "#F5F5F2", borderRadius: 5, border: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, letterSpacing: ".06em", color: INK_MUTED } }, "TO STOCK"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 600, marginTop: 2 } }, g.qty, " box", g.qty === 1 ? "" : "es", " \u2192 ", g.location || "no location")))), /* @__PURE__ */ React.createElement("div", { className: "px-4 py-3 flex gap-2 justify-end", style: { borderTop: `1px solid ${BORDER}`, background: "#FAFAF8" } }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setPendingAdd(null) }, "Go back and change it"), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => performAdd(pendingAdd) }, "That's right \u2014 save it"))))), /* @__PURE__ */ React.createElement(SectionHeader, { title: "Bonding", subtitle: "One row per run, newest first." }), /* @__PURE__ */ React.createElement("details", { className: "no-print", style: { margin: "-6px 0 14px", fontSize: 14, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("summary", { style: { cursor: "pointer", color: NAVY, listStyle: "none" } }, "How a bonding row works"), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8, lineHeight: 1.6, maxWidth: "62ch" } }, "Work Number links straight to a real order, and Meterage Used is worked out for you. A box only counts toward live stock and picking once Checked is set to Yes.")), (() => {
       const todaysBoxes = (data.bondingRuns || []).filter((r) => !r.deleted && !r.packingOnly && r.date === todayISO()).reduce((t, r) => t + Number(r.amountMade || 0), 0);
       if (todaysBoxes <= 0) return null;
       const strong = todaysBoxes >= BONDING_BOXES_PER_DAY_MAX;
@@ -22932,7 +23021,7 @@ Plan it?`
       return names.length > 3 ? `${names.slice(0, 3).join(", ")} and ${names.length - 3} more` : names.join(", ");
     };
     const changeWords = (s, i) => s.change === "width" ? `Width change first \u2014 about ${s.changeMinutes} min` : s.change === "size" ? `Size change first \u2014 about ${s.changeMinutes} min` : i === 0 && r.current ? "Already on the line \u2014 carry on" : "";
-    return /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 rounded", style: { border: `2px solid ${NAVY}`, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "px-4 pt-3 pb-1 flex items-baseline justify-between gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: NAVY } }, "Next up on the glue line"), r.current && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "On the line last: ", r.current.label)), steps.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "px-4 pb-3 text-sm", style: { color: INK_MUTED } }, "Nothing to glue \u2014 reel on hand covers every order.") : steps.map((s, i) => /* @__PURE__ */ React.createElement("div", { key: `${s.tier}|${s.size}`, className: "px-4 py-2.5", style: { borderTop: i ? `1px solid ${BORDER}` : "none", background: i === 0 ? "#F4F6FB" : void 0 } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline justify-between gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: i === 0 ? 22 : 17, fontWeight: 700, color: INK } }, i + 1, ". ", s.label), /* @__PURE__ */ React.createElement("div", { style: { fontSize: i === 0 ? 20 : 16, fontWeight: 700, color: INK } }, Math.round(s.metres).toLocaleString("en-GB"), " m")), /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: INK } }, "Die ", s.die || "\u2014", " \xB7 ", s.width || "\u2014", changeWords(s, i) ? /* @__PURE__ */ React.createElement("span", { style: { color: s.change === "width" ? ORANGE : INK_MUTED } }, " \xB7 ", changeWords(s, i)) : null), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "For ", who(s)))), /* @__PURE__ */ React.createElement("div", { className: "px-4 pb-3 pt-1 flex items-center justify-between gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Metres include ", r.settings.overmakePct, "% for bonding set-up. The full list is under Planning \u2192 When orders finish."), r.glueSteps.length > 3 && /* @__PURE__ */ React.createElement("button", { type: "button", className: "text-xs underline", style: { color: NAVY, background: "none", border: "none", cursor: "pointer" }, onClick: () => setMore((v) => !v) }, more ? "Show 3" : `Show the next ${Math.min(8, r.glueSteps.length)}`)));
+    return /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 rounded", style: { border: `2px solid ${NAVY}`, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "px-4 pt-3 pb-1 flex items-baseline justify-between gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: NAVY } }, "Next up on the glue line"), r.current && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "On the line last: ", r.current.label)), steps.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "px-4 pb-3 text-sm", style: { color: INK_MUTED } }, "Nothing to glue \u2014 reel on hand covers every order.") : steps.map((s, i) => /* @__PURE__ */ React.createElement("div", { key: `${s.tier}|${s.size}`, className: "px-4 py-2.5", style: { borderTop: i ? `1px solid ${BORDER}` : "none", background: i === 0 ? "#F4F6FB" : void 0 } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline justify-between gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: i === 0 ? 22 : 17, fontWeight: 700, color: INK } }, i + 1, ". ", s.label), /* @__PURE__ */ React.createElement("div", { style: { fontSize: i === 0 ? 20 : 16, fontWeight: 700, color: INK } }, Math.round(s.metres).toLocaleString("en-GB"), " m")), /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: INK } }, "Die ", s.die || "\u2014", " \xB7 ", s.width || "\u2014", changeWords(s, i) ? /* @__PURE__ */ React.createElement("span", { style: { color: s.change === "width" ? ORANGE : INK_MUTED } }, " \xB7 ", changeWords(s, i)) : null), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "For ", who(s)))), /* @__PURE__ */ React.createElement("div", { className: "px-4 pb-3 pt-1 flex items-center justify-between gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Metres include ", r.settings.overmakePct, "% for bonding set-up. The full list is under Planning \u2192 Schedule."), r.glueSteps.length > 3 && /* @__PURE__ */ React.createElement("button", { type: "button", className: "text-xs underline", style: { color: NAVY, background: "none", border: "none", cursor: "pointer" }, onClick: () => setMore((v) => !v) }, more ? "Show 3" : `Show the next ${Math.min(8, r.glueSteps.length)}`)));
   }
   function GlueLineView({ data, setData }) {
     const rows = (data.glueLineBatches || []).map((b) => glueSettingsFor(b, data.glueRuns));
@@ -23999,7 +24088,8 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
   var NAV = [
     { key: "dashboard", label: "Orders", icon: IconOrders },
     { key: "daily", label: "Daily plan", icon: IconClock },
-    { key: "finish", label: "When orders finish", icon: IconClock },
+    { key: "finish", label: "Schedule", icon: IconClock },
+    // was "When orders finish" — it reads as a report, and this is the schedule (Chris, 21 Sep 2026)
     { key: "production", label: "Production list", icon: IconProduction },
     { key: "gluelineschedule", label: "Glue line schedule", icon: IconLink },
     { key: "batches", label: "Batches available to bond", icon: IconDiamond },
