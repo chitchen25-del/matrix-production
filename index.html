@@ -1201,7 +1201,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-19.28";
+  var APP_VERSION = "2026-09-20.3";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -7318,6 +7318,95 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     if (name) return name.charAt(0).toUpperCase() + name.slice(1);
     return isAdminDevice() ? "Admin" : "Team";
   }
+  var DEVICE_KEY_STORE = "matrixDeviceKey";
+  var EVENT_QUEUE_STORE = "matrixEventQueue";
+  var EVENT_CLIENT = null;
+  function deviceKey() {
+    try {
+      let k = localStorage.getItem(DEVICE_KEY_STORE);
+      if (!k) {
+        k = uid("dev");
+        localStorage.setItem(DEVICE_KEY_STORE, k);
+      }
+      return k;
+    } catch {
+      return "dev-unknown";
+    }
+  }
+  function setEventClient(client) {
+    EVENT_CLIENT = client || null;
+    if (client) flushAppEvents();
+  }
+  function queuedEvents() {
+    try {
+      return JSON.parse(localStorage.getItem(EVENT_QUEUE_STORE) || "[]");
+    } catch {
+      return [];
+    }
+  }
+  function reportAppEvent(ev) {
+    try {
+      const row = {
+        id: uid("ev"),
+        at: (/* @__PURE__ */ new Date()).toISOString(),
+        kind: ev.kind || "error",
+        device: currentDevice(),
+        device_key: deviceKey(),
+        actor: currentActor(),
+        app_version: APP_VERSION,
+        screen: ev.screen || null,
+        message: String(ev.message || "").slice(0, 500),
+        detail: ev.detail ? String(ev.detail).slice(0, 2e3) : null,
+        table_name: ev.table || null,
+        row_id: ev.rowId || null
+      };
+      const q = [...queuedEvents(), row].slice(-50);
+      localStorage.setItem(EVENT_QUEUE_STORE, JSON.stringify(q));
+      flushAppEvents();
+    } catch {
+    }
+  }
+  function flushAppEvents() {
+    const client = EVENT_CLIENT;
+    if (!client) return;
+    const q = queuedEvents();
+    if (!q.length) return;
+    client.from("app_events").upsert(q).then(({ error }) => {
+      if (error) return;
+      try {
+        const sent = new Set(q.map((e) => e.id));
+        localStorage.setItem(EVENT_QUEUE_STORE, JSON.stringify(queuedEvents().filter((e) => !sent.has(e.id))));
+      } catch {
+      }
+    }, () => {
+    });
+  }
+  function reportDeviceStatus(patch) {
+    const client = EVENT_CLIENT;
+    if (!client) return;
+    const row = { id: deviceKey(), device: currentDevice(), actor: currentActor(), app_version: APP_VERSION, updated_at: (/* @__PURE__ */ new Date()).toISOString(), ...patch };
+    client.from("device_status").upsert(row).then(() => {
+    }, () => {
+    });
+  }
+  if (typeof window !== "undefined" && !window.__mxErrorHooks) {
+    window.__mxErrorHooks = true;
+    const seen = /* @__PURE__ */ new Map();
+    const once = (msg) => {
+      const now = Date.now(), last = seen.get(msg) || 0;
+      if (now - last < 6e4) return false;
+      seen.set(msg, now);
+      return true;
+    };
+    window.addEventListener("error", (e) => {
+      const m = String(e && e.message || "error");
+      if (once(m)) reportAppEvent({ kind: "error", message: m, detail: e && e.error && e.error.stack });
+    });
+    window.addEventListener("unhandledrejection", (e) => {
+      const m = String(e && e.reason && (e.reason.message || e.reason) || "unhandled");
+      if (once(m)) reportAppEvent({ kind: "error", message: m, detail: e && e.reason && e.reason.stack });
+    });
+  }
   function currentDevice() {
     const ua = navigator.userAgent || "";
     if (/iPad/.test(ua) || /Macintosh/.test(ua) && navigator.maxTouchPoints > 1) return "iPad";
@@ -12468,6 +12557,12 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
           component: String(info && info.componentStack || "").split("\n").slice(1, 4).join(" | ")
         });
         localStorage.setItem("matrixCrashLog", JSON.stringify(log.slice(0, 20)));
+        reportAppEvent({
+          kind: "crash",
+          screen: this.props.viewKey || "?",
+          message: String(err && err.message || err),
+          detail: `${String(err && err.stack || "").split("\n").slice(0, 8).join(" | ")} || ${String(info && info.componentStack || "").split("\n").slice(1, 5).join(" | ")}`
+        });
       } catch (e) {
       }
     }
@@ -16433,6 +16528,31 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     const trustworthy = solid.length >= 5;
     return /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4", style: { borderLeft: `4px solid ${NAVY}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1", style: { color: NAVY } }, "Bonding output \u2014 is downtime coming down?"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED, maxWidth: 720, lineHeight: 1.5 } }, "Target band is ", BONDING_BOXES_PER_DAY_MIN, "\u2013", BONDING_BOXES_PER_DAY_MAX, " boxes a day at roughly 45% of the day lost to admin and packing. If that downtime falls, this number rises. Admin only \u2014 the line sees its own daily total and nothing else."), !trustworthy ? /* @__PURE__ */ React.createElement("div", { className: "px-3 py-2.5 mb-3", style: { background: "#FFF7E6", border: `1px solid ${AMBER}`, borderRadius: 5, fontSize: 13 } }, /* @__PURE__ */ React.createElement("b", null, "Not enough properly logged days to show a trend yet."), " ", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Only ", solid.length, " of the last ", days.length, " logged days reach even half a normal shift (", Math.round(coverage * 100), "% coverage). Most days aren't making it into the app at all, so any average here would describe the paperwork rather than the line. This fills in on its own as logging tightens \u2014 no extra work, just entries on the day they happen.")) : /* @__PURE__ */ React.createElement("div", { className: "mb-3", style: { fontSize: 13 } }, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 20, color: avg >= BONDING_BOXES_PER_DAY_MIN ? GREEN : INK } }, avg, " boxes"), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " ", "average across ", solid.length, " properly logged day", solid.length === 1 ? "" : "s", " ", "(", Math.round(coverage * 100), "% of days logged well enough to count)")), /* @__PURE__ */ React.createElement("table", { className: "w-full text-xs" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { color: INK_MUTED, textAlign: "left" } }, /* @__PURE__ */ React.createElement("th", { className: "py-1" }, "Date"), /* @__PURE__ */ React.createElement("th", null, "Boxes"), /* @__PURE__ */ React.createElement("th", null, "Entries"), /* @__PURE__ */ React.createElement("th", null, "First \u2192 last entry"), /* @__PURE__ */ React.createElement("th", null, "Logged"))), /* @__PURE__ */ React.createElement("tbody", null, days.slice(0, 12).map((d) => /* @__PURE__ */ React.createElement("tr", { key: d.date, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-1" }, d.date), /* @__PURE__ */ React.createElement("td", { className: "font-semibold", style: { color: d.boxes >= BONDING_BOXES_PER_DAY_MIN ? GREEN : INK } }, d.boxes), /* @__PURE__ */ React.createElement("td", { style: { color: INK_MUTED } }, d.rows), /* @__PURE__ */ React.createElement("td", { style: { color: INK_MUTED } }, d.spanHours ? `${d.spanHours}h` : /* @__PURE__ */ React.createElement("span", { style: { opacity: 0.5 } }, "\u2014")), /* @__PURE__ */ React.createElement("td", null, d.wellLogged ? /* @__PURE__ */ React.createElement(Badge, { color: GREEN }, "ok") : /* @__PURE__ */ React.createElement(Badge, { color: AMBER }, "partial")))))), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: INK_MUTED, lineHeight: 1.5 } }, withSpan.length === 0 ? "First \u2192 last entry starts filling in from now on: each new box records when it was entered. It can't be worked out for older rows \u2014 the stored timestamp is last-modified, and an import left most of them sharing one time." : `First \u2192 last entry is a real measure of the working window on ${withSpan.length} day${withSpan.length === 1 ? "" : "s"} so far.`));
   }
+  function SyncHealthPanel() {
+    const [devices, setDevices] = useState(null);
+    const [events, setEvents] = useState(null);
+    const [err, setErr] = useState(null);
+    const load = () => {
+      const c = EVENT_CLIENT;
+      if (!c) {
+        setErr("Not connected to the cloud on this device \u2014 connect sync to see every device.");
+        return;
+      }
+      setErr(null);
+      c.from("device_status").select("*").order("last_sync_at", { ascending: false }).then(({ data, error }) => error ? setErr(error.message) : setDevices(data || []));
+      c.from("app_events").select("*").eq("deleted", false).order("at", { ascending: false }).limit(40).then(({ data, error }) => error ? setErr(error.message) : setEvents(data || []));
+    };
+    useEffect(() => {
+      load();
+    }, []);
+    const ago = (t) => {
+      if (!t) return "never";
+      const m = Math.round((Date.now() - new Date(t).getTime()) / 6e4);
+      return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`;
+    };
+    const stale = (t) => !t || Date.now() - new Date(t).getTime() > 3 * 3600 * 1e3;
+    return /* @__PURE__ */ React.createElement("div", { className: "mt-6" }, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Sync health and problems", subtitle: "Every device's last sync, and the latest crashes and refused saves \u2014 from the database, not just this device." }), /* @__PURE__ */ React.createElement("div", { className: "mb-2" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: load }, "Refresh")), err && /* @__PURE__ */ React.createElement("div", { className: "text-sm mb-2", style: { color: RED } }, err), devices && /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm mb-4", style: { borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { color: INK_MUTED, textAlign: "left" } }, /* @__PURE__ */ React.createElement("th", { className: "py-1" }, "Device"), /* @__PURE__ */ React.createElement("th", null, "Who"), /* @__PURE__ */ React.createElement("th", null, "Build"), /* @__PURE__ */ React.createElement("th", null, "Last sync"), /* @__PURE__ */ React.createElement("th", null, "Waiting to send"), /* @__PURE__ */ React.createElement("th", null, "Last refused"))), /* @__PURE__ */ React.createElement("tbody", null, devices.map((d) => /* @__PURE__ */ React.createElement("tr", { key: d.id, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-1" }, d.device), /* @__PURE__ */ React.createElement("td", null, d.actor || "\u2014"), /* @__PURE__ */ React.createElement("td", { style: { color: d.app_version === APP_VERSION ? INK : RED } }, d.app_version, d.app_version === APP_VERSION ? "" : " (not the latest)"), /* @__PURE__ */ React.createElement("td", { style: { color: stale(d.last_sync_at) ? RED : INK } }, ago(d.last_sync_at)), /* @__PURE__ */ React.createElement("td", null, d.pending || 0), /* @__PURE__ */ React.createElement("td", { style: { color: d.last_refused_at ? RED : INK_MUTED } }, d.last_refused_at ? `${ago(d.last_refused_at)} \u2014 ${d.last_refused || ""}` : "none"))), !devices.length && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { colSpan: 6, className: "py-2", style: { color: INK_MUTED } }, "No device has reported yet \u2014 each one appears after its next sync.")))), events && /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { color: INK_MUTED, textAlign: "left" } }, /* @__PURE__ */ React.createElement("th", { className: "py-1" }, "When"), /* @__PURE__ */ React.createElement("th", null, "What"), /* @__PURE__ */ React.createElement("th", null, "Device \xB7 who \xB7 build"), /* @__PURE__ */ React.createElement("th", null, "Where"), /* @__PURE__ */ React.createElement("th", null, "Message"))), /* @__PURE__ */ React.createElement("tbody", null, events.map((e) => /* @__PURE__ */ React.createElement("tr", { key: e.id, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-1", style: { whiteSpace: "nowrap" } }, ago(e.at)), /* @__PURE__ */ React.createElement("td", { style: { color: e.kind === "crash" ? RED : e.kind === "refused" ? AMBER : INK } }, e.kind), /* @__PURE__ */ React.createElement("td", null, e.device, " \xB7 ", e.actor || "\u2014", " \xB7 ", e.app_version), /* @__PURE__ */ React.createElement("td", null, e.screen || e.table_name || "\u2014"), /* @__PURE__ */ React.createElement("td", { title: e.detail || "" }, e.message))), !events.length && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { colSpan: 5, className: "py-2", style: { color: INK_MUTED } }, "Nothing reported. Crashes, errors and refused saves appear here from every device.")))));
+  }
   function AdminView({ data, setData }) {
     const { requirePassword, modal } = useAdminPasswordGate();
     const [unlocked, setUnlocked] = useState(() => localStorage.getItem("matrixSyncUserRole") === "admin");
@@ -16482,7 +16602,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         title: "Change log",
         subtitle: "Everything that changed, who changed it, and what it was before. Revert puts one change back without touching anything else."
       }
-    ), modal, /* @__PURE__ */ React.createElement(BondingOutputPanel, { data }), /* @__PURE__ */ React.createElement(LabelPrintingPanel, null), /* @__PURE__ */ React.createElement(DataHealthPanel, { data }), /* @__PURE__ */ React.createElement(WipeStockPanel, { data, setData }), /* @__PURE__ */ React.createElement(RecoveryPanel, { data, setData }), /* @__PURE__ */ React.createElement(CustomSizesPanel, { data, setData }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 10 } }, /* @__PURE__ */ React.createElement(
+    ), modal, /* @__PURE__ */ React.createElement(BondingOutputPanel, { data }), /* @__PURE__ */ React.createElement(LabelPrintingPanel, null), /* @__PURE__ */ React.createElement(SyncHealthPanel, null), /* @__PURE__ */ React.createElement(DataHealthPanel, { data }), /* @__PURE__ */ React.createElement(WipeStockPanel, { data, setData }), /* @__PURE__ */ React.createElement(RecoveryPanel, { data, setData }), /* @__PURE__ */ React.createElement(CustomSizesPanel, { data, setData }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 10 } }, /* @__PURE__ */ React.createElement(
       "input",
       {
         value: logQuery,
@@ -18173,6 +18293,212 @@ Plan it?`
       /* @__PURE__ */ React.createElement(Num, { bold: true }, r.pct, "%")
     ))), /* @__PURE__ */ React.createElement("tfoot", { style: { borderTop: `2px solid ${INK}` } }, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { className: "py-2.5 px-3", style: { fontWeight: 650 } }, "All live orders"), /* @__PURE__ */ React.createElement("td", null), /* @__PURE__ */ React.createElement(Num, { bold: true }, T.ordered.toLocaleString()), /* @__PURE__ */ React.createElement(Num, { bold: true, tone: T.planned === T.ordered ? void 0 : RED }, T.planned.toLocaleString()), /* @__PURE__ */ React.createElement(Num, { bold: true }, T.packed.toLocaleString()), /* @__PURE__ */ React.createElement(Num, { bold: true, tone: T.outstanding ? ORANGE : GREEN }, T.outstanding.toLocaleString()), /* @__PURE__ */ React.createElement(Num, { bold: true }, T.casesFull, " / ", T.cases), /* @__PURE__ */ React.createElement(Num, { bold: true }, totalPct, "%"))))), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-4" }, /* @__PURE__ */ React.createElement(Panel, { className: "p-4", style: { flex: "1 1 240px" } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED, fontWeight: 600 } }, "ON THE SHELF"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 650 } }, shelfBoxes.toLocaleString(), " boxes"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 4 } }, shelf.length, " box code", shelf.length === 1 ? "" : "s", " free to promise"), shelfNoBay.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: ORANGE, marginTop: 6 } }, shelfNoBay.reduce((t, r) => t + (Number(r.toStock) || 0), 0), " of them across ", shelfNoBay.length, " code", shelfNoBay.length === 1 ? "" : "s", " have no bay \u2014 nobody can be told where to find them")), /* @__PURE__ */ React.createElement(Panel, { className: "p-4", style: { flex: "1 1 240px" } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED, fontWeight: 600 } }, "READY TO BOND"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 650 } }, reels.length, " reel", reels.length === 1 ? "" : "s"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 4 } }, reelMetres.toLocaleString(), " m checked and not yet used up")), /* @__PURE__ */ React.createElement(Panel, { className: "p-4", style: { flex: "1 1 240px" } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED, fontWeight: 600 } }, "REGISTER"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 650, color: openCount ? ORANGE : GREEN } }, openCount, " open item", openCount === 1 ? "" : "s"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, marginTop: 4 } }, openCount ? "Things that need somebody to go and look" : "Nothing outstanding"))), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-4", style: { color: INK_MUTED } }, "Ordered comes from the order's own lines, less delivery and tape. Planned is the case plan written when the order arrived. Packed is what is actually in the cases. Shipped and cancelled orders are not counted here."));
   }
+  function measuredRates(data) {
+    const num = (x) => {
+      const n = Number(x);
+      return isFinite(n) ? n : null;
+    };
+    const stats = (vals) => {
+      const v = vals.filter((x) => isFinite(x) && x > 0).sort((a, b) => a - b);
+      if (!v.length) return null;
+      const q = (p) => v[Math.min(v.length - 1, Math.max(0, Math.round(p * (v.length - 1))))];
+      return { n: v.length, median: q(0.5), low: q(0.25), high: q(0.75) };
+    };
+    const sane = (h) => h != null && h >= 0.05 && h <= 12;
+    const forms = new Map((data.productForms || []).filter((f) => f && !f.deleted).map((f) => [f.id, f]));
+    const prods = new Map((data.products || []).filter((p) => p && !p.deleted).map((p) => [p.id, p]));
+    const runs = (data.bondingRuns || []).filter((r) => r && !r.deleted && !r.packingOnly && !r._synth && num(r.amountMade) > 0);
+    const timed = runs.filter((r) => sane(num(r.runtimeHrs)));
+    const groups = /* @__PURE__ */ new Map();
+    for (const r of timed) {
+      const f = r.formId && forms.get(r.formId);
+      const p = f && prods.get(f.productId);
+      const key = f ? f.id : `name:${r.productSize}`;
+      const label = p ? `${p.displayName}${String(f.form).toLowerCase() === "reel" ? " REEL" : ""}` : r.productSize || "(no product)";
+      const metres = num(r.metersPerBox) || f && num(f.metres) || 0;
+      if (!groups.has(key)) groups.set(key, { key, label, form: f ? f.form : /reel/i.test(r.productSize || "") ? "Reel" : "Box", metres, boxesPerHour: [], metresPerHour: [] });
+      const g = groups.get(key), h = num(r.runtimeHrs);
+      g.boxesPerHour.push(num(r.amountMade) / h);
+      if (metres) g.metresPerHour.push(num(r.amountMade) * metres / h);
+    }
+    const byProduct = [...groups.values()].map((g) => ({
+      key: g.key,
+      label: g.label,
+      form: g.form,
+      metresPerBox: g.metres,
+      boxes: stats(g.boxesPerHour),
+      metres: stats(g.metresPerHour)
+    })).filter((g) => g.boxes).sort((a, b) => b.boxes.n - a.boxes.n || a.label.localeCompare(b.label));
+    const bondingOverall = stats(timed.map((r) => {
+      const f = r.formId && forms.get(r.formId);
+      const m = num(r.metersPerBox) || f && num(f.metres) || 0;
+      return m ? num(r.amountMade) * m / num(r.runtimeHrs) : null;
+    }).filter((x) => x != null));
+    const reels = (data.glueLineBatches || []).filter((b) => b && !b.deleted && num(b.meterage) > 0);
+    const gtimed = reels.filter((b) => sane(num(b.runtimeHrs)));
+    const sizes = /* @__PURE__ */ new Map();
+    for (const b of gtimed) {
+      const key = b.sizeKey || `name:${b.productSize}`;
+      if (!sizes.has(key)) sizes.set(key, { key, label: b.productSize || key, vals: [] });
+      sizes.get(key).vals.push(num(b.meterage) / num(b.runtimeHrs));
+    }
+    const bySize = [...sizes.values()].map((g) => ({ key: g.key, label: g.label, metres: stats(g.vals) })).filter((g) => g.metres).sort((a, b) => b.metres.n - a.metres.n || a.label.localeCompare(b.label));
+    return {
+      bonding: { overall: bondingOverall, byProduct, timed: timed.length, untimed: runs.length - timed.length },
+      glue: { overall: stats(gtimed.map((b) => num(b.meterage) / num(b.runtimeHrs))), bySize, timed: gtimed.length, untimed: reels.length - gtimed.length }
+    };
+  }
+  var WORK_HOURS = { 1: [8, 17], 2: [8, 17], 3: [8, 17], 4: [8, 17], 5: [8, 14] };
+  function nextWorkMoment(t) {
+    let d = new Date(t);
+    for (let i = 0; i < 14; i++) {
+      const h = WORK_HOURS[d.getDay()];
+      if (h) {
+        const start = new Date(d);
+        start.setHours(h[0], 0, 0, 0);
+        const end = new Date(d);
+        end.setHours(h[1], 0, 0, 0);
+        if (d < start) return start;
+        if (d < end) return d;
+      }
+      d = new Date(d);
+      d.setDate(d.getDate() + 1);
+      d.setHours(0, 0, 0, 0);
+    }
+    return d;
+  }
+  function addWorkHours(t, hours) {
+    let d = nextWorkMoment(t), left = Math.max(0, Number(hours) || 0) * 36e5;
+    while (left > 0) {
+      const h = WORK_HOURS[d.getDay()];
+      const end = new Date(d);
+      end.setHours(h[1], 0, 0, 0);
+      const room = end - d;
+      if (left <= room) return new Date(d.getTime() + left);
+      left -= room;
+      d = nextWorkMoment(new Date(end.getTime() + 1));
+    }
+    return d;
+  }
+  function orderFinishDates(data, now = /* @__PURE__ */ new Date()) {
+    const rates = measuredRates(data);
+    const forms = new Map((data.productForms || []).filter((f) => f && !f.deleted).map((f) => [f.id, f]));
+    const prods = new Map((data.products || []).filter((p) => p && !p.deleted).map((p) => [p.id, p]));
+    const bondByForm = new Map(rates.bonding.byProduct.filter((g) => g.boxes && g.boxes.n >= 3).map((g) => [g.key, g.boxes.median]));
+    const glueBySize = new Map(rates.glue.bySize.filter((g) => g.metres && g.metres.n >= 3).map((g) => [g.key, g.metres.median]));
+    const bondMph = rates.bonding.overall && rates.bonding.overall.median || 460;
+    const glueMph = rates.glue.overall && rates.glue.overall.median || 690;
+    const runs = (data.bondingRuns || []).filter((r) => r && !r.deleted && !r._synth && r.boxNumber && r.formId);
+    const formOfBox = /* @__PURE__ */ new Map();
+    for (const r of runs) formOfBox.set(String(r.boxNumber).trim().toUpperCase(), r.formId);
+    const shelf = /* @__PURE__ */ new Map();
+    for (const box of formOfBox.keys()) {
+      const n = Math.max(0, (placeOf(data, box) || {}).onShelf || 0);
+      if (n) {
+        const f = formOfBox.get(box);
+        shelf.set(f, (shelf.get(f) || 0) + n);
+      }
+    }
+    const reelLeft = /* @__PURE__ */ new Map();
+    for (const b of data.glueLineBatches || []) {
+      if (!b || b.deleted || String(b.cleared || "").toLowerCase() === "yes" || !b.sizeKey) continue;
+      const left = Math.max(0, (Number(b.meterage) || 0) - batchMeterageUsed(data.bondingRuns || [], b.batchNumber));
+      if (left) reelLeft.set(b.sizeKey, (reelLeft.get(b.sizeKey) || 0) + left);
+    }
+    const held = ledgerCaseContents(data.movements || []);
+    const inCases = (orderId, formId) => {
+      let t = 0;
+      for (const [k, c] of held) {
+        if (!k.startsWith(orderId + "|")) continue;
+        for (const [box, q] of Object.entries(c)) if (formOfBox.get(String(box).toUpperCase()) === formId) t += Number(q) || 0;
+      }
+      return t;
+    };
+    const live = (data.orders || []).filter((o) => o && !o.deleted && o.stage !== "Shipped" && o.stage !== "Cancelled").sort((a, b) => (Number(a.priority) || 99) - (Number(b.priority) || 99) || String(a.dueDate || "9999").localeCompare(String(b.dueDate || "9999")) || a.id.localeCompare(b.id));
+    let glueClock = nextWorkMoment(now), bondClock = nextWorkMoment(now);
+    const out = [];
+    for (const o of live) {
+      let bondHours = 0, glueHours = 0, units = 0, fromShelf = 0, unknown = 0;
+      const lines = (data.lineItems || []).filter((l) => l && !l.deleted && l.orderId === o.id && Number(l.qty) > 0 && !isDelivery(l.description) && !isSmallItem(l.description));
+      const perForm = /* @__PURE__ */ new Map();
+      for (const l of lines) {
+        if (!l.formId) {
+          unknown += Number(l.qty) || 0;
+          continue;
+        }
+        perForm.set(l.formId, (perForm.get(l.formId) || 0) + (Number(l.qty) || 0));
+      }
+      for (const [formId, ordered] of perForm) {
+        let need = Math.max(0, ordered - inCases(o.id, formId));
+        const take = Math.min(need, shelf.get(formId) || 0);
+        if (take) {
+          shelf.set(formId, shelf.get(formId) - take);
+          need -= take;
+          fromShelf += take;
+        }
+        if (!need) continue;
+        units += need;
+        const f = forms.get(formId), metresEach = f && Number(f.metres) || 24;
+        bondHours += bondByForm.has(formId) ? need / bondByForm.get(formId) : need * metresEach / bondMph;
+        const p = f && prods.get(f.productId), size = p && sizeKeyOfProduct(p);
+        let metres = need * metresEach;
+        const onHand = size ? reelLeft.get(size) || 0 : 0, use = Math.min(metres, onHand);
+        if (use) {
+          reelLeft.set(size, onHand - use);
+          metres -= use;
+        }
+        if (metres > 0) glueHours += metres / (glueBySize.get(size) || glueMph);
+      }
+      let finish = null, glueEnd = null;
+      if (glueHours > 0) {
+        glueEnd = addWorkHours(glueClock, glueHours);
+        glueClock = glueEnd;
+      }
+      if (bondHours > 0) {
+        const start = glueEnd && glueEnd > bondClock ? glueEnd : bondClock;
+        finish = addWorkHours(start, bondHours);
+        bondClock = finish;
+      }
+      const due = o.dueDate ? /* @__PURE__ */ new Date(`${o.dueDate}T17:00:00`) : null;
+      out.push({
+        orderId: o.id,
+        customer: o.customer,
+        priority: o.priority || null,
+        dueDate: o.dueDate || null,
+        units,
+        fromShelf,
+        unknown,
+        glueHours,
+        bondHours,
+        finish,
+        late: !!(due && finish && finish > due),
+        overdueNow: !!(due && due < now)
+      });
+    }
+    return {
+      orders: out,
+      glueFree: glueClock,
+      bondFree: bondClock,
+      glueBacklog: out.reduce((t, x) => t + x.glueHours, 0),
+      bondBacklog: out.reduce((t, x) => t + x.bondHours, 0)
+    };
+  }
+  function FinishDatesView({ data }) {
+    const r = useMemo(() => orderFinishDates(data, /* @__PURE__ */ new Date()), [data]);
+    const day = (d) => d ? d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }) + " " + d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : "\u2014";
+    const h1 = (x) => x ? (Math.round(x * 10) / 10).toLocaleString("en-GB") : "\u2014";
+    const lateCount = r.orders.filter((o) => o.late).length;
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "When orders finish", subtitle: "Every live order, most urgent first, laid against the working week (Mon\u2013Thu 8\u20135, Fri 8\u20132) at the rates the lines actually run. Packing is not counted; a Saturday run brings things forward." }), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "p-3 rounded", style: { border: `1px solid ${BORDER}`, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Glue line work waiting"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 700 } }, h1(r.glueBacklog), " h"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "clear by ", day(r.glueFree))), /* @__PURE__ */ React.createElement("div", { className: "p-3 rounded", style: { border: `1px solid ${BORDER}`, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Bonding work waiting"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 700 } }, h1(r.bondBacklog), " h"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "clear by ", day(r.bondFree))), /* @__PURE__ */ React.createElement("div", { className: "p-3 rounded", style: { border: `1px solid ${lateCount ? RED : BORDER}`, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Will miss their due date"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: lateCount ? RED : GREEN } }, lateCount), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "of ", r.orders.length, " live orders"))), /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { color: INK_MUTED, textAlign: "left" } }, /* @__PURE__ */ React.createElement("th", { className: "py-1" }, "Order"), /* @__PURE__ */ React.createElement("th", null, "Customer"), /* @__PURE__ */ React.createElement("th", null, "Priority"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Still to make"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "From the shelf"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Glue h"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Bonding h"), /* @__PURE__ */ React.createElement("th", null, "Expected finish"), /* @__PURE__ */ React.createElement("th", null, "Due"))), /* @__PURE__ */ React.createElement("tbody", null, r.orders.map((o) => /* @__PURE__ */ React.createElement("tr", { key: o.orderId, style: { borderTop: `1px solid ${BORDER}`, background: o.late ? "#FDECEA" : void 0 } }, /* @__PURE__ */ React.createElement("td", { className: "py-1", style: { fontWeight: 600 } }, o.orderId), /* @__PURE__ */ React.createElement("td", null, o.customer), /* @__PURE__ */ React.createElement("td", null, o.priority || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, o.units, o.unknown ? ` (+${o.unknown} not in the catalogue)` : ""), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, o.fromShelf || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, h1(o.glueHours)), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, h1(o.bondHours)), /* @__PURE__ */ React.createElement("td", { style: { color: o.late ? RED : INK, fontWeight: o.late ? 700 : 400 } }, o.finish ? day(o.finish) : "nothing left to make"), /* @__PURE__ */ React.createElement("td", { style: { color: o.overdueNow ? RED : INK } }, o.dueDate || "\u2014")))))));
+  }
+  function MeasuredRatesPanel({ data }) {
+    const r = useMemo(() => measuredRates(data), [data.bondingRuns, data.glueLineBatches, data.productForms, data.products]);
+    const [showAll, setShowAll] = useState(false);
+    const f0 = (x) => x == null ? "\u2014" : Math.round(x).toLocaleString("en-GB");
+    const f1 = (x) => x == null ? "\u2014" : (Math.round(x * 10) / 10).toLocaleString("en-GB");
+    const card = (title, o, extra) => /* @__PURE__ */ React.createElement("div", { className: "p-3 rounded", style: { border: `1px solid ${BORDER}`, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: INK_MUTED } }, title), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 24, fontWeight: 700, color: INK } }, o ? `${f0(o.median)} m/hour` : "\u2014"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, o ? `${f1(o.median / 60)} m/min \xB7 usually ${f0(o.low)}\u2013${f0(o.high)} m/hour \xB7 ${o.n} timed` : "no timed runs yet", extra));
+    const rows = showAll ? r.bonding.byProduct : r.bonding.byProduct.slice(0, 15);
+    return /* @__PURE__ */ React.createElement("div", { className: "mt-6" }, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Measured rates", subtitle: "What the lines actually do, worked out from every timed bonding run and glue reel \u2014 the typical rate is the middle run, so one badly logged run cannot move it." }), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4" }, card("Bonding \u2014 all products", r.bonding.overall, r.bonding.untimed ? ` \xB7 ${r.bonding.untimed} runs have no time and are left out` : ""), card("Glue line \u2014 all sizes", r.glue.overall, r.glue.untimed ? ` \xB7 ${r.glue.untimed} reels have no time and are left out` : "")), /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: INK_MUTED } }, "Bonding, by product \u2014 most runs first"), /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm mb-2", style: { borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { color: INK_MUTED, textAlign: "left" } }, /* @__PURE__ */ React.createElement("th", { className: "py-1" }, "Product"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Runs"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Boxes or reels / hour"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Usually"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Metres / hour"))), /* @__PURE__ */ React.createElement("tbody", null, rows.map((g) => /* @__PURE__ */ React.createElement("tr", { key: g.key, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-1" }, g.label), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, g.boxes.n), /* @__PURE__ */ React.createElement("td", { className: "text-right", style: { fontWeight: 600 } }, f1(g.boxes.median)), /* @__PURE__ */ React.createElement("td", { className: "text-right", style: { color: INK_MUTED } }, g.boxes.n >= 3 ? `${f1(g.boxes.low)}\u2013${f1(g.boxes.high)}` : "too few runs"), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, g.metres ? f0(g.metres.median) : "\u2014")))))), r.bonding.byProduct.length > 15 && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setShowAll((v) => !v) }, showAll ? "Show the top 15" : `Show all ${r.bonding.byProduct.length} products`), /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1 mt-4", style: { color: INK_MUTED } }, "Glue line, by size \u2014 most reels first"), /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { color: INK_MUTED, textAlign: "left" } }, /* @__PURE__ */ React.createElement("th", { className: "py-1" }, "Size"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Reels"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Metres / hour"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Usually"))), /* @__PURE__ */ React.createElement("tbody", null, r.glue.bySize.slice(0, showAll ? 999 : 15).map((g) => /* @__PURE__ */ React.createElement("tr", { key: g.key, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-1" }, g.label), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, g.metres.n), /* @__PURE__ */ React.createElement("td", { className: "text-right", style: { fontWeight: 600 } }, f0(g.metres.median)), /* @__PURE__ */ React.createElement("td", { className: "text-right", style: { color: INK_MUTED } }, g.metres.n >= 3 ? `${f0(g.metres.low)}\u2013${f0(g.metres.high)}` : "too few reels")))))));
+  }
   function MetricsView({ data, setData }) {
     const { orders, lineItems, bondingRuns, glueLineBatches, ncrs = [] } = data;
     const todayStr = daysAgoLocal(0);
@@ -18236,7 +18562,7 @@ Plan it?`
       const val = mr.get(p.m);
       const flagged = mr.flagIf && mr.flagIf(p.m);
       return /* @__PURE__ */ React.createElement("td", { key: p.label, className: "px-3 py-2 text-right font-semibold", style: { color: flagged ? RED : INK } }, val);
-    })))))), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-3", style: { color: INK_MUTED } }, `"Boxes created" and "meterage bonded" come from Bonding Line entries, dated when the run was logged. "Orders completed" only counts orders shipped since this feature was added \u2014 orders already marked Shipped beforehand won't have a shipped date recorded and won't appear in that count.`));
+    })))))), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-3", style: { color: INK_MUTED } }, `"Boxes created" and "meterage bonded" come from Bonding Line entries, dated when the run was logged. "Orders completed" only counts orders shipped since this feature was added \u2014 orders already marked Shipped beforehand won't have a shipped date recorded and won't appear in that count.`), /* @__PURE__ */ React.createElement(MeasuredRatesPanel, { data }));
   }
   var NcrBatchField = ({ value, onChange, options, listId }) => /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(
     "input",
@@ -22863,6 +23189,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
   var NAV = [
     { key: "dashboard", label: "Orders", icon: IconOrders },
     { key: "daily", label: "Daily plan", icon: IconClock },
+    { key: "finish", label: "When orders finish", icon: IconClock },
     { key: "production", label: "Production list", icon: IconProduction },
     { key: "gluelineschedule", label: "Glue line schedule", icon: IconLink },
     { key: "batches", label: "Batches available to bond", icon: IconDiamond },
@@ -22911,7 +23238,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     { label: "The line", section: true, prominent: true, line: true, keys: ["dashboard", "extrusion", "glueline", "bonding", "packing", "pick"] },
     { label: null, prominent: true, keys: ["stock"] },
     { label: null, keys: ["eva"] },
-    { label: "Planning", section: true, prominent: true, keys: ["daily", "production", "gluelineschedule", "batches"] },
+    { label: "Planning", section: true, prominent: true, keys: ["daily", "finish", "production", "gluelineschedule", "batches"] },
     { label: null, keys: ["materials"] },
     { label: null, keys: ["customers", "messages"] },
     { label: "Quality and reports", keys: ["overview", "register", "ncr", "metrics"] },
@@ -23448,6 +23775,12 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         setPendingCount(0);
         setSyncFailureDetail(null);
         markSynced();
+        {
+          const now = (/* @__PURE__ */ new Date()).toISOString();
+          reportDeviceStatus({ last_sync_at: now, last_ok_at: now, pending: 0 });
+        }
+        if (res && res.refused && res.refused.length) for (const r of res.refused.slice(0, 20))
+          reportAppEvent({ kind: "refused", table: r.table || r.key || null, rowId: r.id || null, message: "The cloud held a newer copy; it was fetched instead" });
         setSyncWarnings(res && res.warnings && res.warnings.length ? res.warnings : null);
         if (res && res.refused && res.refused.length) reconcileRefusedRowsRef.current(res.refused, res.refusedFresh);
         releasePendingDeletions(Object.keys(deletedByTable));
@@ -23467,6 +23800,12 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         retireLocalDuplicates(err.warnings);
         if (err.refused && err.refused.length) reconcileRefusedRowsRef.current(err.refused, err.refusedFresh);
         const offline = failures.length === 0 || failures.some(isNetworkFailure);
+        if (!offline) {
+          const now = (/* @__PURE__ */ new Date()).toISOString();
+          const what = failures.map((f) => `${f.table || f.key || "?"}: ${String(f.message || f.error || f).slice(0, 160)}`).slice(0, 5).join(" \xB7 ");
+          for (const f of failures.slice(0, 10)) reportAppEvent({ kind: "refused", table: f.table || f.key || null, message: String(f.message || f.error || f).slice(0, 400) });
+          reportDeviceStatus({ last_sync_at: now, last_refused_at: now, last_refused: what, pending: countPendingChanges(prevDataRef.current, storedData) });
+        }
         setSyncStatus(offline ? "offline" : "connected");
         setSyncFailureDetail(failures.length ? failures : null);
       });
@@ -23621,6 +23960,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       noteWatermarks(connectRes);
       const remote = connectRes.data;
       syncClientRef.current = client;
+      setEventClient(client);
       try {
         const { data: userData } = await client.auth.getUser();
         let role = userData?.user?.user_metadata?.role || null;
@@ -23846,6 +24186,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         focusPullRef.current = null;
       }
       syncClientRef.current = null;
+      setEventClient(null);
       setSyncEnabled(false);
       setSyncStatus("off");
       localStorage.setItem(SYNC_PREF_KEY, "false");
@@ -23996,6 +24337,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         navigateTo(v);
         setOpenGroup(groupForView(v));
       } }),
+      finish: /* @__PURE__ */ React.createElement(FinishDatesView, { data }),
       daily: /* @__PURE__ */ React.createElement(
         TodayView,
         {
