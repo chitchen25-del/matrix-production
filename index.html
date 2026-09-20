@@ -1201,7 +1201,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-20.3";
+  var APP_VERSION = "2026-09-20.4";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -14721,18 +14721,67 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       lineHeight: 1.5
     } }, /* @__PURE__ */ React.createElement("b", null, rows.reduce((t, r) => t + r.waiting, 0)), " boxes are promised to a live order and not yet in a case.", lost.length > 0 ? /* @__PURE__ */ React.createElement(React.Fragment, null, " ", /* @__PURE__ */ React.createElement("b", null, lost.reduce((t, r) => t + r.waiting, 0), " of them have no bay recorded"), " \u2014 those are the ones that end up on top of a case. They are listed first.") : /* @__PURE__ */ React.createElement(React.Fragment, null, " Every one of them has a bay, so every one can be found.")), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-x-auto" }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: "#F7F8FC" } }, /* @__PURE__ */ React.createElement(Th, null, "Box"), /* @__PURE__ */ React.createElement(Th, null, "Product"), /* @__PURE__ */ React.createElement(Th, null, "Order"), /* @__PURE__ */ React.createElement(Th, null, "Waiting"), /* @__PURE__ */ React.createElement(Th, null, "For"), /* @__PURE__ */ React.createElement(Th, null, "Case"), /* @__PURE__ */ React.createElement(Th, null, "Bay"))), /* @__PURE__ */ React.createElement("tbody", null, rows.map((r) => /* @__PURE__ */ React.createElement("tr", { key: `${r.orderId}|${r.boxNumber}`, style: { borderTop: `1px solid ${BORDER}`, background: r.location ? "#fff" : "#FFF6F6" } }, /* @__PURE__ */ React.createElement(Td, null, /* @__PURE__ */ React.createElement("span", { className: "font-mono" }, r.boxNumber)), /* @__PURE__ */ React.createElement(Td, null, r.spec), /* @__PURE__ */ React.createElement(Td, null, r.orderId, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: INK_MUTED } }, r.customer)), /* @__PURE__ */ React.createElement(Td, null, /* @__PURE__ */ React.createElement("b", null, r.waiting)), /* @__PURE__ */ React.createElement(Td, null, days(r.since)), /* @__PURE__ */ React.createElement(Td, null, r.caseNum != null ? `case ${r.caseNum}` : /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014")), /* @__PURE__ */ React.createElement(Td, null, r.location ? r.location : /* @__PURE__ */ React.createElement("span", { style: { color: RED, fontWeight: 700 } }, "no bay \u2014 find it")))), rows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 7 }, "Nothing is waiting. Everything promised is in a case.")))));
   }
-  function PickLauncher({ data, onPick }) {
-    const waiting = useMemo(() => promisedNotPacked(data), [data]);
-    const byOrder = /* @__PURE__ */ new Map();
-    for (const w of waiting) {
-      const e = byOrder.get(w.orderId) || { orderId: w.orderId, customer: w.customer, boxes: 0, codes: 0, noBay: 0 };
-      e.boxes += w.waiting;
-      e.codes += 1;
-      if (!w.location) e.noBay += w.waiting;
-      byOrder.set(w.orderId, e);
+  function pickableNow(data) {
+    const up = (x) => String(x || "").trim().toUpperCase();
+    const runs = (data.bondingRuns || []).filter((r) => r && !r.deleted && !r._synth && r.boxNumber && r.formId);
+    const byForm = /* @__PURE__ */ new Map();
+    const seen = /* @__PURE__ */ new Set();
+    for (const r of runs) {
+      const box = up(r.boxNumber);
+      if (seen.has(box)) continue;
+      seen.add(box);
+      const n = Math.max(0, (placeOf(data, box) || {}).onShelf || 0);
+      if (!n) continue;
+      if (!byForm.has(r.formId)) byForm.set(r.formId, []);
+      byForm.get(r.formId).push({ box: r.boxNumber, left: n, bay: String(r.location || "").trim() });
     }
-    const rows = [...byOrder.values()].sort((a, b) => b.boxes - a.boxes);
-    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: INK_MUTED, marginBottom: 12, lineHeight: 1.5 } }, "Orders with boxes on a shelf waiting to go in a case. Tap one to start."), rows.length === 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-5", style: { textAlign: "center", color: INK_MUTED } }, "Nothing is waiting to be picked."), rows.map((r) => /* @__PURE__ */ React.createElement(
+    for (const list of byForm.values()) list.sort((a, b) => a.box.localeCompare(b.box));
+    const formOfBox = new Map(runs.map((r) => [up(r.boxNumber), r.formId]));
+    const held = ledgerCaseContents(data.movements || []);
+    const inCases = (orderId, formId) => {
+      let t = 0;
+      for (const [k, c] of held) {
+        if (!k.startsWith(orderId + "|")) continue;
+        for (const [box, q] of Object.entries(c)) if (formOfBox.get(up(box)) === formId) t += Number(q) || 0;
+      }
+      return t;
+    };
+    const live = (data.orders || []).filter((o) => o && !o.deleted && o.stage !== "Shipped" && o.stage !== "Cancelled").sort((a, b) => (Number(a.priority) || 99) - (Number(b.priority) || 99) || String(a.dueDate || "9999").localeCompare(String(b.dueDate || "9999")) || a.id.localeCompare(b.id));
+    const out = [];
+    for (const o of live) {
+      const perForm = /* @__PURE__ */ new Map();
+      for (const l of data.lineItems || []) {
+        if (!l || l.deleted || l.orderId !== o.id || !l.formId || !(Number(l.qty) > 0) || isDelivery(l.description) || isSmallItem(l.description)) continue;
+        perForm.set(l.formId, (perForm.get(l.formId) || 0) + Number(l.qty));
+      }
+      const codes = [];
+      for (const [formId, ordered] of perForm) {
+        let need = Math.max(0, ordered - inCases(o.id, formId));
+        for (const b of byForm.get(formId) || []) {
+          if (need <= 0) break;
+          if (b.left <= 0) continue;
+          const take = Math.min(need, b.left);
+          b.left -= take;
+          need -= take;
+          codes.push({ box: b.box, qty: take, bay: b.bay });
+        }
+      }
+      if (!codes.length) continue;
+      out.push({
+        orderId: o.id,
+        customer: o.customer,
+        priority: o.priority || null,
+        dueDate: o.dueDate || null,
+        codes,
+        boxes: codes.reduce((t, c) => t + c.qty, 0),
+        noBay: codes.filter((c) => !c.bay).reduce((t, c) => t + c.qty, 0)
+      });
+    }
+    return out;
+  }
+  function PickLauncher({ data, onPick }) {
+    const rows = useMemo(() => pickableNow(data), [data]);
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: INK_MUTED, marginBottom: 12, lineHeight: 1.5 } }, "Orders with boxes free on the shelf that they still need \u2014 most urgent first. Tap one to pick it."), rows.length === 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-5", style: { textAlign: "center", color: INK_MUTED } }, "Nothing on the shelf is needed by an order right now."), rows.map((r) => /* @__PURE__ */ React.createElement(
       "button",
       {
         key: r.orderId,
@@ -14750,8 +14799,9 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
           cursor: "pointer"
         }
       },
-      /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 17, fontWeight: 700, color: INK } }, r.customer || r.orderId), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, r.orderId, " \xB7 ", r.codes, " box code", r.codes === 1 ? "" : "s")), /* @__PURE__ */ React.createElement("div", { style: { textAlign: "right" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 800, color: NAVY } }, r.boxes), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: INK_MUTED } }, "boxes waiting"))),
-      r.noBay > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: RED, marginTop: 6, fontWeight: 600 } }, r.noBay, " with no bay recorded")
+      /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 17, fontWeight: 700, color: INK } }, r.customer || r.orderId), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, r.orderId, r.priority ? ` \xB7 priority ${r.priority}` : "", " \xB7 ", r.codes.length, " box code", r.codes.length === 1 ? "" : "s")), /* @__PURE__ */ React.createElement("div", { style: { textAlign: "right" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 800, color: NAVY } }, r.boxes), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: INK_MUTED } }, "ready to pick"))),
+      /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK, marginTop: 6 } }, r.codes.slice(0, 4).map((c) => `${c.qty} \xD7 ${c.box}${c.bay ? ` (bay ${c.bay})` : ""}`).join(" \xB7 "), r.codes.length > 4 ? ` \xB7 and ${r.codes.length - 4} more` : ""),
+      r.noBay > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: RED, marginTop: 6, fontWeight: 600 } }, r.noBay, " with no bay recorded \u2014 find them first")
     )));
   }
   function WrongStockInCaseView({ data, setData }) {
