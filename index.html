@@ -1151,6 +1151,12 @@
     idbPut(IDB_HANDLE, IDB_KEY, payload).then(() => {
       LAST_STORED_KB = Math.round(payload.length * 2 / 1024);
       window.__matrixStorageFailed = false;
+      if (window.__MX_TEST_MIRROR__) {
+        try {
+          localStorage.setItem(STORAGE_KEY, payload);
+        } catch {
+        }
+      }
       cbs.forEach((cb) => {
         try {
           cb(true);
@@ -1195,7 +1201,7 @@
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-19.24";
+  var APP_VERSION = "2026-09-19.28";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -3320,8 +3326,10 @@
   function caseKindOf(row) {
     const k = String(row && row.kind || "").trim().toLowerCase();
     if (k === "reel" || k === "box") return k;
+    const specs = Object.keys(casePlanned(row));
+    if (specs.length) return specs.every(isReelSpec) ? "reel" : "box";
     const n = Number(row && row.maxSize);
-    return n > 0 && n < CASE_MAX_SIZE_DEFAULT ? "reel" : "box";
+    return n === 9 || n === 10 ? "reel" : "box";
   }
   function isReelCase(row) {
     return caseKindOf(row) === "reel";
@@ -5435,6 +5443,28 @@
         sameSize: c.contributions.some((r) => looseSpecMatch(r.spec, spec))
       };
     }).sort((a, b) => b.sameSize - a.sameSize || a.caseNum - b.caseNum);
+  }
+  function placeShelfBoxesIntoOrder(data, { boxNumber, spec, formId, orderId, qty, sourceId = null, note = null, source = "move" }) {
+    const box = String(boxNumber || "").trim().toUpperCase();
+    const q = Math.round(Number(qty) || 0);
+    if (!(q > 0)) return { error: "Say how many." };
+    const onShelf = Math.max(0, (placeOf(data, box) || {}).onShelf || 0);
+    if (q > onShelf) return { error: `Only ${onShelf} of ${box} are on the shelf.` };
+    const need = (ordersNeedingSpec(data, spec, [], { formId: formId || void 0 }).needing || []).find((x) => x.orderId === orderId);
+    if (!need) return { error: `${orderId} needs no more ${spec} \u2014 its cases already hold everything that was ordered.` };
+    if (q > need.needs) return { error: `${orderId} needs only ${need.needs} more ${spec}.` };
+    const put = [];
+    let left = q;
+    for (const r of need.room) {
+      if (left <= 0) break;
+      const n = Math.min(r.spaces, left);
+      if (n > 0) {
+        put.push(movePlaced({ boxNumber: box, spec, qty: n, orderId, caseNum: r.caseNum, source, sourceId, note: note || `Into ${orderId}` }));
+        left -= n;
+      }
+    }
+    if (left > 0) return { error: `${orderId}'s case plan has room for only ${q - left} of ${spec}.` };
+    return { patch: recordMovements(data, put), placed: put.map((m) => ({ caseNum: m.caseNum, qty: m.qty })) };
   }
   function moveBoxRow(data, rowId, dest) {
     if (String(rowId || "").includes("~") && !(data.bondingRuns || []).some((r) => r.id === rowId)) {
@@ -8831,7 +8861,7 @@ ${line}` : line;
         confirmed: !!c.confirmed,
         contributions: Object.entries(c.contents || {}).filter(([, q]) => (Number(q) || 0) > 0).map(([box, q]) => ({ boxNumber: box, spec: specOfBoxInCase(data, order.id, c.caseNum, box), qty: Number(q) || 0, batchCode: null })),
         weight: Number(caseWeights[c.caseNum]) || 0
-      })) : buildCombinedCases(byLineItem, (Number(order.startingCaseNum) || 0) + 1, packedOutsideSpecs(order, lineItems), order.caseLayout).map((c) => ({ ...c, weight: Number(caseWeights[c.caseNum]) || 0 }));
+      })).filter((r) => r.contributions.length > 0 || r.weight > 0 || r.packedOutside) : buildCombinedCases(byLineItem, (Number(order.startingCaseNum) || 0) + 1, packedOutsideSpecs(order, lineItems), order.caseLayout).map((c) => ({ ...c, weight: Number(caseWeights[c.caseNum]) || 0 }));
       const totalWeight = caseRows.reduce((s, r) => s + (r.weight || 0), 0);
       const shipWeight = orderShipmentWeight(order, lineItems, data.bondingRuns);
       const pallets = (shipWeight?.pallets || []).map((p) => ({
@@ -9674,8 +9704,20 @@ Read the next screen carefully before you agree to it.`
         for (const c of changes) {
           const box = c.line.boxNumber;
           const spec = c.line.spec;
+          const outOfCase = () => {
+            if (c.printedCase != null) moves.push(moveUnplaced({
+              boxNumber: box,
+              spec,
+              qty: c.printed,
+              orderId: order.id,
+              caseNum: Number(c.printedCase),
+              source: "amend",
+              note: c.damaged ? `Damaged, found while picking ${sheet.ref}` : `Not on the shelf when picked against sheet ${sheet.ref}`
+            }));
+          };
           if (c.damaged) {
             runs = scrapFromOrder(runs, box, order.id, c.printed);
+            outOfCase();
             moves.push(moveUnallocated({ boxNumber: box, spec, qty: c.printed, orderId: order.id, source: "amend", note: `Damaged, found while picking ${sheet.ref}` }));
             moves.push(moveScrapped({ boxNumber: box, spec, qty: c.printed, source: "amend", note: `Damaged, found while picking ${sheet.ref}` }));
             delete overrides[box];
@@ -9684,6 +9726,7 @@ Read the next screen carefully before you agree to it.`
           }
           if (c.notFound) {
             runs = scrapFromOrder(runs, box, order.id, c.printed);
+            outOfCase();
             moves.push(moveUnallocated({
               boxNumber: box,
               spec,
@@ -10228,7 +10271,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
       })(), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, "Nothing is allocated until you print a sheet or commit a phone pick."), pendingPrint && pendingPrint.order.id === o.id && /* @__PURE__ */ React.createElement("div", { className: "mb-3 p-3 rounded", style: { background: "#FDF6EC", borderLeft: `4px solid ${ORANGE}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold", style: { color: INK } }, "Did ", pendingPrint.sheet.ref, " come out of the printer?"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1 mb-2.5", style: { color: INK_MUTED } }, (pendingPrint.lines || []).length, " line", (pendingPrint.lines || []).length === 1 ? "" : "s", ",", " ", (pendingPrint.lines || []).reduce((t, l) => t + (Number(l.qty) || 0), 0), " boxes. Nothing is allocated until you say so \u2014 if you cancelled the print, nothing has changed."), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: confirmPrinted }, "Yes \u2014 it's on the floor"), " ", /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: discardPrint }, "No \u2014 throw it away")), (() => {
         const sheet = openPickSheets(data.pickSheets, o.id)[0];
         if (!sheet) return null;
-        return /* @__PURE__ */ React.createElement("div", { className: "mb-3 p-2.5 rounded", style: { background: "#FDF6EC", borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold", style: { color: AMBER } }, "Pick sheet ", sheet.ref, " is out on the floor"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, "Printed by ", sheet.printedBy || "\u2014", " on ", sheet.printedAt ? new Date(sheet.printedAt).toLocaleString("en-GB", { weekday: "long", hour: "2-digit", minute: "2-digit" }) : "\u2014", Number(sheet.reprintCount) > 0 ? ` \xB7 reprinted ${sheet.reprintCount}\xD7` : "", " \xB7 ", (sheet.lines || []).length, " line", (sheet.lines || []).length === 1 ? "" : "s", ", stock already allocated.", " ", "Press Print pick sheet again to reprint this same sheet."));
+        return /* @__PURE__ */ React.createElement("div", { className: "mb-3 p-2.5 rounded", style: { background: "#FDF6EC", borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold", style: { color: AMBER } }, "Pick sheet ", sheet.ref, " is out on the floor"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, "Printed by ", sheet.printedBy || "\u2014", " on ", sheet.printedAt ? new Date(sheet.printedAt).toLocaleString("en-GB", { weekday: "long", hour: "2-digit", minute: "2-digit" }) : "\u2014", Number(sheet.reprintCount) > 0 ? ` \xB7 reprinted ${sheet.reprintCount}\xD7` : "", " \xB7 ", (sheet.lines || []).length, " line", (sheet.lines || []).length === 1 ? "" : "s", ", boxes already in their cases.", " ", "Press Print pick sheet again to reprint this same sheet."));
       })(), pickNothing && pickNothing.orderId === o.id && /* @__PURE__ */ React.createElement("div", { className: "mb-3 p-2.5 rounded", style: { background: "#FDF6EC", borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold", style: { color: AMBER } }, "Nothing to put on a sheet"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, pickNothing.reason === "allocated" && "Every line on this order already has its boxes allocated. Nothing is left to pick.", pickNothing.reason === "boxtype" && "There is matching stock, but it is in the wrong box type for this order (or its box type was never recorded). Set it on the Bonding Line entry before picking.", pickNothing.reason === "noshelf" && "Nothing matching this order is on the shelf right now. It still has to be made.", pickNothing.reason === "strongtape" && "STRONG TAPE \u2014 this order is made fresh on the bonding line. Nothing for it comes from stock, so there is nothing to pick.")), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => printPickSheet(o) }, openPickSheets(data.pickSheets, o.id).length > 0 ? "Reprint pick sheet" : "Print pick sheet"), " ", /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => {
         setPickNothing(null);
         if (!pickOrderInstantly(o)) setPickNothing({ orderId: o.id, reason: whyNothingToPick(o) });
@@ -14008,10 +14051,13 @@ The manifest will list them as cases with no pallet, and the gross weight will b
   var DISCREPANCY_SEEN_KEY = "matrixDiscrepancySeen";
   var DISMISSALS = {};
   var DISMISSAL_SETDATA = null;
-  function setDismissalsFromData(rows, setData) {
+  function dismissalMap(rows) {
     const m = {};
     for (const r of rows || []) if (r && !r.deleted && r.id) m[r.id] = { at: r.dismissedAt, by: r.dismissedBy, reason: r.reason || "" };
-    DISMISSALS = m;
+    return m;
+  }
+  function setDismissalsFromData(rows, setData) {
+    DISMISSALS = dismissalMap(rows);
     if (setData) DISMISSAL_SETDATA = setData;
   }
   function readDiscrepancyDismissals() {
@@ -15619,35 +15665,38 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
             patch = { pickSheets: (prevData.pickSheets || []).map((p) => p.id === entityId ? { ...p, lines: before.lines, reconciledAt: null, reconciledBy: null, notes: "" } : p) };
           } else if (action === "print") {
             const gone = (prevData.pickSheets || []).find((p) => p.id === entityId);
-            let runs = prevData.bondingRuns || [];
+            const held = ledgerCaseContents(prevData.movements || []);
             const moves = [];
             for (const l of gone && gone.lines || []) {
               let left = Number(l.qty) || 0;
               if (left <= 0) continue;
-              runs = runs.map((r) => {
-                if (left <= 0 || r.boxNumber !== l.boxNumber || r.workNumber !== gone.orderId) return r;
-                const take = Math.min(left, Number(r.onOrderQty || 0));
-                if (take <= 0) return r;
+              const box = String(l.boxNumber || "").trim().toUpperCase();
+              const cases = [];
+              if (l.caseNum != null && l.caseNum !== "") cases.push(Number(l.caseNum));
+              for (const k of held.keys()) {
+                const [o, cn] = k.split("|");
+                if (o === gone.orderId && !cases.includes(Number(cn))) cases.push(Number(cn));
+              }
+              for (const cn of cases) {
+                if (left <= 0) break;
+                const c = held.get(`${gone.orderId}|${cn}`) || {};
+                const have = Object.entries(c).filter(([b]) => b.toUpperCase() === box).reduce((t, [, q]) => t + (Number(q) || 0), 0);
+                const take = Math.min(left, have);
+                if (take <= 0) continue;
+                moves.push(moveUnplaced({
+                  boxNumber: l.boxNumber,
+                  spec: l.spec,
+                  qty: take,
+                  orderId: gone.orderId,
+                  caseNum: cn,
+                  source: "revert",
+                  note: `Print of ${gone.ref} reverted`
+                }));
                 left -= take;
-                return {
-                  ...r,
-                  onOrderQty: Number(r.onOrderQty || 0) - take,
-                  toStock: Number(r.toStock || 0) + take,
-                  workNumber: Number(r.onOrderQty || 0) - take <= 0 ? "" : r.workNumber
-                };
-              });
-              moves.push(moveUnallocated({
-                boxNumber: l.boxNumber,
-                spec: l.spec,
-                qty: Number(l.qty) || 0,
-                orderId: gone.orderId,
-                source: "revert",
-                note: `Print of ${gone.ref} reverted`
-              }));
+              }
             }
             const base = {
               ...prevData,
-              bondingRuns: runs,
               pickSheets: (prevData.pickSheets || []).filter((p) => p.id !== entityId)
             };
             const withMoves = moves.length ? recordMovements(base, moves) : base;
@@ -20195,6 +20244,29 @@ Plan it?`
                 note: "Placed at bonding \u2014 the case bonding named is the move"
               }))
             ]);
+          }
+        }
+        if (before && after && after.workNumber && after.boxNumber) {
+          const held = Number((projectBox(next.movements, after.boxNumber).byOrder || {})[after.workNumber] || 0);
+          const onShelf = Math.max(0, (placeOf(next, after.boxNumber) || {}).onShelf || 0);
+          const asked = Number(after.onOrderQty || 0) > 0 ? Number(after.onOrderQty) : before.workNumber !== after.workNumber ? held + onShelf : held;
+          const more = Math.min(asked - held, onShelf);
+          if (more > 0) {
+            const res = placeShelfBoxesIntoOrder(next, {
+              boxNumber: after.boxNumber,
+              spec: after.productSize,
+              formId: after.formId,
+              orderId: after.workNumber,
+              qty: more,
+              sourceId: after.id,
+              source: "bonding",
+              note: `Bonding Line row edited \u2014 into ${after.workNumber}`
+            });
+            if (res.error) {
+              setTimeout(() => setEditError(res.error), 0);
+              return prevData;
+            }
+            next = res.patch;
           }
         }
         if (batchCode) {
