@@ -5607,9 +5607,14 @@
       const same = spec && (looseSpecMatch(spec, key) || productKey(spec) === productKey(key) && isReelSpec(spec) === isReelSpec(key));
       return t + (same ? Number(q) || 0 : 0);
     }, 0);
+    const boxesOf = (c) => Object.entries(inCases.get(`${orderId}|${Number(c.caseNum)}`) || {}).filter(([box, q]) => {
+      if (!(Number(q) > 0)) return false;
+      const spec = specOfBoxInCase(data, orderId, c.caseNum, box);
+      return spec && (looseSpecMatch(spec, key) || productKey(spec) === productKey(key) && isReelSpec(spec) === isReelSpec(key));
+    }).map(([box, q]) => ({ box, qty: Number(q) })).sort((x, y) => x.box.localeCompare(y.box));
     return rows.map((c) => {
       const planned = Number(casePlanned(c)[key]) || 0, held = Math.min(planned, heldOf(c));
-      return { id: c.id, caseNum: Number(c.caseNum), planned, held, empty: Math.max(0, planned - held) };
+      return { id: c.id, caseNum: Number(c.caseNum), planned, held, empty: Math.max(0, planned - held), boxes: boxesOf(c) };
     }).sort((x, y) => y.caseNum - x.caseNum);
   }
   function proposeCut(spaces, cut) {
@@ -5634,7 +5639,7 @@
     const totalEmpty = spaces.reduce((t, x) => t + x.empty, 0);
     if (totalEmpty < n) {
       return {
-        error: `${key}: only ${totalEmpty} planned space${totalEmpty === 1 ? " is" : "s are"} still empty, so ${n - totalEmpty} would have to come out of a case first. Take ${n - totalEmpty === 1 ? "it" : "them"} out with Move or Count on the case, or short ship ${totalEmpty}.`,
+        error: `${key}: ${totalEmpty ? `only ${totalEmpty} planned space${totalEmpty === 1 ? " is" : "s are"} still empty` : "every planned space is already packed"}, so ${n - totalEmpty} ${n - totalEmpty === 1 ? "box has" : "boxes have"} to come out of a case first \u2014 take ${n - totalEmpty === 1 ? "it" : "them"} out under the case below.`,
         totalEmpty,
         needOut: n - totalEmpty
       };
@@ -8245,7 +8250,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-22.7";
+  var APP_VERSION = "2026-09-22.8";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -11043,11 +11048,45 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     if (lineEditMode) return fullTable;
     return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "desktop-only" }, fullTable), /* @__PURE__ */ React.createElement("div", { className: "mobile-only mb-3" }, sorted.map((li, i) => /* @__PURE__ */ React.createElement("div", { key: li.id, className: "flex items-center justify-between text-sm py-1.5", style: { borderTop: i ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement(Spec, { s: li.description })), /* @__PURE__ */ React.createElement("span", { className: "font-semibold" }, li.qty)))));
   }
-  function shortShipCasePreview(data, orderId, decisions, caseCuts = {}, removeSet = /* @__PURE__ */ new Set()) {
+  function shortShipTakeOutMoves(data, orderId, takeOut = {}) {
     const items = orderLineItems(data.lineItems, orderId);
+    const moves = [], errors = [];
+    for (const [liId, byCase] of Object.entries(takeOut || {})) {
+      const li = items.find((x) => x.id === liId);
+      if (!li) continue;
+      const spaces = planSpacesFor(data, orderId, li.description);
+      for (const [cn, byBox] of Object.entries(byCase || {})) {
+        const x = spaces.find((sp) => sp.caseNum === Number(cn));
+        for (const [box, q0] of Object.entries(byBox || {})) {
+          const q = Math.max(0, Math.round(Number(q0) || 0));
+          if (!q) continue;
+          const inIt = x ? (x.boxes.find((b) => b.box === box) || {}).qty || 0 : 0;
+          if (q > inIt) {
+            errors.push(`Case ${cn} has ${inIt} of ${box} in it, not ${q}.`);
+            continue;
+          }
+          moves.push(moveUnplaced({
+            boxNumber: box,
+            spec: specOfBoxInCase(data, orderId, Number(cn), box) || li.description,
+            qty: q,
+            orderId,
+            caseNum: Number(cn),
+            source: "short_ship",
+            note: `Taken out of case ${cn} back to the shelf \u2014 short ship`
+          }));
+        }
+      }
+    }
+    return { moves, errors };
+  }
+  function shortShipCasePreview(data0, orderId, decisions, caseCuts = {}, removeSet = /* @__PURE__ */ new Set(), takeOut = {}) {
+    const items = orderLineItems(data0.lineItems, orderId);
     const lines = [];
-    let cases = data.cases || [];
     const errors = [];
+    const out = shortShipTakeOutMoves(data0, orderId, takeOut);
+    errors.push(...out.errors);
+    const data = out.moves.length ? { ...data0, movements: [...data0.movements || [], ...out.moves] } : data0;
+    let cases = data.cases || [];
     for (const li of items) {
       const d = decisions[li.id];
       if (!d) continue;
@@ -11059,7 +11098,9 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       const r = planCutForLine({ ...data, cases }, orderId, li.description, cut, pick);
       if (r.error) errors.push(r.error);
       else cases = r.cases;
-      lines.push({ liId: li.id, description: li.description, cut, spaces, pick });
+      const before2 = planSpacesFor(data0, orderId, li.description);
+      const totalEmpty = spaces.reduce((t, x) => t + x.empty, 0);
+      lines.push({ liId: li.id, description: li.description, cut, spaces, before: before2, pick, shortOfEmpty: Math.max(0, cut - totalEmpty) });
     }
     const before = new Map((data.cases || []).filter((c) => c && !c.deleted && c.orderId === orderId).map((c) => [c.id, c]));
     const inCases = ledgerCaseContents(data.movements || []);
@@ -11072,7 +11113,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       const startAt = (Number(order.startingCaseNum) || 0) + 1;
       wouldRenumber = live.map((n, i) => ({ from: n, to: startAt + i })).filter((m) => m.from !== m.to);
     }
-    return { lines, emptied, wouldRenumber, errors };
+    return { lines, emptied, wouldRenumber, errors, takeOutMoves: out.moves };
   }
   function planShortShip(data, orderId, decisions, opts = {}) {
     const parent = (data.orders || []).find((o) => o.id === orderId);
@@ -11162,6 +11203,17 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       };
     }).concat(newLineItems);
     const caseCuts = opts.caseCuts || {};
+    const out = shortShipTakeOutMoves(data, orderId, opts.takeOut || {});
+    if (out.errors.length) return { error: out.errors.join(" ") };
+    if (out.moves.length) {
+      let trial = data;
+      for (const m of out.moves) {
+        const why = movementRefusal(trial, m);
+        if (why) return { error: why };
+        trial = recordMovement(trial, m);
+      }
+      data = recordMovements(data, out.moves);
+    }
     let nextCases = data.cases || [];
     for (const [liId, cut] of reduceBy) {
       const li = items.find((x) => x.id === liId);
@@ -11180,7 +11232,9 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     if (remove.size) closed = closeUpCaseNumbers({ ...data, cases: nextCases }, orderId, { remove, renumber: opts.renumber });
     nextCases = closed.data.cases;
     const kept = pv.emptied.filter((n) => emptiedChoice[n] === "keep");
+    const outNote = out.moves.length ? out.moves.map((m) => `${m.qty} \xD7 ${m.boxNumber} out of case ${m.caseNum} to the shelf`).join(", ") : "";
     const closedNote = [
+      outNote,
       closeUpSummary(closed),
       closed.removed.length && opts.renumber === false ? "other case numbers left as they are" : "",
       kept.length ? `case${kept.length === 1 ? "" : "s"} ${caseRunsLabel(kept)} kept, empty` : ""
@@ -11195,7 +11249,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
         orders: nextOrders,
         lineItems: nextLineItems,
         cases: nextCases,
-        ...closed.moved.length ? { movements: closed.data.movements } : {},
+        ...closed.moved.length || out.moves.length ? { movements: closed.data.movements } : {},
         ...appendLog(data, {
           action: "short_ship",
           entity: "order",
@@ -15328,6 +15382,8 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     const [cutsDraft, setCutsDraft] = useState({});
     const [emptiedDraft, setEmptiedDraft] = useState({});
     const [renumberDraft, setRenumberDraft] = useState(null);
+    const [takeOutDraft, setTakeOutDraft] = useState({});
+    const [outOpen, setOutOpen] = useState({});
     const items = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description));
     if (!items.length) return null;
     const set = (id, field, v) => {
@@ -15349,12 +15405,14 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     const caseCuts = {};
     for (const [liId, m] of Object.entries(cutsDraft)) if (decisions[liId]) caseCuts[liId] = Object.fromEntries(Object.entries(m).map(([k, v]) => [k, Number(v) || 0]));
     const removeSet = new Set(Object.entries(emptiedDraft).filter(([, v]) => v === "remove").map(([k]) => Number(k)));
-    const pv = totals.cancel || totals.split ? shortShipCasePreview(data, order.id, decisions, caseCuts, removeSet) : { lines: [], emptied: [], wouldRenumber: [], errors: [] };
+    const takeOut = {};
+    for (const [liId, byCase] of Object.entries(takeOutDraft)) if (decisions[liId]) takeOut[liId] = byCase;
+    const pv = totals.cancel || totals.split ? shortShipCasePreview(data, order.id, decisions, caseCuts, removeSet, takeOut) : { lines: [], emptied: [], wouldRenumber: [], errors: [] };
     const going = pv.emptied.filter((n) => removeSet.has(n));
     const renumber = going.length ? pv.wouldRenumber.length ? renumberDraft : true : void 0;
     const undecided = pv.emptied.filter((n) => !emptiedDraft[n]);
     const casesReady = !pv.errors.length && !undecided.length && (!going.length || typeof renumber === "boolean");
-    const caseOpts = { caseCuts, emptied: emptiedDraft, ...typeof renumber === "boolean" ? { renumber } : {} };
+    const caseOpts = { caseCuts, takeOut, emptied: emptiedDraft, ...typeof renumber === "boolean" ? { renumber } : {} };
     const apply = () => {
       const result = planShortShip(data, order.id, decisions, { reason, ...caseOpts });
       if (result.error) {
@@ -15383,6 +15441,8 @@ This changes the order quantities. It is recorded in the change log and can be r
       setCutsDraft({});
       setEmptiedDraft({});
       setRenumberDraft(null);
+      setTakeOutDraft({});
+      setOutOpen({});
       if (onDone) onDone(result.splitOrderId);
     };
     const segBtn = (on) => ({
@@ -15397,7 +15457,7 @@ This changes the order quantities. It is recorded in the change log and can be r
       color: on ? NAVY : INK
     });
     const numBox = { width: 64, height: 40, boxSizing: "border-box", border: `1px solid #B9BBC2`, borderRadius: 6, padding: "0 8px", fontSize: 16, textAlign: "right" };
-    const casesStep = pv.lines.length > 0 && /* @__PURE__ */ React.createElement("div", { "data-shortship-cases": "1", className: "mt-4", style: { borderTop: `1px solid ${BORDER}`, paddingTop: 12 } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: NAVY } }, "What happens to the cases"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1 mb-2", style: { color: INK_MUTED, maxWidth: 560 } }, "Only empty planned spaces come off \u2014 boxes already in a case stay where they are. Change the numbers to take them from the cases you want."), pv.lines.map((ln) => {
+    const casesStep = pv.lines.length > 0 && /* @__PURE__ */ React.createElement("div", { "data-shortship-cases": "1", className: "mt-4", style: { borderTop: `1px solid ${BORDER}`, paddingTop: 12 } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: NAVY } }, "What happens to the cases"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1 mb-2", style: { color: INK_MUTED, maxWidth: 560 } }, "Empty planned spaces come off \u2014 change the numbers to take them from the cases you want. Boxes stay in their case unless you take them out under it."), pv.lines.map((ln) => {
       const edited = cutsDraft[ln.liId];
       const val = (cn) => edited ? edited[cn] ?? "" : String(ln.pick[cn] || "");
       const sum = ln.spaces.reduce((t, x) => t + (Number(val(x.caseNum)) || 0), 0);
@@ -15408,19 +15468,45 @@ This changes the order quantities. It is recorded in the change log and can be r
           return { ...d, [ln.liId]: { ...cur, [cn]: v.replace(/[^0-9]/g, "") } };
         });
       };
-      return /* @__PURE__ */ React.createElement("div", { key: ln.liId, "data-shortship-line": ln.liId, style: { marginBottom: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, fontSize: 14.5 } }, /* @__PURE__ */ React.createElement(Spec, { s: ln.description }), " ", /* @__PURE__ */ React.createElement("span", { style: { color: sum === ln.cut ? INK_MUTED : RED, fontWeight: 500 } }, "\u2014 ", ln.cut, " off the plan", sum !== ln.cut ? ` \u2014 the cases below come to ${sum}; ${sum > ln.cut ? `make Cancel or To follow ${sum} to close them like this` : `take ${ln.cut - sum} more off a case`}` : "")), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 6, marginTop: 6 } }, ln.spaces.filter((x) => x.empty > 0 || Number(val(x.caseNum))).map((x) => /* @__PURE__ */ React.createElement("label", { key: x.caseNum, style: { display: "flex", alignItems: "center", gap: 10, fontSize: 14.5 } }, /* @__PURE__ */ React.createElement("span", { style: { minWidth: 64, fontWeight: 700 } }, "Case ", x.caseNum), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, flex: 1 } }, x.planned, " planned \xB7 ", x.held, " in \xB7 ", x.empty, " empty"), x.held > 0 && /* @__PURE__ */ React.createElement(
-        "button",
-        {
-          "data-close-case": x.caseNum,
-          onClick: (e) => {
-            e.preventDefault();
-            setCut(x.caseNum, String(x.empty));
+      return /* @__PURE__ */ React.createElement("div", { key: ln.liId, "data-shortship-line": ln.liId, style: { marginBottom: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, fontSize: 14.5 } }, /* @__PURE__ */ React.createElement(Spec, { s: ln.description }), " ", /* @__PURE__ */ React.createElement("span", { style: { color: sum === ln.cut ? INK_MUTED : RED, fontWeight: 500 } }, "\u2014 ", ln.cut, " off the plan", sum !== ln.cut ? ` \u2014 the cases below come to ${sum}; ${sum > ln.cut ? `make Cancel or To follow ${sum} to close them like this` : `take ${ln.cut - sum} more off a case`}` : "")), ln.shortOfEmpty > 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: AMBER, marginTop: 4 } }, ln.shortOfEmpty, " ", ln.shortOfEmpty === 1 ? "is" : "are", " already packed \u2014 take ", ln.shortOfEmpty === 1 ? "it" : "them", " out of a case below (Take boxes out), then take the spaces off."), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 6, marginTop: 6 } }, ln.spaces.map((x) => {
+        const b4 = (ln.before || []).find((y) => y.caseNum === x.caseNum) || x;
+        const k = `${ln.liId}|${x.caseNum}`;
+        const outVal = (box) => ((takeOutDraft[ln.liId] || {})[x.caseNum] || {})[box] || "";
+        const setOut = (box, v) => {
+          setError(null);
+          setTakeOutDraft((d) => {
+            const L = { ...d[ln.liId] || {} };
+            L[x.caseNum] = { ...L[x.caseNum] || {}, [box]: v.replace(/[^0-9]/g, "") };
+            return { ...d, [ln.liId]: L };
+          });
+        };
+        const outN = (b4.boxes || []).reduce((t, bx) => t + (Number(outVal(bx.box)) || 0), 0);
+        return /* @__PURE__ */ React.createElement("div", { key: x.caseNum, "data-shortship-case": x.caseNum }, /* @__PURE__ */ React.createElement("label", { style: { display: "flex", alignItems: "center", gap: 10, fontSize: 14.5, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { style: { minWidth: 64, fontWeight: 700 } }, "Case ", x.caseNum), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, flex: 1 } }, x.planned, " planned \xB7 ", x.held, " in \xB7 ", x.empty, " empty"), x.held > 0 && x.empty > 0 && /* @__PURE__ */ React.createElement(
+          "button",
+          {
+            "data-close-case": x.caseNum,
+            onClick: (e) => {
+              e.preventDefault();
+              setCut(x.caseNum, String(x.empty));
+            },
+            style: { ...segBtn(Number(val(x.caseNum)) === x.empty), height: 40, padding: "0 10px", fontSize: 13.5 }
           },
-          style: { ...segBtn(Number(val(x.caseNum)) === x.empty), height: 40, padding: "0 10px", fontSize: 13.5 }
-        },
-        Number(val(x.caseNum)) === x.empty ? `Closed at ${x.held}` : `Close at ${x.held}`
-      ), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, "take off"), /* @__PURE__ */ React.createElement("input", { "data-case-cut": x.caseNum, inputMode: "numeric", value: val(x.caseNum), placeholder: "0", onChange: (e) => setCut(x.caseNum, e.target.value), style: numBox })))));
-    }), pv.errors.map((e, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "text-xs", style: { color: RED, marginBottom: 6 } }, e)), pv.emptied.map((n) => /* @__PURE__ */ React.createElement("div", { key: n, "data-shortship-emptied": n, style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14.5, marginBottom: 6 } }, /* @__PURE__ */ React.createElement("b", null, "Case ", n), " would have nothing planned and nothing in it."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("button", { "data-choice": "remove", onClick: () => {
+          Number(val(x.caseNum)) === x.empty ? `Closed at ${x.held}` : `Close at ${x.held}`
+        ), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, "take off"), /* @__PURE__ */ React.createElement("input", { "data-case-cut": x.caseNum, inputMode: "numeric", value: val(x.caseNum), placeholder: "0", onChange: (e) => setCut(x.caseNum, e.target.value), style: numBox })), (b4.boxes || []).length > 0 && /* @__PURE__ */ React.createElement("div", { style: { marginLeft: 74, marginTop: 4 } }, /* @__PURE__ */ React.createElement(
+          "button",
+          {
+            "data-takeout-open": x.caseNum,
+            onClick: (e) => {
+              e.preventDefault();
+              setOutOpen((o) => ({ ...o, [k]: !o[k] }));
+            },
+            style: { background: "none", border: "none", padding: "4px 0", color: NAVY, fontSize: 13.5, fontWeight: 600, cursor: "pointer", textDecoration: "underline" }
+          },
+          outOpen[k] ? "Hide" : "Take boxes out",
+          outN ? ` \u2014 ${outN} coming out to the shelf` : ""
+        ), outOpen[k] && (b4.boxes || []).map((bx) => /* @__PURE__ */ React.createElement("label", { key: bx.box, style: { display: "flex", alignItems: "center", gap: 10, fontSize: 14, marginTop: 4 } }, /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "IBM Plex Mono, monospace", minWidth: 110 } }, bx.box), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, flex: 1 } }, bx.qty, " in"), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, "out to shelf"), /* @__PURE__ */ React.createElement("input", { "data-takeout": `${x.caseNum}|${bx.box}`, inputMode: "numeric", value: outVal(bx.box), placeholder: "0", onChange: (e) => setOut(bx.box, e.target.value), style: numBox })))));
+      })));
+    }), pv.errors.filter((e) => !/to come out of a case first/.test(e)).map((e, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "text-xs", style: { color: RED, marginBottom: 6 } }, e)), pv.emptied.map((n) => /* @__PURE__ */ React.createElement("div", { key: n, "data-shortship-emptied": n, style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14.5, marginBottom: 6 } }, /* @__PURE__ */ React.createElement("b", null, "Case ", n), " would have nothing planned and nothing in it."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("button", { "data-choice": "remove", onClick: () => {
       setError(null);
       setEmptiedDraft((d) => ({ ...d, [n]: "remove" }));
     }, style: segBtn(emptiedDraft[n] === "remove") }, "Take it away"), /* @__PURE__ */ React.createElement("button", { "data-choice": "keep", onClick: () => {
