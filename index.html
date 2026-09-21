@@ -614,6 +614,8 @@
     { id: "mat-box-jkk", category: "boxes", name: "JKK", unit: "boxes", currentStock: 0, lastStockTakeDate: null },
     { id: "mat-box-smartformes", category: "boxes", name: "Smart Formes", unit: "boxes", currentStock: 0, lastStockTakeDate: null },
     { id: "mat-case-20", category: "cases", name: "20 box capacity", unit: "cases", currentStock: 0, lastStockTakeDate: null },
+    { id: "mat-case-15", category: "cases", name: "15 box capacity", unit: "cases", currentStock: 0, lastStockTakeDate: null },
+    // Chris, 22 Sep 2026
     { id: "mat-case-10", category: "cases", name: "10 box capacity", unit: "cases", currentStock: 0, lastStockTakeDate: null },
     { id: "mat-case-5", category: "cases", name: "5 box capacity", unit: "cases", currentStock: 0, lastStockTakeDate: null },
     { id: "mat-case-reel", category: "cases", name: "Reels", unit: "cases", currentStock: 0, lastStockTakeDate: null }
@@ -8250,7 +8252,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-22.8";
+  var APP_VERSION = "2026-09-22.10";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -8874,6 +8876,35 @@ ${line}` : line;
       }
     }
     return { ...data, cases: rows };
+  }
+  function appendPlanDifference(setData, data, order) {
+    const items = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description));
+    const existing = (data.cases || []).filter((c) => !c.deleted && c.orderId === order.id && hasCasePlan(c)).flatMap((c) => Object.entries(casePlanned(c)).map(([spec, qty]) => ({ caseNum: Number(c.caseNum), spec, qty: Number(qty) || 0 })));
+    const extra = planAmendment(items, existing);
+    if (!extra.length) return;
+    const label = `Amendment ${(/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
+    setData((prev) => ({
+      ...prev,
+      cases: [...prev.cases || [], ...extra.map((p) => ({
+        id: caseRowId(order.id, p.caseNum, prev.cases || []),
+        orderId: order.id,
+        caseNum: p.caseNum,
+        contents: null,
+        confirmed: false,
+        deleted: false,
+        // see plannedCaseRows: null says nothing, {} asserts empty
+        planned: { [p.spec]: Number(p.qty) || 0 },
+        planBatch: label,
+        updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        updatedBy: currentActor()
+      }))],
+      ...appendLog(prev, {
+        action: "packing_plan_appended",
+        entity: "order",
+        entityId: order.id,
+        summary: `${label}: ${extra.length} cases added to ${order.id} (cases ${extra[0].caseNum}\u2013${extra[extra.length - 1].caseNum}), ${extra.reduce((t, p) => t + p.qty, 0)} boxes`
+      })
+    }));
   }
   function PlanAmendmentRecord({ order, lineItems, cases, onAppend }) {
     const planned = (cases || []).filter((c) => !c.deleted && c.orderId === order.id && hasCasePlan(c));
@@ -10986,6 +11017,36 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     }
     return /* @__PURE__ */ React.createElement("div", { style: { border: "1px solid #E8C77A", background: "#FFF6E5", borderRadius: 6, padding: "7px 10px", marginBottom: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "#8A4B00" } }, "This order has been amended ", a.count === 1 ? "once" : `${a.count} times`, " \u2014 ", a.boxes, " box", a.boxes === 1 ? "" : "es", " added after the original"), a.list.map((e) => /* @__PURE__ */ React.createElement("div", { key: e.label, style: { fontSize: 11.5, color: "#8A6100", marginTop: 2 } }, e.label, ": ", e.boxes, " box", e.boxes === 1 ? "" : "es", " on ", e.lines, " line", e.lines === 1 ? "" : "s", e.caseNums.length ? ` \u2192 case${e.caseNums.length === 1 ? "" : "s"} ${caseRunsLabel(e.caseNums)}` : " \u2014 no cases yet")));
   }
+  function QtyField({ value, onCommit }) {
+    const [v, setV] = useState(String(value ?? ""));
+    useEffect(() => {
+      setV(String(value ?? ""));
+    }, [value]);
+    const commit = () => {
+      const n = Number(v) || 0;
+      if (n !== (Number(value) || 0)) onCommit(n);
+      else setV(String(value ?? ""));
+    };
+    return /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        type: "number",
+        inputMode: "numeric",
+        value: v,
+        "data-qty-field": "1",
+        onChange: (e) => setV(e.target.value),
+        onBlur: commit,
+        onKeyDown: (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            e.currentTarget.blur();
+          }
+        },
+        className: "w-16 text-right px-1.5 py-0.5 rounded text-sm",
+        style: { border: `1px solid ${BORDER}` }
+      }
+    );
+  }
   function OrderLineItemsTable({ items, lineItems, setLineItems, data, lineEditMode, updateLineItemField, removeLineItemDirect, lineChanged = () => false, lineChangeReasons = {}, setLineChangeReasons = null }) {
     const itemsWithTotal = items.map((li) => ({ ...li, lineTotal: Number(li.qty || 0) * Number(li.unitPrice || 0) }));
     const { sorted: sortedRaw, sortBy, sortDir, toggleSort } = useSortableRows(itemsWithTotal, "description", "asc");
@@ -11001,16 +11062,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       const label = String(li.amendmentLabel || "").trim();
       const prevLabel = idx > 0 ? String(sorted[idx - 1].amendmentLabel || "").trim() : null;
       const startsBlock = label && label !== prevLabel;
-      return /* @__PURE__ */ React.createElement(React.Fragment, { key: li.id }, startsBlock && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { colSpan: 9, className: "pt-4 pb-1" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2" }, /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { fontWeight: 700, color: ORANGE, whiteSpace: "nowrap" } }, label), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, height: 1, background: ORANGE, opacity: 0.35 } }), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, whiteSpace: "nowrap" } }, "added after the original order")))), /* @__PURE__ */ React.createElement("tr", { className: "border-t", style: { borderColor: BORDER } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5 no-wrap" }, lineEditMode ? /* @__PURE__ */ React.createElement(TextInput, { value: li.description, onChange: (e) => updateLineItemField(li.id, "description", e.target.value) }) : /* @__PURE__ */ React.createElement(SpecWithRef, { spec: li.description, customerRef: li.customerRef })), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, lineEditMode ? /* @__PURE__ */ React.createElement(
-        "input",
-        {
-          type: "number",
-          value: li.qty,
-          onChange: (e) => updateLineItemField(li.id, "qty", Number(e.target.value) || 0),
-          className: "w-16 text-right px-1.5 py-0.5 rounded text-sm",
-          style: { border: `1px solid ${BORDER}` }
-        }
-      ) : li.qty), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, lineEditMode ? /* @__PURE__ */ React.createElement(
+      return /* @__PURE__ */ React.createElement(React.Fragment, { key: li.id }, startsBlock && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { colSpan: 9, className: "pt-4 pb-1" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2" }, /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { fontWeight: 700, color: ORANGE, whiteSpace: "nowrap" } }, label), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, height: 1, background: ORANGE, opacity: 0.35 } }), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, whiteSpace: "nowrap" } }, "added after the original order")))), /* @__PURE__ */ React.createElement("tr", { className: "border-t", style: { borderColor: BORDER } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5 no-wrap" }, lineEditMode ? /* @__PURE__ */ React.createElement(TextInput, { value: li.description, onChange: (e) => updateLineItemField(li.id, "description", e.target.value) }) : /* @__PURE__ */ React.createElement(SpecWithRef, { spec: li.description, customerRef: li.customerRef })), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, lineEditMode ? /* @__PURE__ */ React.createElement(QtyField, { value: li.qty, onCommit: (v) => updateLineItemField(li.id, "qty", v) }) : li.qty), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, lineEditMode ? /* @__PURE__ */ React.createElement(
         "input",
         {
           type: "number",
@@ -11268,7 +11320,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     }, []);
     return /* @__PURE__ */ React.createElement("div", { className: "text-sm py-8", style: { color: INK_MUTED } }, "Taking you back to Orders\u2026", " ", /* @__PURE__ */ React.createElement("button", { onClick: () => onBack && onBack(), style: { background: "none", border: "none", color: NAVY, cursor: "pointer", textDecoration: "underline" } }, "Go now"));
   }
-  function OrdersView({ data, setData, mode = "active", initialExpandedId = null, jumpToPacking, onBackToOrders, autoPick = null }) {
+  function OrdersView({ data, setData, mode = "active", initialExpandedId = null, jumpToPacking, onBackToOrders, autoPick = null, autoShip = null, onShipStarted = null }) {
     const { lineItems } = data;
     const allOrders = data.orders;
     const orders = mode === "completed" ? allOrders.filter((o) => o.stage === "Shipped") : allOrders.filter((o) => o.stage !== "Shipped");
@@ -11285,6 +11337,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       return !!b && (Number(b.qty) !== Number(li.qty) || String(b.description) !== String(li.description));
     };
     const [checkStockFor, setCheckStockFor] = useState(null);
+    const [reduceDraft, setReduceDraft] = useState(null);
     const [printIntent, setPrintIntent] = useState(null);
     const [pickNothing, setPickNothing] = useState(null);
     const [pendingPrint, setPendingPrint] = useState(null);
@@ -11353,9 +11406,14 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     };
     const guessCaseType = (caseRow) => {
       if (isReelCase(caseRow)) return "mat-case-reel";
+      const rec = (data.cases || []).find((c) => c && !c.deleted && c.orderId === caseRow.orderId && Number(c.caseNum) === Number(caseRow.caseNum));
+      if (rec && rec.kind === "reel") return "mat-case-reel";
+      const ms = rec ? Number(rec.maxSize) || 0 : 0;
+      if (ms > 0) return ms <= 5 ? "mat-case-5" : ms <= 10 ? "mat-case-10" : ms <= 15 ? "mat-case-15" : "mat-case-20";
       const contentCount = caseRow.contributions.reduce((s, c) => s + (Number(c.qty) || 0), 0);
       if (contentCount <= 5) return "mat-case-5";
       if (contentCount <= 10) return "mat-case-10";
+      if (contentCount <= 15) return "mat-case-15";
       return "mat-case-20";
     };
     const [shipConfirm, setShipConfirm] = useState(null);
@@ -11675,6 +11733,10 @@ Apply this?`
         });
         return;
       }
+      if (planSpacesFor(data, li.orderId, li.description).length) {
+        setReduceDraft({ orderId: li.orderId, prefill: { [id]: { cancel: String(drop) } }, note: `${li.description}: ${was} \u2192 ${now}`, key: Date.now() });
+        return;
+      }
       setData((prevData) => {
         const rows = (prevData.cases || []).filter((c) => !c.deleted && c.orderId === li.orderId);
         const order = (prevData.orders || []).find((o) => o.id === li.orderId) || {};
@@ -11844,6 +11906,16 @@ Read the next screen carefully before you agree to it.`
       setCustomizingPick(false);
       return true;
     };
+    const autoShipDone = useRef(null);
+    useEffect(() => {
+      if (!autoShip || autoShipDone.current === autoShip.at) return;
+      const o = (orders || []).find((x) => x.id === autoShip.id);
+      if (!o) return;
+      autoShipDone.current = autoShip.at;
+      setExpanded(o.id);
+      shipOrder(o);
+      if (onShipStarted) onShipStarted();
+    }, [autoShip, orders]);
     const autoPickDone = useRef(null);
     useEffect(() => {
       if (!autoPick || autoPickDone.current === autoPick) return;
@@ -12758,7 +12830,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
           placeholder: "Optional",
           onChange: (e) => updateOrder(o.id, { address: e.target.value })
         }
-      )), /* @__PURE__ */ React.createElement(OrderNoteField, { value: o.notes, onSave: (notes) => updateOrder(o.id, { notes }) }), o.stage !== "Shipped" && o.stage !== "Cancelled" && !o.deleted && /* @__PURE__ */ React.createElement(ReadyByPanel, { data, order: o, onPick: (p) => updateOrder(o.id, { priority: p }) }), /* @__PURE__ */ React.createElement(AmendmentBanner, { order: o, lineItems, cases: data.cases }), /* @__PURE__ */ React.createElement(
+      )), /* @__PURE__ */ React.createElement(OrderNoteField, { value: o.notes, onSave: (notes) => updateOrder(o.id, { notes }) }), o.stage !== "Shipped" && o.stage !== "Cancelled" && !o.deleted && /* @__PURE__ */ React.createElement(ReadyByPanel, { data, order: o, onPick: (p) => updateOrder(o.id, { priority: p }) }), /* @__PURE__ */ React.createElement(AmendmentBanner, { order: o, lineItems, cases: data.cases }), /* @__PURE__ */ React.createElement(PlanAmendmentRecord, { order: o, lineItems, cases: data.cases, onAppend: () => appendPlanDifference(setData, data, o) }), /* @__PURE__ */ React.createElement(
         OrderLineItemsTable,
         {
           items,
@@ -12772,7 +12844,20 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
           updateLineItemField,
           removeLineItemDirect
         }
-      ), !extrasLabel ? /* @__PURE__ */ React.createElement("div", { className: "mb-3" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setExtrasLabel(
+      ), reduceDraft && reduceDraft.orderId === o.id && /* @__PURE__ */ React.createElement("div", { "data-reduce-panel": "1", className: "mt-3" }, /* @__PURE__ */ React.createElement(
+        ShortShipPanel,
+        {
+          order: o,
+          data,
+          setData,
+          title: "Lower a quantity",
+          prefill: reduceDraft.prefill,
+          prefillKey: reduceDraft.key,
+          note: reduceDraft.note,
+          onClose: () => setReduceDraft(null),
+          onDone: () => setReduceDraft(null)
+        }
+      )), !extrasLabel ? /* @__PURE__ */ React.createElement("div", { className: "mb-3" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setExtrasLabel(
         `Amendment ${(/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}`
       ) }, "\u2795 Add extras to this order")) : /* @__PURE__ */ React.createElement("div", { className: "mb-3 p-2.5 rounded", style: { background: "#FFF6F2", border: `1px solid ${ORANGE}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement("span", { className: "text-sm", style: { fontWeight: 600, color: ORANGE } }, "Adding extras \u2014 these append as ", extrasLabel), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setExtrasLabel(null) }, "Done adding extras")), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, "Nothing already on the order changes. Plan the extra cases from the packing screen when you're finished.")), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-2 items-end" }, /* @__PURE__ */ React.createElement("div", { style: { width: 140 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Range"), /* @__PURE__ */ React.createElement(Select, { value: newLine.range, onChange: (e) => setNewLine({ ...newLine, range: e.target.value, size: "" }) }, Object.keys(PRODUCT_RANGES).map((r) => /* @__PURE__ */ React.createElement("option", { key: r, value: r }, r)), /* @__PURE__ */ React.createElement("option", { value: "Custom" }, "Custom / other"))), /* @__PURE__ */ React.createElement("div", { className: "flex-1 min-w-[200px]" }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Size"), newLine.range === "Custom" ? /* @__PURE__ */ React.createElement(
         TextInput,
@@ -12809,7 +12894,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
         const sheet = openPickSheets(data.pickSheets, o.id)[0];
         if (!sheet) return null;
         return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => openAmendment(sheet) }, "Amend pick sheet"), " ");
-      })(), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => jumpToPacking(o.id) }, "\u{1F4E6} Packing List"), (() => {
+      })(), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => jumpToPacking(o.id) }, "\u{1F4E6} Packing List"), /* @__PURE__ */ React.createElement(OrderPaperwork, { order: o, data, setData, onOpenPacking: () => jumpToPacking(o.id) }), (() => {
         const w = orderShipmentWeight(o, lineItems, data.bondingRuns);
         if (!w || w.total <= 0) return null;
         return /* @__PURE__ */ React.createElement("div", { className: "mt-3 p-2.5 rounded", style: { background: "#F4F4F2", border: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline justify-between" }, /* @__PURE__ */ React.createElement("span", { className: "text-xs font-semibold", style: { color: INK_MUTED } }, "SHIPMENT WEIGHT"), /* @__PURE__ */ React.createElement("span", { className: "font-mono font-bold", style: { color: INK } }, w.total, " kg")), w.palletCount > 1 && w.pallets.map((p) => /* @__PURE__ */ React.createElement(
@@ -12990,38 +13075,9 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
           )))));
         })))), !pickByPhone && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => confirmPickAndAllocate(o) }, "Confirm & allocate to order"), " ", /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: cancelPendingPick }, "Cancel")));
       })(), checkStockFor === o.id && (() => {
-        const boxes = assignedBoxesFor(o);
-        const boxesForLine = (li) => boxes.filter((b) => runMatchesLine(b, li));
-        const items2 = orderLineItems(lineItems, o.id).filter((li) => !isDelivery(li.description)).filter((li) => boxesForLine(li).length > 0);
-        const matchedIds = new Set(items2.flatMap((li) => boxesForLine(li).map((b) => b.id)));
-        const unmatched = boxes.filter((b) => !matchedIds.has(b.id));
-        return /* @__PURE__ */ React.createElement("div", { className: "mt-3" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Already assigned to this order"), items2.length === 0 && unmatched.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: INK_MUTED } }, "Nothing assigned to this order yet \u2014 tap Pick this order above.") : items2.map((li) => {
-          const lineBoxes = boxesForLine(li);
-          const assignedQty = lineBoxes.reduce((sum, b) => sum + Number(b.onOrderQty || 0), 0);
-          return /* @__PURE__ */ React.createElement(Panel, { key: li.id, className: "p-3 mb-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between mb-2" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold" }, /* @__PURE__ */ React.createElement(Spec, { s: li.description, size: 13 })), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, assignedQty, " / ", li.qty, " assigned")), /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement(Th, null, "Box code"), /* @__PURE__ */ React.createElement(ThR, { w: 80 }, "Qty"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Date"), /* @__PURE__ */ React.createElement(Th, { w: 170 }, "Action"))), /* @__PURE__ */ React.createElement("tbody", null, lineBoxes.map((b) => /* @__PURE__ */ React.createElement("tr", { key: b.id, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-2 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, b.boxNumber)), /* @__PURE__ */ React.createElement("td", { className: "text-right px-2" }, b.onOrderQty), /* @__PURE__ */ React.createElement("td", { className: "px-2" }, manufactureDateLabel(b.boxNumber, "") || b.date || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-2" }, /* @__PURE__ */ React.createElement(Select, { defaultValue: "", onChange: (e) => {
-            const action = e.target.value;
-            if (action === "back") returnBoxToStock(o, b);
-            else if (action === "damaged") markBoxDamaged(o, b);
-            else if (action === "notfound") markBoxNotFound(o, b);
-          } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014"), /* @__PURE__ */ React.createElement("option", { value: "back" }, "Back to stock"), /* @__PURE__ */ React.createElement("option", { value: "notfound" }, "Not there \u2014 take off stock"), /* @__PURE__ */ React.createElement("option", { value: "damaged" }, "Damaged"))))))));
-        }), (() => {
-          if (unmatched.length === 0) return null;
-          return /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-3", style: { borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1" }, "Other assigned stock"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, "Assigned to this order, but the box's product spec doesn't text-match a line item \u2014 worth double-checking it's the right product."), /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement(Th, null, "Box code"), /* @__PURE__ */ React.createElement(Th, null, "Product size"), /* @__PURE__ */ React.createElement(ThR, { w: 80 }, "Qty"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Date"), /* @__PURE__ */ React.createElement(Th, { w: 170 }, "Action"))), /* @__PURE__ */ React.createElement("tbody", null, unmatched.map((b) => /* @__PURE__ */ React.createElement("tr", { key: b.id, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-2 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, b.boxNumber)), /* @__PURE__ */ React.createElement("td", { className: "px-2 py-1.5" }, /* @__PURE__ */ React.createElement(Spec, { s: b.productSize })), /* @__PURE__ */ React.createElement("td", { className: "text-right px-2" }, b.onOrderQty), /* @__PURE__ */ React.createElement("td", { className: "px-2" }, manufactureDateLabel(b.boxNumber, "") || b.date || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-2" }, /* @__PURE__ */ React.createElement(Select, { defaultValue: "", onChange: (e) => {
-            const action = e.target.value;
-            if (action === "back") returnBoxToStock(o, b);
-            else if (action === "damaged") markBoxDamaged(o, b);
-            else if (action === "notfound") markBoxNotFound(o, b);
-          } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014"), /* @__PURE__ */ React.createElement("option", { value: "back" }, "Back to stock"), /* @__PURE__ */ React.createElement("option", { value: "notfound" }, "Not there \u2014 take off stock"), /* @__PURE__ */ React.createElement("option", { value: "damaged" }, "Damaged"))))))));
-        })());
-      })(), checkStockFor === o.id && assignedBoxesFor(o).length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-4 text-sm", style: { color: INK_MUTED } }, "Something in a case not right? Open the case and use ", /* @__PURE__ */ React.createElement("b", null, "Swap"), ", ", /* @__PURE__ */ React.createElement("b", null, "Move"), " or ", /* @__PURE__ */ React.createElement("b", null, "Count"), ".", jumpToPacking && /* @__PURE__ */ React.createElement(React.Fragment, null, " ", /* @__PURE__ */ React.createElement(
-        "button",
-        {
-          onClick: () => jumpToPacking(o.id),
-          className: "underline",
-          style: { background: "none", border: "none", color: NAVY, cursor: "pointer", fontWeight: 600, padding: 0 }
-        },
-        "Open the cases"
-      )))));
+        const n = assignedBoxesFor(o).reduce((t, b) => t + (Number(b.onOrderQty) || 0), 0);
+        return n > 0 ? /* @__PURE__ */ React.createElement("div", { className: "mt-3 text-sm", style: { color: INK_MUTED }, "data-assigned-summary": "1" }, "Already on this order: ", /* @__PURE__ */ React.createElement("b", { style: { color: INK } }, n), " in its cases \u2014 see them on the Packing List.") : null;
+      })(), checkStockFor === o.id && assignedBoxesFor(o).length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-4 text-sm", style: { color: INK_MUTED } }, "Something in a case not right? Open it on the Packing List and use ", /* @__PURE__ */ React.createElement("b", null, "Swap"), ", ", /* @__PURE__ */ React.createElement("b", null, "Move"), " or ", /* @__PURE__ */ React.createElement("b", null, "Count"), ".")));
     }
     function renderOrdersList() {
       return /* @__PURE__ */ React.createElement("div", { className: "space-y-2" }, orders.map((o) => {
@@ -13047,7 +13103,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
     }
     return /* @__PURE__ */ React.createElement("div", null, passwordModal, shipConfirm && /* @__PURE__ */ React.createElement("div", { style: { position: "fixed", inset: 0, background: "rgba(20,25,40,0.45)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center" }, onClick: () => setShipConfirm(null) }, /* @__PURE__ */ React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { background: "#fff", borderRadius: 8, padding: 24, width: 420, maxHeight: "85vh", overflowY: "auto", boxShadow: "0 12px 30px rgba(20,25,40,0.3)" } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1", style: { color: NAVY } }, "Confirm cases before shipping"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-3", style: { color: INK_MUTED } }, shipConfirm.order.id, " \u2014 ", shipConfirm.manifest.caseRows.length, " case", shipConfirm.manifest.caseRows.length === 1 ? "" : "s", ". Best-guess type shown for each \u2014 change any that are wrong, then confirm to ship and update Cases stock."), shipConfirm.manifest.caseRows.map((c) => {
       const contentCount = c.contributions.reduce((s, x) => s + (Number(x.qty) || 0), 0);
-      return /* @__PURE__ */ React.createElement("div", { key: c.caseNum, className: "flex items-center justify-between gap-2 py-2", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm" }, "Case ", c.caseNum, " ", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "(", contentCount, " items)")), /* @__PURE__ */ React.createElement(Select, { value: shipConfirm.caseTypeAssignments[c.caseNum] || "", onChange: (e) => setShipConfirm({ ...shipConfirm, caseTypeAssignments: { ...shipConfirm.caseTypeAssignments, [c.caseNum]: e.target.value } }), style: { width: 160 } }, /* @__PURE__ */ React.createElement("option", { value: "mat-case-20" }, "20 box capacity"), /* @__PURE__ */ React.createElement("option", { value: "mat-case-10" }, "10 box capacity"), /* @__PURE__ */ React.createElement("option", { value: "mat-case-5" }, "5 box capacity"), /* @__PURE__ */ React.createElement("option", { value: "mat-case-reel" }, "Reels")));
+      return /* @__PURE__ */ React.createElement("div", { key: c.caseNum, className: "flex items-center justify-between gap-2 py-2", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm" }, "Case ", c.caseNum, " ", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "(", contentCount, " items)")), /* @__PURE__ */ React.createElement(Select, { value: shipConfirm.caseTypeAssignments[c.caseNum] || "", onChange: (e) => setShipConfirm({ ...shipConfirm, caseTypeAssignments: { ...shipConfirm.caseTypeAssignments, [c.caseNum]: e.target.value } }), style: { width: 160 } }, /* @__PURE__ */ React.createElement("option", { value: "mat-case-20" }, "20 box capacity"), /* @__PURE__ */ React.createElement("option", { value: "mat-case-15" }, "15 box capacity"), /* @__PURE__ */ React.createElement("option", { value: "mat-case-10" }, "10 box capacity"), /* @__PURE__ */ React.createElement("option", { value: "mat-case-5" }, "5 box capacity"), /* @__PURE__ */ React.createElement("option", { value: "mat-case-reel" }, "Reels")));
     }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mt-4" }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: confirmShip }, "Confirm & ship"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setShipConfirm(null) }, "Cancel")))), /* @__PURE__ */ React.createElement("div", { className: "no-print" }, /* @__PURE__ */ React.createElement(
       SectionHeader,
       {
@@ -14011,7 +14067,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       );
     })));
   }
-  function PackingListScreen({ data, setData, packJump, onBack, onPick }) {
+  function PackingListScreen({ data, setData, packJump, onBack, onPick, onShip = null }) {
     const order = data.orders.find((o) => o.id === packJump?.orderId);
     if (!order) return /* @__PURE__ */ React.createElement(PackingOrderPicker, { data, onPick });
     return /* @__PURE__ */ React.createElement(
@@ -14021,6 +14077,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
         data,
         setData,
         onBack,
+        onShip,
         highlightBoxes: packJump?.highlightBoxes || null,
         highlightKey: packJump?.at
       }
@@ -14737,6 +14794,24 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     const changes = printed ? log.filter((l) => mapChange(l) && String(l.at) > String(printed.at)) : [];
     return { printedAt: printed ? printed.at : null, changedSince: changes.length, lastChange: changes.sort((a, b) => String(b.at).localeCompare(String(a.at)))[0] || null };
   }
+  function OrderPaperwork({ order, data, setData, onOpenPacking }) {
+    const st = packingListStatus(data, order.id);
+    const when = (iso) => {
+      try {
+        return plainDate(new Date(iso));
+      } catch (e) {
+        return "";
+      }
+    };
+    const printAck = () => {
+      const its = (data.lineItems || []).filter((li) => !li.deleted && li.orderId === order.id);
+      const stored = (data.orderAcknowledgements || []).filter((a) => !a.deleted && a.orderId === order.id).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0];
+      printInFrame("ack-print-frame", stored ? stored.html : orderAckDoc(order, its, {}));
+    };
+    const row = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "6px 0", borderTop: `1px solid ${BORDER}`, fontSize: 14 };
+    const link = { background: "none", border: "none", color: NAVY, fontWeight: 600, cursor: "pointer", padding: 0, textDecoration: "underline", fontSize: 14 };
+    return /* @__PURE__ */ React.createElement("div", { className: "mt-3 no-print", "data-paperwork": "1", style: { maxWidth: 560 } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: INK_MUTED } }, "Paperwork"), /* @__PURE__ */ React.createElement("div", { style: row }, /* @__PURE__ */ React.createElement("span", null, "Packing list \u2014 ", /* @__PURE__ */ React.createElement("span", { style: { color: !st.printedAt ? AMBER : st.changedSince ? "#8A4B12" : INK_MUTED } }, !st.printedAt ? "not printed yet" : st.changedSince ? `cases changed since ${when(st.printedAt)} \u2014 reprint` : `printed ${when(st.printedAt)}`)), /* @__PURE__ */ React.createElement("button", { style: link, onClick: onOpenPacking }, "Open")), /* @__PURE__ */ React.createElement("div", { style: row }, /* @__PURE__ */ React.createElement("span", null, "Acknowledgement"), /* @__PURE__ */ React.createElement("button", { style: link, onClick: printAck }, "Print")), /* @__PURE__ */ React.createElement("div", { style: row }, /* @__PURE__ */ React.createElement("span", null, "Shipping manifest", order.shippingManifest ? "" : /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " \u2014 after it ships")), order.shippingManifest ? /* @__PURE__ */ React.createElement("button", { style: link, onClick: () => printShippingManifest(order, setData) }, "Print") : /* @__PURE__ */ React.createElement("span", null)));
+  }
   function PackingListStrip({ data, order, onPrint, docHtml = null }) {
     const st = packingListStatus(data, order.id);
     const [showing, setShowing] = useState(false);
@@ -15372,11 +15447,17 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     for (const l of logs) next = { ...next, ...appendLog(next, l) };
     return next;
   }
-  function ShortShipPanel({ order, data, setData, onDone }) {
+  function ShortShipPanel({ order, data, setData, onDone, prefill = null, prefillKey = null, note = null, title = "Short ship", onClose = null }) {
     const phone = useIsPhone();
-    const [open, setOpen] = useState(false);
-    const [draft, setDraft] = useState({});
+    const [open, setOpen] = useState(!!prefill);
+    const [draft, setDraft] = useState(prefill || {});
     const [reason, setReason] = useState("");
+    useEffect(() => {
+      if (prefill) {
+        setDraft((d) => ({ ...d, ...prefill }));
+        setOpen(true);
+      }
+    }, [prefillKey]);
     const [error, setError] = useState(null);
     const [done, setDone] = useState(null);
     const [cutsDraft, setCutsDraft] = useState({});
@@ -15513,10 +15594,14 @@ This changes the order quantities. It is recorded in the change log and can be r
       setError(null);
       setEmptiedDraft((d) => ({ ...d, [n]: "keep" }));
     }, style: segBtn(emptiedDraft[n] === "keep") }, "Keep it (empty)")))), going.length > 0 && pv.wouldRenumber.length > 0 && /* @__PURE__ */ React.createElement("div", { "data-shortship-renumber": "1", style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14.5, marginBottom: 6 } }, "The cases after ", going.length === 1 ? "it" : "them", ":"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("button", { "data-choice": "renumber", onClick: () => setRenumberDraft(true), style: segBtn(renumberDraft === true) }, "Renumber \u2014 reprint ", pv.wouldRenumber.map((m) => `${m.from}\u2192${m.to}`).join(", ")), /* @__PURE__ */ React.createElement("button", { "data-choice": "keepnumbers", onClick: () => setRenumberDraft(false), style: segBtn(renumberDraft === false) }, "Keep their numbers"))), !casesReady && !pv.errors.length && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: AMBER } }, "Decide what happens to each case above before applying."));
-    return /* @__PURE__ */ React.createElement(Panel, { className: "no-print p-4 mb-5" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Short ship"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED, maxWidth: 460 } }, "If some of this order isn't going out, say what stays behind. Cancelled comes off the order for good; to follow moves onto a new order that stays on the system.")), /* @__PURE__ */ React.createElement(Button, { variant: open ? "accent" : "ghost", onClick: () => {
+    return /* @__PURE__ */ React.createElement(Panel, { className: "no-print p-4 mb-5" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, title), note && /* @__PURE__ */ React.createElement("div", { className: "text-sm mt-1", style: { color: NAVY, fontWeight: 600 } }, note, " \u2014 say what happens to the cases below, then apply."), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED, maxWidth: 460 } }, "If some of this order isn't going out, say what stays behind. Cancelled comes off the order for good; to follow moves onto a new order that stays on the system.")), /* @__PURE__ */ React.createElement(Button, { variant: open ? "accent" : "ghost", onClick: () => {
+      if (open && onClose) {
+        onClose();
+        return;
+      }
       setOpen(!open);
       setError(null);
-    } }, open ? "Close" : "Short ship")), done && /* @__PURE__ */ React.createElement("div", { className: "mt-3 px-3 py-2", style: { background: "rgba(63,125,92,0.10)", border: `1px solid ${GREEN}`, borderRadius: 5, fontSize: 13 } }, "\u2713 ", done, "."), open && phone && /* ON A PHONE, A CARD PER PRODUCT (Chris, 22 Sep 2026 — the table put the
+    } }, open ? "Close" : title)), done && /* @__PURE__ */ React.createElement("div", { className: "mt-3 px-3 py-2", style: { background: "rgba(63,125,92,0.10)", border: `1px solid ${GREEN}`, borderRadius: 5, fontSize: 13 } }, "\u2713 ", done, "."), open && phone && /* ON A PHONE, A CARD PER PRODUCT (Chris, 22 Sep 2026 — the table put the
        product name on five lines and pushed Shipping off the edge, so you
        couldn't see what your numbers did). Same fields, same writer. */
     /* @__PURE__ */ React.createElement("div", { className: "mt-3", style: { display: "grid", gap: 10 } }, items.map((li) => {
@@ -15580,7 +15665,7 @@ This changes the order quantities. It is recorded in the change log and can be r
       }
     )), casesStep, error && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: RED } }, error), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 mt-3 flex-wrap" }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: apply, disabled: !reason.trim() || !(totals.cancel || totals.split) || !casesReady }, "Apply short ship"), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, totals.cancel || totals.split ? `${totals.cancel} to cancel \xB7 ${totals.split} to follow on a new order` : "Nothing held back yet."))));
   }
-  function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = null, highlightKey = null, onAllocateBoxes = null }) {
+  function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = null, highlightKey = null, onAllocateBoxes = null, onShip = null }) {
     const { requirePassword: requireAdmin, modal: adminModal } = useAdminPasswordGate();
     const { lineItems, bondingRuns } = data;
     const orderId = order.id;
@@ -15755,42 +15840,6 @@ This changes the order quantities. It is recorded in the change log and can be r
         (c, ci) => c.contributions.map((row, ri) => /* @__PURE__ */ React.createElement("tr", { key: `p-${c.caseNum}-${ri}`, style: { borderTop: ri === 0 ? `1.5px solid ${NAVY}` : `1px solid #ddd` } }, /* @__PURE__ */ React.createElement("td", { style: { padding: "5px 10px", fontWeight: 600 } }, ri === 0 ? c.caseNum : ""), /* @__PURE__ */ React.createElement("td", { style: { padding: "5px 10px" } }, /* @__PURE__ */ React.createElement(Spec, { s: row.spec })), /* @__PURE__ */ React.createElement("td", { style: { padding: "5px 10px", fontFamily: "monospace" } }, row.boxNumber || "not run yet"), /* @__PURE__ */ React.createElement("td", { style: { padding: "5px 10px", textAlign: "right" } }, row.qty)))
       ), smallRows.map((r) => /* @__PURE__ */ React.createElement("tr", { key: `p-small-${r.id}`, style: { borderTop: `1.5px solid ${NAVY}` } }, /* @__PURE__ */ React.createElement("td", { style: { padding: "5px 10px" } }, "\u2014"), /* @__PURE__ */ React.createElement("td", { style: { padding: "5px 10px" } }, r.spec), /* @__PURE__ */ React.createElement("td", { style: { padding: "5px 10px", fontFamily: "monospace" } }, r.boxNumbers || "not run yet"), /* @__PURE__ */ React.createElement("td", { style: { padding: "5px 10px", textAlign: "right" } }, r.qty)))))),
       document.getElementById("print-portal-root") || document.body
-    ), /* @__PURE__ */ React.createElement(
-      PlanAmendmentRecord,
-      {
-        order,
-        lineItems: data.lineItems,
-        cases: data.cases,
-        onAppend: () => {
-          const items2 = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description));
-          const existing = (data.cases || []).filter((c) => !c.deleted && c.orderId === order.id && hasCasePlan(c)).flatMap((c) => Object.entries(casePlanned(c)).map(([spec, qty]) => ({ caseNum: Number(c.caseNum), spec, qty: Number(qty) || 0 })));
-          const extra = planAmendment(items2, existing);
-          if (!extra.length) return;
-          const label = `Amendment ${(/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
-          setData((prev) => ({
-            ...prev,
-            cases: [...prev.cases || [], ...extra.map((p) => ({
-              id: caseRowId(order.id, p.caseNum, prev.cases || []),
-              orderId: order.id,
-              caseNum: p.caseNum,
-              contents: null,
-              confirmed: false,
-              deleted: false,
-              // see plannedCaseRows: null says nothing, {} asserts empty
-              planned: { [p.spec]: Number(p.qty) || 0 },
-              planBatch: label,
-              updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-              updatedBy: currentActor()
-            }))],
-            ...appendLog(prev, {
-              action: "packing_plan_appended",
-              entity: "order",
-              entityId: order.id,
-              summary: `${label}: ${extra.length} cases added to ${order.id} (cases ${extra[0].caseNum}\u2013${extra[extra.length - 1].caseNum}), ${extra.reduce((t, p) => t + p.qty, 0)} boxes`
-            })
-          }));
-        }
-      }
     ), /* @__PURE__ */ React.createElement(CaseAnnouncement, { cases: litCases, boxes: highlightBoxes, fireKey: highlightKey }), adminModal, /* @__PURE__ */ React.createElement("div", { className: "no-print" }, allCases.length > 0 && (tooMany || packView !== "grid") && /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-3" }, /* @__PURE__ */ React.createElement(
       "button",
       {
@@ -16046,7 +16095,12 @@ The manifest will list them as cases with no pallet, and the gross weight will b
         /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: AMBER } }, "Other assigned stock", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontWeight: 400 } }, " \u2014 ", otherAssigned.length, " item", otherAssigned.length === 1 ? "" : "s", " whose spec matches no line")),
         /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 12 } }, otherOpen ? "hide" : "show")
       ), otherOpen && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2 mt-2", style: { color: INK_MUTED } }, "Assigned to this order, but the spec doesn't match any line item at all \u2014 check these are meant for this order before packing."), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, { w: 140 }, "Box / reel number"), /* @__PURE__ */ React.createElement(Th, null, "Product size"), /* @__PURE__ */ React.createElement(Th, { w: 140 }, "Batch code"), /* @__PURE__ */ React.createElement(ThR, { w: 80 }, "Qty"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Date"))), /* @__PURE__ */ React.createElement("tbody", null, otherAssigned.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.boxNumber || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Spec, { s: r.productSize })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.baselineBatchCode || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.onOrderQty), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, manufactureDateLabel(r.boxNumber, "") || r.date || "\u2014")))))))))
-    ), /* @__PURE__ */ React.createElement(ShortShipPanel, { order, data, setData }));
+    ), onShip && order.stage !== "Shipped" && (() => {
+      const ready = manifestReadiness(order, caseRows);
+      const pct = orderPctComplete(data.lineItems, data.bondingRuns, order.id);
+      const blockers = [...pct < 100 ? [`Only ${pct}% made or assigned.`] : [], ...ready.ready ? [] : ready.blockers];
+      return /* @__PURE__ */ React.createElement(Panel, { className: "no-print p-4 mt-5", "data-ship-panel": "1" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Ship"), blockers.length ? /* @__PURE__ */ React.createElement("div", { className: "text-sm mt-1", style: { color: AMBER } }, blockers.map((b, i) => /* @__PURE__ */ React.createElement("div", { key: i }, "\u26A0 ", b))) : /* @__PURE__ */ React.createElement("div", { className: "text-sm mt-1", style: { color: GREEN } }, "Every case weighed", ready.palletised ? " and on a pallet" : "", " \u2014 ready to go."), /* @__PURE__ */ React.createElement("div", { className: "mt-3" }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", disabled: blockers.length > 0, onClick: () => onShip(order.id) }, "Ship ", order.id)));
+    })(), /* @__PURE__ */ React.createElement(ShortShipPanel, { order, data, setData }));
   }
   function DetailGrid({ items, showEmpty }) {
     const isBlank = (v) => v === void 0 || v === null || v === "";
@@ -24647,6 +24701,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const [packJump, setPackJump] = useState(null);
     const [searchJump, setSearchJump] = useState(null);
     const [pickTarget, setPickTarget] = useState(null);
+    const [shipTarget, setShipTarget] = useState(null);
     const [canGoBack, setCanGoBack] = useState(false);
     const navigateTo = (nextView) => {
       if (nextView === view) return;
@@ -25475,7 +25530,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         }
       ),
       neworders: /* @__PURE__ */ React.createElement(NewOrdersView, { data, setData, jumpToOrder }),
-      orders: /* @__PURE__ */ React.createElement(OrdersView, { data, setData, initialExpandedId: searchJump?.view === "orders" ? searchJump.orderId : null, jumpToPacking, onBackToOrders: () => navigateTo("dashboard") }),
+      orders: /* @__PURE__ */ React.createElement(OrdersView, { data, setData, initialExpandedId: shipTarget ? shipTarget.id : searchJump?.view === "orders" ? searchJump.orderId : null, jumpToPacking, onBackToOrders: () => navigateTo("dashboard"), autoShip: shipTarget, onShipStarted: () => setShipTarget(null) }),
       completed: /* @__PURE__ */ React.createElement(OrdersView, { data, setData, mode: "completed", initialExpandedId: searchJump?.view === "completed" ? searchJump.orderId : null, jumpToPacking }),
       /* Back from a packing list now returns to the packing list of orders —
          Packing is a destination in its own right, so its own list is the place
@@ -25499,7 +25554,12 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           setData,
           packJump,
           onPick: (id) => setPackJump({ orderId: id, highlightBoxes: null, at: Date.now() }),
-          onBack: () => setPackJump(null)
+          onBack: () => setPackJump(null),
+          onShip: (id) => {
+            setShipTarget({ id, at: Date.now() });
+            setOpenGroup(groupForView("orders"));
+            navigateTo("orders");
+          }
         }
       ),
       customers: /* @__PURE__ */ React.createElement(CustomersView, { data, setData }),
