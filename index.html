@@ -8266,7 +8266,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-21.2";
+  var APP_VERSION = "2026-09-21.3";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -10808,6 +10808,26 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     }) };
   }
   var REEL_DISCREPANCY_TOLERANCE_PCT = 10;
+  var PENDING_PRINT_KEY = "mxPendingPrint_v1";
+  function readPendingPrint() {
+    try {
+      const raw = localStorage.getItem(PENDING_PRINT_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  function writePendingPrint(v) {
+    try {
+      if (v) localStorage.setItem(PENDING_PRINT_KEY, JSON.stringify(v));
+      else localStorage.removeItem(PENDING_PRINT_KEY);
+    } catch (e) {
+    }
+    try {
+      window.dispatchEvent(new Event("mx-pending-print"));
+    } catch (e) {
+    }
+  }
   function recordPickSheet(prev, orderId, lines, actor) {
     const existing = openPickSheets(prev.pickSheets, orderId)[0];
     if (existing) {
@@ -11209,6 +11229,18 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     const [printIntent, setPrintIntent] = useState(null);
     const [pickNothing, setPickNothing] = useState(null);
     const [pendingPrint, setPendingPrint] = useState(null);
+    useEffect(() => {
+      const held = readPendingPrint();
+      if (!held || !held.pendingPrint || pendingPrint) return;
+      if (!(data.orders || []).some((o) => o && o.id === held.pendingPrint.order.id && !o.deleted)) {
+        writePendingPrint(null);
+        return;
+      }
+      if (held.pickFor) setPendingPickFor(held.pickFor);
+      if (Array.isArray(held.pickItems)) setPendingPickItems(held.pickItems);
+      setPendingPrint(held.pendingPrint);
+      setExpanded(held.pendingPrint.order.id);
+    }, []);
     const [walk, setWalk] = useDraftState("palletWalk", null, null);
     const startWalk = (order) => ({
       orderId: order.id,
@@ -12029,6 +12061,7 @@ Read the next screen carefully before you agree to it.`
         isReprint: false
       };
       setPendingPrint({ order, items, sheet, lines });
+      writePendingPrint({ pendingPrint: { order, items, sheet, lines }, pickFor: pendingPickFor, pickItems: pendingPickItems, at: (/* @__PURE__ */ new Date()).toISOString() });
       setPrintingSheet({ sheet, order: { ...order, lines: orderLineItems(lineItems, order.id) } });
       return true;
     };
@@ -12036,11 +12069,13 @@ Read the next screen carefully before you agree to it.`
       const p = pendingPrint;
       if (!p) return;
       setPendingPrint(null);
+      writePendingPrint(null);
       setData((prev) => recordPickSheet(prev, p.order.id, p.lines).data);
       confirmPickAndAllocate(p.order, p.items, { receipt: false });
     };
     const discardPrint = () => {
       setPendingPrint(null);
+      writePendingPrint(null);
       cancelPendingPick();
     };
     const printPickSheet = (order) => {
@@ -24533,6 +24568,16 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       window.addEventListener("popstate", onPopState);
       return () => window.removeEventListener("popstate", onPopState);
     }, []);
+    const [pendingPrintNote, setPendingPrintNote] = useState(() => readPendingPrint());
+    useEffect(() => {
+      const again = () => setPendingPrintNote(readPendingPrint());
+      window.addEventListener("mx-pending-print", again);
+      window.addEventListener("storage", again);
+      return () => {
+        window.removeEventListener("mx-pending-print", again);
+        window.removeEventListener("storage", again);
+      };
+    }, []);
     const jumpToOrder = (orderId, stage) => {
       const targetView = stage === "Shipped" ? "completed" : "orders";
       setSearchJump({ view: targetView, orderId });
@@ -25421,7 +25466,27 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       fontWeight: 600,
       textAlign: "center",
       padding: "6px 10px"
-    } }, "\u26A0 The cloud is refusing ", pendingCount > 0 ? `${pendingCount} change${pendingCount === 1 ? "" : "s"}` : "some changes", " from this device \u2014 saved here, not there. Open Cloud Sync in the menu for what to send to Claude.")), syncEnabled && (pendingCount > 0 || syncStatus === "offline") && !(syncStatus !== "offline" && syncFailureDetail && syncFailureDetail.length > 0) && /* @__PURE__ */ React.createElement("div", { className: "no-print", style: {
+    } }, "\u26A0 The cloud is refusing ", pendingCount > 0 ? `${pendingCount} change${pendingCount === 1 ? "" : "s"}` : "some changes", " from this device \u2014 saved here, not there. Open Cloud Sync in the menu for what to send to Claude.")), pendingPrintNote && pendingPrintNote.pendingPrint && /* @__PURE__ */ React.createElement("div", { className: "no-print", style: {
+      background: ORANGE,
+      color: "#fff",
+      fontSize: 14,
+      fontWeight: 600,
+      padding: "8px 12px",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 12,
+      flexWrap: "wrap",
+      textAlign: "center"
+    } }, /* @__PURE__ */ React.createElement("span", null, "\u{1F5A8} ", pendingPrintNote.pendingPrint.sheet.ref, " went to the printer and hasn't been confirmed \u2014 nothing is allocated or recorded until it is."), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => jumpToOrder(pendingPrintNote.pendingPrint.order.id, pendingPrintNote.pendingPrint.order.stage),
+        style: { background: "#fff", color: INK, border: "none", borderRadius: 5, padding: "6px 12px", fontWeight: 700, fontSize: 14, cursor: "pointer" }
+      },
+      "Answer it on ",
+      pendingPrintNote.pendingPrint.order.id
+    )), syncEnabled && (pendingCount > 0 || syncStatus === "offline") && !(syncStatus !== "offline" && syncFailureDetail && syncFailureDetail.length > 0) && /* @__PURE__ */ React.createElement("div", { className: "no-print", style: {
       background: syncStatus === "offline" ? RED : AMBER,
       color: "#fff",
       fontSize: 13,
