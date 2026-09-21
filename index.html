@@ -5181,32 +5181,6 @@
   function findDiscrepancies(...args) {
     return memoCall("findDiscrepancies", args, () => findDiscrepanciesFresh(...args));
   }
-  function orderShortfall(data, orderId) {
-    const rows = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === orderId);
-    const specs = /* @__PURE__ */ new Map();
-    for (const c of rows) {
-      for (const [spec, qty] of Object.entries(casePlanned(c))) {
-        specs.set(spec, (specs.get(spec) || 0) + (Number(qty) || 0));
-      }
-    }
-    const out = [];
-    for (const [spec, planned] of specs) {
-      const ranked = ordersNeedingSpec(data, spec);
-      const mine = ranked.needing.find((n) => n.orderId === orderId);
-      const needed = mine ? mine.needs : 0;
-      if (needed <= 0) continue;
-      const shelf = boxedStockAvailable(data.bondingRuns, data.stockPicks || []).filter((b) => looseSpecMatch(b.productSize, spec)).reduce((t, b) => t + (Number(b.available) || 0), 0);
-      out.push({
-        spec,
-        planned,
-        needed,
-        shelf,
-        toMake: Math.max(0, needed - shelf),
-        room: mine ? mine.room : []
-      });
-    }
-    return out.sort((a, b) => b.toMake - a.toMake || b.needed - a.needed || a.spec.localeCompare(b.spec));
-  }
   function allocationRefusal(data, spec, allocations, excludeSourceId) {
     const rows = (allocations || []).filter((a) => a && a.orderId && Number(a.qty) > 0);
     if (!rows.length || !String(spec || "").trim()) return "";
@@ -8238,7 +8212,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-22.2";
+  var APP_VERSION = "2026-09-22.3";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -13886,244 +13860,89 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     // hatched, not a flat colour — see below
     packedOutside: "#D8D8D3"
   };
-  function printCaseMapGrid(order, caseRows, setData, data = null) {
+  function packingListDoc(order, caseRows) {
     const esc = pEsc;
     const rows = [...caseRows || []].filter((c) => !c.packedOutside).sort((a, b) => a.caseNum - b.caseNum).map((c) => {
       const v = caseView(c);
-      const cells = /* @__PURE__ */ new Map();
-      for (const l of caseContentLines(c)) cells.set(l.label, (cells.get(l.label) || 0) + l.qty);
-      const awaited = /* @__PURE__ */ new Map();
-      const planMap = /* @__PURE__ */ new Map();
+      const want = /* @__PURE__ */ new Map();
       for (const p of v.plan) {
         const k = shortCaseSpec(p.spec) || p.spec;
-        if (p.qty > 0) planMap.set(k, (planMap.get(k) || 0) + p.qty);
-        if (p.outstanding > 0) awaited.set(k, (awaited.get(k) || 0) + p.outstanding);
+        if (p.qty > 0) want.set(k, (want.get(k) || 0) + p.qty);
       }
-      return {
-        caseNum: v.caseNum,
-        cells,
-        awaited,
-        planMap,
-        total: v.total,
-        reel: isReelCase(c)
-      };
-    }).filter((c) => c.cells.size > 0 || c.planMap.size > 0);
-    const PALLET_CAP = { box: 32, reel: 14 };
-    let pal = 0, onPallet = 0, palKind = null;
-    for (const c of rows) {
-      const kind = c.reel ? "reel" : "box";
-      if (palKind === null || kind !== palKind || onPallet >= PALLET_CAP[kind]) {
-        pal++;
-        onPallet = 0;
-      }
-      palKind = kind;
-      onPallet++;
-      c.pallet = pal;
-    }
+      for (const l of caseContentLines(c)) if (!want.has(l.label)) want.set(l.label, (want.get(l.label) || 0) + l.qty);
+      return { caseNum: v.caseNum, want };
+    }).filter((r) => r.want.size > 0);
+    const order_ = [];
     const seen = /* @__PURE__ */ new Set();
-    const specs = [];
     for (const li of order.lines || []) {
       const k = shortCaseSpec(li.spec);
       if (k && !seen.has(k)) {
         seen.add(k);
-        specs.push(k);
+        order_.push(k);
       }
     }
-    for (const c of rows) for (const k of c.cells.keys()) if (!seen.has(k)) {
+    for (const r of rows) for (const k of r.want.keys()) if (!seen.has(k)) {
       seen.add(k);
-      specs.push(k);
+      order_.push(k);
     }
-    for (const c of rows) for (const k of c.awaited.keys()) if (!seen.has(k)) {
-      seen.add(k);
-      specs.push(k);
-    }
-    for (const c of rows) for (const k of c.planMap.keys()) if (!seen.has(k)) {
-      seen.add(k);
-      specs.push(k);
-    }
-    const szHead = (sp) => String(sp).split(/\s+/).filter(Boolean).map((t) => `<span class="tk">${esc(t)}</span>`).join(" ");
-    const CASES_PER_SHEET = 15;
+    const head = (sp) => {
+      const m = String(sp).match(/^(\S+)\s*x\s*(\S+)\s*(.*)$/i);
+      if (!m) return `<span class="a">${esc(sp)}</span>`;
+      const rest = m[3].split(/\s+/).filter(Boolean);
+      const os = rest.filter((t) => /^o\/s$/i.test(t)), other = rest.filter((t) => !/^o\/s$/i.test(t));
+      return `<span class="a">${esc(m[1])}</span><span class="a">${esc(m[2])}</span>${other.map((t) => `<span class="b">${esc(t)}</span>`).join("")}${os.map((t) => `<span class="b os">${esc(t)}</span>`).join("")}`;
+    };
+    const PER = 15;
     const chunks = [];
-    for (let i = 0; i < rows.length; i += CASES_PER_SHEET) chunks.push(rows.slice(i, i + CASES_PER_SHEET));
-    let lastPallet = null;
+    for (let i = 0; i < rows.length; i += PER) chunks.push(rows.slice(i, i + PER));
     const sheets = chunks.map((chunk, idx) => {
-      const used = /* @__PURE__ */ new Set();
-      for (const c of chunk) {
-        for (const k of c.cells.keys()) used.add(k);
-        for (const k of c.awaited.keys()) used.add(k);
-        for (const k of c.planMap.keys()) used.add(k);
-      }
-      const mySpecs = specs.filter((k) => used.has(k));
-      const cols = mySpecs.length + 3;
-      const sizeW = (100 - 4.5 - 4 - 7) / Math.max(1, mySpecs.length);
-      const runHead = `<tr><th class="runhead" colspan="${cols}">${esc(order.id)}${order.customer ? " &middot; " + esc(order.customer) : ""} &nbsp;&middot;&nbsp; sheet ${idx + 1} of ${chunks.length}</th></tr>`;
-      const body = chunk.map((c) => {
-        let band = "";
-        if (c.pallet !== lastPallet) {
-          lastPallet = c.pallet;
-          band = `<tr class="pallet"><td colspan="${cols}">Pallet ${esc(c.pallet)}${c.reel ? " &middot; reels" : ""}</td></tr>`;
-        }
-        const cells = mySpecs.map((sp) => {
-          const q = c.cells.get(sp);
-          const a = c.awaited.get(sp);
-          return `<td class="q${q ? " has" : ""}">${q ? esc(q) : ""}${a ? `<span class="await">${q ? " " : ""}(${esc(a)})</span>` : ""}</td>`;
-        }).join("");
-        const band5 = Number(c.caseNum) % 5 === 1 ? " fifth" : "";
-        const zebra = Number(c.caseNum) % 2 === 0 ? " alt" : "";
-        return band + `<tr class="cr${band5}${zebra}"><td class="cn">${esc(c.caseNum)}</td>${cells}<td class="tot">${esc(c.total)}</td><td class="wr"></td></tr>`;
-      }).join("");
-      const heads = mySpecs.map((sp) => `<th class="sz" style="width:${sizeW.toFixed(3)}%">${szHead(sp)}</th>`).join("");
-      const foots = mySpecs.map((sp) => {
-        const packed = chunk.reduce((t, c) => t + (c.cells.get(sp) || 0), 0);
-        const due = chunk.reduce((t, c) => t + (c.awaited.get(sp) || 0), 0);
-        return `<td class="q b">${esc(packed)}${due ? `<span class="await"> (${esc(due)})</span>` : ""}</td>`;
-      }).join("");
-      const sheetTotal = chunk.reduce((t, c) => t + c.total, 0);
-      const sheetDue = chunk.reduce((t, c) => t + [...c.awaited.values()].reduce((a, q) => a + q, 0), 0);
-      return `<div class="sheet${idx < chunks.length - 1 ? " brk" : ""}"><table class="cm">
-      <thead><tr><th class="cn">Case</th>${heads}<th class="tot">Total</th><th class="wr">Weight</th></tr>${runHead}</thead>
-      <tbody>${body}</tbody>
-      <tfoot><tr><td class="cn">This sheet</td>${foots}<td class="tot b">${esc(sheetTotal)}${sheetDue ? `<span class="await"> (${esc(sheetDue)})</span>` : ""}</td><td class="wr"></td></tr></tfoot>
-    </table></div>`;
+      const specs = order_.filter((k) => chunk.some((r) => r.want.has(k)));
+      const w = (100 - 7 - 5 - 7 - 7) / Math.max(1, specs.length);
+      const body = chunk.map((r, i) => `<tr${i % 5 === 4 ? ' class="five"' : ""}><td class="wt"></td><td class="cn">${esc(r.caseNum)}</td>${specs.map((k) => `<td class="q">${r.want.has(k) ? esc(r.want.get(k)) : ""}</td>`).join("")}<td class="sg"></td><td class="sg"></td></tr>`).join("");
+      const sheetNo = chunks.length > 1 ? `<span class="sn">sheet ${idx + 1} of ${chunks.length}</span>` : "";
+      return `<section class="sheet">
+      <header><div class="t"><b>Packing list</b> &nbsp; ${esc(order.id)} &nbsp;\xB7&nbsp; ${esc(order.customer || "")}</div>${sheetNo}</header>
+      <table><colgroup><col style="width:7%"><col style="width:5%">${specs.map(() => `<col style="width:${w.toFixed(3)}%">`).join("")}<col style="width:7%"><col style="width:7%"></colgroup>
+        <thead><tr><th>Weight</th><th>Case</th>${specs.map((sp) => `<th class="p">${head(sp)}</th>`).join("")}<th>Packed by</th><th>Checked by</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+      <div class="pal">Pallet ____________</div>
+    </section>`;
     }).join("");
-    const table = sheets;
-    const totalBoxes = rows.reduce((t, c) => t + c.total, 0);
-    const pallets = new Set(rows.map((c) => c.pallet)).size;
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Packing list ${esc(order.id)}</title>
-  <style>${PAPER_CSS}
-    @page { size: A4 landscape; margin: 12mm; }
-    table.cm { border-collapse:collapse; width:100%; table-layout:fixed; margin-top:5mm; }
-    table.cm, table.cm td, table.cm th { box-sizing:border-box; }
-    /* White ground, NOT the black header band the other documents use. Across
-       the full width this header is a solid block on every page: on the office
-       mono laser that is a heavy load of toner and it ghosts through onto the
-       back of the sheet. Black type under a heavy rule reads better and costs
-       nothing. */
-    table.cm th { background:#fff; color:#000; text-transform:none; border-bottom:1.5pt solid #000;
-                  vertical-align:bottom; padding:0 1mm 1.6mm; letter-spacing:0; }
-    /* keep-all, because "0.80 x 2.30 2-3pt" broke at the HYPHEN and printed
-       "2-" over "3pt" \u2014 a size split across two lines at a character that is
-       part of the size. It may still wrap at a space, which is where the
-       O/S and pt tails are meant to go. */
-    th.sz { font-size:8.5pt; font-weight:700; text-align:center;
-            border-left:.75pt solid #8A8A8A; hyphens:none; }
-    th.sz .tk { white-space:nowrap; }
-    /* 6.5pt untracked. "CHECKED" tracked out at 7.5pt is wider than the column
-       it names and ran off the right edge of the page. */
-    /* table.cm th above is (0,1,2) and out-specifies a bare th.cn at (0,1,1),
-       so its text-transform:none silently won and these five labels printed
-       mixed case by accident. Qualified so the choice is the one written
-       down rather than whichever selector happened to be heavier. */
-    table.cm th.cn, table.cm th.tot, table.cm th.wr { font-size:6.5pt; font-weight:700; text-transform:uppercase; text-align:center; }
-    /* PROPORTIONAL, NOT MILLIMETRES. This is the fault the tile sheet hit on
-       5 Sep \u2014 "it falls off the right side of the printout paper" \u2014 arriving
-       from the other direction, and it was in the very comment I copied the
-       page-size request from.
-       Fixed widths summed to 260mm. That fits A4 landscape's 273mm, so it
-       looked right everywhere I could check it. A phone prints US Letter
-       PORTRAIT and ignores the @page request: 192mm of usable width, so 68mm
-       of the sheet ran off the right edge and Total, Weight, Packed and
-       Checked were simply not on the paper. Chris printed it and they were
-       gone.
-       Percentages of whatever page actually arrives can't do that. Landscape
-       still gives each size column ~20mm and one line per name; portrait
-       squeezes to ~14mm and a name wraps at a space, which the nowrap tokens
-       already handle. Cramped beats absent.
-       Derived from MAX_SIZE_COLS so the arithmetic cannot drift away from the
-       column count. The write-in columns get 7% rather than 6% because
-       "CHECKED" is a single word that cannot wrap, and at 6% of a portrait
-       page it was clipped to "CHECKE" \u2014 a column label has to fit the column
-       it names, which is the same lesson as the 7.5pt tracking earlier. */
-    th.cn { width:4.5%; } th.tot { width:4%; } th.wr { width:7%; }
-    /* th.sz width is set per sheet inline: each sheet has its own column set,
-       so a single shared rule here would be wrong for all but one of them. */
-    /* One page per sheet block. break-after on the block, not inside the
-       table, so a table is never split and no header has to repeat. */
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Packing list ${esc(order.id)}</title>
+  <style>
+    @page { size: A4 landscape; margin: 10mm; }
+    html, body { margin:0; padding:0; }
+    body { font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color:#000; }
     .sheet { break-after: page; page-break-after: always; }
-    .sheet:last-of-type, .sheet:not(.brk) { break-after: auto; page-break-after: auto; }
-    table.cm { break-inside: avoid; page-break-inside: avoid; }
-    /* .75pt, NOT .5pt. Chris printed this from his phone on 6 Sep and the grid
-       came out with no cell lines at all \u2014 every heavy rule (the header
-       underline, the pallet band, the totals rule, all 1.5pt) rendered, and
-       every .5pt cell border was gone. A hairline under about .75pt rounds to
-       nothing at the rasteriser and simply disappears. .75pt is what
-       PAPER_CSS has always used for the other documents' table rules, which
-       is why none of them ever showed this. A grid with no grid is not a
-       grid. */
-    /* 8.4mm, not 4.8mm. Fifteen rows at 4.8mm used a third of the sheet and
-       left the rest white \u2014 the grid is written in by hand at the bench, so
-       the row wants to be big enough to write a figure in. Fifteen rows plus
-       header, pallet bands and the totals rule fill an A4 landscape sheet. */
-    table.cm td { border:.75pt solid #8A8A8A; padding:1.0mm .5mm; text-align:center; font-size:9.5pt; height:7.2mm;
-                  vertical-align:middle; word-break:normal; }
-    td.cn { font-weight:700; font-size:13pt; }
-    /* The figure is what the sheet is for, so it is the biggest thing in the
-       cell. An empty cell stays genuinely empty \u2014 no dash, no zero \u2014 because
-       on a grid this wide anything printed in a cell reads as a quantity. */
-    td.q.has { font-weight:700; font-size:12pt; }
-    tr.cr.alt td { background:#F2F2EF; }
-    /* -webkit-print-color-adjust so the band survives the printer driver's
-       habit of dropping backgrounds; without it the zebra is a screen-only
-       effect and the paper is unchanged. */
-    tr.cr.alt td { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    tr.cr.fifth td { border-top:1.5pt solid #000; }
-    td.q .await { color:#888; font-weight:400; font-size:0.9em; }
-    td.tot { color:#4A4A4A; font-size:8.5pt; }
-    /* A BAND, not a column: the pallet is a property of a RUN of cases, and a
-       repeated number down a column reads as data about each case rather than
-       as the boundary it actually is. A rule and a label, no fill \u2014 a grey
-       fill turns to mud at 300dpi on the mono printer. */
-    tr.pallet td { border:none; border-top:1.5pt solid #000; text-align:left; font-size:8pt; font-weight:700;
-                   text-transform:uppercase; letter-spacing:.12em; padding:2mm 0 1mm; height:auto; }
-    /* Repeats at the top of every page: a sheet that breaks mid-order
-       otherwise arrives at the bench saying nothing about what it belongs to. */
-    th.runhead { font-size:7pt; font-weight:400; color:#4A4A4A; letter-spacing:.08em; text-transform:uppercase;
-                 text-align:left; padding:2mm 0 1mm; border-bottom:.75pt solid #B4B4B4; background:#fff; }
-    /* NOT table-footer-group. Chrome repeats a footer group on every page, so
-       the "All" row printed a PARTIAL column total at the foot of each sheet
-       that read exactly like the order total. */
-    tfoot { display: table-row-group; }
-    /* The "All" row must not start a page on its own. Found by rendering the
-       real output: the second block's totals landed alone on page 3 under a
-       repeated header, with its case rows back on page 2 \u2014 a page of totals
-       belonging to cases that are not on it. */
-    tfoot tr { break-before: avoid; page-break-before: avoid; }
-    tfoot td { border-top:1.5pt solid #000; font-size:9pt; }
-    tfoot td.cn { font-size:6.5pt; text-transform:uppercase; font-weight:700; color:#4A4A4A; }
-    .foot { margin-top:6mm; font-size:9pt; padding-bottom:6mm; }
-  </style></head><body>
-    ${paperHead("Packing list", order, [
-      order.customer ? esc(order.customer) : "",
-      order.customerRef ? `Their ref &nbsp;<b>${esc(order.customerRef)}</b>` : "",
-      `<b>${rows.length}</b> case${rows.length === 1 ? "" : "s"} &nbsp;&middot;&nbsp; <b>${totalBoxes}</b> boxes &nbsp;&middot;&nbsp; <b>${pallets}</b> pallet${pallets === 1 ? "" : "s"}`,
-      ...(() => {
-        const short = typeof orderShortfall === "function" && data ? orderShortfall(data, order.id) : [];
-        if (!short.length) return [];
-        const make = short.filter((x) => x.toMake > 0);
-        return [
-          `<b>${short.reduce((t, x) => t + x.needed, 0)}</b> still to go in` + (make.length ? ` &nbsp;&middot;&nbsp; <b>${make.reduce((t, x) => t + x.toMake, 0)}</b> of that not made yet` : " &mdash; all of it is on the shelf"),
-          ...short.slice(0, 6).map((x) => `${esc(x.spec)}: need <b>${x.needed}</b>, shelf ${x.shelf}${x.toMake ? `, <b>make ${x.toMake}</b>` : ""}`)
-        ];
-      })()
-    ])}
-    ${table}
-    <div class="foot">If a case is packed differently from this sheet, write it on the sheet &mdash; the sheet is the record.</div>
-    <div class="p-sign">
-      <div class="p-sigbox"><div class="p-sigline"></div><div class="p-sigcap">Packed by</div></div>
-      <div class="p-sigbox"><div class="p-sigline"></div><div class="p-sigcap">Checked by</div></div>
-    </div>
-    ${paperFoot(order)}
-  </body></html>`;
+    .sheet:last-child { break-after: auto; page-break-after: auto; }
+    header { display:flex; justify-content:space-between; align-items:baseline; border-bottom:1.5pt solid #000; padding-bottom:2mm; margin-bottom:3mm; }
+    header .t { font-size:15pt; } header .t b { font-weight:700; } header .sn { font-size:10pt; }
+    table { width:100%; border-collapse:collapse; table-layout:fixed; break-inside:avoid; page-break-inside:avoid; }
+    th, td { border:1pt solid #000; text-align:center; box-sizing:border-box; }
+    th { font-size:9pt; font-weight:700; padding:1.5mm .5mm; vertical-align:bottom; }
+    th.p { padding:1.2mm 0; line-height:1.15; }
+    th.p .a { display:block; white-space:nowrap; font-size:9.5pt; }
+    th.p .b { display:block; white-space:nowrap; font-size:7.5pt; font-weight:600; }
+    th.p .b.os { font-size:7.5pt; font-weight:800; }
+    td { height:9mm; font-size:14pt; }
+    td.cn { font-weight:700; font-size:14pt; }
+    td.q { font-weight:600; }
+    tr.five td { border-bottom:2pt solid #000; }
+    .pal { margin-top:4mm; font-size:13pt; font-weight:700; }
+  </style></head><body>${sheets || "<p>No cases on this order yet.</p>"}</body></html>`;
+  }
+  function printPackingListSheet(order, caseRows, setData) {
+    const html = packingListDoc(order, caseRows);
+    printInFrame("packing-list-print-frame", html, { width: 1080, height: 760 });
     if (typeof setData === "function") {
       setData((prev) => ({ ...prev, ...appendLog(prev, {
         action: "print",
         entity: "order",
         entityId: order.id,
-        summary: `Printed packing list for ${order.id} (${order.customer}) \u2014 ${rows.length} cases, ${totalBoxes} boxes`
+        summary: `Printed packing list for ${order.id} (${order.customer})`
       }) }));
     }
-    printInFrame("case-map-grid-print-frame", html, { width: 1080, height: 760 });
-    return html;
   }
   var CASE_FILL_PARTIAL = "#FFF0A6";
   var CASE_FILL_CONFIRMED = "#BFE6CE";
@@ -15562,7 +15381,7 @@ This changes the order quantities. It is recorded in the change log and can be r
       },
       "\u2190 Back to ",
       order.id
-    ), /* @__PURE__ */ React.createElement("header", { style: { marginBottom: 18 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED, marginBottom: 2, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", null, "Packing ", /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { color: NAVY, fontWeight: 500 } }, order.id)), order.boxType && /* @__PURE__ */ React.createElement(BoxTypeMark, { type: order.boxType })), /* @__PURE__ */ React.createElement("h1", { style: { fontSize: 30, lineHeight: 1.08, letterSpacing: "-0.02em", fontWeight: 600, margin: 0, color: NAVY_DEEP } }, order.customer), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6, fontSize: 15, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, totalItems), " boxes in ", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, caseRows.length), " case", caseRows.length === 1 ? "" : "s", manualCount ? `, plus ${manualCount} packed before the app` : "", ".", " ", order.caseLayout === "as_entered" ? "Cases follow the order the lines were entered." : "Cases are laid out by size.")), /* @__PURE__ */ React.createElement(PackingListStrip, { data, order, onPrint: () => printCaseMapGrid(order, caseRows, setData, data) }), String(order.notes || "").trim() && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-4", style: { borderLeft: `4px solid ${NAVY}`, background: "#FAFAF8" } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-1 flex items-center justify-between gap-3" }, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Notes on this order"), String(order.notes).length > 150 && /* @__PURE__ */ React.createElement(
+    ), /* @__PURE__ */ React.createElement("header", { style: { marginBottom: 18 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED, marginBottom: 2, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", null, "Packing ", /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { color: NAVY, fontWeight: 500 } }, order.id)), order.boxType && /* @__PURE__ */ React.createElement(BoxTypeMark, { type: order.boxType })), /* @__PURE__ */ React.createElement("h1", { style: { fontSize: 30, lineHeight: 1.08, letterSpacing: "-0.02em", fontWeight: 600, margin: 0, color: NAVY_DEEP } }, order.customer), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6, fontSize: 15, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, totalItems), " boxes in ", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, caseRows.length), " case", caseRows.length === 1 ? "" : "s", manualCount ? `, plus ${manualCount} packed before the app` : "", ".", " ", order.caseLayout === "as_entered" ? "Cases follow the order the lines were entered." : "Cases are laid out by size.")), /* @__PURE__ */ React.createElement(PackingListStrip, { data, order, onPrint: () => printPackingListSheet(order, caseRows, setData) }), String(order.notes || "").trim() && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-4", style: { borderLeft: `4px solid ${NAVY}`, background: "#FAFAF8" } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-1 flex items-center justify-between gap-3" }, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Notes on this order"), String(order.notes).length > 150 && /* @__PURE__ */ React.createElement(
       "button",
       {
         onClick: () => setNotesOpen((v) => !v),
