@@ -4593,48 +4593,6 @@
         ref: r.boxNumber || r.id
       });
     }
-    {
-      const placed = /* @__PURE__ */ new Map();
-      for (const m of data.movements || []) {
-        if (m.caseNum == null || !m.boxNumber) continue;
-        if (m.kind !== "placed" && m.kind !== "unplaced") continue;
-        const key = `${m.orderId}|${m.caseNum}|${String(m.boxNumber).trim().toUpperCase()}`;
-        placed.set(key, m.kind === "placed" ? Number(m.qty) || 0 : 0);
-      }
-      for (const o of (data.orders || []).filter((x) => !x.deleted)) {
-        if (["Shipped", "Completed", "Cancelled"].includes(o.stage)) continue;
-        for (const [numStr, entry] of Object.entries(o.confirmedCases || {})) {
-          if (!entry || typeof entry !== "object" || !entry.boxes) continue;
-          const caseNum = Number(numStr);
-          const disagreements = [];
-          for (const [box, qty] of Object.entries(entry.boxes)) {
-            const key = `${o.id}|${caseNum}|${String(box).trim().toUpperCase()}`;
-            const led = placed.get(key);
-            if (led === void 0) disagreements.push(`${box}: confirmed ${qty}, ledger has no record`);
-            else if (Number(led) !== Number(qty)) disagreements.push(`${box}: confirmed ${qty}, ledger says ${led}`);
-          }
-          for (const [key, qty] of placed.entries()) {
-            if (qty <= 0) continue;
-            const [oid, cn, box] = key.split("|");
-            if (oid !== o.id || Number(cn) !== caseNum) continue;
-            const inConfirmed = Object.keys(entry.boxes).some((b) => String(b).trim().toUpperCase() === box);
-            if (!inConfirmed) disagreements.push(`${box}: ledger says ${qty}, not in the confirmed list`);
-          }
-          if (!disagreements.length) continue;
-          add({
-            id: `caseledger:${o.id}:${caseNum}`,
-            kind: "Confirmed case disagrees",
-            severity: "high",
-            what: `${o.id} case ${caseNum}: ${disagreements.length === 1 ? "1 box doesn't match" : `${disagreements.length} boxes don't match`}`,
-            detail: disagreements.slice(0, 3).join(" \xB7 "),
-            why: "Someone confirmed what was in this case, and the movement record says something different. Only one of them can be what is physically in the box, and it ships either way.",
-            todo: "Look in the case. Whatever is actually in it, confirm the case again so both records say the same thing.",
-            fixHere: true,
-            ref: o.id
-          });
-        }
-      }
-    }
     const sheetStale = (printedAt) => {
       if (!printedAt) return true;
       const t = new Date(printedAt).getTime();
@@ -7246,7 +7204,20 @@ ${line}` : line;
       };
       byKey.set(key, better(held, f));
     }
-    return [...rows.filter((f) => !f || !f.productId), ...byKey.values()];
+    const kept = [...byKey.values()];
+    const liveByProductForm = /* @__PURE__ */ new Map();
+    for (const f of kept) {
+      if (f.deleted) continue;
+      const k = `${f.productId}|${f.form}`;
+      const held = liveByProductForm.get(k);
+      if (!held) {
+        liveByProductForm.set(k, f);
+        continue;
+      }
+      liveByProductForm.set(k, String(f.updatedAt || "") > String(held.updatedAt || "") ? f : held);
+    }
+    const retired = kept.map((f) => f.deleted || liveByProductForm.get(`${f.productId}|${f.form}`) === f ? f : { ...f, deleted: true });
+    return [...rows.filter((f) => !f || !f.productId), ...retired];
   }
   var IDB_STORE = "state";
   function idbGet(db, key) {
@@ -8295,7 +8266,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-20.30";
+  var APP_VERSION = "2026-09-21.2";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -16045,7 +16016,80 @@ The manifest will list them as cases with no pallet, and the gross weight will b
     const m = `${f.id || ""} ${f.detail || ""} ${f.what || ""}`.match(/WO-\d{3,}/);
     return m ? m[0] : null;
   }
-  function DiscrepanciesView({ data, onLookUp, jumpToOrder }) {
+  function DiscrepancyFix({ f, data, setData }) {
+    const [bays, setBays] = useState({});
+    if (!setData) return null;
+    const who = (typeof currentActor === "function" ? currentActor() : null) || "someone";
+    const idsOf = (prefix) => String(f.id || "").startsWith(prefix) ? String(f.id).slice(prefix.length).split(",").filter(Boolean) : [];
+    const btn = { fontSize: 14, fontWeight: 600, padding: "8px 14px", borderRadius: 5, cursor: "pointer" };
+    if (f.kind === "Reel date disagrees") {
+      const reel = (data.glueLineBatches || []).find((g) => g && !g.deleted && g.batchNumber === f.ref);
+      const fromCode = reel ? dateFromReelCode(reel.batchNumber) : null;
+      if (!reel || !fromCode) return null;
+      const apply = () => setData((prev) => ({
+        ...prev,
+        glueLineBatches: (prev.glueLineBatches || []).map((g) => g && !g.deleted && g.batchNumber === reel.batchNumber ? { ...g, date: fromCode } : g),
+        ...appendLog(prev, {
+          action: "update",
+          entity: "glueLineBatch",
+          entityId: reel.id,
+          summary: `Reel ${reel.batchNumber}: date set to ${fromCode} to match its code (was ${reel.date}) \u2014 from Discrepancies, by ${who}`,
+          before: { date: reel.date },
+          after: { date: fromCode }
+        })
+      }));
+      return /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("button", { onClick: apply, style: { ...btn, background: NAVY, color: "#fff", border: "none" } }, "Set the date to ", plainDate(fromCode), ", as the code says"));
+    }
+    if (f.kind === "Not checked" || f.kind === "No location") {
+      const ids = new Set(idsOf(f.kind === "Not checked" ? "unchecked:" : "noloc:"));
+      const runs = (data.bondingRuns || []).filter((r) => r && !r.deleted && ids.has(r.id));
+      if (!runs.length) return null;
+      const setField = (run, field, value, summary) => setData((prev) => ({
+        ...prev,
+        bondingRuns: (prev.bondingRuns || []).map((r) => r.id === run.id ? { ...r, [field]: value } : r),
+        ...appendLog(prev, {
+          action: "update",
+          entity: "bondingRun",
+          entityId: run.id,
+          summary: `${summary} \u2014 from Discrepancies, by ${who}`,
+          before: { [field]: run[field] ?? null },
+          after: { [field]: value }
+        })
+      }));
+      return /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8, display: "grid", gap: 6 } }, runs.map((r) => /* @__PURE__ */ React.createElement("div", { key: r.id, className: "flex items-center gap-2 flex-wrap", style: { fontSize: 14 } }, /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { fontWeight: 600, minWidth: 104 } }, r.boxNumber || r.id), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 13, flex: "1 1 140px" } }, r.productSize || "", r.amountMade ? ` \xB7 ${r.amountMade} made` : "", r.date ? ` \xB7 ${plainDate(r.date)}` : ""), f.kind === "Not checked" ? /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          onClick: () => setField(r, "checked", "Yes", `Box ${r.boxNumber || r.id} checked`),
+          style: { ...btn, background: NAVY, color: "#fff", border: "none" }
+        },
+        "I've checked it \u2713"
+      ) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(
+        "input",
+        {
+          value: bays[r.id] || "",
+          onChange: (e) => setBays((b) => ({ ...b, [r.id]: e.target.value.toUpperCase() })),
+          placeholder: "Bay, e.g. D1",
+          "aria-label": `Bay for ${r.boxNumber}`,
+          style: { width: 110, padding: "8px 10px", fontSize: 15, border: `1px solid ${BORDER}`, borderRadius: 5 }
+        }
+      ), /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          disabled: !String(bays[r.id] || "").trim(),
+          onClick: () => setField(r, "location", String(bays[r.id]).trim(), `Box ${r.boxNumber || r.id} located at ${String(bays[r.id]).trim()}`),
+          style: {
+            ...btn,
+            background: String(bays[r.id] || "").trim() ? NAVY : "#fff",
+            color: String(bays[r.id] || "").trim() ? "#fff" : "#B9BBC2",
+            border: String(bays[r.id] || "").trim() ? "none" : `1px solid ${BORDER}`
+          }
+        },
+        "Set bay"
+      )))));
+    }
+    return null;
+  }
+  function DiscrepanciesView({ data, setData, onLookUp, jumpToOrder }) {
     const dismissals = readDiscrepancyDismissals();
     const [showDismissed, setShowDismissed] = useState(false);
     const all = useMemo(() => findDiscrepancies(data), [data]);
@@ -16122,7 +16166,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
           className: "flex items-center justify-between gap-3 flex-wrap",
           style: { borderTop: `1px solid ${BORDER}`, padding: "9px 14px" }
         },
-        /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0, flex: "1 1 260px" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14.5, fontWeight: 600, color: INK } }, f.what), f.detail && f.detail !== g.orderId && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED, marginTop: 1 } }, f.detail), dismissals[f.id] && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: INK_MUTED, marginTop: 2 } }, "Set aside ", new Date(dismissals[f.id].at).toLocaleDateString(), dismissals[f.id].reason ? ` \u2014 ${dismissals[f.id].reason}` : "")),
+        /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0, flex: "1 1 260px" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14.5, fontWeight: 600, color: INK } }, f.what), f.detail && f.detail !== g.orderId && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED, marginTop: 1 } }, f.detail), f.fixHere && !dismissals[f.id] && /* @__PURE__ */ React.createElement(DiscrepancyFix, { f, data, setData }), dismissals[f.id] && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: INK_MUTED, marginTop: 2 } }, "Set aside ", new Date(dismissals[f.id].at).toLocaleDateString(), dismissals[f.id].reason ? ` \u2014 ${dismissals[f.id].reason}` : "")),
         /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 no-print", style: { flexWrap: "wrap" } }, f.ref && onLookUp && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => onLookUp(f.ref) }, "Look up ", f.ref), dismissals[f.id] ? /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => restore(f) }, "Put back") : /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => dismiss(f) }, "Set aside"))
       )))));
     }), hidden.length > 0 && /* @__PURE__ */ React.createElement(
@@ -16444,7 +16488,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         background: tab === t.key ? "rgba(255,255,255,0.25)" : "#FBEAEA",
         color: tab === t.key ? "#fff" : RED
       } }, openCount)
-    ))), tab === "history" && /* @__PURE__ */ React.createElement(BoxHistoryView, { data, setData, initialQuery: lookUp || initialQuery }), tab === "boxes" && /* @__PURE__ */ React.createElement(LiveBoxStockView, { data }), tab === "reels" && /* @__PURE__ */ React.createElement(LiveReelStockView, { data }), tab === "waiting" && /* @__PURE__ */ React.createElement(PromisedNotPackedView, { data }), tab === "wrongcase" && /* @__PURE__ */ React.createElement(WrongStockInCaseView, { data, setData }), tab === "discrepancies" && /* @__PURE__ */ React.createElement(DiscrepanciesView, { data, jumpToOrder, onLookUp: (ref) => {
+    ))), tab === "history" && /* @__PURE__ */ React.createElement(BoxHistoryView, { data, setData, initialQuery: lookUp || initialQuery }), tab === "boxes" && /* @__PURE__ */ React.createElement(LiveBoxStockView, { data }), tab === "reels" && /* @__PURE__ */ React.createElement(LiveReelStockView, { data }), tab === "waiting" && /* @__PURE__ */ React.createElement(PromisedNotPackedView, { data }), tab === "wrongcase" && /* @__PURE__ */ React.createElement(WrongStockInCaseView, { data, setData }), tab === "discrepancies" && /* @__PURE__ */ React.createElement(DiscrepanciesView, { data, setData, jumpToOrder, onLookUp: (ref) => {
       setLookUp(ref);
       setTab("history");
     } }), tab === "stocktaker" && stockAdmin && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "mb-4 p-3", style: { background: "#F7F8FC", border: `1px solid ${NAVY}`, borderLeft: `4px solid ${NAVY}`, borderRadius: 4, fontSize: 13.5, color: INK_MUTED, lineHeight: 1.5 } }, "For a full count only. To add one batch that has turned up, type its code into History and movement \u2014 it will offer to add it as a box or a reel."), /* @__PURE__ */ React.createElement(StockTakerView, { data, setData })));
