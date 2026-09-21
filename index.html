@@ -4614,8 +4614,15 @@
       return { boxNumbers: boxes.join(", "), batchCodes: batches.join(", ") };
     });
   }
-  function caseRowId(orderId, caseNum) {
-    return `case-${String(orderId)}-${Number(caseNum)}`;
+  function caseRowId(orderId, caseNum, cases = null) {
+    const base = `case-${String(orderId)}-${Number(caseNum)}`;
+    if (!cases) return base;
+    const clash = (id) => cases.some((c) => c && c.id === id && !c.deleted && !(String(c.orderId) === String(orderId) && Number(c.caseNum) === Number(caseNum)));
+    if (!clash(base)) return base;
+    for (let k = 2; ; k++) {
+      const id = `${base}-${k}`;
+      if (!cases.some((c) => c && c.id === id)) return id;
+    }
   }
   var PLAN_BAND_ORDER = { "rubber": 0, "12mm": 1, "10mm": 2, "7mm": 3 };
   function planBandFor(spec) {
@@ -5336,7 +5343,7 @@
       c.planned[p.spec] = (Number(c.planned[p.spec]) || 0) + (Number(p.qty) || 0);
     }
     return [...byCase.values()].sort((a, b) => a.caseNum - b.caseNum).map((c) => ({
-      id: caseRowId(orderId, c.caseNum),
+      id: caseRowId(orderId, c.caseNum, opts.data && opts.data.cases || null),
       orderId,
       caseNum: c.caseNum,
       /* contents: NULL, not {}. A plan says what a case is PROMISED, not what is
@@ -5510,7 +5517,7 @@
         const sc = scalars.get(Number(c.caseNum)) || {};
         if (!sc.weight && !sc.pallet) continue;
         added.push({
-          id: caseRowId(o.id, c.caseNum),
+          id: caseRowId(o.id, c.caseNum, [...data.cases || [], ...added]),
           orderId: o.id,
           caseNum: Number(c.caseNum),
           contents: null,
@@ -5530,7 +5537,7 @@
         const key = `${o.id}#${cn}`;
         if (existing.has(key)) continue;
         added.push({
-          id: caseRowId(o.id, cn),
+          id: caseRowId(o.id, cn, [...data.cases || [], ...added]),
           orderId: o.id,
           caseNum: cn,
           contents: null,
@@ -5591,20 +5598,40 @@
     }
     return { needs: need.needs, cases };
   }
-  function planCutForLine(data, orderId, description, cut) {
+  function planSpacesFor(data, orderId, description) {
     const key = String(description || "").trim();
-    const n = Math.max(0, Math.round(Number(cut) || 0));
-    if (!n) return { cases: data.cases || [], emptyTaken: 0 };
     const rows = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === orderId && casePlanned(c)[key]);
-    if (!rows.length) return { cases: data.cases || [], emptyTaken: 0, noPlan: true };
     const inCases = ledgerCaseContents(data.movements || []);
     const heldOf = (c) => Object.entries(inCases.get(`${orderId}|${Number(c.caseNum)}`) || {}).reduce((t, [box, q]) => {
       const spec = specOfBoxInCase(data, orderId, c.caseNum, box);
       const same = spec && (looseSpecMatch(spec, key) || productKey(spec) === productKey(key) && isReelSpec(spec) === isReelSpec(key));
       return t + (same ? Number(q) || 0 : 0);
     }, 0);
-    const empty = rows.map((c) => ({ c, empty: Math.max(0, (Number(casePlanned(c)[key]) || 0) - heldOf(c)) })).sort((a, b) => Number(b.c.caseNum) - Number(a.c.caseNum));
-    const totalEmpty = empty.reduce((t, x) => t + x.empty, 0);
+    return rows.map((c) => {
+      const planned = Number(casePlanned(c)[key]) || 0, held = Math.min(planned, heldOf(c));
+      return { id: c.id, caseNum: Number(c.caseNum), planned, held, empty: Math.max(0, planned - held) };
+    }).sort((x, y) => y.caseNum - x.caseNum);
+  }
+  function proposeCut(spaces, cut) {
+    let left = Math.max(0, Math.round(Number(cut) || 0));
+    const out = {};
+    for (const x of spaces) {
+      if (!left) break;
+      const t = Math.min(x.empty, left);
+      if (t) {
+        out[x.caseNum] = t;
+        left -= t;
+      }
+    }
+    return out;
+  }
+  function planCutForLine(data, orderId, description, cut, perCase = null) {
+    const key = String(description || "").trim();
+    const n = Math.max(0, Math.round(Number(cut) || 0));
+    if (!n) return { cases: data.cases || [], emptyTaken: 0 };
+    const spaces = planSpacesFor(data, orderId, key);
+    if (!spaces.length) return { cases: data.cases || [], emptyTaken: 0, noPlan: true };
+    const totalEmpty = spaces.reduce((t, x) => t + x.empty, 0);
     if (totalEmpty < n) {
       return {
         error: `${key}: only ${totalEmpty} planned space${totalEmpty === 1 ? " is" : "s are"} still empty, so ${n - totalEmpty} would have to come out of a case first. Take ${n - totalEmpty === 1 ? "it" : "them"} out with Move or Count on the case, or short ship ${totalEmpty}.`,
@@ -5612,15 +5639,21 @@
         needOut: n - totalEmpty
       };
     }
-    let left = n;
+    const pick = perCase || proposeCut(spaces, n);
+    let sum = 0;
+    for (const [cn, q0] of Object.entries(pick)) {
+      const q = Math.max(0, Math.round(Number(q0) || 0));
+      if (!q) continue;
+      const x = spaces.find((s) => s.caseNum === Number(cn));
+      if (!x) return { error: `${key}: case ${cn} has none of it planned.` };
+      if (q > x.empty) return { error: `${key}: case ${cn} has only ${x.empty} empty space${x.empty === 1 ? "" : "s"} for it (${x.held} already in).` };
+      sum += q;
+    }
+    if (sum !== n) return { error: `${key}: the cases add up to ${sum}, but ${n} ${n === 1 ? "is" : "are"} coming off.` };
     const change = /* @__PURE__ */ new Map();
-    for (const { c, empty: e } of empty) {
-      if (!left) break;
-      const take = Math.min(e, left);
-      if (take) {
-        change.set(c.id, take);
-        left -= take;
-      }
+    for (const [cn, q0] of Object.entries(pick)) {
+      const q = Math.round(Number(q0) || 0);
+      if (q) change.set(spaces.find((s) => s.caseNum === Number(cn)).id, q);
     }
     const cases = (data.cases || []).map((c) => {
       const take = change.get(c.id);
@@ -8212,7 +8245,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-22.4";
+  var APP_VERSION = "2026-09-22.7";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -8769,7 +8802,7 @@ ${line}` : line;
       if (i < 0) {
         const seed = seedFor(n);
         rows.push({
-          id: caseRowId(orderId, n),
+          id: caseRowId(orderId, n, rows),
           orderId,
           caseNum: Number(n),
           contents: seed,
@@ -10422,7 +10455,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     if (i < 0) {
       if (delta < 0) return next;
       rows.push({
-        id: caseRowId(row.orderId, caseNum),
+        id: caseRowId(row.orderId, caseNum, rows),
         orderId: row.orderId,
         caseNum,
         contents: { [box]: delta },
@@ -10540,6 +10573,43 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     const keep = data.cases || [];
     const tmp = recordMovements({ ...data, cases: keep.filter((c) => !c || c.orderId !== orderId) }, [...outs, ...ins]);
     return syncCaseRowsToLedger({ ...tmp, cases: keep }, orderId);
+  }
+  function closeUpCaseNumbers(data, orderId, opts = {}) {
+    const order = (data.orders || []).find((o) => o && o.id === orderId) || {};
+    const startAt = (Number(order.startingCaseNum) || 0) + 1;
+    const inCases = ledgerCaseContents(data.movements || []);
+    const held = (c) => Object.values(inCases.get(`${orderId}|${Number(c.caseNum)}`) || {}).some((n) => Number(n) > 0);
+    const live = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === orderId).sort((a, b) => Number(a.caseNum) - Number(b.caseNum));
+    if (!live.length) return { data, moved: [], removed: [] };
+    const hasPlan = live.some((c) => Object.keys(casePlanned(c)).length);
+    const empty = (c) => hasPlan && !Object.values(casePlanned(c)).some((n) => Number(n) > 0) && !held(c) && !String(c.weight || "").trim() && !String(c.pallet || "").trim();
+    const removed = opts.remove ? live.filter((c) => opts.remove.has(Number(c.caseNum))) : live.filter(empty);
+    const keep = live.filter((c) => !removed.includes(c));
+    const moved = [];
+    const to = /* @__PURE__ */ new Map();
+    if (opts.renumber !== false) keep.forEach((c, i) => {
+      const n = startAt + i;
+      to.set(c.id, n);
+      if (Number(c.caseNum) !== n) moved.push({ from: Number(c.caseNum), to: n });
+    });
+    if (!removed.length && !moved.length) return { data, moved: [], removed: [] };
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    const gone = new Set(removed.map((c) => c.id));
+    const cases = (data.cases || []).map((c) => {
+      if (!c || c.deleted || c.orderId !== orderId) return c;
+      if (gone.has(c.id)) return { ...c, deleted: true, deletedAt: stamp, updatedAt: stamp, updatedBy: currentActor() };
+      const n = to.get(c.id);
+      return n != null && Number(c.caseNum) !== n ? { ...c, caseNum: n, updatedAt: stamp, updatedBy: currentActor() } : c;
+    });
+    const next = relabelCasesInLedger({ ...data, cases }, orderId, moved);
+    return { data: next, moved, removed: removed.map((c) => Number(c.caseNum)) };
+  }
+  function closeUpSummary(r) {
+    if (!r || !r.moved.length && !r.removed.length) return "";
+    const bits = [];
+    if (r.removed.length) bits.push(`empty case${r.removed.length === 1 ? "" : "s"} ${caseRunsLabel(r.removed)} taken away`);
+    if (r.moved.length) bits.push(`case${r.moved.length === 1 ? "" : "s"} renumbered ${r.moved.map((m) => `${m.from}\u2192${m.to}`).join(", ")} \u2014 reprint ${r.moved.length === 1 ? "that label" : "those labels"}`);
+    return bits.join("; ");
   }
   function recordMovement(prev, m) {
     if (m && Number(m.qty) === 0 && m.kind !== "adjusted") return prev;
@@ -10973,6 +11043,37 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     if (lineEditMode) return fullTable;
     return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "desktop-only" }, fullTable), /* @__PURE__ */ React.createElement("div", { className: "mobile-only mb-3" }, sorted.map((li, i) => /* @__PURE__ */ React.createElement("div", { key: li.id, className: "flex items-center justify-between text-sm py-1.5", style: { borderTop: i ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement(Spec, { s: li.description })), /* @__PURE__ */ React.createElement("span", { className: "font-semibold" }, li.qty)))));
   }
+  function shortShipCasePreview(data, orderId, decisions, caseCuts = {}, removeSet = /* @__PURE__ */ new Set()) {
+    const items = orderLineItems(data.lineItems, orderId);
+    const lines = [];
+    let cases = data.cases || [];
+    const errors = [];
+    for (const li of items) {
+      const d = decisions[li.id];
+      if (!d) continue;
+      const cut = Math.round(Number(d.cancel) || 0) + Math.round(Number(d.split) || 0);
+      if (!cut) continue;
+      const spaces = planSpacesFor({ ...data, cases }, orderId, li.description);
+      if (!spaces.length) continue;
+      const pick = caseCuts[li.id] || proposeCut(spaces, cut);
+      const r = planCutForLine({ ...data, cases }, orderId, li.description, cut, pick);
+      if (r.error) errors.push(r.error);
+      else cases = r.cases;
+      lines.push({ liId: li.id, description: li.description, cut, spaces, pick });
+    }
+    const before = new Map((data.cases || []).filter((c) => c && !c.deleted && c.orderId === orderId).map((c) => [c.id, c]));
+    const inCases = ledgerCaseContents(data.movements || []);
+    const emptied = (cases || []).filter((c) => c && !c.deleted && c.orderId === orderId && Object.keys(casePlanned(before.get(c.id) || {})).length && !Object.values(casePlanned(c)).some((n) => Number(n) > 0) && !Object.values(inCases.get(`${orderId}|${Number(c.caseNum)}`) || {}).some((n) => Number(n) > 0)).map((c) => Number(c.caseNum)).sort((a, b) => a - b);
+    let wouldRenumber = [];
+    const going = emptied.filter((n) => removeSet.has(n));
+    if (going.length) {
+      const live = (cases || []).filter((c) => c && !c.deleted && c.orderId === orderId && !going.includes(Number(c.caseNum))).map((c) => Number(c.caseNum)).sort((a, b) => a - b);
+      const order = (data.orders || []).find((o) => o.id === orderId) || {};
+      const startAt = (Number(order.startingCaseNum) || 0) + 1;
+      wouldRenumber = live.map((n, i) => ({ from: n, to: startAt + i })).filter((m) => m.from !== m.to);
+    }
+    return { lines, emptied, wouldRenumber, errors };
+  }
   function planShortShip(data, orderId, decisions, opts = {}) {
     const parent = (data.orders || []).find((o) => o.id === orderId);
     if (!parent) return { error: `Order ${orderId} not found.` };
@@ -11060,27 +11161,46 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
         changeNotes: appendChangeNote(li.changeNotes, `qty ${before} \u2192 ${before - cut} (short ship): ${reason}`)
       };
     }).concat(newLineItems);
+    const caseCuts = opts.caseCuts || {};
     let nextCases = data.cases || [];
     for (const [liId, cut] of reduceBy) {
       const li = items.find((x) => x.id === liId);
-      const r = planCutForLine({ ...data, cases: nextCases }, orderId, li.description, cut);
+      const spaces = planSpacesFor({ ...data, cases: nextCases }, orderId, li.description);
+      const r = planCutForLine({ ...data, cases: nextCases }, orderId, li.description, cut, caseCuts[liId] || (spaces.length ? proposeCut(spaces, cut) : null));
       if (r.error) return { error: r.error };
       nextCases = r.cases;
     }
+    const pv = shortShipCasePreview(data, orderId, decisions, caseCuts);
+    const emptiedChoice = opts.emptied || {};
+    const undecided = pv.emptied.filter((n) => !["remove", "keep"].includes(emptiedChoice[n]));
+    if (undecided.length) return { error: `Say what happens to case${undecided.length === 1 ? "" : "s"} ${caseRunsLabel(undecided)} \u2014 ${undecided.length === 1 ? "it would be" : "they would be"} left with nothing planned and nothing in ${undecided.length === 1 ? "it" : "them"}.`, needsCases: undecided };
+    const remove = new Set(pv.emptied.filter((n) => emptiedChoice[n] === "remove"));
+    if (remove.size && typeof opts.renumber !== "boolean") return { error: "Say whether the cases after the one taken away are renumbered or keep their numbers.", needsRenumber: true };
+    let closed = { data: { ...data, cases: nextCases }, moved: [], removed: [] };
+    if (remove.size) closed = closeUpCaseNumbers({ ...data, cases: nextCases }, orderId, { remove, renumber: opts.renumber });
+    nextCases = closed.data.cases;
+    const kept = pv.emptied.filter((n) => emptiedChoice[n] === "keep");
+    const closedNote = [
+      closeUpSummary(closed),
+      closed.removed.length && opts.renumber === false ? "other case numbers left as they are" : "",
+      kept.length ? `case${kept.length === 1 ? "" : "s"} ${caseRunsLabel(kept)} kept, empty` : ""
+    ].filter(Boolean).join("; ");
     const summaryBits = [];
     if (toCancel.length) summaryBits.push(`${toCancel.reduce((s, x) => s + x.qty, 0)} cancelled`);
     if (toSplit.length) summaryBits.push(`${toSplit.reduce((s, x) => s + x.qty, 0)} moved to ${splitOrderId}`);
     return {
       splitOrderId,
+      closedNote,
       patch: {
         orders: nextOrders,
         lineItems: nextLineItems,
         cases: nextCases,
+        ...closed.moved.length ? { movements: closed.data.movements } : {},
         ...appendLog(data, {
           action: "short_ship",
           entity: "order",
           entityId: orderId,
-          summary: `Short shipped ${orderId} \u2014 ${summaryBits.join(", ")} \u2014 because: ${reason}`,
+          summary: `Short shipped ${orderId} \u2014 ${summaryBits.join(", ")}${closedNote ? ` (${closedNote})` : ""} \u2014 because: ${reason}`,
           before: { lineItems: items.filter((li) => reduceBy.has(li.id)) },
           after: { splitOrderId, decisions, reason }
         })
@@ -11534,7 +11654,7 @@ Read the next screen carefully before you agree to it.`
           return to && Number(to.caseNum) !== Number(c.caseNum) ? { ...c, caseNum: to.caseNum, updatedAt: stamp, updatedBy: currentActor() } : c;
         });
         const added = res.newCases.map((n) => ({
-          id: caseRowId(li.orderId, n.caseNum),
+          id: caseRowId(li.orderId, n.caseNum, cases),
           orderId: li.orderId,
           caseNum: n.caseNum,
           contents: null,
@@ -14933,7 +15053,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       moves.push(movePlaced({ boxNumber: box, spec, qty: q, orderId, caseNum: to, source: "move", note }));
       if (!liveCase(to)) {
         cases = [...cases, {
-          id: caseRowId(orderId, to),
+          id: caseRowId(orderId, to, cases),
           orderId,
           caseNum: to,
           contents: null,
@@ -14999,12 +15119,10 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     }
     let next = recordMovements({ ...prev, cases }, moves);
     if (a.kind === "move") {
-      const after = ledgerCaseContents(next.movements || []).get(`${orderId}|${Number(a.caseNum)}`) || {};
-      const fromRow = (next.cases || []).find((c) => c && !c.deleted && c.orderId === orderId && Number(c.caseNum) === Number(a.caseNum));
-      const emptyNow = !Object.values(after).some((n) => Number(n) > 0) && fromRow && !Object.values(casePlanned(fromRow)).some((n) => Number(n) > 0);
-      if (emptyNow) {
-        next = { ...next, cases: next.cases.map((c) => c === fromRow ? { ...c, deleted: true, deletedAt: (/* @__PURE__ */ new Date()).toISOString() } : c) };
-        summary += `; case ${a.caseNum} is now empty and has been removed`;
+      const r = closeUpCaseNumbers(next, orderId);
+      if (r.removed.length || r.moved.length) {
+        next = r.data;
+        summary += `; ${closeUpSummary(r)}`;
       }
     }
     return { patch: { ...next, ...appendLog(next, { action: a.kind, entity: "order", entityId: orderId, summary: `${orderId} \u2014 ${summary}${a.reason ? ` (${a.reason})` : ""}` }) }, summary };
@@ -15167,7 +15285,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       const patch = Object.keys(contents).length ? { confirmed: true, updatedAt: stamp } : { contents: {}, confirmed: true, notes: EMPTY_ON_PURPOSE, updatedAt: stamp };
       caseRowPatch = () => {
         next = { ...next, cases: existing || (next.cases || []).some((c) => !c.deleted && c.orderId === order.id && Number(c.caseNum) === Number(caseNum)) ? (next.cases || []).map((c) => !c.deleted && c.orderId === order.id && Number(c.caseNum) === Number(caseNum) ? { ...c, ...patch } : c) : [...next.cases || [], {
-          id: caseRowId(order.id, caseNum),
+          id: caseRowId(order.id, caseNum, next.cases || []),
           orderId: order.id,
           caseNum: Number(caseNum),
           contents: {},
@@ -15207,6 +15325,9 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     const [reason, setReason] = useState("");
     const [error, setError] = useState(null);
     const [done, setDone] = useState(null);
+    const [cutsDraft, setCutsDraft] = useState({});
+    const [emptiedDraft, setEmptiedDraft] = useState({});
+    const [renumberDraft, setRenumberDraft] = useState(null);
     const items = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description));
     if (!items.length) return null;
     const set = (id, field, v) => {
@@ -15219,14 +15340,23 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       acc.split += Number(d.split) || 0;
       return acc;
     }, { cancel: 0, split: 0 });
+    const decisions = {};
+    for (const li of items) {
+      const d = draft[li.id] || {};
+      const cancel = Number(d.cancel) || 0, split = Number(d.split) || 0;
+      if (cancel || split) decisions[li.id] = { cancel, split };
+    }
+    const caseCuts = {};
+    for (const [liId, m] of Object.entries(cutsDraft)) if (decisions[liId]) caseCuts[liId] = Object.fromEntries(Object.entries(m).map(([k, v]) => [k, Number(v) || 0]));
+    const removeSet = new Set(Object.entries(emptiedDraft).filter(([, v]) => v === "remove").map(([k]) => Number(k)));
+    const pv = totals.cancel || totals.split ? shortShipCasePreview(data, order.id, decisions, caseCuts, removeSet) : { lines: [], emptied: [], wouldRenumber: [], errors: [] };
+    const going = pv.emptied.filter((n) => removeSet.has(n));
+    const renumber = going.length ? pv.wouldRenumber.length ? renumberDraft : true : void 0;
+    const undecided = pv.emptied.filter((n) => !emptiedDraft[n]);
+    const casesReady = !pv.errors.length && !undecided.length && (!going.length || typeof renumber === "boolean");
+    const caseOpts = { caseCuts, emptied: emptiedDraft, ...typeof renumber === "boolean" ? { renumber } : {} };
     const apply = () => {
-      const decisions = {};
-      for (const li of items) {
-        const d = draft[li.id] || {};
-        const cancel = Number(d.cancel) || 0, split = Number(d.split) || 0;
-        if (cancel || split) decisions[li.id] = { cancel, split };
-      }
-      const result = planShortShip(data, order.id, decisions, { reason });
+      const result = planShortShip(data, order.id, decisions, { reason, ...caseOpts });
       if (result.error) {
         setError(result.error);
         return;
@@ -15237,31 +15367,78 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       ].filter(Boolean).join(" and ");
       if (!window.confirm(`Short ship ${order.id}?
 
-${summary}.
+${summary}.${result.closedNote ? `
+
+Cases: ${result.closedNote}.` : ""}
 
 This changes the order quantities. It is recorded in the change log and can be reversed there.`)) return;
       setData((prev) => {
-        const r = planShortShip(prev, order.id, decisions, { splitOrderId: result.splitOrderId, reason });
+        const r = planShortShip(prev, order.id, decisions, { splitOrderId: result.splitOrderId, reason, ...caseOpts });
         if (r.error) return prev;
         return { ...prev, ...r.patch };
       });
-      setDone(summary);
+      setDone(summary + (result.closedNote ? ` \u2014 ${result.closedNote}` : ""));
       setDraft({});
       setReason("");
+      setCutsDraft({});
+      setEmptiedDraft({});
+      setRenumberDraft(null);
       if (onDone) onDone(result.splitOrderId);
     };
+    const segBtn = (on) => ({
+      height: 44,
+      padding: "0 14px",
+      borderRadius: 6,
+      fontSize: 14.5,
+      fontWeight: on ? 700 : 500,
+      cursor: "pointer",
+      border: on ? `2px solid ${NAVY}` : `1px solid ${BORDER}`,
+      background: on ? "#EEF1F8" : "#fff",
+      color: on ? NAVY : INK
+    });
+    const numBox = { width: 64, height: 40, boxSizing: "border-box", border: `1px solid #B9BBC2`, borderRadius: 6, padding: "0 8px", fontSize: 16, textAlign: "right" };
+    const casesStep = pv.lines.length > 0 && /* @__PURE__ */ React.createElement("div", { "data-shortship-cases": "1", className: "mt-4", style: { borderTop: `1px solid ${BORDER}`, paddingTop: 12 } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: NAVY } }, "What happens to the cases"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1 mb-2", style: { color: INK_MUTED, maxWidth: 560 } }, "Only empty planned spaces come off \u2014 boxes already in a case stay where they are. Change the numbers to take them from the cases you want."), pv.lines.map((ln) => {
+      const edited = cutsDraft[ln.liId];
+      const val = (cn) => edited ? edited[cn] ?? "" : String(ln.pick[cn] || "");
+      const sum = ln.spaces.reduce((t, x) => t + (Number(val(x.caseNum)) || 0), 0);
+      const setCut = (cn, v) => {
+        setError(null);
+        setCutsDraft((d) => {
+          const cur = d[ln.liId] || Object.fromEntries(ln.spaces.map((x) => [x.caseNum, String(ln.pick[x.caseNum] || "")]));
+          return { ...d, [ln.liId]: { ...cur, [cn]: v.replace(/[^0-9]/g, "") } };
+        });
+      };
+      return /* @__PURE__ */ React.createElement("div", { key: ln.liId, "data-shortship-line": ln.liId, style: { marginBottom: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, fontSize: 14.5 } }, /* @__PURE__ */ React.createElement(Spec, { s: ln.description }), " ", /* @__PURE__ */ React.createElement("span", { style: { color: sum === ln.cut ? INK_MUTED : RED, fontWeight: 500 } }, "\u2014 ", ln.cut, " off the plan", sum !== ln.cut ? ` \u2014 the cases below come to ${sum}; ${sum > ln.cut ? `make Cancel or To follow ${sum} to close them like this` : `take ${ln.cut - sum} more off a case`}` : "")), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 6, marginTop: 6 } }, ln.spaces.filter((x) => x.empty > 0 || Number(val(x.caseNum))).map((x) => /* @__PURE__ */ React.createElement("label", { key: x.caseNum, style: { display: "flex", alignItems: "center", gap: 10, fontSize: 14.5 } }, /* @__PURE__ */ React.createElement("span", { style: { minWidth: 64, fontWeight: 700 } }, "Case ", x.caseNum), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, flex: 1 } }, x.planned, " planned \xB7 ", x.held, " in \xB7 ", x.empty, " empty"), x.held > 0 && /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          "data-close-case": x.caseNum,
+          onClick: (e) => {
+            e.preventDefault();
+            setCut(x.caseNum, String(x.empty));
+          },
+          style: { ...segBtn(Number(val(x.caseNum)) === x.empty), height: 40, padding: "0 10px", fontSize: 13.5 }
+        },
+        Number(val(x.caseNum)) === x.empty ? `Closed at ${x.held}` : `Close at ${x.held}`
+      ), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, "take off"), /* @__PURE__ */ React.createElement("input", { "data-case-cut": x.caseNum, inputMode: "numeric", value: val(x.caseNum), placeholder: "0", onChange: (e) => setCut(x.caseNum, e.target.value), style: numBox })))));
+    }), pv.errors.map((e, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "text-xs", style: { color: RED, marginBottom: 6 } }, e)), pv.emptied.map((n) => /* @__PURE__ */ React.createElement("div", { key: n, "data-shortship-emptied": n, style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14.5, marginBottom: 6 } }, /* @__PURE__ */ React.createElement("b", null, "Case ", n), " would have nothing planned and nothing in it."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("button", { "data-choice": "remove", onClick: () => {
+      setError(null);
+      setEmptiedDraft((d) => ({ ...d, [n]: "remove" }));
+    }, style: segBtn(emptiedDraft[n] === "remove") }, "Take it away"), /* @__PURE__ */ React.createElement("button", { "data-choice": "keep", onClick: () => {
+      setError(null);
+      setEmptiedDraft((d) => ({ ...d, [n]: "keep" }));
+    }, style: segBtn(emptiedDraft[n] === "keep") }, "Keep it (empty)")))), going.length > 0 && pv.wouldRenumber.length > 0 && /* @__PURE__ */ React.createElement("div", { "data-shortship-renumber": "1", style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14.5, marginBottom: 6 } }, "The cases after ", going.length === 1 ? "it" : "them", ":"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("button", { "data-choice": "renumber", onClick: () => setRenumberDraft(true), style: segBtn(renumberDraft === true) }, "Renumber \u2014 reprint ", pv.wouldRenumber.map((m) => `${m.from}\u2192${m.to}`).join(", ")), /* @__PURE__ */ React.createElement("button", { "data-choice": "keepnumbers", onClick: () => setRenumberDraft(false), style: segBtn(renumberDraft === false) }, "Keep their numbers"))), !casesReady && !pv.errors.length && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: AMBER } }, "Decide what happens to each case above before applying."));
     return /* @__PURE__ */ React.createElement(Panel, { className: "no-print p-4 mb-5" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Short ship"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED, maxWidth: 460 } }, "If some of this order isn't going out, say what stays behind. Cancelled comes off the order for good; to follow moves onto a new order that stays on the system.")), /* @__PURE__ */ React.createElement(Button, { variant: open ? "accent" : "ghost", onClick: () => {
       setOpen(!open);
       setError(null);
-    } }, open ? "Close" : "Short ship")), done && /* @__PURE__ */ React.createElement("div", { className: "mt-3 px-3 py-2", style: { background: "rgba(63,125,92,0.10)", border: `1px solid ${GREEN}`, borderRadius: 5, fontSize: 13 } }, "\u2713 ", done, ". The cases below have been rebuilt from the new quantities."), open && phone && /* ON A PHONE, A CARD PER PRODUCT (Chris, 22 Sep 2026 — the table put the
+    } }, open ? "Close" : "Short ship")), done && /* @__PURE__ */ React.createElement("div", { className: "mt-3 px-3 py-2", style: { background: "rgba(63,125,92,0.10)", border: `1px solid ${GREEN}`, borderRadius: 5, fontSize: 13 } }, "\u2713 ", done, "."), open && phone && /* ON A PHONE, A CARD PER PRODUCT (Chris, 22 Sep 2026 — the table put the
        product name on five lines and pushed Shipping off the edge, so you
        couldn't see what your numbers did). Same fields, same writer. */
     /* @__PURE__ */ React.createElement("div", { className: "mt-3", style: { display: "grid", gap: 10 } }, items.map((li) => {
       const have = Number(li.qty) || 0;
       const d = draft[li.id] || {};
       const held = (Number(d.cancel) || 0) + (Number(d.split) || 0);
-      const going = have - held;
-      const over = going < 0;
+      const going2 = have - held;
+      const over = going2 < 0;
       return /* @__PURE__ */ React.createElement("div", { key: li.id, style: { border: `1px solid ${held ? AMBER : BORDER}`, borderRadius: 6, background: "#fff", padding: "10px 12px" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, fontWeight: 600, color: INK, lineHeight: 1.3 } }, /* @__PURE__ */ React.createElement(Spec, { s: li.description })), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 8, alignItems: "end" } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "On order"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 20, fontWeight: 700, height: 44, display: "flex", alignItems: "center" } }, have)), /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Cancel"), /* @__PURE__ */ React.createElement(
         "input",
         {
@@ -15280,13 +15457,13 @@ This changes the order quantities. It is recorded in the change log and can be r
           onChange: (e) => set(li.id, "split", e.target.value),
           style: { width: "100%", height: 44, boxSizing: "border-box", border: `1px solid #B9BBC2`, borderRadius: 6, padding: "0 10px", fontSize: 17, textAlign: "right" }
         }
-      ))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8, fontSize: 16, color: INK_MUTED } }, "Shipping", " ", /* @__PURE__ */ React.createElement("span", { style: { fontSize: 22, fontWeight: 700, color: over ? RED : held ? AMBER : INK } }, going), over && /* @__PURE__ */ React.createElement("span", { style: { color: RED, fontSize: 14 } }, " \u2014 more held back than ordered")));
+      ))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8, fontSize: 16, color: INK_MUTED } }, "Shipping", " ", /* @__PURE__ */ React.createElement("span", { style: { fontSize: 22, fontWeight: 700, color: over ? RED : held ? AMBER : INK } }, going2), over && /* @__PURE__ */ React.createElement("span", { style: { color: RED, fontSize: 14 } }, " \u2014 more held back than ordered")));
     })), open && /* @__PURE__ */ React.createElement("div", { className: "mt-3" }, !phone && /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product"), /* @__PURE__ */ React.createElement(ThR, { w: 70 }, "On order"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Cancel"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "To follow"), /* @__PURE__ */ React.createElement(ThR, { w: 80 }, "Shipping"))), /* @__PURE__ */ React.createElement("tbody", null, items.map((li) => {
       const have = Number(li.qty) || 0;
       const d = draft[li.id] || {};
       const held = (Number(d.cancel) || 0) + (Number(d.split) || 0);
-      const going = have - held;
-      const over = going < 0;
+      const going2 = have - held;
+      const over = going2 < 0;
       return /* @__PURE__ */ React.createElement("tr", { key: li.id, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Spec, { s: li.description })), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, have), /* @__PURE__ */ React.createElement("td", { className: "text-right px-2" }, /* @__PURE__ */ React.createElement(
         TextInput,
         {
@@ -15303,7 +15480,7 @@ This changes the order quantities. It is recorded in the change log and can be r
           style: { width: 70, textAlign: "right" },
           onChange: (e) => set(li.id, "split", e.target.value)
         }
-      )), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-semibold", style: { color: over ? RED : held ? AMBER : INK } }, going));
+      )), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-semibold", style: { color: over ? RED : held ? AMBER : INK } }, going2));
     }))), /* @__PURE__ */ React.createElement("div", { className: "mt-3" }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Why is the order changing? ", /* @__PURE__ */ React.createElement("span", { style: { color: RED } }, "required")), /* @__PURE__ */ React.createElement(
       TextInput,
       {
@@ -15315,7 +15492,7 @@ This changes the order quantities. It is recorded in the change log and can be r
         placeholder: "e.g. customer agreed 5 cancelled by email 4 Sep; balance to follow next week",
         style: { width: "100%", maxWidth: 560 }
       }
-    )), error && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: RED } }, error), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 mt-3 flex-wrap" }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: apply, disabled: !reason.trim() || !(totals.cancel || totals.split) }, "Apply short ship"), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, totals.cancel || totals.split ? `${totals.cancel} to cancel \xB7 ${totals.split} to follow on a new order` : "Nothing held back yet."))));
+    )), casesStep, error && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: RED } }, error), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 mt-3 flex-wrap" }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: apply, disabled: !reason.trim() || !(totals.cancel || totals.split) || !casesReady }, "Apply short ship"), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, totals.cancel || totals.split ? `${totals.cancel} to cancel \xB7 ${totals.split} to follow on a new order` : "Nothing held back yet."))));
   }
   function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = null, highlightKey = null, onAllocateBoxes = null }) {
     const { requirePassword: requireAdmin, modal: adminModal } = useAdminPasswordGate();
@@ -15338,7 +15515,7 @@ This changes the order quantities. It is recorded in the change log and can be r
     const writeCaseField = (prevData, caseNum, patch) => {
       const stamp = (/* @__PURE__ */ new Date()).toISOString();
       const existing = (prevData.cases || []).find((c) => !c.deleted && c.orderId === orderId && Number(c.caseNum) === Number(caseNum));
-      const cases = existing ? (prevData.cases || []).map((c) => c.id === existing.id ? { ...c, ...patch, updatedAt: stamp } : c) : [...prevData.cases || [], { id: caseRowId(orderId, caseNum), orderId, caseNum: Number(caseNum), contents: null, confirmed: false, weight: "", pallet: "", packedOutside: false, ...patch, updatedAt: stamp }];
+      const cases = existing ? (prevData.cases || []).map((c) => c.id === existing.id ? { ...c, ...patch, updatedAt: stamp } : c) : [...prevData.cases || [], { id: caseRowId(orderId, caseNum, prevData.cases || []), orderId, caseNum: Number(caseNum), contents: null, confirmed: false, weight: "", pallet: "", packedOutside: false, ...patch, updatedAt: stamp }];
       return { ...prevData, cases };
     };
     const setCaseWeights = (next) => setData((prevData) => {
@@ -15507,7 +15684,7 @@ This changes the order quantities. It is recorded in the change log and can be r
           setData((prev) => ({
             ...prev,
             cases: [...prev.cases || [], ...extra.map((p) => ({
-              id: caseRowId(order.id, p.caseNum),
+              id: caseRowId(order.id, p.caseNum, prev.cases || []),
               orderId: order.id,
               caseNum: p.caseNum,
               contents: null,
