@@ -3433,60 +3433,6 @@
     }
     return null;
   }
-  function confirmedCaseLockRefusal(prev, next) {
-    if (!prev || !next || prev === next) return null;
-    if (prev.cases === next.cases && prev.movements === next.movements) return null;
-    const locked = (prev.cases || []).filter((c) => c && !c.deleted && c.confirmed);
-    if (!locked.length) return null;
-    const before = ledgerCaseContents(prev.movements || []);
-    const after = prev.movements === next.movements ? before : ledgerCaseContents(next.movements || []);
-    const nextRows = new Map((next.cases || []).filter((c) => c).map((c) => [c.id, c]));
-    for (const c of locked) {
-      const key = `${c.orderId}|${Number(c.caseNum)}`;
-      const now = nextRows.get(c.id);
-      const where = `Case ${c.caseNum} on ${c.orderId}`;
-      const tail = " It is confirmed, so it is locked. To change it, stand at the case, photograph what is in it and send the photo to Claude.";
-      if (!now || now.deleted) return { orderId: c.orderId, summary: `${where} is confirmed \u2014 removing it was refused`, message: `${where} was not removed.${tail}` };
-      if (!now.confirmed) return { orderId: c.orderId, summary: `${where} is confirmed \u2014 taking the confirmation off was refused`, message: `${where} is still confirmed.${tail}` };
-      const was = {}, now2 = {};
-      for (const [k, v] of Object.entries(before.get(key) || {})) was[upBox(k)] = (was[upBox(k)] || 0) + (Number(v) || 0);
-      for (const [k, v] of Object.entries(after.get(key) || {})) now2[upBox(k)] = (now2[upBox(k)] || 0) + (Number(v) || 0);
-      const lost = Object.keys(was).find((b) => (now2[b] || 0) < was[b]);
-      if (lost) {
-        return {
-          orderId: c.orderId,
-          summary: `${where} is confirmed \u2014 taking ${lost} out of it was refused`,
-          message: `Nothing was changed: the ${was[lost]} \xD7 ${lost} confirmed in ${where} stay there.${tail} Boxes can still be added to fill the case.`
-        };
-      }
-      const added = Object.keys(now2).filter((b) => (now2[b] || 0) > (was[b] || 0));
-      if (added.length) {
-        const plan = Object.entries(casePlanned(now || c)).map(([spec, q]) => ({ spec, q: Number(q) || 0, held: 0 }));
-        const lineFor = (box) => {
-          const spec = specOfBoxInCase(next, c.orderId, c.caseNum, box) || "";
-          return plan.find((l) => isReelSpec(l.spec) === isReelSpec(spec) && looseSpecMatch(spec, l.spec)) || null;
-        };
-        for (const [b, q] of Object.entries(now2)) {
-          const l = lineFor(b);
-          if (l) l.held += q;
-        }
-        for (const b of added) {
-          const l = lineFor(b);
-          if (!l) return {
-            orderId: c.orderId,
-            summary: `${where} is confirmed \u2014 ${b} is not on its plan`,
-            message: `Nothing was changed: ${b} is not a product the plan has due in ${where}.`
-          };
-          if (l.held > l.q) return {
-            orderId: c.orderId,
-            summary: `${where} is confirmed \u2014 more ${l.spec} than its plan`,
-            message: `Nothing was changed: ${where} is planned for ${l.q} \xD7 ${l.spec}; this would make it ${l.held}. Only ${Math.max(0, l.q - (l.held - ((now2[b] || 0) - (was[b] || 0))))} more are due there.`
-          };
-        }
-      }
-    }
-    return null;
-  }
   function cartonOfEntry(prev, m) {
     if (!m || !m.boxNumber) return m && m.boxTypeId || null;
     const code = String(m.boxNumber).trim().toUpperCase();
@@ -5672,6 +5618,48 @@
     }
     return { needs: need.needs, cases };
   }
+  function planCutForLine(data, orderId, description, cut) {
+    const key = String(description || "").trim();
+    const n = Math.max(0, Math.round(Number(cut) || 0));
+    if (!n) return { cases: data.cases || [], emptyTaken: 0 };
+    const rows = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === orderId && casePlanned(c)[key]);
+    if (!rows.length) return { cases: data.cases || [], emptyTaken: 0, noPlan: true };
+    const inCases = ledgerCaseContents(data.movements || []);
+    const heldOf = (c) => Object.entries(inCases.get(`${orderId}|${Number(c.caseNum)}`) || {}).reduce((t, [box, q]) => {
+      const spec = specOfBoxInCase(data, orderId, c.caseNum, box);
+      const same = spec && (looseSpecMatch(spec, key) || productKey(spec) === productKey(key) && isReelSpec(spec) === isReelSpec(key));
+      return t + (same ? Number(q) || 0 : 0);
+    }, 0);
+    const empty = rows.map((c) => ({ c, empty: Math.max(0, (Number(casePlanned(c)[key]) || 0) - heldOf(c)) })).sort((a, b) => Number(b.c.caseNum) - Number(a.c.caseNum));
+    const totalEmpty = empty.reduce((t, x) => t + x.empty, 0);
+    if (totalEmpty < n) {
+      return {
+        error: `${key}: only ${totalEmpty} planned space${totalEmpty === 1 ? " is" : "s are"} still empty, so ${n - totalEmpty} would have to come out of a case first. Take ${n - totalEmpty === 1 ? "it" : "them"} out with Move or Count on the case, or short ship ${totalEmpty}.`,
+        totalEmpty,
+        needOut: n - totalEmpty
+      };
+    }
+    let left = n;
+    const change = /* @__PURE__ */ new Map();
+    for (const { c, empty: e } of empty) {
+      if (!left) break;
+      const take = Math.min(e, left);
+      if (take) {
+        change.set(c.id, take);
+        left -= take;
+      }
+    }
+    const cases = (data.cases || []).map((c) => {
+      const take = change.get(c.id);
+      if (!take) return c;
+      const planned = { ...casePlanned(c) };
+      const now = (Number(planned[key]) || 0) - take;
+      if (now > 0) planned[key] = now;
+      else delete planned[key];
+      return { ...c, planned };
+    });
+    return { cases, emptyTaken: n, casesChanged: [...change.entries()].map(([id, q]) => ({ caseNum: (data.cases || []).find((c) => c.id === id).caseNum, qty: q })) };
+  }
   function planOrderMismatches(data, orderId) {
     const cases = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === orderId);
     if (!cases.some((c) => Object.keys(casePlanned(c)).length)) return [];
@@ -5712,8 +5700,8 @@
       if (!orderId) continue;
       const o = (next.orders || []).find((x) => x && x.id === orderId);
       if (!o || o.deleted || o.stage === "Shipped" || o.stage === "Cancelled") continue;
-      const before = new Set(planOrderMismatches(prev, orderId).map((m) => `${m.spec}|${m.ordered}|${m.planned}`));
-      const fresh = planOrderMismatches(next, orderId).filter((m) => !before.has(`${m.spec}|${m.ordered}|${m.planned}`));
+      const before = new Set(planOrderMismatches(prev, orderId).map((m) => m.spec));
+      const fresh = planOrderMismatches(next, orderId).filter((m) => !before.has(m.spec));
       if (fresh.length) {
         const m = fresh[0];
         return {
@@ -8266,7 +8254,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-21.3";
+  var APP_VERSION = "2026-09-21.9";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -11183,6 +11171,13 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
         changeNotes: appendChangeNote(li.changeNotes, `qty ${before} \u2192 ${before - cut} (short ship): ${reason}`)
       };
     }).concat(newLineItems);
+    let nextCases = data.cases || [];
+    for (const [liId, cut] of reduceBy) {
+      const li = items.find((x) => x.id === liId);
+      const r = planCutForLine({ ...data, cases: nextCases }, orderId, li.description, cut);
+      if (r.error) return { error: r.error };
+      nextCases = r.cases;
+    }
     const summaryBits = [];
     if (toCancel.length) summaryBits.push(`${toCancel.reduce((s, x) => s + x.qty, 0)} cancelled`);
     if (toSplit.length) summaryBits.push(`${toSplit.reduce((s, x) => s + x.qty, 0)} moved to ${splitOrderId}`);
@@ -11191,6 +11186,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       patch: {
         orders: nextOrders,
         lineItems: nextLineItems,
+        cases: nextCases,
         ...appendLog(data, {
           action: "short_ship",
           entity: "order",
@@ -11915,7 +11911,9 @@ Read the next screen carefully before you agree to it.`
       setCustomizingPick(false);
     };
     const removePickItem = (id) => setPendingPickItems((prev) => prev.filter((it) => it.id !== id));
-    const [customizingPick, setCustomizingPick] = useState(false);
+    const customizingPick = true;
+    const setCustomizingPick = () => {
+    };
     const [pickByPhone, setPickByPhone] = useState(() => typeof window !== "undefined" && window.innerWidth < 700);
     const pendingCaseSuggestions = useMemo(() => {
       if (!pendingPickFor) return {};
@@ -12138,6 +12136,21 @@ Read the next screen carefully before you agree to it.`
     const commitSheetAmendment = (order, sheet) => {
       const draft = amendDraft.lines || {};
       const changes = [];
+      const swaps = [];
+      const trySwaps = (base) => {
+        let n = base;
+        const errs = [];
+        for (const sw of swaps) {
+          if (sw.caseNum == null) {
+            errs.push(`${sw.outBox}: no case on the sheet to swap in.`);
+            continue;
+          }
+          const r = applyCaseAction(n, order, { kind: "swap", caseNum: sw.caseNum, outBox: sw.outBox, inBox: sw.inBox, qty: sw.qty, reason: `took ${sw.inBox} instead, ${sheet.ref}` });
+          if (r.error) errs.push(`${sw.outBox} \u2192 ${sw.inBox}: ${r.error}`);
+          else n = r.patch;
+        }
+        return { n, errs };
+      };
       for (const l of sheet.lines || []) {
         const d = draft[l.boxNumber] || {};
         const printed = Number(l.qty) || 0;
@@ -12145,6 +12158,10 @@ Read the next screen carefully before you agree to it.`
         const printedCase = Array.isArray(l.caseNum) ? null : l.caseNum ?? null;
         const newCase = d.caseNum ?? printedCase;
         const caseMoved = printedCase != null && newCase != null && Number(newCase) !== Number(printedCase);
+        if (d.instead && !d.damaged && !d.notFound && String(d.instead) !== String(l.boxNumber).toUpperCase()) {
+          swaps.push({ outBox: l.boxNumber, inBox: d.instead, qty: found || printed, caseNum: newCase ?? printedCase });
+          continue;
+        }
         if (found === printed && !d.damaged && !d.notFound && !caseMoved) continue;
         changes.push({
           line: l,
@@ -12157,8 +12174,21 @@ Read the next screen carefully before you agree to it.`
           caseMoved
         });
       }
+      if (swaps.length) {
+        const dry = trySwaps(data);
+        if (dry.errs.length) {
+          try {
+            window.alert(`Nothing was saved \u2014 ${dry.errs.join(" ")}`);
+          } catch (e) {
+          }
+          return;
+        }
+      }
       if (!changes.length) {
-        setData((prev) => reconcilePickSheet(prev, sheet.id, "Amended: everything as printed"));
+        setData((prev) => {
+          const t = swaps.length ? trySwaps(prev).n : prev;
+          return reconcilePickSheet(t, sheet.id, swaps.length ? `Amended: ${swaps.map((x) => `${x.inBox} taken instead of ${x.outBox}`).join("; ")}` : "Amended: everything as printed");
+        });
         closeAmendment();
         return;
       }
@@ -12234,6 +12264,10 @@ Read the next screen carefully before you agree to it.`
         let result = { ...prevData, bondingRuns: runs, orders: prevData.orders };
         result = recordMovements(result, moves);
         result = applyPatchMapsToCases(result, order.id, { caseOverrides: overrides });
+        if (swaps.length) {
+          result = trySwaps(result).n;
+          for (const x of swaps) summary.push(`${x.inBox} taken instead of ${x.outBox}`);
+        }
         result = reconcilePickSheet(result, sheet.id, `Amended: ${summary.join("; ")}`);
         return { ...result, ...appendLog(result, {
           action: "edit",
@@ -12488,40 +12522,6 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
     const commitOnePick = (order, item) => confirmPickAndAllocate(order, [item], { receipt: false, keepRest: true });
     const assignedBoxesFor = (order) => orderBoxes(data.movements || [], data.bondingRuns || [], order.id);
     const outOfCases = (d, order, box, qty, note, sourceId) => boxOutOfOrderCases(d, order.id, box, qty, note, sourceId);
-    const [confirmQtyEdits, setConfirmQtyEdits] = useState({});
-    const confirmAllocatedQuantities = (order) => {
-      const boxes = assignedBoxesFor(order);
-      const changed = boxes.filter((b) => confirmQtyEdits[b.id] !== void 0 && Number(confirmQtyEdits[b.id]) !== Number(b.onOrderQty || 0));
-      const moves = [], errors = [], act = uid("chk");
-      for (const b of changed) {
-        const keep = Math.max(0, Math.min(Number(confirmQtyEdits[b.id]), Number(b.onOrderQty || 0)));
-        const off = Number(b.onOrderQty || 0) - keep;
-        if (off <= 0) continue;
-        const r = outOfCases(data, order, b, off, "Pick quantity reduced \u2014 back on the shelf", act);
-        if (r.error) errors.push(r.error);
-        else moves.push(...r.moves);
-      }
-      if (errors.length) {
-        window.alert(errors.join("\n\n"));
-        return;
-      }
-      if (!moves.length) {
-        setConfirmQtyEdits({});
-        return;
-      }
-      setData((prevData) => ({
-        ...recordMovements(prevData, moves),
-        ...appendLog(prevData, {
-          action: "stock_adjustment",
-          entity: "order",
-          entityId: order.id,
-          summary: `Confirmed allocated stock for order ${order.id}: ${changed.length} box${changed.length === 1 ? "" : "es"} reduced to match what was actually picked`,
-          before: { boxes: changed.map((b) => ({ boxNumber: b.boxNumber, onOrder: Number(b.onOrderQty || 0) })) },
-          after: { movementsSourceId: act, boxes: changed.map((b) => ({ boxNumber: b.boxNumber, onOrder: Math.max(0, Math.min(Number(confirmQtyEdits[b.id]), Number(b.onOrderQty || 0))) })) }
-        })
-      }));
-      setConfirmQtyEdits({});
-    };
     const returnBoxToStock = (order, box) => {
       const qty = Number(box.onOrderQty || 0);
       const act = uid("chk");
@@ -12767,7 +12767,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
         const diffs = lines.filter((l) => {
           const d = draft[l.boxNumber] || {};
           const printedCase = Array.isArray(l.caseNum) ? null : l.caseNum ?? null;
-          return d.damaged || d.notFound || Number(d.found ?? l.qty) !== Number(l.qty) || printedCase != null && d.caseNum != null && Number(d.caseNum) !== Number(printedCase);
+          return d.damaged || d.notFound || Number(d.found ?? l.qty) !== Number(l.qty) || printedCase != null && d.caseNum != null && Number(d.caseNum) !== Number(printedCase) || !!d.instead && d.instead !== String(l.boxNumber).toUpperCase();
         }).length;
         return /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mt-3", style: { borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement(
           DraftRestoredBanner,
@@ -12794,6 +12794,16 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
               type: "number",
               value: d.caseNum ?? printedCase,
               onChange: (e) => setAmendLine(l.boxNumber, { caseNum: e.target.value === "" ? printedCase : Number(e.target.value) })
+            }
+          )), /* @__PURE__ */ React.createElement("label", { className: "text-sm pb-2", style: { display: "grid", gap: 2 } }, /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, "Took instead"), /* @__PURE__ */ React.createElement(
+            "input",
+            {
+              value: d.instead || "",
+              disabled: !!d.damaged || !!d.notFound,
+              placeholder: "Box code",
+              onChange: (e) => setAmendLine(l.boxNumber, { instead: e.target.value.toUpperCase().trim() }),
+              "aria-label": `Took instead of ${l.boxNumber}`,
+              style: { height: 36, width: 130, border: `1px solid ${BORDER}`, borderRadius: 4, padding: "0 8px", fontFamily: "IBM Plex Mono, monospace" }
             }
           )), /* @__PURE__ */ React.createElement("label", { className: "text-sm flex items-center gap-2 pb-2" }, /* @__PURE__ */ React.createElement(
             "input",
@@ -12858,7 +12868,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
             },
             message: "Your pick walk was restored \u2014 the quantities and cases you'd already entered are still here. Nothing was confirmed."
           }
-        ), /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-3", style: { borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1" }, "Go and check this against real stock before confirming"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Grouped by product, oldest first within each. Find each box: correct the quantity if it's short, tick Damaged if it's unusable, and check the Case # it's going in \u2014 a suggestion's filled in already, change it if you're packing differently. Nothing is allocated until you hit Confirm below.")), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 flex-wrap mb-2" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => printAndAllocate(o) }, "\u{1F5A8} Print pick sheet"), /* @__PURE__ */ React.createElement(Button, { variant: pickByPhone ? "accent" : "ghost", onClick: () => setPickByPhone(!pickByPhone) }, "\u{1F4F1} ", pickByPhone ? "Back to full view" : "Pick by phone"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setCustomizingPick(!customizingPick) }, customizingPick ? "Done customizing" : "\u270E Customize pick list"), anyAdjusted && /* @__PURE__ */ React.createElement("span", { className: "text-sm font-semibold", style: { color: AMBER } }, "Confirmed total ", totalConfirmed, " differs from proposed ", totalProposed), damagedCount > 0 && /* @__PURE__ */ React.createElement("span", { className: "text-sm font-semibold", style: { color: RED } }, damagedCount, " box", damagedCount === 1 ? "" : "es", " marked damaged \u2014 written off, not allocated")), customizingPick && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, `Remove anything you don't want, or use "+ Add another box" on a product if you find you're short \u2014 it goes straight back to unpicked stock either way, nothing's touched until you Confirm.`), pickByPhone ? /* @__PURE__ */ React.createElement(
+        ), /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-3", style: { borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1" }, "Go and check this against real stock before confirming"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Grouped by product, oldest first within each. Find each box: correct the quantity if it's short, tick Damaged if it's unusable, and check the Case # it's going in \u2014 a suggestion's filled in already, change it if you're packing differently. Nothing is allocated until you hit Confirm below.")), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 flex-wrap mb-2" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => printAndAllocate(o) }, "\u{1F5A8} Print pick sheet"), /* @__PURE__ */ React.createElement(Button, { variant: pickByPhone ? "accent" : "ghost", onClick: () => setPickByPhone(!pickByPhone) }, "\u{1F4F1} ", pickByPhone ? "Back to full view" : "Pick by phone"), anyAdjusted && /* @__PURE__ */ React.createElement("span", { className: "text-sm font-semibold", style: { color: AMBER } }, "Confirmed total ", totalConfirmed, " differs from proposed ", totalProposed), damagedCount > 0 && /* @__PURE__ */ React.createElement("span", { className: "text-sm font-semibold", style: { color: RED } }, damagedCount, " box", damagedCount === 1 ? "" : "es", " marked damaged \u2014 written off, not allocated")), customizingPick && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, `Remove anything you don't want, or use "+ Add another box" on a product if you find you're short \u2014 it goes straight back to unpicked stock either way, nothing's touched until you Confirm.`), pickByPhone ? /* @__PURE__ */ React.createElement(
           PickByPhoneView,
           {
             setPickItemConfirmed,
@@ -12940,20 +12950,15 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
             else if (action === "notfound") markBoxNotFound(o, b);
           } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014"), /* @__PURE__ */ React.createElement("option", { value: "back" }, "Back to stock"), /* @__PURE__ */ React.createElement("option", { value: "notfound" }, "Not there \u2014 take off stock"), /* @__PURE__ */ React.createElement("option", { value: "damaged" }, "Damaged"))))))));
         })());
-      })(), checkStockFor === o.id && (() => {
-        const boxes = assignedBoxesFor(o);
-        if (boxes.length === 0) return null;
-        return /* @__PURE__ */ React.createElement("div", { className: "mt-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Correct a quantity"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, "Adjust any box down to what was actually found \u2014 the difference goes straight back to general stock. Leave as-is if the count was right."), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto mb-3", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, { w: 140 }, "Box number"), /* @__PURE__ */ React.createElement(Th, null, "Product size"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Allocated"), /* @__PURE__ */ React.createElement(Th, { w: 110 }, "Actual found"))), /* @__PURE__ */ React.createElement("tbody", null, boxes.map((b, i) => /* @__PURE__ */ React.createElement("tr", { key: b.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, b.boxNumber)), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 no-wrap" }, /* @__PURE__ */ React.createElement(Spec, { s: b.productSize })), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, b.onOrderQty), /* @__PURE__ */ React.createElement("td", { className: "px-2 py-1" }, /* @__PURE__ */ React.createElement(
-          TextInput,
-          {
-            type: "number",
-            min: "0",
-            max: b.onOrderQty,
-            value: confirmQtyEdits[b.id] ?? b.onOrderQty,
-            onChange: (e) => setConfirmQtyEdits({ ...confirmQtyEdits, [b.id]: e.target.value })
-          }
-        ))))))), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => confirmAllocatedQuantities(o) }, "Save quantity changes"));
-      })()));
+      })(), checkStockFor === o.id && assignedBoxesFor(o).length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-4 text-sm", style: { color: INK_MUTED } }, "Something in a case not right? Open the case and use ", /* @__PURE__ */ React.createElement("b", null, "Swap"), ", ", /* @__PURE__ */ React.createElement("b", null, "Move"), " or ", /* @__PURE__ */ React.createElement("b", null, "Count"), ".", jumpToPacking && /* @__PURE__ */ React.createElement(React.Fragment, null, " ", /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          onClick: () => jumpToPacking(o.id),
+          className: "underline",
+          style: { background: "none", border: "none", color: NAVY, cursor: "pointer", fontWeight: 600, padding: 0 }
+        },
+        "Open the cases"
+      )))));
     }
     function renderOrdersList() {
       return /* @__PURE__ */ React.createElement("div", { className: "space-y-2" }, orders.map((o) => {
@@ -14632,6 +14637,13 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       qty: Number(r.qty) || 0
     })));
     const nextKey = useRef(rows.length);
+    const [where, setWhere] = useState({});
+    const shortfalls = (() => {
+      const was = {}, now = {};
+      for (const r of rows) if (r.boxNumber) was[r.boxNumber] = (was[r.boxNumber] || 0) + (Number(r.qty) || 0);
+      for (const d of draft) if (d.boxNumber) now[d.boxNumber] = (now[d.boxNumber] || 0) + (Number(d.qty) || 0);
+      return Object.entries(was).filter(([b, n]) => (now[b] || 0) < n).map(([b, n]) => ({ box: b, short: n - (now[b] || 0) }));
+    })();
     const [spec, setSpec] = useState("");
     const [box, setBox] = useState("");
     const [qty, setQty] = useState("");
@@ -14810,7 +14822,24 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
         }
       },
       "Add"
-    )), picked && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, picked.code, " holds ", picked.left, ", ", picked.where, ".")), flags.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-3 px-3 py-2", style: { background: "#FFF7E6", border: `1px solid ${AMBER}`, borderRadius: 6 } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { fontWeight: 700, color: INK } }, "Doesn't add up \u2014 saved anyway, and listed at the end"), flags.map((f, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "text-xs mt-0.5", style: { color: INK_MUTED } }, f))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 16 } }, /* @__PURE__ */ React.createElement(
+    )), picked && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, picked.code, " holds ", picked.left, ", ", picked.where, ".")), flags.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-3 px-3 py-2", style: { background: "#FFF7E6", border: `1px solid ${AMBER}`, borderRadius: 6 } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { fontWeight: 700, color: INK } }, "Doesn't add up \u2014 saved anyway, and listed at the end"), flags.map((f, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "text-xs mt-0.5", style: { color: INK_MUTED } }, f))), shortfalls.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-3", "data-shortfalls": "1", style: { display: "grid", gap: 8, padding: "10px 12px", background: "#FDF1E7", border: "1px solid #F0C9A6", borderRadius: 6 } }, shortfalls.map((sf) => /* @__PURE__ */ React.createElement("div", { key: sf.box, style: { display: "grid", gap: 6 } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm" }, /* @__PURE__ */ React.createElement("b", null, sf.short, " \xD7 ", /* @__PURE__ */ React.createElement("span", { className: "font-mono" }, sf.box)), " fewer than the record. Where are they?"), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 } }, [["shelf", "Back on the shelf"], ["lost", "Not found"]].map(([k, label]) => /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        key: k,
+        onClick: () => setWhere((w) => ({ ...w, [sf.box]: k })),
+        style: {
+          height: 44,
+          borderRadius: 6,
+          fontSize: 14,
+          cursor: "pointer",
+          fontWeight: (where[sf.box] || "shelf") === k ? 700 : 500,
+          border: (where[sf.box] || "shelf") === k ? `2px solid ${NAVY}` : `1px solid ${BORDER}`,
+          background: (where[sf.box] || "shelf") === k ? "#EEF1F8" : "#fff",
+          color: (where[sf.box] || "shelf") === k ? NAVY : INK
+        }
+      },
+      label
+    )))))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 16 } }, /* @__PURE__ */ React.createElement(
       "button",
       {
         onClick: () => onSave(
@@ -14819,11 +14848,12 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
           // Boxes that were in this case when the editor opened and are not
           // in it now. Without this a removal was never recorded — overrides
           // can only place — so the automatic contents came straight back.
-          rows.filter((r) => r.boxNumber && !draft.some((d) => d.boxNumber === r.boxNumber)).map((r) => r.boxNumber)
+          rows.filter((r) => r.boxNumber && !draft.some((d) => d.boxNumber === r.boxNumber)).map((r) => r.boxNumber),
+          Object.fromEntries(shortfalls.filter((sf) => where[sf.box] === "lost").map((sf) => [sf.box, sf.short]))
         ),
         style: { ...fld, flex: 1, background: GREEN, color: "#fff", border: "none", fontWeight: 700, fontSize: 17, cursor: "pointer" }
       },
-      "\u2713 Confirm case ",
+      "\u2713 Save count of case ",
       caseNum
     ), /* @__PURE__ */ React.createElement("button", { onClick: onCancel, style: { ...fld, padding: "0 20px", cursor: "pointer" } }, "Cancel")));
   }
@@ -14943,7 +14973,130 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 12 } }, open ? "hide" : "show")
     ), /* @__PURE__ */ React.createElement("div", { style: open ? void 0 : { display: "none" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Georgia, serif", color: "#000" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 26, fontWeight: 700 } }, order.customer), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, marginBottom: 2 } }, "Order ", order.id, order.customerRef ? ` \xB7 their ref ${order.customerRef}` : ""), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, marginBottom: 14 } }, rows.length, " case", rows.length === 1 ? "" : "s", " \xB7 ", grand, " boxes altogether"), /* @__PURE__ */ React.createElement("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 15 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: { textAlign: "left", borderBottom: "2px solid #000", padding: "6px 8px", width: 62 } }, "Case"), /* @__PURE__ */ React.createElement("th", { style: { textAlign: "left", borderBottom: "2px solid #000", padding: "6px 8px" } }, "What goes in it"), /* @__PURE__ */ React.createElement("th", { style: { textAlign: "right", borderBottom: "2px solid #000", padding: "6px 8px", width: 70 } }, "Boxes"), /* @__PURE__ */ React.createElement("th", { style: { textAlign: "center", borderBottom: "2px solid #000", padding: "6px 8px", width: 60 } }, "Done"))), /* @__PURE__ */ React.createElement("tbody", null, rows.map((r) => /* @__PURE__ */ React.createElement("tr", { key: r.caseNum, style: { pageBreakInside: "avoid" } }, /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px", fontSize: 22, fontWeight: 700, verticalAlign: "top" } }, r.caseNum), /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px" } }, r.lines.map(([spec, qty], i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { lineHeight: 1.5 } }, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 17 } }, qty), " \xD7 ", short(spec))), (r.plan || []).map((p, i) => /* @__PURE__ */ React.createElement("div", { key: "a" + i, style: { lineHeight: 1.5, color: "#666" } }, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 17 } }, p[1]), " \xD7 ", short(p[0]), " ", /* @__PURE__ */ React.createElement("i", null, p[3] > 0 ? `\u2014 ${p[3]} to come` : "\u2014 done")))), /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px", textAlign: "right", fontSize: 19, fontWeight: 700, verticalAlign: "top" } }, r.total, r.toCome > 0 && /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 400, color: "#666" } }, " / ", r.total + r.toCome)), /* @__PURE__ */ React.createElement("td", { style: { borderBottom: "1px solid #999", padding: "9px 8px", textAlign: "center", verticalAlign: "top" } }, /* @__PURE__ */ React.createElement("span", { style: { display: "inline-block", width: 22, height: 22, border: "2px solid #000" } })))))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, marginTop: 16 } }, "Printed ", (/* @__PURE__ */ new Date()).toLocaleString("en-GB", { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" }), ". If a case is different from this list, write on it \u2014 the sheet is the record."))));
   }
-  function CaseGrid({ cases, caseWeights, setCaseWeights, palletAssignments, setPalletAssignments, highlightBoxes = null, highlightKey = null, litCases = [], caseOverrides = {}, setCaseOverrides = null, onEditCase = null, editOrder = null, editData = null }) {
+  function caseCardFill(c) {
+    const rows = c && c.contributions || [];
+    const groups = [];
+    for (const r of rows) {
+      const qty = Number(r.qty) || 0;
+      if (!qty) continue;
+      let g = groups.find((x) => sameProductSpec(x.spec, r.spec));
+      if (!g) {
+        g = { spec: r.spec, held: 0, plan: 0 };
+        groups.push(g);
+      }
+      g.plan += qty;
+      if (r.boxNumber) g.held += qty;
+    }
+    const held = groups.reduce((t, g) => t + g.held, 0);
+    const plan = Number(c && c.maxSize) || CASE_MAX_SIZE_DEFAULT;
+    return { held, plan, full: held >= plan && plan > 0, byProduct: groups };
+  }
+  function CaseActionPanel({ kind, order, data, chosen, cases, onDo, onCancel }) {
+    const boxes = (chosen.contributions || []).filter((r) => r.boxNumber && Number(r.qty) > 0);
+    const others = (cases || []).map((c) => c.caseNum).filter((n) => Number(n) !== Number(chosen.caseNum)).sort((a, b) => a - b);
+    const nextNew = Math.max(0, ...(cases || []).map((c) => Number(c.caseNum) || 0)) + 1;
+    const [box, setBox] = useState(boxes[0] ? boxes[0].boxNumber : "");
+    const held = Number((boxes.find((b) => b.boxNumber === box) || {}).qty) || 0;
+    const [qty, setQty] = useState(held || "");
+    const [outTo, setOutTo] = useState("shelf");
+    const [inBox, setInBox] = useState("");
+    const [inFrom, setInFrom] = useState("shelf");
+    const [toCase, setToCase] = useState(others[0] != null ? String(others[0]) : String(nextNew));
+    const [reason, setReason] = useState("");
+    const spec = (boxes.find((b) => b.boxNumber === box) || {}).spec;
+    const sameFree = useMemo(() => {
+      if (kind !== "Swap" || !spec) return [];
+      const seen = /* @__PURE__ */ new Set();
+      const out = [];
+      for (const r of data.bondingRuns || []) {
+        if (!r || r.deleted || !r.boxNumber || !r.productSize) continue;
+        const B = String(r.boxNumber).trim().toUpperCase();
+        if (seen.has(B) || B === String(box).toUpperCase() || !sameProductSpec(r.productSize, spec)) continue;
+        seen.add(B);
+        const free = placeOf(data, B).available || 0;
+        if (free > 0) out.push({ box: B, free, bay: r.location || "" });
+      }
+      return out.sort((a, b) => b.free - a.free).slice(0, 12);
+    }, [kind, spec, box, data]);
+    const action = kind === "Swap" ? { kind: "swap", caseNum: chosen.caseNum, outBox: box, qty, inBox, outToCase: outTo === "shelf" ? null : Number(outTo), inFromCase: inFrom === "shelf" ? null : Number(inFrom), reason: reason.trim() } : { kind: "move", caseNum: chosen.caseNum, box, qty, toCase: Number(toCase), reason: reason.trim() };
+    const ready = kind === "Swap" ? !!(box && inBox && Number(qty) > 0) : !!(box && Number(qty) > 0 && Number(toCase) > 0);
+    const preview = ready ? applyCaseAction(data, order, action) : null;
+    const field = { height: 44, boxSizing: "border-box", border: `1px solid #B9BBC2`, borderRadius: 6, padding: "0 10px", fontSize: 16, background: "#fff", width: "100%" };
+    const lbl = { fontSize: 12, fontWeight: 700, letterSpacing: ".06em", textTransform: "uppercase", color: INK_MUTED };
+    const seg = (on) => ({ height: 44, borderRadius: 6, fontSize: 14, fontWeight: on ? 700 : 500, border: on ? `2px solid ${NAVY}` : `1px solid ${BORDER}`, background: on ? "#EEF1F8" : "#fff", color: on ? NAVY : INK, cursor: "pointer" });
+    return /* @__PURE__ */ React.createElement("div", { className: "no-print", "data-case-action": kind, style: { padding: "12px 16px 14px", borderTop: `1px solid ${BORDER}`, background: "#FCFCFB", display: "grid", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, color: NAVY } }, kind === "Swap" ? `Swap on case ${chosen.caseNum} \u2014 same product` : `Move from case ${chosen.caseNum}`), /* @__PURE__ */ React.createElement("div", { style: lbl }, kind === "Swap" ? "Taking out" : "Moving"), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 96px", gap: 8 } }, /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, "Box"), /* @__PURE__ */ React.createElement("select", { value: box, onChange: (e) => {
+      setBox(e.target.value);
+      const h = Number((boxes.find((b) => b.boxNumber === e.target.value) || {}).qty) || 0;
+      setQty(h || "");
+    }, style: field }, boxes.map((b) => /* @__PURE__ */ React.createElement("option", { key: b.boxNumber, value: b.boxNumber }, b.boxNumber, " \xB7 ", b.qty, " in")))), /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, "How many"), /* @__PURE__ */ React.createElement("input", { type: "number", inputMode: "numeric", min: "1", value: qty, onChange: (e) => setQty(e.target.value), style: field }))), kind === "Swap" ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "They go to"), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 } }, /* @__PURE__ */ React.createElement("button", { onClick: () => setOutTo("shelf"), style: seg(outTo === "shelf") }, "The shelf"), /* @__PURE__ */ React.createElement("select", { value: outTo === "shelf" ? "" : outTo, onChange: (e) => setOutTo(e.target.value || "shelf"), style: { ...seg(outTo !== "shelf"), padding: "0 8px" } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Another case\u2026"), others.map((n) => /* @__PURE__ */ React.createElement("option", { key: n, value: n }, "Case ", n)))), /* @__PURE__ */ React.createElement("div", { style: lbl }, "Putting in"), /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, "Box (same product)"), /* @__PURE__ */ React.createElement("input", { list: `swapin-${chosen.caseNum}`, value: inBox, onChange: (e) => setInBox(e.target.value.toUpperCase()), placeholder: "Box code", style: { ...field, fontFamily: "IBM Plex Mono, monospace" } }), /* @__PURE__ */ React.createElement("datalist", { id: `swapin-${chosen.caseNum}` }, sameFree.map((x) => /* @__PURE__ */ React.createElement("option", { key: x.box, value: x.box }, `${x.free} free${x.bay ? " at " + x.bay : ""}`)))), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "From"), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 } }, /* @__PURE__ */ React.createElement("button", { onClick: () => setInFrom("shelf"), style: seg(inFrom === "shelf") }, "The shelf"), /* @__PURE__ */ React.createElement("select", { value: inFrom === "shelf" ? "" : inFrom, onChange: (e) => setInFrom(e.target.value || "shelf"), style: { ...seg(inFrom !== "shelf"), padding: "0 8px" } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Another case\u2026"), others.map((n) => /* @__PURE__ */ React.createElement("option", { key: n, value: n }, "Case ", n))))) : /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, "To case"), /* @__PURE__ */ React.createElement("select", { value: toCase, onChange: (e) => setToCase(e.target.value), style: field }, others.map((n) => /* @__PURE__ */ React.createElement("option", { key: n, value: n }, "Case ", n)), /* @__PURE__ */ React.createElement("option", { value: nextNew }, "A new case (", nextNew, ")"))), /* @__PURE__ */ React.createElement("label", null, /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, "Reason (optional)"), /* @__PURE__ */ React.createElement("input", { value: reason, onChange: (e) => setReason(e.target.value), placeholder: "e.g. couldn't find the batch", style: field })), preview && /* @__PURE__ */ React.createElement("div", { style: {
+      borderRadius: 6,
+      padding: "10px 12px",
+      fontSize: 14,
+      lineHeight: 1.5,
+      background: preview.error ? "#FDF1E7" : "#EEF1F8",
+      border: `1px solid ${preview.error ? "#F0C9A6" : "#C9D0E6"}`
+    } }, preview.error ? preview.error : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("b", null, "What will happen:"), " ", preview.summary, ".")), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 2fr", gap: 8 } }, /* @__PURE__ */ React.createElement("button", { onClick: onCancel, style: { height: 48, borderRadius: 6, border: `1px solid ${NAVY}`, background: "#fff", color: NAVY, fontWeight: 600, fontSize: 15, cursor: "pointer" } }, "Cancel"), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        "data-case-do": "1",
+        disabled: !preview || !!preview.error,
+        onClick: () => onDo(action),
+        style: {
+          height: 48,
+          borderRadius: 6,
+          border: "none",
+          fontWeight: 600,
+          fontSize: 16,
+          cursor: "pointer",
+          background: !preview || preview.error ? "#C9CBD1" : NAVY,
+          color: "#fff"
+        }
+      },
+      kind
+    )), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED, textAlign: "center" } }, "Saved with your name and the time, in the change log."));
+  }
+  function packingListStatus(data, orderId) {
+    const log = (data.changeLog || []).filter((l) => l && !l.deleted && l.entityId === orderId);
+    const printed = log.filter((l) => l.action === "print" && /^Printed packing list/.test(l.summary || "")).sort((a, b) => String(b.at).localeCompare(String(a.at)))[0] || null;
+    const mapChange = (l) => l.action === "move" || l.action === "short_ship" || /amend/i.test(l.action || "") || /amendment/i.test(l.summary || "");
+    const changes = printed ? log.filter((l) => mapChange(l) && String(l.at) > String(printed.at)) : [];
+    return { printedAt: printed ? printed.at : null, changedSince: changes.length, lastChange: changes.sort((a, b) => String(b.at).localeCompare(String(a.at)))[0] || null };
+  }
+  function PackingListStrip({ data, order, onPrint }) {
+    const st = packingListStatus(data, order.id);
+    const when = (iso) => {
+      try {
+        const d = new Date(iso);
+        return `${plainDate(d)} ${d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
+      } catch (e) {
+        return iso;
+      }
+    };
+    const tone = !st.printedAt ? { bg: "#EEF1F8", bd: "#C9D0E6", fg: NAVY } : st.changedSince ? { bg: "#FDF1E7", bd: "#F0C9A6", fg: "#8A4B12" } : { bg: "#FAFAF8", bd: BORDER, fg: INK_MUTED };
+    return /* @__PURE__ */ React.createElement("div", { className: "no-print", "data-packing-list-strip": "1", style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 12,
+      flexWrap: "wrap",
+      padding: "10px 12px",
+      marginBottom: 14,
+      borderRadius: 6,
+      background: tone.bg,
+      border: `1px solid ${tone.bd}`
+    } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 14.5, color: tone.fg, fontWeight: st.printedAt && !st.changedSince ? 400 : 600, lineHeight: 1.4 } }, !st.printedAt ? "Packing list not printed yet \u2014 print it for the clipboard on the cases." : st.changedSince ? `The cases have changed since the packing list was printed (${when(st.printedAt)}) \u2014 reprint it.` : `Packing list printed ${when(st.printedAt)}.`), /* @__PURE__ */ React.createElement("button", { onClick: onPrint, style: {
+      height: 44,
+      padding: "0 16px",
+      borderRadius: 6,
+      fontWeight: 600,
+      fontSize: 15,
+      cursor: "pointer",
+      border: st.printedAt && !st.changedSince ? `1px solid ${NAVY}` : "none",
+      background: st.printedAt && !st.changedSince ? "#fff" : NAVY,
+      color: st.printedAt && !st.changedSince ? NAVY : "#fff"
+    } }, "\u{1F5A8} ", st.printedAt && !st.changedSince ? "Print again" : "Print packing list"));
+  }
+  function CaseGrid({ cases, caseWeights, setCaseWeights, palletAssignments, setPalletAssignments, highlightBoxes = null, highlightKey = null, litCases = [], caseOverrides = {}, setCaseOverrides = null, onEditCase = null, editOrder = null, editData = null, onCaseAction = null }) {
     const onWayByCase = useMemo(() => {
       const out = {};
       if (!editOrder || !editData) return out;
@@ -14967,6 +15120,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       return out;
     }, [editOrder && editOrder.id, editData && editData.movements, cases]);
     const [editingCase, setEditingCase] = useState(null);
+    const [caseAct, setCaseAct] = useState(null);
     const [sel, setSel] = useState(cases.length ? cases[0].caseNum : null);
     const chosen = cases.find((c) => c.caseNum === sel) || cases[0];
     const [walking, setWalking] = useState(false);
@@ -15049,38 +15203,28 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
         setWalking(false);
         setEditingCase(null);
       } }, "Finish walk"))),
-      /* @__PURE__ */ React.createElement(
-        "button",
-        {
-          onClick: () => setEditingCase(editingCase === chosen.caseNum ? null : chosen.caseNum),
-          style: {
-            background: "none",
-            border: "none",
-            padding: "4px 0",
-            cursor: onEditCase ? "pointer" : "default",
-            font: "inherit",
-            color: INK,
-            fontWeight: 600,
-            textAlign: "left",
-            display: "flex",
-            alignItems: "baseline",
-            gap: 10,
-            flexWrap: "wrap"
-          }
-        },
-        /* @__PURE__ */ React.createElement("span", null, "Case ", /* @__PURE__ */ React.createElement(Mono, { className: "font-bold", style: { fontSize: 20 } }, chosen.caseNum)),
-        onEditCase && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, color: NAVY, fontWeight: 700, whiteSpace: "nowrap" } }, editingCase === chosen.caseNum ? "\u2715 close" : "tap to confirm or amend")
-      ),
-      /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, marginLeft: 12, whiteSpace: "nowrap" } }, caseState(chosen).label)
-    ), onEditCase && editingCase === chosen.caseNum && /* @__PURE__ */ React.createElement(
+      /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 600, display: "flex", alignItems: "baseline", gap: 10 } }, /* @__PURE__ */ React.createElement("span", null, "Case ", /* @__PURE__ */ React.createElement(Mono, { className: "font-bold", style: { fontSize: 20 } }, chosen.caseNum))),
+      (() => {
+        const f = caseCardFill(chosen);
+        return /* @__PURE__ */ React.createElement("span", { style: {
+          fontSize: 13,
+          fontWeight: 700,
+          padding: "3px 10px",
+          borderRadius: 12,
+          whiteSpace: "nowrap",
+          color: f.full ? "#1F6B41" : "#7A4F00",
+          background: f.full ? "#E4F2E8" : "#FBEFD6"
+        } }, f.full ? `Full \xB7 ${f.held} of ${f.plan}` : `${f.held} of ${f.plan}`);
+      })()
+    ), !chosen.packedOutside && caseCardFill(chosen).byProduct.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "px-4 pt-2.5 pb-1", style: { display: "grid", gap: 4 } }, caseCardFill(chosen).byProduct.map((p) => /* @__PURE__ */ React.createElement("div", { key: p.spec, className: "flex items-baseline justify-between gap-3 text-sm" }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 600, color: INK, minWidth: 0 } }, p.spec), /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 700, whiteSpace: "nowrap", color: p.held >= p.plan ? "#1F6B41" : "#7A4F00" } }, p.held, " of ", p.plan, " planned")))), onEditCase && editingCase === chosen.caseNum && /* @__PURE__ */ React.createElement(
       CaseContentsEditor,
       {
         order: editOrder,
         caseNum: chosen.caseNum,
         rows: chosen.contributions || [],
         data: editData,
-        onSave: (rows2, flags, removed) => {
-          onEditCase(chosen.caseNum, rows2, flags, removed);
+        onSave: (rows2, flags, removed, lost) => {
+          onEditCase(chosen.caseNum, rows2, flags, removed, lost);
           if (walking) stepWalk(1);
           else setEditingCase(null);
         },
@@ -15093,9 +15237,47 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
         className: "flex items-baseline justify-between gap-3 px-4 py-2.5",
         style: { borderTop: i ? `1px solid #F0F0EC` : "none" }
       },
-      /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { fontWeight: 600, color: INK } }, /* @__PURE__ */ React.createElement(SpecWithRef, { spec: r.spec, customerRef: r.customerRef })), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-0.5", style: { color: INK_MUTED } }, r.boxNumber ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Mono, null, r.boxNumber), r.batchCode ? /* @__PURE__ */ React.createElement(React.Fragment, null, " \xB7 batch ", /* @__PURE__ */ React.createElement(Mono, null, r.batchCode)) : null) : /* @__PURE__ */ React.createElement("span", { style: { color: AMBER, fontWeight: 600 } }, "not run yet \u2014 no box or batch assigned")), setCaseOverrides && r.boxNumber && /* @__PURE__ */ React.createElement("div", { className: "mt-1.5" }, /* @__PURE__ */ React.createElement(CaseMover, { boxNumber: r.boxNumber, caseNum: chosen.caseNum, caseOverrides, setCaseOverrides, cases }))),
+      /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { fontWeight: 600, color: INK } }, /* @__PURE__ */ React.createElement(SpecWithRef, { spec: r.spec, customerRef: r.customerRef })), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-0.5", style: { color: INK_MUTED } }, r.boxNumber ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Mono, null, r.boxNumber), r.batchCode ? /* @__PURE__ */ React.createElement(React.Fragment, null, " \xB7 batch ", /* @__PURE__ */ React.createElement(Mono, null, r.batchCode)) : null) : /* @__PURE__ */ React.createElement("span", { style: { color: AMBER, fontWeight: 600 } }, "not run yet \u2014 no box or batch assigned"))),
       /* @__PURE__ */ React.createElement("span", { className: "font-mono shrink-0", style: { fontWeight: 800, fontSize: 13.5 } }, r.qty)
-    )), /* @__PURE__ */ React.createElement(
+    )), !chosen.packedOutside && (onCaseAction || onEditCase) && editingCase !== chosen.caseNum && /* @__PURE__ */ React.createElement("div", { className: "no-print", style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, padding: "10px 16px 12px", borderTop: `1px solid ${BORDER}` } }, ["Swap", "Move", "Count"].map((k) => /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        key: k,
+        onClick: () => {
+          if (k === "Count") {
+            setCaseAct(null);
+            setEditingCase(chosen.caseNum);
+          } else setCaseAct(caseAct === k ? null : k);
+        },
+        disabled: k !== "Count" && !onCaseAction,
+        style: {
+          height: 44,
+          borderRadius: 6,
+          fontWeight: 600,
+          fontSize: 15,
+          border: `1px solid ${NAVY}`,
+          background: caseAct === k ? NAVY : "#fff",
+          color: caseAct === k ? "#fff" : NAVY,
+          cursor: "pointer"
+        }
+      },
+      k
+    ))), caseAct && onCaseAction && editingCase !== chosen.caseNum && /* @__PURE__ */ React.createElement(
+      CaseActionPanel,
+      {
+        kind: caseAct,
+        order: editOrder,
+        data: editData,
+        chosen,
+        cases,
+        onDo: (a) => {
+          const r = onCaseAction(a);
+          if (!r || !r.error) setCaseAct(null);
+          return r;
+        },
+        onCancel: () => setCaseAct(null)
+      }
+    ), /* @__PURE__ */ React.createElement(
       "div",
       {
         className: "flex items-center gap-3 px-4 py-2.5",
@@ -15117,7 +15299,167 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       )
     )));
   }
-  function applyCaseContents(prev, order, caseNum, rows, flags, removed = [], stamp = (/* @__PURE__ */ new Date()).toISOString()) {
+  function sameProductSpec(a, b) {
+    if (!a || !b) return false;
+    return looseSpecMatch(a, b) || productKey(a) === productKey(b) && isReelSpec(a) === isReelSpec(b);
+  }
+  function boxSpecOf(data, box) {
+    const B = String(box || "").trim().toUpperCase();
+    const run = (data.bondingRuns || []).find((r) => r && !r.deleted && String(r.boxNumber || "").trim().toUpperCase() === B && r.productSize);
+    if (run) return run.productSize;
+    const m = (data.movements || []).find((x) => x && !x.deleted && String(x.boxNumber || "").trim().toUpperCase() === B && x.spec);
+    return m ? m.spec : null;
+  }
+  function planCarry(cases, orderId, fromCase, toCase, spec, qty) {
+    const rows = cases.filter((c) => c && !c.deleted && c.orderId === orderId);
+    const from = rows.find((c) => Number(c.caseNum) === Number(fromCase));
+    const planned = casePlanned(from || {});
+    const key = Object.keys(planned).find((k) => sameProductSpec(k, spec)) || spec;
+    return cases.map((c) => {
+      if (!c || c.deleted || c.orderId !== orderId) return c;
+      if (Number(c.caseNum) === Number(fromCase)) {
+        const p = { ...casePlanned(c) };
+        const now = (Number(p[key]) || 0) - qty;
+        if (now > 0) p[key] = now;
+        else delete p[key];
+        return { ...c, planned: p };
+      }
+      if (Number(c.caseNum) === Number(toCase)) {
+        const p = { ...casePlanned(c) };
+        p[key] = (Number(p[key]) || 0) + qty;
+        return { ...c, planned: p };
+      }
+      return c;
+    });
+  }
+  function applyCaseAction(prev, order, a) {
+    const orderId = order.id;
+    const q = Math.round(Number(a.qty) || 0);
+    if (!(q > 0)) return { error: "Say how many." };
+    const held = ledgerCaseContents(prev.movements || []);
+    const inCase = (cn, box) => Number((held.get(`${orderId}|${Number(cn)}`) || {})[Object.keys(held.get(`${orderId}|${Number(cn)}`) || {}).find((k) => k.toUpperCase() === String(box).trim().toUpperCase())] || 0);
+    const liveCase = (cn) => (prev.cases || []).some((c) => c && !c.deleted && c.orderId === orderId && Number(c.caseNum) === Number(cn));
+    const who = currentActor();
+    const moves = [];
+    let cases = prev.cases || [];
+    let summary;
+    if (a.kind === "swap") {
+      const outBox = String(a.outBox || "").trim().toUpperCase(), inBox = String(a.inBox || "").trim().toUpperCase();
+      if (!outBox || !inBox) return { error: "Say which box comes out and which goes in." };
+      if (outBox === inBox) return { error: "That's the same box going out and in." };
+      if (inCase(a.caseNum, outBox) < q) return { error: `Case ${a.caseNum} holds ${inCase(a.caseNum, outBox)} of ${outBox}, not ${q}.` };
+      const outSpec = boxSpecOf(prev, outBox), inSpec = boxSpecOf(prev, inBox);
+      if (!inSpec) return { error: `${inBox} isn't on record. If it's really here, use Count and add it as found stock.` };
+      if (!sameProductSpec(outSpec, inSpec)) return { error: `${inBox} is ${inSpec}, not ${outSpec}. Swap is for the same product \u2014 use Move to change what a case holds.` };
+      if (a.inFromCase) {
+        if (inCase(a.inFromCase, inBox) < q) return { error: `Case ${a.inFromCase} holds ${inCase(a.inFromCase, inBox)} of ${inBox}, not ${q}.` };
+      } else if ((placeOf(prev, inBox).available || 0) < q) {
+        return { error: `Only ${placeOf(prev, inBox).available || 0} of ${inBox} are free on the shelf.` };
+      }
+      if (a.outToCase) {
+        const toRow = (prev.cases || []).find((c) => c && !c.deleted && c.orderId === orderId && Number(c.caseNum) === Number(a.outToCase));
+        const room = (Number(toRow && toRow.maxSize) || CASE_MAX_SIZE_DEFAULT) - Object.values(held.get(`${orderId}|${Number(a.outToCase)}`) || {}).reduce((t, n) => t + (Number(n) || 0), 0);
+        if (q > room) return { error: room > 0 ? `Case ${a.outToCase} only has room for ${room} more.` : `Case ${a.outToCase} is full.` };
+      }
+      const note = `Swap in ${orderId} case ${a.caseNum}` + (a.reason ? ` \u2014 ${a.reason}` : "");
+      moves.push(moveUnplaced({ boxNumber: outBox, spec: outSpec, qty: q, orderId, caseNum: Number(a.caseNum), source: "swap", note }));
+      if (a.outToCase) moves.push(movePlaced({ boxNumber: outBox, spec: outSpec, qty: q, orderId, caseNum: Number(a.outToCase), source: "swap", note }));
+      if (a.inFromCase) moves.push(moveUnplaced({ boxNumber: inBox, spec: inSpec, qty: q, orderId, caseNum: Number(a.inFromCase), source: "swap", note }));
+      moves.push(movePlaced({ boxNumber: inBox, spec: inSpec, qty: q, orderId, caseNum: Number(a.caseNum), source: "swap", note }));
+      summary = `Case ${a.caseNum}: ${q} \xD7 ${outBox} ${a.outToCase ? `to case ${a.outToCase}` : "back to the shelf"}, ${q} \xD7 ${inBox} in ${a.inFromCase ? `from case ${a.inFromCase}` : "from the shelf"}`;
+    } else if (a.kind === "move") {
+      const box = String(a.box || "").trim().toUpperCase();
+      const to = Number(a.toCase);
+      if (!box) return { error: "Say which box to move." };
+      if (!(to > 0)) return { error: "Say which case they're going to." };
+      if (to === Number(a.caseNum)) return { error: "That's the case they're already in." };
+      if (inCase(a.caseNum, box) < q) return { error: `Case ${a.caseNum} holds ${inCase(a.caseNum, box)} of ${box}, not ${q}.` };
+      const spec = boxSpecOf(prev, box);
+      const toRow = (prev.cases || []).find((c) => c && !c.deleted && c.orderId === orderId && Number(c.caseNum) === to);
+      const room = (Number(toRow && toRow.maxSize) || CASE_MAX_SIZE_DEFAULT) - Object.values(held.get(`${orderId}|${to}`) || {}).reduce((t, n) => t + (Number(n) || 0), 0);
+      if (q > room) return { error: room > 0 ? `Case ${to} only has room for ${room} more.` : `Case ${to} is full.` };
+      const note = `Move in ${orderId}: case ${a.caseNum} \u2192 case ${to}` + (a.reason ? ` \u2014 ${a.reason}` : "");
+      moves.push(moveUnplaced({ boxNumber: box, spec, qty: q, orderId, caseNum: Number(a.caseNum), source: "move", note }));
+      moves.push(movePlaced({ boxNumber: box, spec, qty: q, orderId, caseNum: to, source: "move", note }));
+      if (!liveCase(to)) {
+        cases = [...cases, {
+          id: caseRowId(orderId, to),
+          orderId,
+          caseNum: to,
+          contents: null,
+          planned: {},
+          confirmed: false,
+          weight: "",
+          pallet: "",
+          packedOutside: false,
+          notes: null,
+          deleted: false,
+          deletedAt: null,
+          maxSize: CASE_MAX_SIZE_DEFAULT,
+          updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+          updatedBy: who
+        }];
+      }
+      cases = planCarry(cases, orderId, a.caseNum, to, spec, q);
+      {
+        const toRow2 = cases.find((c) => c && !c.deleted && c.orderId === orderId && Number(c.caseNum) === to);
+        const cap = Number(toRow2 && toRow2.maxSize) || CASE_MAX_SIZE_DEFAULT;
+        let over = Object.values(casePlanned(toRow2 || {})).reduce((t, n) => t + (Number(n) || 0), 0) - cap;
+        if (over > 0) {
+          const heldTo = held.get(`${orderId}|${to}`) || {};
+          const heldOf = (key) => Object.entries(heldTo).reduce((t, [bx, n]) => t + (sameProductSpec(boxSpecOf(prev, bx), key) ? Number(n) || 0 : 0), 0);
+          const giveBack = {};
+          for (const [k, n] of Object.entries(casePlanned(toRow2))) {
+            if (over <= 0) break;
+            if (sameProductSpec(k, spec)) continue;
+            const empty = Math.max(0, (Number(n) || 0) - heldOf(k));
+            const g = Math.min(empty, over);
+            if (g > 0) {
+              giveBack[k] = g;
+              over -= g;
+            }
+          }
+          if (over > 0) return { error: `Case ${to} has no room left in its plan for ${q} more.` };
+          cases = cases.map((c) => {
+            if (!c || c.deleted || c.orderId !== orderId) return c;
+            const pl = { ...casePlanned(c) };
+            if (Number(c.caseNum) === to) {
+              for (const [k, g] of Object.entries(giveBack)) {
+                const nv = (Number(pl[k]) || 0) - g;
+                if (nv > 0) pl[k] = nv;
+                else delete pl[k];
+              }
+              return { ...c, planned: pl };
+            }
+            if (Number(c.caseNum) === Number(a.caseNum)) {
+              for (const [k, g] of Object.entries(giveBack)) pl[k] = (Number(pl[k]) || 0) + g;
+              return { ...c, planned: pl };
+            }
+            return c;
+          });
+        }
+      }
+      summary = `${q} \xD7 ${box} moved from case ${a.caseNum} to case ${to}`;
+    } else return { error: "Unknown action." };
+    let trial = { ...prev, cases };
+    for (const m of moves) {
+      const why = movementRefusal(trial, m);
+      if (why) return { error: why };
+      trial = recordMovement(trial, m);
+    }
+    let next = recordMovements({ ...prev, cases }, moves);
+    if (a.kind === "move") {
+      const after = ledgerCaseContents(next.movements || []).get(`${orderId}|${Number(a.caseNum)}`) || {};
+      const fromRow = (next.cases || []).find((c) => c && !c.deleted && c.orderId === orderId && Number(c.caseNum) === Number(a.caseNum));
+      const emptyNow = !Object.values(after).some((n) => Number(n) > 0) && fromRow && !Object.values(casePlanned(fromRow)).some((n) => Number(n) > 0);
+      if (emptyNow) {
+        next = { ...next, cases: next.cases.map((c) => c === fromRow ? { ...c, deleted: true, deletedAt: (/* @__PURE__ */ new Date()).toISOString() } : c) };
+        summary += `; case ${a.caseNum} is now empty and has been removed`;
+      }
+    }
+    return { patch: { ...next, ...appendLog(next, { action: a.kind, entity: "order", entityId: orderId, summary: `${orderId} \u2014 ${summary}${a.reason ? ` (${a.reason})` : ""}` }) }, summary };
+  }
+  function applyCaseContents(prev, order, caseNum, rows, flags, removed = [], stamp = (/* @__PURE__ */ new Date()).toISOString(), lost = {}) {
     const overrides = {};
     const extraFlags = [];
     let runs = [...prev.bondingRuns || []];
@@ -15290,6 +15632,21 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     }
     next = recordMovements(next, moves.filter((m) => m.kind !== "allocated" || m.qty > 0));
     caseRowPatch();
+    const lostMoves = Object.entries(lost || {}).filter(([, n]) => Number(n) > 0).map(([box, n]) => moveAdjusted({
+      boxNumber: box,
+      qty: -Number(n),
+      source: "count",
+      note: `Not found when ${order.id} case ${caseNum} was counted \u2014 taken off stock`
+    }));
+    if (lostMoves.length) {
+      next = recordMovements(next, lostMoves);
+      logs.push({
+        action: "stock_adjustment",
+        entity: "order",
+        entityId: order.id,
+        summary: `${order.id} case ${caseNum} counted: ${lostMoves.map((m) => `${-m.qty} \xD7 ${m.boxNumber}`).join(", ")} not found \u2014 taken off stock`
+      });
+    }
     for (const l of logs) next = { ...next, ...appendLog(next, l) };
     return next;
   }
@@ -15458,7 +15815,7 @@ This changes the order quantities. It is recorded in the change log and can be r
       () => arrangedCasesForOrder(data, orderId, { items }),
       [data, orderId, items]
     );
-    const saveCaseContents = (caseNum, rows, flags, removed) => setData((prev) => applyCaseContents(prev, order, caseNum, rows, flags, removed));
+    const saveCaseContents = (caseNum, rows, flags, removed, lost) => setData((prev) => applyCaseContents(prev, order, caseNum, rows, flags, removed, void 0, lost));
     const litCaseNums = useMemo(() => {
       if (!highlightBoxes || !highlightBoxes.length) return [];
       const want = new Set(highlightBoxes.map((b) => String(b).trim().toUpperCase()));
@@ -15519,7 +15876,7 @@ This changes the order quantities. It is recorded in the change log and can be r
       },
       "\u2190 Back to ",
       order.id
-    ), /* @__PURE__ */ React.createElement("header", { style: { marginBottom: 18 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED, marginBottom: 2, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", null, "Packing ", /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { color: NAVY, fontWeight: 500 } }, order.id)), order.boxType && /* @__PURE__ */ React.createElement(BoxTypeMark, { type: order.boxType })), /* @__PURE__ */ React.createElement("h1", { style: { fontSize: 30, lineHeight: 1.08, letterSpacing: "-0.02em", fontWeight: 600, margin: 0, color: NAVY_DEEP } }, order.customer), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6, fontSize: 15, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, totalItems), " boxes in ", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, caseRows.length), " case", caseRows.length === 1 ? "" : "s", manualCount ? `, plus ${manualCount} packed before the app` : "", ".", " ", order.caseLayout === "as_entered" ? "Cases follow the order the lines were entered." : "Cases are laid out by size.")), String(order.notes || "").trim() && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-4", style: { borderLeft: `4px solid ${NAVY}`, background: "#FAFAF8" } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-1 flex items-center justify-between gap-3" }, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Notes on this order"), String(order.notes).length > 150 && /* @__PURE__ */ React.createElement(
+    ), /* @__PURE__ */ React.createElement("header", { style: { marginBottom: 18 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED, marginBottom: 2, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", null, "Packing ", /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { color: NAVY, fontWeight: 500 } }, order.id)), order.boxType && /* @__PURE__ */ React.createElement(BoxTypeMark, { type: order.boxType })), /* @__PURE__ */ React.createElement("h1", { style: { fontSize: 30, lineHeight: 1.08, letterSpacing: "-0.02em", fontWeight: 600, margin: 0, color: NAVY_DEEP } }, order.customer), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6, fontSize: 15, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, totalItems), " boxes in ", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, caseRows.length), " case", caseRows.length === 1 ? "" : "s", manualCount ? `, plus ${manualCount} packed before the app` : "", ".", " ", order.caseLayout === "as_entered" ? "Cases follow the order the lines were entered." : "Cases are laid out by size.")), /* @__PURE__ */ React.createElement(PackingListStrip, { data, order, onPrint: () => printPackingList(order, caseRows, setData) }), String(order.notes || "").trim() && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-4", style: { borderLeft: `4px solid ${NAVY}`, background: "#FAFAF8" } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-1 flex items-center justify-between gap-3" }, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Notes on this order"), String(order.notes).length > 150 && /* @__PURE__ */ React.createElement(
       "button",
       {
         onClick: () => setNotesOpen((v) => !v),
@@ -15727,7 +16084,14 @@ This changes the order quantities. It is recorded in the change log and can be r
         setCaseOverrides,
         editOrder: order,
         editData: data,
-        onEditCase: overrideOn ? ((caseNum, rows, flags, removed) => saveCaseContents(caseNum, rows, flags, removed)) : null
+        onEditCase: (caseNum, rows, flags, removed, lost) => saveCaseContents(caseNum, rows, flags, removed, lost),
+        onCaseAction: (a) => {
+          setData((prev) => {
+            const r = applyCaseAction(prev, order, a);
+            return r.error ? prev : r.patch;
+          });
+          return {};
+        }
       }
     )), /* @__PURE__ */ React.createElement("div", { className: "mobile-only mb-5 no-print", style: gridActive ? { display: "none" } : void 0 }, caseRows.length === 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 text-sm", style: { color: INK_MUTED } }, "No standard-size items on this order."), caseRows.map((c) => (
       /* The just-made box's case, lit in the LIST too — this is the view
@@ -16843,11 +17207,6 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       const trial = moveBoxRow(data, r.id, dest);
       if (trial.error) {
         setError(trial.error);
-        return;
-      }
-      const locked = confirmedCaseLockRefusal(data, trial.patch);
-      if (locked) {
-        setError(locked.message);
         return;
       }
       if (!window.confirm(`${trial.summary}?`)) return;
@@ -24438,7 +24797,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       setDataRaw((prevStored) => {
         const prevData = withLedgerFigures(prevStored);
         const nextData = fillCustomerReferences(fillProductReferences(typeof updater === "function" ? updater(prevData) : updater));
-        const locked = confirmedCaseLockRefusal(prevData, nextData) || planOrderRefusal(prevData, nextData) || identityGateRefusal(prevData, nextData);
+        const locked = planOrderRefusal(prevData, nextData) || identityGateRefusal(prevData, nextData);
         if (locked) {
           try {
             setTimeout(() => window.alert(locked.message), 0);
