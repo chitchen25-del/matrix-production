@@ -6347,6 +6347,19 @@
     return out.sort((a, b) => a.distance - b.distance).slice(0, limit);
   }
   var BOX_SUFFIXES = ["SDB", "SD4"];
+  var STRONG_TAPE_MARK = "S";
+  function isStrongTapeBoxCode(code) {
+    return /SD[B4]S$/.test(String(code || "").trim().toUpperCase());
+  }
+  function strongTapeBoxCode(code) {
+    const up = String(code || "").trim().toUpperCase();
+    if (!up || isStrongTapeBoxCode(up) || !/SD[B4]$/.test(up)) return up;
+    return up + STRONG_TAPE_MARK;
+  }
+  function standardTapeBoxCode(code) {
+    const up = String(code || "").trim().toUpperCase();
+    return isStrongTapeBoxCode(up) ? up.slice(0, -1) : up;
+  }
   var RETIRED_SUFFIX_INITIALS = { G: "a former operator" };
   function normaliseBoxSuffix(suffix) {
     const s = String(suffix || "").trim().toUpperCase();
@@ -6375,12 +6388,13 @@
       if (twin) {
         warnings.push(`${twin} already exists \u2014 same three letters in a different order is the same box, not a new one. Check this is not that batch.`);
       }
+      if (parsed.suffix && isStrongTapeBoxCode(trimmed)) parsed.suffix = parsed.suffix.slice(0, -1);
       if (parsed.suffix) {
         const retired = RETIRED_SUFFIX_INITIALS[parsed.suffix[0]];
         if (retired) {
           warnings.push(`"${parsed.suffix}" starts with ${parsed.suffix[0]} \u2014 ${retired}. Historical codes keep it, but new work is ${BOX_SUFFIXES.join(" or ")}.`);
         } else if (!normaliseBoxSuffix(parsed.suffix)) {
-          warnings.push(`"${parsed.suffix}" isn't a suffix in use \u2014 it should be ${BOX_SUFFIXES.join(" or ")} (S for Steve, D for Dave, then B for Biesse tape or 4 for the other).`);
+          warnings.push(`"${parsed.suffix}" isn't a suffix in use \u2014 it should be ${BOX_SUFFIXES.join(" or ")} (S for Steve, D for Dave, then B for Biesse tape or 4 for the other), with an S after it for strong tape.`);
         }
       } else {
         warnings.push(`This code has no suffix \u2014 it should end ${BOX_SUFFIXES.join(" or ")}.`);
@@ -8411,7 +8425,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-22.14";
+  var APP_VERSION = "2026-09-22.15";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -20721,7 +20735,8 @@ Plan it?`
         return { orderId: a.orderId, customer: o?.customer || "", needs: 0, qty: a.qty, extra: true };
       })
     ];
-    const suggestedBoxes = BOX_SUFFIXES.map((suffix) => nextBatchCode(form.date, existingBoxCodes, { suffix }));
+    const strongRun = (form.allocations || []).some((a) => Number(a.qty) > 0 && isStrongTapeOrder(orders.find((o) => o.id === a.orderId)));
+    const suggestedBoxes = BOX_SUFFIXES.map((suffix) => nextBatchCode(form.date, existingBoxCodes, { suffix: strongRun ? suffix + "S" : suffix }));
     const suggestedBox = suggestedBoxes[0];
     const reelMatches = availableBatches.filter((b) => !reelQuery || String(b.batchNumber || "").toUpperCase().includes(reelQuery.toUpperCase()) || looseSpecMatch(b.productSize, reelQuery)).slice(0, 12);
     const pickReel = (b) => {
@@ -20882,7 +20897,7 @@ Plan it?`
         (materials || []).filter((m) => m.category === "boxes" && !m.deleted).map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id }, m.name))
       ))), /* @__PURE__ */ React.createElement("div", { className: "font-mono", style: { fontSize: 20, fontWeight: 600, textAlign: "center", color: over ? RED : INK_MUTED } }, over ? "\u2014" : toShelf)),
       over && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: RED, marginTop: 6 } }, "That's ", allocated, " allocated from ", made, " made \u2014 take ", allocated - made, " off somewhere.")
-    ), /* @__PURE__ */ React.createElement(BondStep, { n: 4, q: "Box code", hint: "Offered, not filled in. Tap the one for the tape you used, or type the code on the label." }, /* @__PURE__ */ React.createElement(BondField, { big: true }, /* @__PURE__ */ React.createElement(
+    ), /* @__PURE__ */ React.createElement(BondStep, { n: 4, q: "Box code", hint: strongRun ? "STRONG TAPE \u2014 this run is for a strong-tape order, so the code ends in S. Tap the one for the tape you used, or type the code on the label." : "Offered, not filled in. Tap the one for the tape you used, or type the code on the label." }, /* @__PURE__ */ React.createElement(BondField, { big: true }, /* @__PURE__ */ React.createElement(
       "input",
       {
         value: form.boxNumber || "",
@@ -21678,6 +21693,23 @@ Plan it?`
       if (allocated > made) return `${allocated} boxes allocated but only ${made} were made.`;
       return "";
     };
+    const gateStrongTape = (f) => {
+      const allocs = (f.allocations || []).filter((a) => a.orderId && Number(a.qty) > 0);
+      const orderIds = allocs.length ? allocs.map((a) => a.orderId) : f.workNumber && Number(f.onOrderQty) > 0 ? [f.workNumber] : [];
+      if (!orderIds.length) return "";
+      const strong = orderIds.filter((id) => isStrongTapeOrder(orders.find((o) => o.id === id)));
+      const plain = orderIds.filter((id) => !strong.includes(id));
+      const code = String(f.boxNumber || "").trim().toUpperCase();
+      if (strong.length && plain.length)
+        return `${strong.join(", ")} ${strong.length === 1 ? "wants" : "want"} strong tape and ${plain.join(", ")} ${plain.length === 1 ? "doesn't" : "don't"} \u2014 one run is one tape. Log them as two runs.`;
+      if (strong.length && !isStrongTapeBoxCode(code)) {
+        const fixed = strongTapeBoxCode(code);
+        return fixed !== code ? `${strong.join(", ")} is a strong-tape order \u2014 the box code ends in S: ${fixed}.` : `${strong.join(", ")} is a strong-tape order \u2014 the box code should be SDB or SD4 with an S on the end (e.g. ${nextBatchCode(f.date, bondingRuns.map((r) => r.boxNumber), { suffix: "SDBS" }) || "I62201SDBS"}).`;
+      }
+      if (plain.length && isStrongTapeBoxCode(code))
+        return `${code} ends in S, which means strong tape, but ${plain.join(", ")} ${plain.length === 1 ? "isn't a strong-tape order" : "aren't strong-tape orders"}. If it is standard tape the code is ${standardTapeBoxCode(code)}.`;
+      return "";
+    };
     const gateCarton = (f) => {
       if ((f.packageType || "Box") !== "Box") return "";
       const rows = explodeAllocations(f) || [{ ...f, boxTypeId: f.workNumber ? f.boxTypeId : shelfCartonId(f) }];
@@ -21704,7 +21736,8 @@ Plan it?`
         () => gateCasePlan(form),
         () => gateAgainstPlan(form),
         () => gateLocation(form),
-        () => gateCarton(form)
+        () => gateCarton(form),
+        () => gateStrongTape(form)
       ]);
       if (err) {
         setAddError(err);
