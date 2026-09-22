@@ -1078,6 +1078,7 @@
           if (!runMatchesLine(box, li, { formCheck: false })) continue;
           if (!stockFormMatchesLine(box, li.description)) continue;
           if (!shelfBoxFitsBoxType(box, orderBoxTypeFor(order, li.description))) continue;
+          if (!tapeFits(box.boxNumber, order)) continue;
           const take = Math.min(box.left, outstanding);
           box.left -= take;
           outstanding -= take;
@@ -1145,16 +1146,10 @@
       const strongTapeOrders = [];
       for (const part of ordered) {
         let need = part.qty;
-        if (part.strongTape) {
-          part.toMake = need;
-          strongTapeToMake += need;
-          strongTapeOrders.push(part.orderId);
-          if (need > 0) toMakeByBox[part.boxType] = (toMakeByBox[part.boxType] || 0) + need;
-          continue;
-        }
         for (const b of candidates) {
           if (need <= 0) break;
           if (b.left <= 0 || !shelfBoxFitsBoxType(b, part.boxType)) continue;
+          if (isStrongTapeBoxCode(b.boxNumber) !== !!part.strongTape) continue;
           const take = Math.min(b.left, need);
           b.left -= take;
           need -= take;
@@ -1162,6 +1157,10 @@
         }
         part.toMake = need;
         if (need > 0) toMakeByBox[part.boxType] = (toMakeByBox[part.boxType] || 0) + need;
+        if (part.strongTape) {
+          strongTapeToMake += need;
+          if (!strongTapeOrders.includes(part.orderId)) strongTapeOrders.push(part.orderId);
+        }
       }
       row.covered = covered;
       row.toMake = Math.max(0, row.qty - covered);
@@ -1630,7 +1629,6 @@
     return orderPickablePercentStored(order, lineItems, ledgerCorrectedRuns(bondingRuns), stockPicks, reservations, materials);
   }
   function orderPickablePercentStored(order, lineItems, bondingRuns, stockPicks, reservations, materials) {
-    if (isStrongTapeOrder(order)) return 0;
     const items = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description) && !isSmallItem(li.description));
     const { byLineItem } = groupAssignedRunsByLineItem(bondingRuns, order.id, items, orderBoxes(LEDGER_MOVEMENTS, bondingRuns, order.id));
     const mine = reservations ? reservations.get(order.id) : null;
@@ -1641,7 +1639,7 @@
       const assignedQty = runs.reduce((s, r) => s + Number(r.onOrderQty || 0), 0);
       const outstanding = Math.max(0, Number(li.qty) - assignedQty);
       if (outstanding <= 0) continue;
-      const available = mine ? mine.get(li.id) || 0 : boxed.filter((b) => runMatchesLine(b, li) && !cartonMismatch(b, order, materials)).reduce((s, b) => s + Number(b.available || 0), 0);
+      const available = mine ? mine.get(li.id) || 0 : boxed.filter((b) => runMatchesLine(b, li) && !cartonMismatch(b, order, materials) && tapeFits(b.boxNumber, order)).reduce((s, b) => s + Number(b.available || 0), 0);
       totalOutstanding += outstanding;
       totalCoverable += Math.min(outstanding, available);
     }
@@ -3725,7 +3723,7 @@
   function computeMakeLists(order, data) {
     const items = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description) && !isSmallItem(li.description));
     const availableBatches = batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || [], data.stockPicks || []);
-    const shelf = isStrongTapeOrder(order) ? [] : boxedStockAvailable(data.bondingRuns, data.stockPicks || []);
+    const shelf = boxedStockAvailable(data.bondingRuns, data.stockPicks || []).filter((b) => tapeFits(b.boxNumber, order));
     const taken = {};
     const inCasePool = [];
     for (const c of data.cases || []) {
@@ -3787,6 +3785,14 @@
   }
   function isStrongTapeOrder(order) {
     return /strong[\s_-]*tape/i.test(String(order && order.notes || ""));
+  }
+  function tapeFits(boxNumber, order) {
+    return isStrongTapeBoxCode(boxNumber) === isStrongTapeOrder(order);
+  }
+  function tapeRefusal(boxNumber, order) {
+    if (!order || tapeFits(boxNumber, order)) return "";
+    const who = `${order.id}${order.customer ? ` (${order.customer})` : ""}`;
+    return isStrongTapeOrder(order) ? `${boxNumber} is ordinary tape and ${who} is a strong-tape order \u2014 only strong-tape boxes (code ending S) can go to it.` : `${boxNumber} is strong tape (the S on the code) and ${who} isn't a strong-tape order \u2014 strong-tape boxes are only for strong-tape orders.`;
   }
   function cartonMismatch(candidate, order, materials) {
     const want = orderBoxTypeFor(order, candidate.productSize || candidate.spec || "");
@@ -5223,6 +5229,10 @@
       return id + (o && o.customer ? ` (${o.customer})` : "");
     };
     for (const a of rows) {
+      if (a.boxNumber) {
+        const t = tapeRefusal(a.boxNumber, (data.orders || []).find((x) => x.id === a.orderId));
+        if (t) return t;
+      }
       if (a.boxTypeId) {
         const order = (data.orders || []).find((x) => x.id === a.orderId);
         const want = orderBoxTypeFor(order, spec);
@@ -8425,7 +8435,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-22.15";
+  var APP_VERSION = "2026-09-22.16";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -9809,7 +9819,7 @@ ${line}` : line;
     return /* @__PURE__ */ React.createElement(
       "span",
       {
-        title: `Made fresh on strong tape for ${(row.strongTapeOrders || []).join(", ")} \u2014 the shelf can't cover it`,
+        title: `Strong tape for ${(row.strongTapeOrders || []).join(", ")} \u2014 only strong-tape boxes (code ending S) can cover it`,
         style: { marginLeft: 8, fontSize: 11, fontWeight: 700, color: RED, whiteSpace: "nowrap", ...style || {} }
       },
       n,
@@ -10105,7 +10115,7 @@ ${line}` : line;
           title: `Open order ${o.id}`
         },
         /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between gap-2.5", style: { padding: "14px 18px 0" } }, /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { fontSize: 12.5, fontWeight: 500, color: NAVY } }, o.id), /* @__PURE__ */ React.createElement(StageRule, { stage: o.stage })),
-        /* @__PURE__ */ React.createElement("div", { style: { padding: "6px 18px 0" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 19, fontWeight: 600, lineHeight: 1.15, letterSpacing: "-0.018em", color: INK } }, o.customer), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-x-4 gap-y-1 flex-wrap", style: { marginTop: 8, fontSize: 13.5, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("span", { style: { color: o.priority === 1 ? RED : INK_MUTED, fontWeight: o.priority === 1 ? 600 : 400 } }, o.priority ? `Priority ${o.priority}` : "No priority"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, o.totalItems), " boxes ordered"), isStrongTapeOrder(o) && /* @__PURE__ */ React.createElement("span", { title: "Made fresh on the bonding line \u2014 nothing from stock", style: { color: RED, fontWeight: 700, fontSize: 12, letterSpacing: "0.04em" } }, "STRONG TAPE \xB7 made fresh"), o.caseCount > 0 && /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, o.caseCount), " case", o.caseCount === 1 ? "" : "s")), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10, fontSize: 15, display: "flex", flexWrap: "wrap", columnGap: 20, rowGap: 4 } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Due", " ", /* @__PURE__ */ React.createElement("span", { style: { color: o.promise && o.promise.overdueNow ? RED : INK, fontWeight: 600 } }, o.dueDate ? plainDate(o.dueDate) : "not set")), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Ready", " ", /* @__PURE__ */ React.createElement("span", { style: { color: o.promise && o.promise.late ? RED : INK, fontWeight: 600 } }, o.promise ? plainDate(o.promise.ready) : "\u2014")), o.promise && o.promise.late && /* @__PURE__ */ React.createElement("span", { style: { color: RED, fontWeight: 600 } }, "late")), o.openSheet && /* @__PURE__ */ React.createElement("div", { style: {
+        /* @__PURE__ */ React.createElement("div", { style: { padding: "6px 18px 0" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 19, fontWeight: 600, lineHeight: 1.15, letterSpacing: "-0.018em", color: INK } }, o.customer), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-x-4 gap-y-1 flex-wrap", style: { marginTop: 8, fontSize: 13.5, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("span", { style: { color: o.priority === 1 ? RED : INK_MUTED, fontWeight: o.priority === 1 ? 600 : 400 } }, o.priority ? `Priority ${o.priority}` : "No priority"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, o.totalItems), " boxes ordered"), isStrongTapeOrder(o) && /* @__PURE__ */ React.createElement("span", { title: "Strong-tape boxes only \u2014 codes ending S", style: { color: RED, fontWeight: 700, fontSize: 12, letterSpacing: "0.04em" } }, "STRONG TAPE \xB7 S boxes only"), o.caseCount > 0 && /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, o.caseCount), " case", o.caseCount === 1 ? "" : "s")), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10, fontSize: 15, display: "flex", flexWrap: "wrap", columnGap: 20, rowGap: 4 } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Due", " ", /* @__PURE__ */ React.createElement("span", { style: { color: o.promise && o.promise.overdueNow ? RED : INK, fontWeight: 600 } }, o.dueDate ? plainDate(o.dueDate) : "not set")), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Ready", " ", /* @__PURE__ */ React.createElement("span", { style: { color: o.promise && o.promise.late ? RED : INK, fontWeight: 600 } }, o.promise ? plainDate(o.promise.ready) : "\u2014")), o.promise && o.promise.late && /* @__PURE__ */ React.createElement("span", { style: { color: RED, fontWeight: 600 } }, "late")), o.openSheet && /* @__PURE__ */ React.createElement("div", { style: {
           marginTop: 8,
           display: "flex",
           alignItems: "center",
@@ -12048,7 +12058,6 @@ Read the next screen carefully before you agree to it.`
       return held.some((r) => r.orderId && r.orderId !== orderId) && !held.some((r) => r.orderId === orderId);
     };
     const matchingBoxesFor = (order) => {
-      if (isStrongTapeOrder(order)) return [];
       const orderLines = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description));
       const orderSpecs = new Set(orderLines.map((li) => normalizeSpec(li.description)));
       const withBoxTypeFlag = (b) => ({ ...b, boxTypeIssue: boxTypeMismatch(b, order) });
@@ -12092,7 +12101,7 @@ Read the next screen carefully before you agree to it.`
         if (room <= 0) return null;
         return room < b.available ? { ...b, available: room, cartonCapped: true } : b;
       };
-      return [...promised, ...[...exact, ...loose].map(capToCarton).filter(Boolean)];
+      return [...promised, ...[...exact, ...loose].map(capToCarton).filter(Boolean)].filter((b) => tapeFits(b.boxNumber, order));
     };
     const openPickListFor = (order, selected) => {
       if (selected.length === 0) return false;
@@ -12687,16 +12696,23 @@ Read the next screen carefully before you agree to it.`
       closeAmendment();
     };
     const whyNothingToPick = (order) => {
-      if (isStrongTapeOrder(order)) return "strongtape";
       const orderItems = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description));
       const { byLineItem } = groupAssignedRunsByLineItem(data.bondingRuns, order.id, orderItems, orderBoxes(LEDGER_MOVEMENTS, data.bondingRuns, order.id));
       const anyOutstanding = byLineItem.some((g) => Number(g.li.qty) - g.runs.reduce((s, r) => s + Number(r.onOrderQty || 0), 0) > 0);
       if (!anyOutstanding) return "allocated";
+      if (isStrongTapeOrder(order)) return "strongtape";
       const withBoxTypeIssue = matchingBoxesFor(order).filter((c) => c.boxTypeIssue);
       if (withBoxTypeIssue.length > 0) return "boxtype";
       return "noshelf";
     };
     const confirmPickAndAllocate = (order, items = pendingPickItems, { receipt = true, onlyConfirmed = false, keepRest = false } = {}) => {
+      {
+        const wrongTape = items.filter((it) => it && !it.damaged && Number(it.confirmedQty) > 0 && (!onlyConfirmed || it.confirmed) && !tapeFits(it.boxNumber, order));
+        if (wrongTape.length) {
+          if (typeof window !== "undefined") window.alert(tapeRefusal(wrongTape[0].boxNumber, order) + (wrongTape.length > 1 ? ` ${wrongTape.length - 1} other box${wrongTape.length > 2 ? "es" : ""} on this sheet ${wrongTape.length > 2 ? "are" : "is"} the same.` : "") + " Nothing has been recorded. Put it back and take the right tape.");
+          return;
+        }
+      }
       {
         const mats = data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS;
         const wrong = items.filter((it) => it && !it.damaged && Number(it.confirmedQty) > 0 && (!onlyConfirmed || it.confirmed)).filter((it) => {
@@ -13127,7 +13143,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
         const sheet = openPickSheets(data.pickSheets, o.id)[0];
         if (!sheet) return null;
         return /* @__PURE__ */ React.createElement("div", { className: "mb-3 p-2.5 rounded", style: { background: "#FDF6EC", borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold", style: { color: AMBER } }, "Pick sheet ", sheet.ref, " is out on the floor"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, "Printed by ", sheet.printedBy || "\u2014", " on ", sheet.printedAt ? new Date(sheet.printedAt).toLocaleString("en-GB", { weekday: "long", hour: "2-digit", minute: "2-digit" }) : "\u2014", Number(sheet.reprintCount) > 0 ? ` \xB7 reprinted ${sheet.reprintCount}\xD7` : "", " \xB7 ", (sheet.lines || []).length, " line", (sheet.lines || []).length === 1 ? "" : "s", ", boxes already in their cases.", " ", "Press Print pick sheet again to reprint this same sheet."));
-      })(), pickNothing && pickNothing.orderId === o.id && /* @__PURE__ */ React.createElement("div", { className: "mb-3 p-2.5 rounded", style: { background: "#FDF6EC", borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold", style: { color: AMBER } }, "Nothing to put on a sheet"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, pickNothing.reason === "allocated" && "Every line on this order already has its boxes allocated. Nothing is left to pick.", pickNothing.reason === "boxtype" && "There is matching stock, but it is in the wrong box type for this order (or its box type was never recorded). Set it on the Bonding Line entry before picking.", pickNothing.reason === "noshelf" && "Nothing matching this order is on the shelf right now. It still has to be made.", pickNothing.reason === "strongtape" && "STRONG TAPE \u2014 this order is made fresh on the bonding line. Nothing for it comes from stock, so there is nothing to pick.")), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => printPickSheet(o) }, openPickSheets(data.pickSheets, o.id).length > 0 ? "Reprint pick sheet" : "Print pick sheet"), " ", /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => {
+      })(), pickNothing && pickNothing.orderId === o.id && /* @__PURE__ */ React.createElement("div", { className: "mb-3 p-2.5 rounded", style: { background: "#FDF6EC", borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold", style: { color: AMBER } }, "Nothing to put on a sheet"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, pickNothing.reason === "allocated" && "Every line on this order already has its boxes allocated. Nothing is left to pick.", pickNothing.reason === "boxtype" && "There is matching stock, but it is in the wrong box type for this order (or its box type was never recorded). Set it on the Bonding Line entry before picking.", pickNothing.reason === "noshelf" && "Nothing matching this order is on the shelf right now. It still has to be made.", pickNothing.reason === "strongtape" && "STRONG TAPE \u2014 only strong-tape boxes (code ending S) can go to this order, and none of what it still needs is on a shelf. Bond it fresh on strong tape.")), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => printPickSheet(o) }, openPickSheets(data.pickSheets, o.id).length > 0 ? "Reprint pick sheet" : "Print pick sheet"), " ", /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => {
         setPickNothing(null);
         if (!pickOrderInstantly(o)) setPickNothing({ orderId: o.id, reason: whyNothingToPick(o) });
         else setPickByPhone(true);
@@ -13628,9 +13644,9 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
         /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, Number(r.toMake ?? r.qty), Number(r.covered || 0) > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: GREEN, fontWeight: 500 } }, r.covered, " on shelf")),
         /* @__PURE__ */ React.createElement("td", { className: "text-right px-3", style: { color: INK_MUTED } }, r.orderIds.size),
         /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.priority != null ? /* @__PURE__ */ React.createElement(Badge, { color: r.priority <= 2 ? RED : INK_MUTED, solid: r.priority <= 2 }, "P", r.priority) : /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014"))
-      ), isOpen && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", null), /* @__PURE__ */ React.createElement("td", { colSpan: 4, className: "px-3 pb-3" }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-xs", style: { background: "#F7F7F5" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("th", { className: "text-left py-1" }, "Customer"), /* @__PURE__ */ React.createElement("th", { className: "text-right py-1" }, "Qty needed"))), /* @__PURE__ */ React.createElement("tbody", null, byCustomer.map((c) => /* @__PURE__ */ React.createElement("tr", { key: c.customer, style: { borderTop: "1px solid #E5E5E0" } }, /* @__PURE__ */ React.createElement("td", { className: "py-1" }, c.customer, c.strongTape && /* @__PURE__ */ React.createElement("span", { style: { marginLeft: 6, fontWeight: 700, color: RED } }, "STRONG TAPE \xB7 made fresh")), /* @__PURE__ */ React.createElement("td", { className: "text-right py-1 font-medium" }, c.qty))))))));
+      ), isOpen && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", null), /* @__PURE__ */ React.createElement("td", { colSpan: 4, className: "px-3 pb-3" }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-xs", style: { background: "#F7F7F5" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("th", { className: "text-left py-1" }, "Customer"), /* @__PURE__ */ React.createElement("th", { className: "text-right py-1" }, "Qty needed"))), /* @__PURE__ */ React.createElement("tbody", null, byCustomer.map((c) => /* @__PURE__ */ React.createElement("tr", { key: c.customer, style: { borderTop: "1px solid #E5E5E0" } }, /* @__PURE__ */ React.createElement("td", { className: "py-1" }, c.customer, c.strongTape && /* @__PURE__ */ React.createElement("span", { style: { marginLeft: 6, fontWeight: 700, color: RED } }, "STRONG TAPE \xB7 S boxes only")), /* @__PURE__ */ React.createElement("td", { className: "text-right py-1 font-medium" }, c.qty))))))));
     }), rows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 4 }, "Nothing outstanding in ", catLabel, ".")))), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto print-clean", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product spec"), /* @__PURE__ */ React.createElement(Th, null, "Customer"), /* @__PURE__ */ React.createElement(Th, { w: 90 }, "Order"), /* @__PURE__ */ React.createElement(ThR, { w: 80 }, "Qty"))), /* @__PURE__ */ React.createElement("tbody", null, rows.flatMap((r, ri) => [
-      ...r.breakdown.map((b, bi) => /* @__PURE__ */ React.createElement("tr", { key: r.spec + "-" + bi, className: ri % 2 ? "" : "bg-black/[0.015]", style: { borderTop: bi === 0 ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-3 no-wrap" }, bi === 0 ? r.spec : ""), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, b.customer, b.strongTape && /* @__PURE__ */ React.createElement("span", { style: { marginLeft: 6, fontSize: 10.5, fontWeight: 700, color: RED, whiteSpace: "nowrap" } }, "STRONG TAPE \xB7 made fresh"), b.boxType && b.boxType !== DEFAULT_BOX_TYPE && /* @__PURE__ */ React.createElement("span", { style: { marginLeft: 6, fontSize: 10.5, fontWeight: 700, color: "#7A4D00", background: "#FFF0A6", borderRadius: 999, padding: "1px 7px", whiteSpace: "nowrap" } }, b.boxType, " boxes")), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, b.orderId)), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, b.qty, b.toMake != null && b.toMake !== b.qty && /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 11, marginLeft: 6 } }, "make ", b.toMake)))),
+      ...r.breakdown.map((b, bi) => /* @__PURE__ */ React.createElement("tr", { key: r.spec + "-" + bi, className: ri % 2 ? "" : "bg-black/[0.015]", style: { borderTop: bi === 0 ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-3 no-wrap" }, bi === 0 ? r.spec : ""), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, b.customer, b.strongTape && /* @__PURE__ */ React.createElement("span", { style: { marginLeft: 6, fontSize: 10.5, fontWeight: 700, color: RED, whiteSpace: "nowrap" } }, "STRONG TAPE \xB7 S boxes only"), b.boxType && b.boxType !== DEFAULT_BOX_TYPE && /* @__PURE__ */ React.createElement("span", { style: { marginLeft: 6, fontSize: 10.5, fontWeight: 700, color: "#7A4D00", background: "#FFF0A6", borderRadius: 999, padding: "1px 7px", whiteSpace: "nowrap" } }, b.boxType, " boxes")), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, b.orderId)), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, b.qty, b.toMake != null && b.toMake !== b.qty && /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 11, marginLeft: 6 } }, "make ", b.toMake)))),
       /* @__PURE__ */ React.createElement("tr", { key: r.spec + "-total", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-3 no-wrap font-semibold", colSpan: 3, style: { textAlign: "right", color: INK_MUTED } }, r.freeOnShelf > 0 ? /* @__PURE__ */ React.createElement(React.Fragment, null, "Ordered ", /* @__PURE__ */ React.createElement("b", { style: { color: INK } }, r.qty), " \xB7 ", /* @__PURE__ */ React.createElement("span", { style: { color: GREEN } }, r.covered ?? r.freeOnShelf, " free on the shelf"), r.shelfWrongBox > 0 && /* @__PURE__ */ React.createElement("span", { style: { color: AMBER } }, " \xB7 ", r.shelfWrongBox, " more on the shelf in the wrong box"), " \xB7 to make") : /* @__PURE__ */ React.createElement(React.Fragment, null, "Total to make"), r.toMake > 0 && r.byBoxType && Object.keys(r.byBoxType).some((k) => k !== DEFAULT_BOX_TYPE) && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: "#7A4D00" } }, Object.entries(r.byBoxType).map(([k, v]) => `${v} in ${k} boxes`).join(" \xB7 "))), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-bold", style: { color: r.toMake === 0 ? GREEN : INK } }, r.toMake === 0 ? "covered" : r.toMake))
     ]), rows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 4 }, "Nothing outstanding in ", catLabel, "."))))), viewMode === "order" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto no-print", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(SortTh, { col: "spec", sortBy: leftSortBy, sortDir: leftSortDir, onSort: leftToggleSort, className: "text-left px-3 py-2" }, "Product spec"), /* @__PURE__ */ React.createElement(SortTh, { col: "ordered", sortBy: leftSortBy, sortDir: leftSortDir, onSort: leftToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 90 } }, "Ordered"), /* @__PURE__ */ React.createElement(SortTh, { col: "made", sortBy: leftSortBy, sortDir: leftSortDir, onSort: leftToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 90 } }, "Made"), /* @__PURE__ */ React.createElement(SortTh, { col: "remaining", sortBy: leftSortBy, sortDir: leftSortDir, onSort: leftToggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 100 } }, "Remaining"), /* @__PURE__ */ React.createElement(SortTh, { col: "status", sortBy: leftSortBy, sortDir: leftSortDir, onSort: leftToggleSort, className: "text-left px-3 py-2", style: { width: 120 } }, "Status"))), /* @__PURE__ */ React.createElement("tbody", null, sortedLeftRows.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 no-wrap" }, /* @__PURE__ */ React.createElement(Spec, { s: r.spec })), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.ordered), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.made), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.remaining), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Badge, { color: statusColor[r.status] }, r.status)))), leftRows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 5 }, orderId ? "No line items." : "Pick an order.")))), orderId && /* @__PURE__ */ React.createElement("div", { className: "print-only" }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Georgia, serif", fontWeight: 700, fontSize: 22, color: NAVY } }, "What's Left To Make \u2014 ", orderId, order ? ` \u2014 ${order.customer}` : ""), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 2 } }, (/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", year: "numeric", month: "long", day: "numeric" })), /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { marginTop: 16 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product spec"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Ordered"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Made"), /* @__PURE__ */ React.createElement(ThR, { w: 100 }, "Remaining"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Status"))), /* @__PURE__ */ React.createElement("tbody", null, sortedLeftRows.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.id, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3" }, /* @__PURE__ */ React.createElement(Spec, { s: r.spec })), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.ordered), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.made), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.remaining), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, r.status))), sortedLeftRows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 5 }, "No line items."))))), viewMode === "eva" && /* @__PURE__ */ React.createElement(ProductionScheduleView, { data, embedded: true }), viewMode === "top2" && (top2.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "text-sm py-8", style: { color: INK_MUTED } }, "Set a Priority on at least one order to see this.") : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "flex gap-6 mb-4 text-sm" }, top2.map((o, i) => /* @__PURE__ */ React.createElement("div", { key: o.id }, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Priority order #", i + 1, ":"), " ", /* @__PURE__ */ React.createElement(Mono, { className: "font-semibold" }, o.id), " \u2014 ", o.customer, " (P", o.priority, ")"))), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product spec"), top2.map((o) => /* @__PURE__ */ React.createElement(ThR, { key: o.id, w: 110 }, o.id)), /* @__PURE__ */ React.createElement(ThR, { w: 110 }, "Combined"))), /* @__PURE__ */ React.createElement("tbody", null, top2Rows.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.spec, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 no-wrap" }, /* @__PURE__ */ React.createElement(Spec, { s: r.spec })), top2.map((o) => /* @__PURE__ */ React.createElement("td", { key: o.id, className: "text-right px-3" }, r.qtyByOrder[o.id] || 0)), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-semibold" }, r.combined)))))))));
   }
@@ -14705,7 +14721,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     const otherAll = (data.otherStock || []).filter((o) => !o.deleted && Number(o.qty) > 0);
     const boxesFor = (forSpec) => {
       if (!forSpec) return [];
-      const shelf = shelfAll.filter((b) => looseSpecMatch(b.productSize, forSpec) && stockFormMatchesLine(b, forSpec)).map((b) => ({ code: b.boxNumber, left: Number(b.available), where: "on the shelf", batch: b.baselineBatchCode || "" }));
+      const shelf = shelfAll.filter((b) => looseSpecMatch(b.productSize, forSpec) && stockFormMatchesLine(b, forSpec) && tapeFits(b.boxNumber, order)).map((b) => ({ code: b.boxNumber, left: Number(b.available), where: "on the shelf", batch: b.baselineBatchCode || "" }));
       const mine = orderBoxes(data.movements || [], data.bondingRuns || [], order.id).filter((r) => looseSpecMatch(r.productSize, forSpec)).map((r) => ({ code: r.boxNumber, left: Number(r.onOrderQty) || 0, where: "on this order", batch: r.baselineBatchCode || "" }));
       const other = otherAll.filter((o) => looseSpecMatch(o.productSpec, forSpec)).map((o) => ({ code: o.boxNumber || "OS-" + String(o.id).replace(/^os-/, "").toUpperCase(), left: Number(o.qty) || 0, where: "other stock", batch: "" }));
       const seen = /* @__PURE__ */ new Set();
@@ -17101,7 +17117,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     const save = () => {
       if (!canSave) return;
       if (dest === "order") {
-        const refusal = allocationRefusal(data, spec, [{ orderId, qty: n }]);
+        const refusal = allocationRefusal(data, spec, [{ orderId, qty: n, boxNumber }]);
         if (refusal) {
           if (typeof window !== "undefined") window.alert(refusal);
           return;
