@@ -625,6 +625,18 @@
     if (CATALOGUE.products === (products || CATALOGUE.products) && CATALOGUE.productForms === (productForms || CATALOGUE.productForms) && products && productForms) return;
     CATALOGUE = { products: products || [], productForms: productForms || [] };
   }
+  var ACTOR = "Team";
+  var DEVICE = "Device";
+  function setActorAndDevice(actor, device) {
+    if (actor) ACTOR = actor;
+    if (device) DEVICE = device;
+  }
+  function currentActor() {
+    return ACTOR;
+  }
+  function currentDevice() {
+    return DEVICE;
+  }
   var LEDGER_MOVEMENTS = [];
   function setLedgerMovements(m) {
     LEDGER_MOVEMENTS = m || [];
@@ -3569,8 +3581,8 @@
   function moveUnplaced({ boxNumber, spec = null, qty, orderId, caseNum, reelCode = null, source = "app", sourceId = null, note = null, boxTypeId = null }) {
     return missingFrom("moveUnplaced", { kind: "unplaced", boxNumber, spec, qty, orderId, caseNum, reelCode, source, sourceId, note, boxTypeId }, ["boxNumber", "qty", "orderId", "caseNum"]);
   }
-  function moveSampled({ boxNumber, spec = null, qty, note, boxTypeId = null, reelCode = null }) {
-    return missingFrom("moveSampled", { kind: "shipped", boxNumber, spec, qty, orderId: null, caseNum: null, reelCode, source: "sample", sourceId: null, note, boxTypeId }, ["boxNumber", "qty", "note"]);
+  function moveSampled({ boxNumber, spec = null, qty, note, boxTypeId = null, reelCode = null, sourceId = null }) {
+    return missingFrom("moveSampled", { kind: "shipped", boxNumber, spec, qty, orderId: null, caseNum: null, reelCode, source: "sample", sourceId, note, boxTypeId }, ["boxNumber", "qty", "note"]);
   }
   function moveAdjusted({ boxNumber, spec = null, qty, source = "app", sourceId = null, note = null, boxTypeId = null }) {
     return missingFrom("moveAdjusted", { kind: "adjusted", boxNumber, spec, qty: Number(qty) || 0, orderId: null, caseNum: null, reelCode: null, source, sourceId, note, boxTypeId }, ["boxNumber"]);
@@ -7347,8 +7359,22 @@ ${line}` : line;
   }
   function storableData(d) {
     if (!d || !Array.isArray(d.bondingRuns)) return d;
-    const clean = d.bondingRuns.filter((r) => !r || !r._synth);
-    if (clean.length === d.bondingRuns.length) return d;
+    let touched = false;
+    const clean = [];
+    for (const r of d.bondingRuns) {
+      if (r && r._synth) {
+        touched = true;
+        continue;
+      }
+      if (r && (r.toStock !== void 0 || r.onOrderQty !== void 0)) {
+        const { toStock, onOrderQty, ...rest } = r;
+        clean.push(rest);
+        touched = true;
+        continue;
+      }
+      clean.push(r);
+    }
+    if (!touched) return d;
     return { ...d, bondingRuns: clean };
   }
   function appVersionRank(v) {
@@ -8111,6 +8137,599 @@ ${line}` : line;
     return orders === d.orders && runs === d.bondingRuns && materials === d.materials && reels === d.glueLineBatches ? d : { ...d, orders, bondingRuns: runs, materials, glueLineBatches: reels };
   }
 
+  // mx_writes.js
+  function fillCustomerReferences(d) {
+    if (!d || !Array.isArray(d.orders) || !d.orders.some((o) => o && !o.deleted && !o.customerId && String(o.customer || "").trim())) return d;
+    let customers = d.customers || [];
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    const orders = d.orders.map((o) => {
+      if (!o || o.deleted || o.customerId || !String(o.customer || "").trim()) return o;
+      let c = customers.find((x) => x && !x.deleted && custNorm(x.companyName) === custNorm(o.customer));
+      if (!c) {
+        const id = "cust-" + String(o.customer).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+        c = customers.find((x) => x && x.id === id) || { id, companyName: String(o.customer).trim(), createdAt: stamp, updatedAt: stamp, updatedBy: currentActor(), deleted: false };
+        if (!customers.includes(c)) customers = [...customers, c];
+      }
+      return { ...o, customerId: c.id };
+    });
+    return { ...d, orders, customers };
+  }
+  function applyPatchMapsToCasesRaw(data, orderId, maps) {
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    const rows = [...data.cases || []];
+    const idxOf = (n) => rows.findIndex((c) => !c.deleted && c.orderId === orderId && Number(c.caseNum) === Number(n));
+    let seedCache = null;
+    const seedFor = (n) => {
+      if (seedCache === null) {
+        seedCache = /* @__PURE__ */ new Map();
+        try {
+          for (const c of arrangedCasesForOrder(data, orderId).caseRows || []) {
+            const contents = {};
+            for (const r of c.contributions || []) {
+              const b = String(r.boxNumber || "").trim();
+              if (b && Number(r.qty) > 0) contents[b] = (contents[b] || 0) + Number(r.qty);
+            }
+            seedCache.set(Number(c.caseNum), contents);
+          }
+        } catch (e) {
+          if (typeof console !== "undefined" && console.warn) console.warn("case seed failed for " + orderId, e);
+        }
+      }
+      return { ...seedCache.get(Number(n)) || {} };
+    };
+    const ensure = (n) => {
+      let i = idxOf(n);
+      if (i < 0) {
+        const seed = seedFor(n);
+        rows.push({
+          id: caseRowId(orderId, n, rows),
+          orderId,
+          caseNum: Number(n),
+          contents: seed,
+          __seed: { ...seed },
+          confirmed: false,
+          weight: "",
+          pallet: "",
+          packedOutside: false,
+          notes: null,
+          deleted: false,
+          deletedAt: null,
+          updatedAt: stamp,
+          updatedBy: currentActor()
+        });
+        i = rows.length - 1;
+      }
+      return i;
+    };
+    const setContents = (i, next) => {
+      rows[i] = { ...rows[i], contents: next, updatedAt: stamp, updatedBy: currentActor() };
+    };
+    if (maps.confirmedCases) {
+      for (const [n, v] of Object.entries(maps.confirmedCases)) {
+        if (v == null) continue;
+        const i = ensure(n);
+        const boxes = v === true ? rows[i].contents || {} : Object.fromEntries(Object.entries(v && v.boxes || {}).filter(([b, q]) => b && Number(q) > 0).map(([b, q]) => [String(b).trim(), Number(q)]));
+        const emptyOnPurpose = !Object.keys(boxes).length && !!(v && v.empty === true);
+        const notes = emptyOnPurpose ? EMPTY_ON_PURPOSE : rows[i].notes === EMPTY_ON_PURPOSE ? null : rows[i].notes;
+        rows[i] = { ...rows[i], contents: boxes, confirmed: true, notes, updatedAt: stamp, updatedBy: currentActor() };
+      }
+    }
+    if (maps.caseOverrides) {
+      for (const [box, v] of Object.entries(maps.caseOverrides)) {
+        const code = String(box).trim();
+        const whole = orderHoldings(data.movements || [], orderId).filter((h) => String(h.boxNumber || "").trim() === code).reduce((t, h) => t + h.qty, 0);
+        const want = v == null ? {} : typeof v === "object" ? Object.fromEntries(Object.entries(v).filter(([, q]) => Number(q) > 0).map(([n, q]) => [Number(n), Number(q)])) : { [Number(v)]: whole };
+        rows.forEach((c, i) => {
+          if (c.deleted || c.orderId !== orderId || c.confirmed || c.contents == null) return;
+          if (c.contents[code] == null || want[Number(c.caseNum)] !== void 0) return;
+          const next = { ...c.contents };
+          delete next[code];
+          setContents(i, next);
+        });
+        for (const [n, q] of Object.entries(want)) {
+          const i = ensure(n);
+          if (rows[i].confirmed) continue;
+          const cur = rows[i].contents || {};
+          if (!(Number(q) > 0)) continue;
+          setContents(i, { ...cur, [code]: Number(q) });
+        }
+      }
+    }
+    if (maps.caseRemovals) {
+      for (const [box, list] of Object.entries(maps.caseRemovals)) {
+        const code = String(box).trim();
+        const nums = list === true ? rows.filter((c) => !c.deleted && c.orderId === orderId).map((c) => Number(c.caseNum)) : (list || []).map(Number);
+        for (const n of nums) {
+          const i = idxOf(n);
+          if (i < 0 || rows[i].confirmed || rows[i].contents == null) continue;
+          const next = { ...rows[i].contents };
+          delete next[code];
+          setContents(i, next);
+        }
+      }
+    }
+    return { ...data, cases: rows };
+  }
+  function appendPlanDifference(setData, data, order) {
+    const items = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description));
+    const existing = (data.cases || []).filter((c) => !c.deleted && c.orderId === order.id && hasCasePlan(c)).flatMap((c) => Object.entries(casePlanned(c)).map(([spec, qty]) => ({ caseNum: Number(c.caseNum), spec, qty: Number(qty) || 0 })));
+    const extra = planAmendment(items, existing);
+    if (!extra.length) return;
+    const label = `Amendment ${(/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
+    setData((prev) => ({
+      ...prev,
+      cases: [...prev.cases || [], ...extra.map((p) => ({
+        id: caseRowId(order.id, p.caseNum, prev.cases || []),
+        orderId: order.id,
+        caseNum: p.caseNum,
+        contents: null,
+        confirmed: false,
+        deleted: false,
+        // see plannedCaseRows: null says nothing, {} asserts empty
+        planned: { [p.spec]: Number(p.qty) || 0 },
+        planBatch: label,
+        updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        updatedBy: currentActor()
+      }))],
+      ...appendLog(prev, {
+        action: "packing_plan_appended",
+        entity: "order",
+        entityId: order.id,
+        summary: `${label}: ${extra.length} cases added to ${order.id} (cases ${extra[0].caseNum}\u2013${extra[extra.length - 1].caseNum}), ${extra.reduce((t, p) => t + p.qty, 0)} boxes`
+      })
+    }));
+  }
+  function appendLog(data, entry) {
+    const full = { id: uid("log"), at: (/* @__PURE__ */ new Date()).toISOString(), actor: currentActor(), device: currentDevice(), ...entry };
+    return { changeLog: [...data.changeLog || [], full] };
+  }
+  function refuseMovement(prev, m, why) {
+    if (typeof console !== "undefined" && console.error) console.error("Movement refused:", why, m);
+    return raiseIssue(prev, {
+      kind: "movement_refused",
+      orderId: m && m.orderId || null,
+      boxNumber: m && m.boxNumber || null,
+      summary: `A movement was refused and not recorded: ${why}`,
+      detail: `Nothing was written to the ledger. The record that tried to go in was: ${JSON.stringify(m)}. This is a fault in the app, not something done wrong on the floor \u2014 but the boxes it was about have not moved in the system, so whatever was being done needs doing again once it is fixed.`
+    });
+  }
+  function applyMovementToCaseRow(next, row, stamp) {
+    if (row.kind !== "placed" && row.kind !== "unplaced") return next;
+    if (!row.orderId || row.caseNum == null) return next;
+    const caseNum = Number(row.caseNum);
+    const box = String(row.boxNumber || "").trim().toUpperCase();
+    const delta = (row.kind === "placed" ? 1 : -1) * (Number(row.qty) || 0);
+    if (!box || !delta) return next;
+    const rows = [...next.cases || []];
+    const i = rows.findIndex((c) => c && !c.deleted && c.orderId === row.orderId && Number(c.caseNum) === caseNum);
+    if (i < 0) {
+      if (delta < 0) return next;
+      rows.push({
+        id: caseRowId(row.orderId, caseNum, rows),
+        orderId: row.orderId,
+        caseNum,
+        contents: { [box]: delta },
+        planned: {},
+        confirmed: false,
+        weight: "",
+        pallet: "",
+        packedOutside: false,
+        notes: null,
+        deleted: false,
+        deletedAt: null,
+        maxSize: CASE_MAX_SIZE_DEFAULT,
+        updatedAt: stamp,
+        updatedBy: currentActor()
+      });
+      return { ...next, cases: rows };
+    }
+    const contents = { ...rows[i].contents || {} };
+    const held = Number(contents[box]) || 0;
+    const now = held + delta;
+    if (now > 0) contents[box] = now;
+    else delete contents[box];
+    const plannedTotal = Object.values(rows[i].planned || {}).reduce((t, n) => t + (Number(n) || 0), 0);
+    const heldTotal = Object.values(contents).reduce((t, n) => t + (Number(n) || 0), 0);
+    const fills = plannedTotal > 0 && heldTotal >= plannedTotal;
+    rows[i] = {
+      ...rows[i],
+      contents,
+      updatedAt: stamp,
+      updatedBy: currentActor(),
+      ...fills && !rows[i].confirmed ? { confirmed: true } : {}
+    };
+    return { ...next, cases: rows };
+  }
+  function relabelCasesInLedger(data, orderId, moved) {
+    if (!moved || !moved.length) return data;
+    const byCase = ledgerCaseContents(data.movements);
+    const outs = [], ins = [];
+    for (const mv of moved) {
+      const from = Number(mv.from), to = Number(mv.to);
+      if (!isFinite(from) || !isFinite(to) || from === to) continue;
+      for (const [box, q] of Object.entries(byCase.get(`${orderId}|${from}`) || {})) {
+        const note = `Case ${from} renumbered to ${to} \u2014 same boxes, new label`;
+        const spec = specOfBoxInCase(data, orderId, from, box);
+        outs.push(moveUnplaced({ boxNumber: box, spec, qty: q, orderId, caseNum: from, source: "renumber", note }));
+        ins.push(movePlaced({ boxNumber: box, spec, qty: q, orderId, caseNum: to, source: "renumber", note }));
+      }
+    }
+    if (!outs.length) return data;
+    const keep = data.cases || [];
+    const tmp = recordMovements({ ...data, cases: keep.filter((c) => !c || c.orderId !== orderId) }, [...outs, ...ins]);
+    return syncCaseRowsToLedger({ ...tmp, cases: keep }, orderId);
+  }
+  function closeUpCaseNumbers(data, orderId, opts = {}) {
+    const order = (data.orders || []).find((o) => o && o.id === orderId) || {};
+    const startAt = (Number(order.startingCaseNum) || 0) + 1;
+    const inCases = ledgerCaseContents(data.movements || []);
+    const held = (c) => Object.values(inCases.get(`${orderId}|${Number(c.caseNum)}`) || {}).some((n) => Number(n) > 0);
+    const live = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === orderId).sort((a, b) => Number(a.caseNum) - Number(b.caseNum));
+    if (!live.length) return { data, moved: [], removed: [] };
+    const hasPlan = live.some((c) => Object.keys(casePlanned(c)).length);
+    const empty = (c) => hasPlan && !Object.values(casePlanned(c)).some((n) => Number(n) > 0) && !held(c) && !String(c.weight || "").trim() && !String(c.pallet || "").trim();
+    const removed = opts.remove ? live.filter((c) => opts.remove.has(Number(c.caseNum))) : live.filter(empty);
+    const keep = live.filter((c) => !removed.includes(c));
+    const moved = [];
+    const to = /* @__PURE__ */ new Map();
+    if (opts.renumber !== false) keep.forEach((c, i) => {
+      const n = startAt + i;
+      to.set(c.id, n);
+      if (Number(c.caseNum) !== n) moved.push({ from: Number(c.caseNum), to: n });
+    });
+    if (!removed.length && !moved.length) return { data, moved: [], removed: [] };
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    const gone = new Set(removed.map((c) => c.id));
+    const cases = (data.cases || []).map((c) => {
+      if (!c || c.deleted || c.orderId !== orderId) return c;
+      if (gone.has(c.id)) return { ...c, deleted: true, deletedAt: stamp, updatedAt: stamp, updatedBy: currentActor() };
+      const n = to.get(c.id);
+      return n != null && Number(c.caseNum) !== n ? { ...c, caseNum: n, updatedAt: stamp, updatedBy: currentActor() } : c;
+    });
+    const next = relabelCasesInLedger({ ...data, cases }, orderId, moved);
+    return { data: next, moved, removed: removed.map((c) => Number(c.caseNum)) };
+  }
+  function closeUpSummary(r) {
+    if (!r || !r.moved.length && !r.removed.length) return "";
+    const bits = [];
+    if (r.removed.length) bits.push(`empty case${r.removed.length === 1 ? "" : "s"} ${caseRunsLabel(r.removed)} taken away`);
+    if (r.moved.length) bits.push(`case${r.moved.length === 1 ? "" : "s"} renumbered ${r.moved.map((m) => `${m.from}\u2192${m.to}`).join(", ")} \u2014 reprint ${r.moved.length === 1 ? "that label" : "those labels"}`);
+    return bits.join("; ");
+  }
+  function recordMovement(prev, m) {
+    if (m && Number(m.qty) === 0 && m.kind !== "adjusted") return prev;
+    if (m && (m.kind === "allocated" || m.kind === "unallocated")) return prev;
+    const why = movementRefusal(prev, m);
+    if (why) return refuseMovement(prev, m, why);
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    const row = {
+      id: uid("mv"),
+      at: stamp,
+      actor: currentActor(),
+      device: currentDevice(),
+      kind: m.kind,
+      boxNumber: m.boxNumber || null,
+      spec: m.spec || null,
+      qty: Number(m.qty) || 0,
+      orderId: m.orderId || null,
+      caseNum: m.caseNum ?? null,
+      reelCode: m.reelCode || null,
+      note: m.note || null,
+      source: m.source || "app",
+      sourceId: m.sourceId || null,
+      boxTypeId: cartonOfEntry(prev, m),
+      // the carton these boxes are in; null = read from the bonding rows (20 Sep 2026)
+      updatedAt: stamp
+    };
+    const isPromise = row.kind === "allocated" || row.kind === "unallocated";
+    const withRow = isPromise ? prev : { ...prev, movements: [...prev.movements || [], row] };
+    const next = applyMovementToReservation(
+      applyMovementToCaseRow(withRow, row, stamp),
+      row,
+      stamp
+    );
+    if (m.kind === "counted" && row.boxNumber) {
+      const shelfNow = placeOf(next, row.boxNumber).onShelf;
+      const diff = row.qty - shelfNow;
+      if (diff !== 0) {
+        const adj = {
+          id: uid("mv"),
+          at: stamp,
+          actor: row.actor,
+          device: row.device,
+          kind: "adjusted",
+          boxNumber: row.boxNumber,
+          spec: row.spec,
+          qty: diff,
+          orderId: null,
+          caseNum: null,
+          reelCode: null,
+          source: row.source,
+          sourceId: row.sourceId,
+          boxTypeId: row.boxTypeId,
+          note: `Count wins: counted ${row.qty}, shelf projected ${shelfNow}${m.note ? " \u2014 " + m.note : ""}`,
+          updatedAt: stamp
+        };
+        return { ...next, movements: [...next.movements, adj] };
+      }
+    }
+    return next;
+  }
+  function recordMovements(prev, list) {
+    const rows = list || [];
+    let trial = prev;
+    for (const m of rows) {
+      if (m && Number(m.qty) === 0 && m.kind !== "adjusted") continue;
+      if (m && (m.kind === "allocated" || m.kind === "unallocated")) continue;
+      const why = movementRefusal(trial, m);
+      if (why) return refuseMovement(prev, m, `${why} Nothing from this batch of ${rows.length} was recorded.`);
+      trial = recordMovement(trial, m);
+    }
+    return rows.reduce((acc, m) => recordMovement(acc, m), prev);
+  }
+  function raiseIssue(prev, { kind, orderId, boxNumber, summary, detail }) {
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    const row = {
+      id: uid("iss"),
+      raisedAt: stamp,
+      raisedBy: currentActor(),
+      kind,
+      severity: "loud",
+      orderId: orderId || null,
+      boxNumber: boxNumber || null,
+      summary,
+      detail: detail || null,
+      resolvedAt: null,
+      resolvedBy: null,
+      resolution: null,
+      updatedAt: stamp
+    };
+    const next = { ...prev, issues: [...prev.issues || [], row] };
+    return { ...next, ...appendLog(next, { action: "add", entity: "issue", entityId: row.id, summary: `Flag raised: ${summary}` }) };
+  }
+  function resolveIssue(prev, issueId, resolution) {
+    if (!String(resolution || "").trim()) return prev;
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    const iss = (prev.issues || []).find((i) => i.id === issueId);
+    if (!iss) return prev;
+    const next = { ...prev, issues: prev.issues.map((i) => i.id === issueId ? { ...i, resolvedAt: stamp, resolvedBy: currentActor(), resolution: String(resolution).trim(), updatedAt: stamp } : i) };
+    return { ...next, ...appendLog(next, {
+      action: "edit",
+      entity: "issue",
+      entityId: issueId,
+      summary: `Flag cleared: ${iss.summary} \u2014 ${String(resolution).trim()}`
+    }) };
+  }
+  function recordPickSheet(prev, orderId, lines, actor) {
+    const existing = openPickSheets(prev.pickSheets, orderId)[0];
+    if (existing) {
+      const stamp2 = (/* @__PURE__ */ new Date()).toISOString();
+      const next2 = { ...prev, pickSheets: prev.pickSheets.map((p) => p.id === existing.id ? { ...p, reprintedAt: stamp2, reprintCount: (Number(p.reprintCount) || 0) + 1, updatedAt: stamp2 } : p) };
+      return { data: { ...next2, ...appendLog(next2, {
+        action: "print",
+        entity: "pickSheet",
+        entityId: existing.id,
+        summary: `Reprinted pick sheet ${existing.ref} for ${orderId} \u2014 the same sheet, not a new one`
+      }) }, ref: existing.ref, sheet: existing };
+    }
+    const ref = nextPickSheetRef(prev.pickSheets, orderId);
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    const sheet = {
+      id: uid("ps"),
+      ref,
+      orderId,
+      lines: lines || null,
+      printedAt: stamp,
+      printedBy: actor || currentActor(),
+      reconciledAt: null,
+      reconciledBy: null,
+      notes: "",
+      updatedAt: stamp
+    };
+    const next = { ...prev, pickSheets: [...prev.pickSheets || [], sheet] };
+    return { data: { ...next, ...appendLog(next, {
+      action: "print",
+      entity: "pickSheet",
+      entityId: sheet.id,
+      summary: `Printed pick sheet ${ref} for ${orderId} \u2014 out on the floor until its contents are recorded`
+    }) }, ref, sheet };
+  }
+  function reconcilePickSheet(prev, sheetId, note) {
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    const sheet = (prev.pickSheets || []).find((p) => p.id === sheetId);
+    if (!sheet) return prev;
+    const next = { ...prev, pickSheets: prev.pickSheets.map((p) => p.id === sheetId ? { ...p, reconciledAt: stamp, reconciledBy: currentActor(), notes: note || p.notes || "", updatedAt: stamp } : p) };
+    return { ...next, ...appendLog(next, {
+      action: "edit",
+      entity: "pickSheet",
+      entityId: sheetId,
+      summary: `Pick sheet ${sheet.ref} recorded \u2014 its contents are now in the system`
+    }) };
+  }
+  function sameProductSpec(a, b) {
+    if (!a || !b) return false;
+    return looseSpecMatch(a, b) || productKey(a) === productKey(b) && isReelSpec(a) === isReelSpec(b);
+  }
+  function boxSpecOf(data, box) {
+    const B = String(box || "").trim().toUpperCase();
+    const run = (data.bondingRuns || []).find((r) => r && !r.deleted && String(r.boxNumber || "").trim().toUpperCase() === B && r.productSize);
+    if (run) return run.productSize;
+    const m = (data.movements || []).find((x) => x && !x.deleted && String(x.boxNumber || "").trim().toUpperCase() === B && x.spec);
+    return m ? m.spec : null;
+  }
+  function planCarry(cases, orderId, fromCase, toCase, spec, qty) {
+    const rows = cases.filter((c) => c && !c.deleted && c.orderId === orderId);
+    const from = rows.find((c) => Number(c.caseNum) === Number(fromCase));
+    const planned = casePlanned(from || {});
+    const key = Object.keys(planned).find((k) => sameProductSpec(k, spec)) || spec;
+    return cases.map((c) => {
+      if (!c || c.deleted || c.orderId !== orderId) return c;
+      if (Number(c.caseNum) === Number(fromCase)) {
+        const p = { ...casePlanned(c) };
+        const now = (Number(p[key]) || 0) - qty;
+        if (now > 0) p[key] = now;
+        else delete p[key];
+        return { ...c, planned: p };
+      }
+      if (Number(c.caseNum) === Number(toCase)) {
+        const p = { ...casePlanned(c) };
+        p[key] = (Number(p[key]) || 0) + qty;
+        return { ...c, planned: p };
+      }
+      return c;
+    });
+  }
+  function applyCaseAction(prev, order, a) {
+    const orderId = order.id;
+    const q = Math.round(Number(a.qty) || 0);
+    if (!(q > 0)) return { error: "Say how many." };
+    const held = ledgerCaseContents(prev.movements || []);
+    const inCase = (cn, box) => Number((held.get(`${orderId}|${Number(cn)}`) || {})[Object.keys(held.get(`${orderId}|${Number(cn)}`) || {}).find((k) => k.toUpperCase() === String(box).trim().toUpperCase())] || 0);
+    const liveCase = (cn) => (prev.cases || []).some((c) => c && !c.deleted && c.orderId === orderId && Number(c.caseNum) === Number(cn));
+    const who = currentActor();
+    const moves = [];
+    let cases = prev.cases || [];
+    let summary;
+    if (a.kind === "swap") {
+      const outBox = String(a.outBox || "").trim().toUpperCase(), inBox = String(a.inBox || "").trim().toUpperCase();
+      if (!outBox || !inBox) return { error: "Say which box comes out and which goes in." };
+      if (outBox === inBox) return { error: "That's the same box going out and in." };
+      if (inCase(a.caseNum, outBox) < q) return { error: `Case ${a.caseNum} holds ${inCase(a.caseNum, outBox)} of ${outBox}, not ${q}.` };
+      const outSpec = boxSpecOf(prev, outBox), inSpec = boxSpecOf(prev, inBox);
+      if (!inSpec) return { error: `${inBox} isn't on record. If it's really here, use Count and add it as found stock.` };
+      if (!sameProductSpec(outSpec, inSpec)) return { error: `${inBox} is ${inSpec}, not ${outSpec}. Swap is for the same product \u2014 use Move to change what a case holds.` };
+      if (a.inFromCase) {
+        if (inCase(a.inFromCase, inBox) < q) return { error: `Case ${a.inFromCase} holds ${inCase(a.inFromCase, inBox)} of ${inBox}, not ${q}.` };
+      } else if ((placeOf(prev, inBox).available || 0) < q) {
+        return { error: `Only ${placeOf(prev, inBox).available || 0} of ${inBox} are free on the shelf.` };
+      }
+      if (a.outToCase) {
+        const toRow = (prev.cases || []).find((c) => c && !c.deleted && c.orderId === orderId && Number(c.caseNum) === Number(a.outToCase));
+        const room = (Number(toRow && toRow.maxSize) || CASE_MAX_SIZE_DEFAULT) - Object.values(held.get(`${orderId}|${Number(a.outToCase)}`) || {}).reduce((t, n) => t + (Number(n) || 0), 0);
+        if (q > room) return { error: room > 0 ? `Case ${a.outToCase} only has room for ${room} more.` : `Case ${a.outToCase} is full.` };
+      }
+      const note = `Swap in ${orderId} case ${a.caseNum}` + (a.reason ? ` \u2014 ${a.reason}` : "");
+      moves.push(moveUnplaced({ boxNumber: outBox, spec: outSpec, qty: q, orderId, caseNum: Number(a.caseNum), source: "swap", note }));
+      if (a.outToCase) moves.push(movePlaced({ boxNumber: outBox, spec: outSpec, qty: q, orderId, caseNum: Number(a.outToCase), source: "swap", note }));
+      if (a.inFromCase) moves.push(moveUnplaced({ boxNumber: inBox, spec: inSpec, qty: q, orderId, caseNum: Number(a.inFromCase), source: "swap", note }));
+      moves.push(movePlaced({ boxNumber: inBox, spec: inSpec, qty: q, orderId, caseNum: Number(a.caseNum), source: "swap", note }));
+      summary = `Case ${a.caseNum}: ${q} \xD7 ${outBox} ${a.outToCase ? `to case ${a.outToCase}` : "back to the shelf"}, ${q} \xD7 ${inBox} in ${a.inFromCase ? `from case ${a.inFromCase}` : "from the shelf"}`;
+    } else if (a.kind === "move") {
+      const box = String(a.box || "").trim().toUpperCase();
+      const to = Number(a.toCase);
+      if (!box) return { error: "Say which box to move." };
+      if (!(to > 0)) return { error: "Say which case they're going to." };
+      if (to === Number(a.caseNum)) return { error: "That's the case they're already in." };
+      if (inCase(a.caseNum, box) < q) return { error: `Case ${a.caseNum} holds ${inCase(a.caseNum, box)} of ${box}, not ${q}.` };
+      const spec = boxSpecOf(prev, box);
+      const toRow = (prev.cases || []).find((c) => c && !c.deleted && c.orderId === orderId && Number(c.caseNum) === to);
+      const room = (Number(toRow && toRow.maxSize) || CASE_MAX_SIZE_DEFAULT) - Object.values(held.get(`${orderId}|${to}`) || {}).reduce((t, n) => t + (Number(n) || 0), 0);
+      if (q > room) return { error: room > 0 ? `Case ${to} only has room for ${room} more.` : `Case ${to} is full.` };
+      const note = `Move in ${orderId}: case ${a.caseNum} \u2192 case ${to}` + (a.reason ? ` \u2014 ${a.reason}` : "");
+      moves.push(moveUnplaced({ boxNumber: box, spec, qty: q, orderId, caseNum: Number(a.caseNum), source: "move", note }));
+      moves.push(movePlaced({ boxNumber: box, spec, qty: q, orderId, caseNum: to, source: "move", note }));
+      if (!liveCase(to)) {
+        cases = [...cases, {
+          id: caseRowId(orderId, to, cases),
+          orderId,
+          caseNum: to,
+          contents: null,
+          planned: {},
+          confirmed: false,
+          weight: "",
+          pallet: "",
+          packedOutside: false,
+          notes: null,
+          deleted: false,
+          deletedAt: null,
+          maxSize: CASE_MAX_SIZE_DEFAULT,
+          updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+          updatedBy: who
+        }];
+      }
+      cases = planCarry(cases, orderId, a.caseNum, to, spec, q);
+      {
+        const toRow2 = cases.find((c) => c && !c.deleted && c.orderId === orderId && Number(c.caseNum) === to);
+        const cap = Number(toRow2 && toRow2.maxSize) || CASE_MAX_SIZE_DEFAULT;
+        let over = Object.values(casePlanned(toRow2 || {})).reduce((t, n) => t + (Number(n) || 0), 0) - cap;
+        if (over > 0) {
+          const heldTo = held.get(`${orderId}|${to}`) || {};
+          const heldOf = (key) => Object.entries(heldTo).reduce((t, [bx, n]) => t + (sameProductSpec(boxSpecOf(prev, bx), key) ? Number(n) || 0 : 0), 0);
+          const giveBack = {};
+          for (const [k, n] of Object.entries(casePlanned(toRow2))) {
+            if (over <= 0) break;
+            if (sameProductSpec(k, spec)) continue;
+            const empty = Math.max(0, (Number(n) || 0) - heldOf(k));
+            const g = Math.min(empty, over);
+            if (g > 0) {
+              giveBack[k] = g;
+              over -= g;
+            }
+          }
+          if (over > 0) return { error: `Case ${to} has no room left in its plan for ${q} more.` };
+          cases = cases.map((c) => {
+            if (!c || c.deleted || c.orderId !== orderId) return c;
+            const pl = { ...casePlanned(c) };
+            if (Number(c.caseNum) === to) {
+              for (const [k, g] of Object.entries(giveBack)) {
+                const nv = (Number(pl[k]) || 0) - g;
+                if (nv > 0) pl[k] = nv;
+                else delete pl[k];
+              }
+              return { ...c, planned: pl };
+            }
+            if (Number(c.caseNum) === Number(a.caseNum)) {
+              for (const [k, g] of Object.entries(giveBack)) pl[k] = (Number(pl[k]) || 0) + g;
+              return { ...c, planned: pl };
+            }
+            return c;
+          });
+        }
+      }
+      summary = `${q} \xD7 ${box} moved from case ${a.caseNum} to case ${to}`;
+    } else return { error: "Unknown action." };
+    let trial = { ...prev, cases };
+    for (const m of moves) {
+      const why = movementRefusal(trial, m);
+      if (why) return { error: why };
+      trial = recordMovement(trial, m);
+    }
+    let next = recordMovements({ ...prev, cases }, moves);
+    if (a.kind === "move") {
+      const r = closeUpCaseNumbers(next, orderId);
+      if (r.removed.length || r.moved.length) {
+        next = r.data;
+        summary += `; ${closeUpSummary(r)}`;
+      }
+    }
+    return { patch: { ...next, ...appendLog(next, { action: a.kind, entity: "order", entityId: orderId, summary: `${orderId} \u2014 ${summary}${a.reason ? ` (${a.reason})` : ""}` }) }, summary };
+  }
+  function planMissingCases(data, orderId) {
+    const found = ordersMissingPlan(data).find((x) => x.order.id === orderId);
+    if (!found) return null;
+    const order = found.order;
+    const rows = planRowsForNewOrder(orderId, found.plannable, {
+      startingCaseNum: Number(order.startingCaseNum) || 0,
+      actor: currentActor(),
+      data
+    }).map((r) => ({ ...r, planBatch: "Original", updatedBy: "plan laid down on arrival" }));
+    if (!rows.length) return null;
+    const boxes = rows.reduce((t, r) => t + Object.values(r.planned).reduce((n, q) => n + Number(q || 0), 0), 0);
+    return {
+      rows,
+      patch: {
+        ...data,
+        cases: [...data.cases || [], ...rows],
+        ...appendLog(data, {
+          action: "packing_planned",
+          entity: "order",
+          entityId: orderId,
+          summary: `${orderId} (${order.customer || "no customer"}) arrived with no case plan \u2014 ${rows.length} case${rows.length === 1 ? "" : "s"} laid down, ${boxes} boxes`
+        })
+      }
+    };
+  }
+
   // app_source_v7.jsx
   var { useState, useEffect, useMemo, useRef } = React;
   var INK = "#242529";
@@ -8452,7 +9071,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-22.19";
+  var APP_VERSION = "2026-09-22.22";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -8697,22 +9316,6 @@ ${line}` : line;
     return { known: true, stale: days >= BACKUP_STALE_DAYS, days, label };
   }
   var CODED_MATERIAL_CATEGORIES = ["pvc", "glue"];
-  function fillCustomerReferences(d) {
-    if (!d || !Array.isArray(d.orders) || !d.orders.some((o) => o && !o.deleted && !o.customerId && String(o.customer || "").trim())) return d;
-    let customers = d.customers || [];
-    const stamp = (/* @__PURE__ */ new Date()).toISOString();
-    const orders = d.orders.map((o) => {
-      if (!o || o.deleted || o.customerId || !String(o.customer || "").trim()) return o;
-      let c = customers.find((x) => x && !x.deleted && custNorm(x.companyName) === custNorm(o.customer));
-      if (!c) {
-        const id = "cust-" + String(o.customer).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-        c = customers.find((x) => x && x.id === id) || { id, companyName: String(o.customer).trim(), createdAt: stamp, updatedAt: stamp, updatedBy: currentActor(), deleted: false };
-        if (!customers.includes(c)) customers = [...customers, c];
-      }
-      return { ...o, customerId: c.id };
-    });
-    return { ...d, orders, customers };
-  }
   function BatchPicker({ alternatives, onPick, onAddFound, onClose, knownCodes = [], orderBoxType = null, onConfirmCarton = null }) {
     const [addingNew, setAddingNew] = useState(false);
     const [newBoxNumber, setNewBoxNumber] = useState("");
@@ -9035,131 +9638,6 @@ ${line}` : line;
       orderId,
       { source: meta.source || "case-map", note: meta.note || null }
     );
-  }
-  function applyPatchMapsToCasesRaw(data, orderId, maps) {
-    const stamp = (/* @__PURE__ */ new Date()).toISOString();
-    const rows = [...data.cases || []];
-    const idxOf = (n) => rows.findIndex((c) => !c.deleted && c.orderId === orderId && Number(c.caseNum) === Number(n));
-    let seedCache = null;
-    const seedFor = (n) => {
-      if (seedCache === null) {
-        seedCache = /* @__PURE__ */ new Map();
-        try {
-          for (const c of arrangedCasesForOrder(data, orderId).caseRows || []) {
-            const contents = {};
-            for (const r of c.contributions || []) {
-              const b = String(r.boxNumber || "").trim();
-              if (b && Number(r.qty) > 0) contents[b] = (contents[b] || 0) + Number(r.qty);
-            }
-            seedCache.set(Number(c.caseNum), contents);
-          }
-        } catch (e) {
-          if (typeof console !== "undefined" && console.warn) console.warn("case seed failed for " + orderId, e);
-        }
-      }
-      return { ...seedCache.get(Number(n)) || {} };
-    };
-    const ensure = (n) => {
-      let i = idxOf(n);
-      if (i < 0) {
-        const seed = seedFor(n);
-        rows.push({
-          id: caseRowId(orderId, n, rows),
-          orderId,
-          caseNum: Number(n),
-          contents: seed,
-          __seed: { ...seed },
-          confirmed: false,
-          weight: "",
-          pallet: "",
-          packedOutside: false,
-          notes: null,
-          deleted: false,
-          deletedAt: null,
-          updatedAt: stamp,
-          updatedBy: currentActor()
-        });
-        i = rows.length - 1;
-      }
-      return i;
-    };
-    const setContents = (i, next) => {
-      rows[i] = { ...rows[i], contents: next, updatedAt: stamp, updatedBy: currentActor() };
-    };
-    if (maps.confirmedCases) {
-      for (const [n, v] of Object.entries(maps.confirmedCases)) {
-        if (v == null) continue;
-        const i = ensure(n);
-        const boxes = v === true ? rows[i].contents || {} : Object.fromEntries(Object.entries(v && v.boxes || {}).filter(([b, q]) => b && Number(q) > 0).map(([b, q]) => [String(b).trim(), Number(q)]));
-        const emptyOnPurpose = !Object.keys(boxes).length && !!(v && v.empty === true);
-        const notes = emptyOnPurpose ? EMPTY_ON_PURPOSE : rows[i].notes === EMPTY_ON_PURPOSE ? null : rows[i].notes;
-        rows[i] = { ...rows[i], contents: boxes, confirmed: true, notes, updatedAt: stamp, updatedBy: currentActor() };
-      }
-    }
-    if (maps.caseOverrides) {
-      for (const [box, v] of Object.entries(maps.caseOverrides)) {
-        const code = String(box).trim();
-        const whole = orderHoldings(data.movements || [], orderId).filter((h) => String(h.boxNumber || "").trim() === code).reduce((t, h) => t + h.qty, 0);
-        const want = v == null ? {} : typeof v === "object" ? Object.fromEntries(Object.entries(v).filter(([, q]) => Number(q) > 0).map(([n, q]) => [Number(n), Number(q)])) : { [Number(v)]: whole };
-        rows.forEach((c, i) => {
-          if (c.deleted || c.orderId !== orderId || c.confirmed || c.contents == null) return;
-          if (c.contents[code] == null || want[Number(c.caseNum)] !== void 0) return;
-          const next = { ...c.contents };
-          delete next[code];
-          setContents(i, next);
-        });
-        for (const [n, q] of Object.entries(want)) {
-          const i = ensure(n);
-          if (rows[i].confirmed) continue;
-          const cur = rows[i].contents || {};
-          if (!(Number(q) > 0)) continue;
-          setContents(i, { ...cur, [code]: Number(q) });
-        }
-      }
-    }
-    if (maps.caseRemovals) {
-      for (const [box, list] of Object.entries(maps.caseRemovals)) {
-        const code = String(box).trim();
-        const nums = list === true ? rows.filter((c) => !c.deleted && c.orderId === orderId).map((c) => Number(c.caseNum)) : (list || []).map(Number);
-        for (const n of nums) {
-          const i = idxOf(n);
-          if (i < 0 || rows[i].confirmed || rows[i].contents == null) continue;
-          const next = { ...rows[i].contents };
-          delete next[code];
-          setContents(i, next);
-        }
-      }
-    }
-    return { ...data, cases: rows };
-  }
-  function appendPlanDifference(setData, data, order) {
-    const items = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description));
-    const existing = (data.cases || []).filter((c) => !c.deleted && c.orderId === order.id && hasCasePlan(c)).flatMap((c) => Object.entries(casePlanned(c)).map(([spec, qty]) => ({ caseNum: Number(c.caseNum), spec, qty: Number(qty) || 0 })));
-    const extra = planAmendment(items, existing);
-    if (!extra.length) return;
-    const label = `Amendment ${(/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
-    setData((prev) => ({
-      ...prev,
-      cases: [...prev.cases || [], ...extra.map((p) => ({
-        id: caseRowId(order.id, p.caseNum, prev.cases || []),
-        orderId: order.id,
-        caseNum: p.caseNum,
-        contents: null,
-        confirmed: false,
-        deleted: false,
-        // see plannedCaseRows: null says nothing, {} asserts empty
-        planned: { [p.spec]: Number(p.qty) || 0 },
-        planBatch: label,
-        updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-        updatedBy: currentActor()
-      }))],
-      ...appendLog(prev, {
-        action: "packing_plan_appended",
-        entity: "order",
-        entityId: order.id,
-        summary: `${label}: ${extra.length} cases added to ${order.id} (cases ${extra[0].caseNum}\u2013${extra[extra.length - 1].caseNum}), ${extra.reduce((t, p) => t + p.qty, 0)} boxes`
-      })
-    }));
   }
   function PlanAmendmentRecord({ order, lineItems, cases, onAppend }) {
     const planned = (cases || []).filter((c) => !c.deleted && c.orderId === order.id && hasCasePlan(c));
@@ -10622,13 +11100,20 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
   function isAdminDevice() {
     return localStorage.getItem(ADMIN_DEVICE_FLAG_KEY) === "true" || localStorage.getItem("matrixSyncUserRole") === "admin";
   }
-  function currentActor() {
+  function readActorFromDevice() {
     const connected = localStorage.getItem(SYNC_PREF_KEY) === "true";
     const email = connected ? (localStorage.getItem("matrixSyncEmail") || "").trim() : "";
     const name = email.includes("@") ? email.split("@")[0] : "";
     if (name) return name.charAt(0).toUpperCase() + name.slice(1);
     return isAdminDevice() ? "Admin" : "Team";
   }
+  function refreshActorAndDevice() {
+    try {
+      setActorAndDevice(readActorFromDevice(), readDeviceFromAgent());
+    } catch {
+    }
+  }
+  if (typeof localStorage !== "undefined" && typeof navigator !== "undefined") refreshActorAndDevice();
   var DEVICE_KEY_STORE = "matrixDeviceKey";
   var EVENT_QUEUE_STORE = "matrixEventQueue";
   var EVENT_CLIENT = null;
@@ -10718,7 +11203,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       if (once(m)) reportAppEvent({ kind: "error", message: m, detail: e && e.reason && e.reason.stack });
     });
   }
-  function currentDevice() {
+  function readDeviceFromAgent() {
     const ua = navigator.userAgent || "";
     if (/iPad/.test(ua) || /Macintosh/.test(ua) && navigator.maxTouchPoints > 1) return "iPad";
     if (/iPhone/.test(ua)) return "iPhone";
@@ -10727,72 +11212,11 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     if (/Windows/.test(ua)) return "Work PC";
     return "Device";
   }
-  function appendLog(data, entry) {
-    const full = { id: uid("log"), at: (/* @__PURE__ */ new Date()).toISOString(), actor: currentActor(), device: currentDevice(), ...entry };
-    return { changeLog: [...data.changeLog || [], full] };
-  }
   function printAndLog(setData, what, entity, entityId, summary) {
     if (typeof setData === "function") {
       setData((prev) => ({ ...prev, ...appendLog(prev, { action: "print", entity, entityId, summary: summary || `Printed ${what}` }) }));
     }
     window.print();
-  }
-  function refuseMovement(prev, m, why) {
-    if (typeof console !== "undefined" && console.error) console.error("Movement refused:", why, m);
-    return raiseIssue(prev, {
-      kind: "movement_refused",
-      orderId: m && m.orderId || null,
-      boxNumber: m && m.boxNumber || null,
-      summary: `A movement was refused and not recorded: ${why}`,
-      detail: `Nothing was written to the ledger. The record that tried to go in was: ${JSON.stringify(m)}. This is a fault in the app, not something done wrong on the floor \u2014 but the boxes it was about have not moved in the system, so whatever was being done needs doing again once it is fixed.`
-    });
-  }
-  function applyMovementToCaseRow(next, row, stamp) {
-    if (row.kind !== "placed" && row.kind !== "unplaced") return next;
-    if (!row.orderId || row.caseNum == null) return next;
-    const caseNum = Number(row.caseNum);
-    const box = String(row.boxNumber || "").trim().toUpperCase();
-    const delta = (row.kind === "placed" ? 1 : -1) * (Number(row.qty) || 0);
-    if (!box || !delta) return next;
-    const rows = [...next.cases || []];
-    const i = rows.findIndex((c) => c && !c.deleted && c.orderId === row.orderId && Number(c.caseNum) === caseNum);
-    if (i < 0) {
-      if (delta < 0) return next;
-      rows.push({
-        id: caseRowId(row.orderId, caseNum, rows),
-        orderId: row.orderId,
-        caseNum,
-        contents: { [box]: delta },
-        planned: {},
-        confirmed: false,
-        weight: "",
-        pallet: "",
-        packedOutside: false,
-        notes: null,
-        deleted: false,
-        deletedAt: null,
-        maxSize: CASE_MAX_SIZE_DEFAULT,
-        updatedAt: stamp,
-        updatedBy: currentActor()
-      });
-      return { ...next, cases: rows };
-    }
-    const contents = { ...rows[i].contents || {} };
-    const held = Number(contents[box]) || 0;
-    const now = held + delta;
-    if (now > 0) contents[box] = now;
-    else delete contents[box];
-    const plannedTotal = Object.values(rows[i].planned || {}).reduce((t, n) => t + (Number(n) || 0), 0);
-    const heldTotal = Object.values(contents).reduce((t, n) => t + (Number(n) || 0), 0);
-    const fills = plannedTotal > 0 && heldTotal >= plannedTotal;
-    rows[i] = {
-      ...rows[i],
-      contents,
-      updatedAt: stamp,
-      updatedBy: currentActor(),
-      ...fills && !rows[i].confirmed ? { confirmed: true } : {}
-    };
-    return { ...next, cases: rows };
   }
   function settleCaseToCount(prev, orderId, caseNum, counted, meta = {}, only = null) {
     const held = ledgerCaseContents(prev.movements).get(`${orderId}|${Number(caseNum)}`) || {};
@@ -10859,133 +11283,6 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     for (const cnt of counts) next = settleCaseToCount(next, orderId, cnt.caseNum, cnt.contents, meta, cnt.only);
     return syncCaseRowsToLedger(next, orderId);
   }
-  function relabelCasesInLedger(data, orderId, moved) {
-    if (!moved || !moved.length) return data;
-    const byCase = ledgerCaseContents(data.movements);
-    const outs = [], ins = [];
-    for (const mv of moved) {
-      const from = Number(mv.from), to = Number(mv.to);
-      if (!isFinite(from) || !isFinite(to) || from === to) continue;
-      for (const [box, q] of Object.entries(byCase.get(`${orderId}|${from}`) || {})) {
-        const note = `Case ${from} renumbered to ${to} \u2014 same boxes, new label`;
-        const spec = specOfBoxInCase(data, orderId, from, box);
-        outs.push(moveUnplaced({ boxNumber: box, spec, qty: q, orderId, caseNum: from, source: "renumber", note }));
-        ins.push(movePlaced({ boxNumber: box, spec, qty: q, orderId, caseNum: to, source: "renumber", note }));
-      }
-    }
-    if (!outs.length) return data;
-    const keep = data.cases || [];
-    const tmp = recordMovements({ ...data, cases: keep.filter((c) => !c || c.orderId !== orderId) }, [...outs, ...ins]);
-    return syncCaseRowsToLedger({ ...tmp, cases: keep }, orderId);
-  }
-  function closeUpCaseNumbers(data, orderId, opts = {}) {
-    const order = (data.orders || []).find((o) => o && o.id === orderId) || {};
-    const startAt = (Number(order.startingCaseNum) || 0) + 1;
-    const inCases = ledgerCaseContents(data.movements || []);
-    const held = (c) => Object.values(inCases.get(`${orderId}|${Number(c.caseNum)}`) || {}).some((n) => Number(n) > 0);
-    const live = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === orderId).sort((a, b) => Number(a.caseNum) - Number(b.caseNum));
-    if (!live.length) return { data, moved: [], removed: [] };
-    const hasPlan = live.some((c) => Object.keys(casePlanned(c)).length);
-    const empty = (c) => hasPlan && !Object.values(casePlanned(c)).some((n) => Number(n) > 0) && !held(c) && !String(c.weight || "").trim() && !String(c.pallet || "").trim();
-    const removed = opts.remove ? live.filter((c) => opts.remove.has(Number(c.caseNum))) : live.filter(empty);
-    const keep = live.filter((c) => !removed.includes(c));
-    const moved = [];
-    const to = /* @__PURE__ */ new Map();
-    if (opts.renumber !== false) keep.forEach((c, i) => {
-      const n = startAt + i;
-      to.set(c.id, n);
-      if (Number(c.caseNum) !== n) moved.push({ from: Number(c.caseNum), to: n });
-    });
-    if (!removed.length && !moved.length) return { data, moved: [], removed: [] };
-    const stamp = (/* @__PURE__ */ new Date()).toISOString();
-    const gone = new Set(removed.map((c) => c.id));
-    const cases = (data.cases || []).map((c) => {
-      if (!c || c.deleted || c.orderId !== orderId) return c;
-      if (gone.has(c.id)) return { ...c, deleted: true, deletedAt: stamp, updatedAt: stamp, updatedBy: currentActor() };
-      const n = to.get(c.id);
-      return n != null && Number(c.caseNum) !== n ? { ...c, caseNum: n, updatedAt: stamp, updatedBy: currentActor() } : c;
-    });
-    const next = relabelCasesInLedger({ ...data, cases }, orderId, moved);
-    return { data: next, moved, removed: removed.map((c) => Number(c.caseNum)) };
-  }
-  function closeUpSummary(r) {
-    if (!r || !r.moved.length && !r.removed.length) return "";
-    const bits = [];
-    if (r.removed.length) bits.push(`empty case${r.removed.length === 1 ? "" : "s"} ${caseRunsLabel(r.removed)} taken away`);
-    if (r.moved.length) bits.push(`case${r.moved.length === 1 ? "" : "s"} renumbered ${r.moved.map((m) => `${m.from}\u2192${m.to}`).join(", ")} \u2014 reprint ${r.moved.length === 1 ? "that label" : "those labels"}`);
-    return bits.join("; ");
-  }
-  function recordMovement(prev, m) {
-    if (m && Number(m.qty) === 0 && m.kind !== "adjusted") return prev;
-    if (m && (m.kind === "allocated" || m.kind === "unallocated")) return prev;
-    const why = movementRefusal(prev, m);
-    if (why) return refuseMovement(prev, m, why);
-    const stamp = (/* @__PURE__ */ new Date()).toISOString();
-    const row = {
-      id: uid("mv"),
-      at: stamp,
-      actor: currentActor(),
-      device: currentDevice(),
-      kind: m.kind,
-      boxNumber: m.boxNumber || null,
-      spec: m.spec || null,
-      qty: Number(m.qty) || 0,
-      orderId: m.orderId || null,
-      caseNum: m.caseNum ?? null,
-      reelCode: m.reelCode || null,
-      note: m.note || null,
-      source: m.source || "app",
-      sourceId: m.sourceId || null,
-      boxTypeId: cartonOfEntry(prev, m),
-      // the carton these boxes are in; null = read from the bonding rows (20 Sep 2026)
-      updatedAt: stamp
-    };
-    const isPromise = row.kind === "allocated" || row.kind === "unallocated";
-    const withRow = isPromise ? prev : { ...prev, movements: [...prev.movements || [], row] };
-    const next = applyMovementToReservation(
-      applyMovementToCaseRow(withRow, row, stamp),
-      row,
-      stamp
-    );
-    if (m.kind === "counted" && row.boxNumber) {
-      const shelfNow = placeOf(next, row.boxNumber).onShelf;
-      const diff = row.qty - shelfNow;
-      if (diff !== 0) {
-        const adj = {
-          id: uid("mv"),
-          at: stamp,
-          actor: row.actor,
-          device: row.device,
-          kind: "adjusted",
-          boxNumber: row.boxNumber,
-          spec: row.spec,
-          qty: diff,
-          orderId: null,
-          caseNum: null,
-          reelCode: null,
-          source: row.source,
-          sourceId: row.sourceId,
-          boxTypeId: row.boxTypeId,
-          note: `Count wins: counted ${row.qty}, shelf projected ${shelfNow}${m.note ? " \u2014 " + m.note : ""}`,
-          updatedAt: stamp
-        };
-        return { ...next, movements: [...next.movements, adj] };
-      }
-    }
-    return next;
-  }
-  function recordMovements(prev, list) {
-    const rows = list || [];
-    let trial = prev;
-    for (const m of rows) {
-      if (m && Number(m.qty) === 0 && m.kind !== "adjusted") continue;
-      if (m && (m.kind === "allocated" || m.kind === "unallocated")) continue;
-      const why = movementRefusal(trial, m);
-      if (why) return refuseMovement(prev, m, `${why} Nothing from this batch of ${rows.length} was recorded.`);
-      trial = recordMovement(trial, m);
-    }
-    return rows.reduce((acc, m) => recordMovement(acc, m), prev);
-  }
   function adjustBatchQuantity(prev, { boxNumber, spec, newQty, note }) {
     const p = projectBox(prev.movements, boxNumber, prev.reservations);
     const delta = Number(newQty) - p.made;
@@ -11025,39 +11322,6 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     }
     return next;
   }
-  function raiseIssue(prev, { kind, orderId, boxNumber, summary, detail }) {
-    const stamp = (/* @__PURE__ */ new Date()).toISOString();
-    const row = {
-      id: uid("iss"),
-      raisedAt: stamp,
-      raisedBy: currentActor(),
-      kind,
-      severity: "loud",
-      orderId: orderId || null,
-      boxNumber: boxNumber || null,
-      summary,
-      detail: detail || null,
-      resolvedAt: null,
-      resolvedBy: null,
-      resolution: null,
-      updatedAt: stamp
-    };
-    const next = { ...prev, issues: [...prev.issues || [], row] };
-    return { ...next, ...appendLog(next, { action: "add", entity: "issue", entityId: row.id, summary: `Flag raised: ${summary}` }) };
-  }
-  function resolveIssue(prev, issueId, resolution) {
-    if (!String(resolution || "").trim()) return prev;
-    const stamp = (/* @__PURE__ */ new Date()).toISOString();
-    const iss = (prev.issues || []).find((i) => i.id === issueId);
-    if (!iss) return prev;
-    const next = { ...prev, issues: prev.issues.map((i) => i.id === issueId ? { ...i, resolvedAt: stamp, resolvedBy: currentActor(), resolution: String(resolution).trim(), updatedAt: stamp } : i) };
-    return { ...next, ...appendLog(next, {
-      action: "edit",
-      entity: "issue",
-      entityId: issueId,
-      summary: `Flag cleared: ${iss.summary} \u2014 ${String(resolution).trim()}`
-    }) };
-  }
   var REEL_DISCREPANCY_TOLERANCE_PCT = 10;
   var PENDING_PRINT_KEY = "mxPendingPrint_v1";
   function readPendingPrint() {
@@ -11078,52 +11342,6 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       window.dispatchEvent(new Event("mx-pending-print"));
     } catch (e) {
     }
-  }
-  function recordPickSheet(prev, orderId, lines, actor) {
-    const existing = openPickSheets(prev.pickSheets, orderId)[0];
-    if (existing) {
-      const stamp2 = (/* @__PURE__ */ new Date()).toISOString();
-      const next2 = { ...prev, pickSheets: prev.pickSheets.map((p) => p.id === existing.id ? { ...p, reprintedAt: stamp2, reprintCount: (Number(p.reprintCount) || 0) + 1, updatedAt: stamp2 } : p) };
-      return { data: { ...next2, ...appendLog(next2, {
-        action: "print",
-        entity: "pickSheet",
-        entityId: existing.id,
-        summary: `Reprinted pick sheet ${existing.ref} for ${orderId} \u2014 the same sheet, not a new one`
-      }) }, ref: existing.ref, sheet: existing };
-    }
-    const ref = nextPickSheetRef(prev.pickSheets, orderId);
-    const stamp = (/* @__PURE__ */ new Date()).toISOString();
-    const sheet = {
-      id: uid("ps"),
-      ref,
-      orderId,
-      lines: lines || null,
-      printedAt: stamp,
-      printedBy: actor || currentActor(),
-      reconciledAt: null,
-      reconciledBy: null,
-      notes: "",
-      updatedAt: stamp
-    };
-    const next = { ...prev, pickSheets: [...prev.pickSheets || [], sheet] };
-    return { data: { ...next, ...appendLog(next, {
-      action: "print",
-      entity: "pickSheet",
-      entityId: sheet.id,
-      summary: `Printed pick sheet ${ref} for ${orderId} \u2014 out on the floor until its contents are recorded`
-    }) }, ref, sheet };
-  }
-  function reconcilePickSheet(prev, sheetId, note) {
-    const stamp = (/* @__PURE__ */ new Date()).toISOString();
-    const sheet = (prev.pickSheets || []).find((p) => p.id === sheetId);
-    if (!sheet) return prev;
-    const next = { ...prev, pickSheets: prev.pickSheets.map((p) => p.id === sheetId ? { ...p, reconciledAt: stamp, reconciledBy: currentActor(), notes: note || p.notes || "", updatedAt: stamp } : p) };
-    return { ...next, ...appendLog(next, {
-      action: "edit",
-      entity: "pickSheet",
-      entityId: sheetId,
-      summary: `Pick sheet ${sheet.ref} recorded \u2014 its contents are now in the system`
-    }) };
   }
   function logRowEdits(data, key, prevRows, nextRows, entity, labelOf) {
     const prevById = new Map((prevRows || []).map((r) => [r.id, r]));
@@ -15374,164 +15592,6 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       )
     )));
   }
-  function sameProductSpec(a, b) {
-    if (!a || !b) return false;
-    return looseSpecMatch(a, b) || productKey(a) === productKey(b) && isReelSpec(a) === isReelSpec(b);
-  }
-  function boxSpecOf(data, box) {
-    const B = String(box || "").trim().toUpperCase();
-    const run = (data.bondingRuns || []).find((r) => r && !r.deleted && String(r.boxNumber || "").trim().toUpperCase() === B && r.productSize);
-    if (run) return run.productSize;
-    const m = (data.movements || []).find((x) => x && !x.deleted && String(x.boxNumber || "").trim().toUpperCase() === B && x.spec);
-    return m ? m.spec : null;
-  }
-  function planCarry(cases, orderId, fromCase, toCase, spec, qty) {
-    const rows = cases.filter((c) => c && !c.deleted && c.orderId === orderId);
-    const from = rows.find((c) => Number(c.caseNum) === Number(fromCase));
-    const planned = casePlanned(from || {});
-    const key = Object.keys(planned).find((k) => sameProductSpec(k, spec)) || spec;
-    return cases.map((c) => {
-      if (!c || c.deleted || c.orderId !== orderId) return c;
-      if (Number(c.caseNum) === Number(fromCase)) {
-        const p = { ...casePlanned(c) };
-        const now = (Number(p[key]) || 0) - qty;
-        if (now > 0) p[key] = now;
-        else delete p[key];
-        return { ...c, planned: p };
-      }
-      if (Number(c.caseNum) === Number(toCase)) {
-        const p = { ...casePlanned(c) };
-        p[key] = (Number(p[key]) || 0) + qty;
-        return { ...c, planned: p };
-      }
-      return c;
-    });
-  }
-  function applyCaseAction(prev, order, a) {
-    const orderId = order.id;
-    const q = Math.round(Number(a.qty) || 0);
-    if (!(q > 0)) return { error: "Say how many." };
-    const held = ledgerCaseContents(prev.movements || []);
-    const inCase = (cn, box) => Number((held.get(`${orderId}|${Number(cn)}`) || {})[Object.keys(held.get(`${orderId}|${Number(cn)}`) || {}).find((k) => k.toUpperCase() === String(box).trim().toUpperCase())] || 0);
-    const liveCase = (cn) => (prev.cases || []).some((c) => c && !c.deleted && c.orderId === orderId && Number(c.caseNum) === Number(cn));
-    const who = currentActor();
-    const moves = [];
-    let cases = prev.cases || [];
-    let summary;
-    if (a.kind === "swap") {
-      const outBox = String(a.outBox || "").trim().toUpperCase(), inBox = String(a.inBox || "").trim().toUpperCase();
-      if (!outBox || !inBox) return { error: "Say which box comes out and which goes in." };
-      if (outBox === inBox) return { error: "That's the same box going out and in." };
-      if (inCase(a.caseNum, outBox) < q) return { error: `Case ${a.caseNum} holds ${inCase(a.caseNum, outBox)} of ${outBox}, not ${q}.` };
-      const outSpec = boxSpecOf(prev, outBox), inSpec = boxSpecOf(prev, inBox);
-      if (!inSpec) return { error: `${inBox} isn't on record. If it's really here, use Count and add it as found stock.` };
-      if (!sameProductSpec(outSpec, inSpec)) return { error: `${inBox} is ${inSpec}, not ${outSpec}. Swap is for the same product \u2014 use Move to change what a case holds.` };
-      if (a.inFromCase) {
-        if (inCase(a.inFromCase, inBox) < q) return { error: `Case ${a.inFromCase} holds ${inCase(a.inFromCase, inBox)} of ${inBox}, not ${q}.` };
-      } else if ((placeOf(prev, inBox).available || 0) < q) {
-        return { error: `Only ${placeOf(prev, inBox).available || 0} of ${inBox} are free on the shelf.` };
-      }
-      if (a.outToCase) {
-        const toRow = (prev.cases || []).find((c) => c && !c.deleted && c.orderId === orderId && Number(c.caseNum) === Number(a.outToCase));
-        const room = (Number(toRow && toRow.maxSize) || CASE_MAX_SIZE_DEFAULT) - Object.values(held.get(`${orderId}|${Number(a.outToCase)}`) || {}).reduce((t, n) => t + (Number(n) || 0), 0);
-        if (q > room) return { error: room > 0 ? `Case ${a.outToCase} only has room for ${room} more.` : `Case ${a.outToCase} is full.` };
-      }
-      const note = `Swap in ${orderId} case ${a.caseNum}` + (a.reason ? ` \u2014 ${a.reason}` : "");
-      moves.push(moveUnplaced({ boxNumber: outBox, spec: outSpec, qty: q, orderId, caseNum: Number(a.caseNum), source: "swap", note }));
-      if (a.outToCase) moves.push(movePlaced({ boxNumber: outBox, spec: outSpec, qty: q, orderId, caseNum: Number(a.outToCase), source: "swap", note }));
-      if (a.inFromCase) moves.push(moveUnplaced({ boxNumber: inBox, spec: inSpec, qty: q, orderId, caseNum: Number(a.inFromCase), source: "swap", note }));
-      moves.push(movePlaced({ boxNumber: inBox, spec: inSpec, qty: q, orderId, caseNum: Number(a.caseNum), source: "swap", note }));
-      summary = `Case ${a.caseNum}: ${q} \xD7 ${outBox} ${a.outToCase ? `to case ${a.outToCase}` : "back to the shelf"}, ${q} \xD7 ${inBox} in ${a.inFromCase ? `from case ${a.inFromCase}` : "from the shelf"}`;
-    } else if (a.kind === "move") {
-      const box = String(a.box || "").trim().toUpperCase();
-      const to = Number(a.toCase);
-      if (!box) return { error: "Say which box to move." };
-      if (!(to > 0)) return { error: "Say which case they're going to." };
-      if (to === Number(a.caseNum)) return { error: "That's the case they're already in." };
-      if (inCase(a.caseNum, box) < q) return { error: `Case ${a.caseNum} holds ${inCase(a.caseNum, box)} of ${box}, not ${q}.` };
-      const spec = boxSpecOf(prev, box);
-      const toRow = (prev.cases || []).find((c) => c && !c.deleted && c.orderId === orderId && Number(c.caseNum) === to);
-      const room = (Number(toRow && toRow.maxSize) || CASE_MAX_SIZE_DEFAULT) - Object.values(held.get(`${orderId}|${to}`) || {}).reduce((t, n) => t + (Number(n) || 0), 0);
-      if (q > room) return { error: room > 0 ? `Case ${to} only has room for ${room} more.` : `Case ${to} is full.` };
-      const note = `Move in ${orderId}: case ${a.caseNum} \u2192 case ${to}` + (a.reason ? ` \u2014 ${a.reason}` : "");
-      moves.push(moveUnplaced({ boxNumber: box, spec, qty: q, orderId, caseNum: Number(a.caseNum), source: "move", note }));
-      moves.push(movePlaced({ boxNumber: box, spec, qty: q, orderId, caseNum: to, source: "move", note }));
-      if (!liveCase(to)) {
-        cases = [...cases, {
-          id: caseRowId(orderId, to, cases),
-          orderId,
-          caseNum: to,
-          contents: null,
-          planned: {},
-          confirmed: false,
-          weight: "",
-          pallet: "",
-          packedOutside: false,
-          notes: null,
-          deleted: false,
-          deletedAt: null,
-          maxSize: CASE_MAX_SIZE_DEFAULT,
-          updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-          updatedBy: who
-        }];
-      }
-      cases = planCarry(cases, orderId, a.caseNum, to, spec, q);
-      {
-        const toRow2 = cases.find((c) => c && !c.deleted && c.orderId === orderId && Number(c.caseNum) === to);
-        const cap = Number(toRow2 && toRow2.maxSize) || CASE_MAX_SIZE_DEFAULT;
-        let over = Object.values(casePlanned(toRow2 || {})).reduce((t, n) => t + (Number(n) || 0), 0) - cap;
-        if (over > 0) {
-          const heldTo = held.get(`${orderId}|${to}`) || {};
-          const heldOf = (key) => Object.entries(heldTo).reduce((t, [bx, n]) => t + (sameProductSpec(boxSpecOf(prev, bx), key) ? Number(n) || 0 : 0), 0);
-          const giveBack = {};
-          for (const [k, n] of Object.entries(casePlanned(toRow2))) {
-            if (over <= 0) break;
-            if (sameProductSpec(k, spec)) continue;
-            const empty = Math.max(0, (Number(n) || 0) - heldOf(k));
-            const g = Math.min(empty, over);
-            if (g > 0) {
-              giveBack[k] = g;
-              over -= g;
-            }
-          }
-          if (over > 0) return { error: `Case ${to} has no room left in its plan for ${q} more.` };
-          cases = cases.map((c) => {
-            if (!c || c.deleted || c.orderId !== orderId) return c;
-            const pl = { ...casePlanned(c) };
-            if (Number(c.caseNum) === to) {
-              for (const [k, g] of Object.entries(giveBack)) {
-                const nv = (Number(pl[k]) || 0) - g;
-                if (nv > 0) pl[k] = nv;
-                else delete pl[k];
-              }
-              return { ...c, planned: pl };
-            }
-            if (Number(c.caseNum) === Number(a.caseNum)) {
-              for (const [k, g] of Object.entries(giveBack)) pl[k] = (Number(pl[k]) || 0) + g;
-              return { ...c, planned: pl };
-            }
-            return c;
-          });
-        }
-      }
-      summary = `${q} \xD7 ${box} moved from case ${a.caseNum} to case ${to}`;
-    } else return { error: "Unknown action." };
-    let trial = { ...prev, cases };
-    for (const m of moves) {
-      const why = movementRefusal(trial, m);
-      if (why) return { error: why };
-      trial = recordMovement(trial, m);
-    }
-    let next = recordMovements({ ...prev, cases }, moves);
-    if (a.kind === "move") {
-      const r = closeUpCaseNumbers(next, orderId);
-      if (r.removed.length || r.moved.length) {
-        next = r.data;
-        summary += `; ${closeUpSummary(r)}`;
-      }
-    }
-    return { patch: { ...next, ...appendLog(next, { action: a.kind, entity: "order", entityId: orderId, summary: `${orderId} \u2014 ${summary}${a.reason ? ` (${a.reason})` : ""}` }) }, summary };
-  }
   function applyCaseContents(prev, order, caseNum, rows, flags, removed = [], stamp = (/* @__PURE__ */ new Date()).toISOString(), lost = {}) {
     const overrides = {};
     const extraFlags = [];
@@ -17207,8 +17267,9 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         return;
       }
       if (!window.confirm(`Scrap ${n} \xD7 ${r.boxNumber}? Reason: ${d.reason.trim()}`)) return;
+      const act = uid("sc");
       setData((prev) => {
-        let next = recordMovement(prev, moveScrapped({ boxNumber: r.boxNumber, spec: r.productSize, qty: n, orderId: r.workNumber || null, source: "move", note: d.reason.trim() }));
+        let next = recordMovement(prev, moveScrapped({ boxNumber: r.boxNumber, spec: r.productSize, qty: n, orderId: r.workNumber || null, source: "move", sourceId: act, note: d.reason.trim() }));
         next = raiseIssue(next, { kind: "other", boxNumber: r.boxNumber, summary: `${n} of ${r.boxNumber} scrapped`, detail: d.reason.trim() });
         return { ...next, ...appendLog(next, {
           action: "stock_adjustment",
@@ -17216,7 +17277,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
           entityId: r.id,
           summary: `Scrapped ${n} \xD7 ${r.boxNumber} \u2014 ${d.reason.trim()}`,
           before: { amountMade: r.amountMade, onOrderQty: r.onOrderQty, toStock: r.toStock },
-          after: { scrapped: n }
+          after: { scrapped: n, movementsSourceId: act }
         }) };
       });
       setDone(`Scrapped ${n} \xD7 ${r.boxNumber}`);
@@ -17240,11 +17301,13 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         return;
       }
       if (!window.confirm(`Send ${n} \xD7 ${r.boxNumber} as a sample to ${who}? It comes off the shelf.`)) return;
+      const act = uid("sp");
       setData((prev) => {
         const next = recordMovement(prev, moveSampled({
           boxNumber: r.boxNumber,
           spec: r.productSize,
           qty: n,
+          sourceId: act,
           note: `Sample \u2014 ${who}`,
           boxTypeId: r.boxTypeId || null,
           reelCode: r.baselineBatchCode || null
@@ -17255,7 +17318,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
           entityId: r.id,
           summary: `Sample: ${n} \xD7 ${r.boxNumber} to ${who}`,
           before: { onShelf: have },
-          after: { sampled: n, to: who }
+          after: { sampled: n, to: who, movementsSourceId: act }
         }) };
       });
       setDone(`Sent ${n} \xD7 ${r.boxNumber} as a sample to ${who}`);
@@ -18829,31 +18892,6 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         return /* @__PURE__ */ React.createElement("span", { className: "flex items-center justify-center rounded shrink-0", style: { width: 22, height: 22, background: cat.color + "18", color: cat.color } }, /* @__PURE__ */ React.createElement(Icon, { size: 12 }));
       })(), /* @__PURE__ */ React.createElement("div", { className: "min-w-0" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm no-wrap", style: { color: INK } }, mat ? mat.name : mv.materialId), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, sourceLabel[mv.sourceType] || mv.sourceType, mv.note ? ` \u2014 ${mv.note}` : ""))), /* @__PURE__ */ React.createElement("div", { className: "text-right shrink-0" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold", style: { color: mv.qty < 0 ? RED : GREEN } }, mv.qty > 0 ? "+" : "", mv.qty), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, mv.date)));
     })));
-  }
-  function planMissingCases(data, orderId) {
-    const found = ordersMissingPlan(data).find((x) => x.order.id === orderId);
-    if (!found) return null;
-    const order = found.order;
-    const rows = planRowsForNewOrder(orderId, found.plannable, {
-      startingCaseNum: Number(order.startingCaseNum) || 0,
-      actor: currentActor(),
-      data
-    }).map((r) => ({ ...r, planBatch: "Original", updatedBy: "plan laid down on arrival" }));
-    if (!rows.length) return null;
-    const boxes = rows.reduce((t, r) => t + Object.values(r.planned).reduce((n, q) => n + Number(q || 0), 0), 0);
-    return {
-      rows,
-      patch: {
-        ...data,
-        cases: [...data.cases || [], ...rows],
-        ...appendLog(data, {
-          action: "packing_planned",
-          entity: "order",
-          entityId: orderId,
-          summary: `${orderId} (${order.customer || "no customer"}) arrived with no case plan \u2014 ${rows.length} case${rows.length === 1 ? "" : "s"} laid down, ${boxes} boxes`
-        })
-      }
-    };
   }
   function printOrderAck(order, lines, opts) {
     printInFrame("ack-print-frame", orderAckDoc(order, lines, opts));
@@ -25029,6 +25067,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const ledgerReservations = NO_PROMISES;
     setLedgerMovements(storedData.movements || []);
     setCatalogue(storedData.products || [], storedData.productForms || []);
+    refreshActorAndDevice();
     setLedgerCaseHoldings(ledgerCases, storedData.orders || []);
     setBoxMaterials(storedData.materials);
     const data = useMemo(() => {
