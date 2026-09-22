@@ -7752,7 +7752,132 @@ ${line}` : line;
     }
     throw new Error(`gave up after dropping ${dropped.join(", ")}`);
   }
-  function mergeById(localRows, remoteRows, pendingDeletedIds, mapMergeFields) {
+  function rowPatch(before, after) {
+    const out = {};
+    let any = false;
+    for (const [k, v] of Object.entries(after || {})) {
+      if (k === "id" || k === "updated_at" || k === "updated_by") continue;
+      if (JSON.stringify(v) === JSON.stringify(before ? before[k] : void 0)) continue;
+      out[k] = v;
+      any = true;
+    }
+    return any ? out : null;
+  }
+  function notePendingColumns(pending, prevTables, nextTables) {
+    let out = pending;
+    const touch = (table, id, cols, before) => {
+      if (out === pending) out = { ...pending };
+      const t = out[table] = { ...out[table] || {} };
+      const have = t[id];
+      if (have === "*" || cols === "*") {
+        t[id] = "*";
+        return;
+      }
+      const next = { ...owedBase(have) };
+      for (const c of cols) if (!Object.prototype.hasOwnProperty.call(next, c)) next[c] = before[c] === void 0 ? null : before[c];
+      t[id] = next;
+    };
+    for (const table of Object.keys(nextTables || {})) {
+      const prevById = new Map((prevTables[table] || []).map((r) => [r.id, r]));
+      for (const r of nextTables[table] || []) {
+        const before = prevById.get(r.id);
+        if (!before) {
+          touch(table, r.id, "*");
+          continue;
+        }
+        const p = rowPatch(before, r);
+        if (p) touch(table, r.id, Object.keys(p), before);
+      }
+    }
+    return out;
+  }
+  function owedCols(owed) {
+    if (!owed || owed === "*") return [];
+    return Array.isArray(owed) ? owed : Object.keys(owed);
+  }
+  function owedBase(owed) {
+    if (!owed || owed === "*") return {};
+    return Array.isArray(owed) ? {} : owed;
+  }
+  function clearPendingColumns(pending, landed, dropped, stampNow) {
+    let out = pending;
+    const edit = (table) => {
+      if (out === pending) out = { ...pending };
+      return out[table] = { ...out[table] || {} };
+    };
+    for (const l of landed || []) {
+      const have = pending[l.table] && pending[l.table][l.id];
+      if (!have) continue;
+      if (stampNow && l.stamp && stampNow(l.table, l.id) !== l.stamp) continue;
+      const t = edit(l.table);
+      if (have === "*" || l.cols === "*") {
+        delete t[l.id];
+        continue;
+      }
+      const left = Object.fromEntries(Object.entries(owedBase(have)).filter(([c]) => !l.cols.includes(c)));
+      if (Object.keys(left).length) t[l.id] = left;
+      else delete t[l.id];
+    }
+    for (const d of dropped || []) {
+      for (const id of d.ids || []) {
+        if (!(pending[d.table] && pending[d.table][id])) continue;
+        delete edit(d.table)[id];
+      }
+    }
+    for (const table of Object.keys(out)) if (!Object.keys(out[table]).length) {
+      if (out === pending) out = { ...pending };
+      delete out[table];
+    }
+    return out;
+  }
+  async function patchRowsHealing(client, table, items, warnings) {
+    const landed = [], fallback = [], dropped = /* @__PURE__ */ new Set();
+    const CHUNK = 6;
+    for (let i = 0; i < items.length; i += CHUNK) {
+      await Promise.all(items.slice(i, i + CHUNK).map(async (it) => {
+        let patch = { ...it.patch };
+        for (let attempt = 0; attempt < 8; attempt++) {
+          for (const c of dropped) delete patch[c];
+          const content = Object.keys(patch).filter((k) => k !== "updated_at" && k !== "updated_by");
+          if (!content.length) {
+            landed.push({ id: it.id, cols: [], stamp: it.full.updated_at });
+            return;
+          }
+          const { data, error } = await client.from(table).update(patch).eq("id", it.id).select("id");
+          if (!error) {
+            if (data && data.length) landed.push({ id: it.id, cols: content, stamp: it.full.updated_at, values: Object.fromEntries(content.map((c) => [c, patch[c]])) });
+            else fallback.push(it.full);
+            return;
+          }
+          const m = MISSING_COLUMN_RE.exec(String(error.message || ""));
+          if (m) {
+            dropped.add(m[1]);
+            continue;
+          }
+          if (/duplicate key|unique constraint/i.test(String(error.message || ""))) {
+            fallback.push(it.full);
+            return;
+          }
+          throw error;
+        }
+        throw new Error(`gave up patching ${table} ${it.id}`);
+      }));
+    }
+    if (dropped.size) warnings.push({ table, dropped: [...dropped], message: `saved without ${[...dropped].join(", ")} \u2014 the database doesn't have ${dropped.size === 1 ? "that column" : "those columns"} yet` });
+    let refusedIds = [];
+    if (fallback.length) {
+      const cleaned = fallback.map((r) => {
+        const c = { ...r };
+        for (const k of dropped) delete c[k];
+        return c;
+      });
+      refusedIds = await upsertHealingMissingColumns(client, table, cleaned, warnings) || [];
+      const refused = new Set(refusedIds);
+      for (const r of cleaned) if (!refused.has(r.id)) landed.push({ id: r.id, cols: "*", stamp: r.updated_at });
+    }
+    return { refusedIds, landed };
+  }
+  function mergeById(localRows, remoteRows, pendingDeletedIds, mapMergeFields, pendingFields, onClash) {
     const map = /* @__PURE__ */ new Map();
     for (const r of localRows || []) {
       if (!pendingDeletedIds || !pendingDeletedIds.has(r.id)) map.set(r.id, r);
@@ -7770,8 +7895,23 @@ ${line}` : line;
       }
       const localTime = existing.updatedAt ? new Date(existing.updatedAt).getTime() : 0;
       const remoteTime = r.updatedAt ? new Date(r.updatedAt).getTime() : 0;
-      const winner = remoteTime >= localTime ? r : existing;
+      let winner = remoteTime >= localTime ? r : existing;
       const loser = winner === r ? existing : r;
+      const owedRaw = pendingFields && pendingFields[r.id];
+      const owed = Array.isArray(owedRaw) ? Object.fromEntries(owedRaw.map((f) => [f, void 0])) : owedRaw;
+      if (owed && owed !== "*") {
+        const fields = Object.keys(owed).filter((f) => Object.prototype.hasOwnProperty.call(existing, f));
+        const same = (a, b) => JSON.stringify(a === void 0 || a === "" ? null : a) === JSON.stringify(b === void 0 || b === "" ? null : b);
+        const keep = winner === existing ? fields : fields.filter((f) => owed[f] !== void 0 && same(r[f], owed[f]));
+        const lost = winner === existing ? [] : fields.filter((f) => !keep.includes(f) && !same(r[f], existing[f]));
+        if (keep.length) {
+          const overlay = { ...r };
+          for (const f of keep) overlay[f] = existing[f];
+          overlay.updatedAt = winner === existing ? existing.updatedAt : r.updatedAt;
+          winner = overlay;
+        }
+        if (lost.length && onClash) onClash(r.id, lost);
+      }
       if (mapMergeFields && mapMergeFields.length) {
         let merged = winner;
         for (const field of mapMergeFields) {
@@ -8252,7 +8392,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-22.11";
+  var APP_VERSION = "2026-09-22.12";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -8335,6 +8475,21 @@ ${line}` : line;
     } catch {
     }
   }
+  var PENDING_COLUMNS_KEY = "matrixPendingColumns";
+  function loadPendingColumns() {
+    try {
+      const v = JSON.parse(localStorage.getItem(PENDING_COLUMNS_KEY) || "{}");
+      return v && typeof v === "object" ? v : {};
+    } catch {
+      return {};
+    }
+  }
+  function savePendingColumns(map) {
+    try {
+      localStorage.setItem(PENDING_COLUMNS_KEY, JSON.stringify(map || {}));
+    } catch {
+    }
+  }
   function currentSyncActor() {
     return (localStorage.getItem("matrixSyncEmail") || "").trim().toLowerCase() || null;
   }
@@ -8346,6 +8501,7 @@ ${line}` : line;
     const warnings = [];
     const refused = [];
     const refusedFresh = [];
+    const landed = [];
     const prevTables = dataToTables(prevData);
     const nextTables = dataToTables(nextData);
     const actor = currentSyncActor();
@@ -8373,7 +8529,43 @@ ${line}` : line;
         const deletedIds = prevRows.filter((p) => !p.deleted && !nextRows.some((r) => r.id === p.id)).map((p) => p.id);
         if (changed.length) {
           const outgoing = actor ? changed.map((r) => ({ ...r, updated_by: actor })) : changed;
-          const refusedIds = await upsertHealingMissingColumns(client, table, outgoing, warnings);
+          const owedHere = opts.pending && opts.pending[table] || {};
+          const inserts = [], patches = [];
+          for (const r of outgoing) {
+            const before = prevById.get(r.id);
+            const owed = owedHere[r.id];
+            if (!before || owed === "*") {
+              inserts.push(r);
+              continue;
+            }
+            let patch = rowPatch(before, r);
+            if (opts.baseIsRemote && owed) {
+              const cols = owedCols(owed);
+              if (patch) {
+                for (const k of Object.keys(patch)) if (!cols.includes(k)) delete patch[k];
+              }
+              if (patch && !Object.keys(patch).length) patch = null;
+              const settled = cols.filter((c) => !(patch && c in patch));
+              if (settled.length) landed.push({ table, id: r.id, cols: settled, stamp: r.updated_at, values: Object.fromEntries(settled.map((c) => [c, r[c]])) });
+            }
+            if (!patch) continue;
+            patches.push({
+              id: r.id,
+              full: r,
+              patch: { ...patch, updated_at: r.updated_at, ...r.updated_by ? { updated_by: r.updated_by } : {} }
+            });
+          }
+          let refusedIds = [];
+          if (inserts.length) {
+            refusedIds = await upsertHealingMissingColumns(client, table, inserts, warnings) || [];
+            const no = new Set(refusedIds);
+            for (const r of inserts) if (!no.has(r.id)) landed.push({ table, id: r.id, cols: "*", stamp: r.updated_at });
+          }
+          if (patches.length) {
+            const res = await patchRowsHealing(client, table, patches, warnings);
+            refusedIds = refusedIds.concat(res.refusedIds || []);
+            for (const l of res.landed) landed.push({ table, ...l });
+          }
           if (refusedIds && refusedIds.length) {
             let reasons = [];
             try {
@@ -8409,9 +8601,10 @@ ${line}` : line;
       err.warnings = warnings;
       err.refused = refused;
       err.refusedFresh = refusedFresh;
+      err.landed = landed;
       throw err;
     }
-    return { okTables, warnings, refused, refusedFresh };
+    return { okTables, warnings, refused, refusedFresh, landed };
   }
   function downloadBackup(data) {
     data = storableData(data);
@@ -24855,6 +25048,63 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const visibilityPullRef = useRef(null);
     const focusPullRef = useRef(null);
     const pendingDeletionsRef = useRef(loadPendingDeletions());
+    const pendingColumnsRef = useRef(loadPendingColumns());
+    const notePending = (prev, next) => {
+      prev = storableData(prev) || {};
+      next = storableData(next) || {};
+      const p = {}, n = {};
+      for (const key of Object.keys(SYNC_TABLES)) {
+        if (prev[key] === next[key]) continue;
+        const prevById = new Map((prev[key] || []).map((r) => [r.id, r]));
+        const moved = (next[key] || []).filter((r) => prevById.get(r.id) !== r);
+        if (!moved.length) continue;
+        n[key] = moved;
+        p[key] = moved.map((r) => prevById.get(r.id)).filter(Boolean);
+      }
+      if (prev.extrusion1 !== next.extrusion1 || prev.extrusion2 !== next.extrusion2) {
+        p.extrusion1 = prev.extrusion1;
+        p.extrusion2 = prev.extrusion2;
+        n.extrusion1 = next.extrusion1;
+        n.extrusion2 = next.extrusion2;
+      }
+      if (prev.tooling !== next.tooling) {
+        p.tooling = prev.tooling;
+        n.tooling = next.tooling;
+      }
+      if (!Object.keys(n).length) return;
+      const was = pendingColumnsRef.current;
+      const now = notePendingColumns(was, dataToTables(p), dataToTables(n));
+      if (now !== was) {
+        pendingColumnsRef.current = now;
+        savePendingColumns(now);
+      }
+    };
+    const settlePending = (landed, refused) => {
+      const was = pendingColumnsRef.current;
+      if (!Object.keys(was).length) return;
+      const cur = dataRef.current || {};
+      const stillAsSent = (l) => {
+        if (l.cols === "*" || !l.values) return true;
+        const entry = Object.entries(SYNC_TABLES).find(([, v]) => v.table === l.table);
+        if (!entry) return true;
+        const row = (cur[entry[0]] || []).find((r) => r.id === l.id);
+        if (!row) return true;
+        const snake = syncToSnakeRow(row, entry[1].cols);
+        return l.cols.every((c) => JSON.stringify(snake[c] ?? null) === JSON.stringify(l.values[c] ?? null));
+      };
+      const now = clearPendingColumns(
+        was,
+        (landed || []).filter(stillAsSent).map((l) => ({ ...l, stamp: null })),
+        (refused || []).map((r) => ({ table: r.table, ids: r.ids || [] })),
+        null
+      );
+      if (now !== was) {
+        pendingColumnsRef.current = now;
+        savePendingColumns(now);
+      }
+    };
+    const settlePendingRef = useRef(settlePending);
+    settlePendingRef.current = settlePending;
     const authRecoveryRef = useRef(false);
     const handleAuthLossRef = useRef(null);
     const pollRateRef = useRef(null);
@@ -24887,9 +25137,11 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           const prev = prevDataRef.current;
           pushSyncChanges(syncClientRef.current, prev, storedData).then((res) => {
             prevDataRef.current = advancePrevForTables(prev, storedData, res.okTables);
+            settlePendingRef.current(res.landed, res.refused);
             if (res.refused && res.refused.length) reconcileRefusedRowsRef.current(res.refused, res.refusedFresh);
           }).catch((err) => {
             if (err && err.okTables) prevDataRef.current = advancePrevForTables(prev, storedData, err.okTables);
+            if (err) settlePendingRef.current(err.landed, err.refused);
             if (err && err.refused && err.refused.length) reconcileRefusedRowsRef.current(err.refused, err.refusedFresh);
           });
         }
@@ -24939,19 +25191,22 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         setPendingCount(0);
         return;
       }
+      if (skipNextPushRef.current) {
+        skipNextPushRef.current = false;
+        prevDataRef.current = storedData;
+        if (syncStatus === "connected" || syncStatus === "saving") {
+          setPendingCount(0);
+          markSynced();
+        }
+        return;
+      }
+      notePending(prevDataRef.current, storedData);
       if (syncStatus !== "connected" && syncStatus !== "saving") {
         prevDataRef.current = storedData;
         return;
       }
       if (!syncClientRef.current) {
         prevDataRef.current = storedData;
-        return;
-      }
-      if (skipNextPushRef.current) {
-        skipNextPushRef.current = false;
-        prevDataRef.current = storedData;
-        setPendingCount(0);
-        markSynced();
         return;
       }
       const prev = prevDataRef.current;
@@ -24977,6 +25232,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         setPendingCount(0);
         setSyncFailureDetail(null);
         markSynced();
+        settlePendingRef.current(res && res.landed, res && res.refused);
         {
           const now = (/* @__PURE__ */ new Date()).toISOString();
           reportDeviceStatus({ last_sync_at: now, last_ok_at: now, pending: 0 });
@@ -24996,6 +25252,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         const failures = err.failures || [];
         const okTables = err.okTables || [];
         prevDataRef.current = advancePrevForTables(prev, storedData, okTables);
+        settlePendingRef.current(err.landed, err.refused);
         releasePendingDeletions(okTables);
         setPendingCount(countPendingChanges(prevDataRef.current, storedData));
         if (err.warnings && err.warnings.length) setSyncWarnings(err.warnings);
@@ -25078,8 +25335,45 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       const pending = pendingDeletionsRef.current;
       const merged = { ...currentData };
       const ORDER_MAP_MERGE_FIELDS = ["caseWeights", "caseOverrides", "palletAssignments", "smallCaseSizes", "palletWeights", "palletDims", "packedOutside", "caseFlags", "caseRemovals", "confirmedCases"];
-      for (const key of Object.keys(SYNC_TABLES)) {
-        merged[key] = mergeById(currentData[key], remote[key], pending, key === "orders" ? ORDER_MAP_MERGE_FIELDS : null);
+      const owedFields = (table, cols) => {
+        const out = {};
+        for (const [id, owed] of Object.entries(pendingColumnsRef.current[table] || {})) {
+          if (owed === "*") {
+            out[id] = "*";
+            continue;
+          }
+          const base = owedBase(owed);
+          out[id] = Object.fromEntries(owedCols(owed).map((c) => [Object.keys(syncToCamelRow({ [c]: true }, cols))[0], Object.prototype.hasOwnProperty.call(base, c) ? base[c] : void 0]));
+        }
+        return out;
+      };
+      const clashes = [];
+      for (const [key, { table, cols }] of Object.entries(SYNC_TABLES)) {
+        merged[key] = mergeById(
+          currentData[key],
+          remote[key],
+          pending,
+          key === "orders" ? ORDER_MAP_MERGE_FIELDS : null,
+          owedFields(table, cols),
+          (id, fields) => clashes.push({ table, id, fields })
+        );
+      }
+      if (clashes.length) {
+        const was = pendingColumnsRef.current;
+        const now = clearPendingColumns(was, clashes.map((c) => {
+          const { cols } = Object.values(SYNC_TABLES).find((v) => v.table === c.table);
+          return { table: c.table, id: c.id, cols: c.fields.map((f) => cols[f] || syncCamelToSnake(f)), stamp: null };
+        }), [], null);
+        if (now !== was) {
+          pendingColumnsRef.current = now;
+          savePendingColumns(now);
+        }
+        const what = [...new Set(clashes.map((c) => `${c.table.replace(/_/g, " ")}: ${c.fields.join(", ")}`))].slice(0, 4).join("; ");
+        setSyncWarnings((cur) => [...(cur || []).filter((w) => !w.clash), {
+          clash: clashes,
+          table: [...new Set(clashes.map((c) => c.table))].join(", "),
+          message: `${clashes.length} ${clashes.length === 1 ? "change" : "changes"} made on this device ${clashes.length === 1 ? "was" : "were"} not saved \u2014 the same thing had since been changed on another device, and that newer change stands (${what}). Check ${clashes.length === 1 ? "it" : "them"} on screen.`
+        }]);
       }
       merged.extrusion1 = mergeById(currentData.extrusion1, remote.extrusion1, pending);
       merged.extrusion2 = mergeById(currentData.extrusion2, remote.extrusion2, pending);
@@ -25197,8 +25491,9 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       setSyncStatus("connected");
       markSynced();
       try {
-        const res = await pushSyncChanges(client, remote, merged, { skipTables: connectRes.failed });
+        const res = await pushSyncChanges(client, remote, merged, { skipTables: connectRes.failed, pending: pendingColumnsRef.current, baseIsRemote: true });
         prevDataRef.current = merged;
+        settlePendingRef.current(res.landed, res.refused);
         setPendingCount(0);
         setSyncFailureDetail(null);
         setSyncWarnings(res.warnings && res.warnings.length ? res.warnings : null);
@@ -25208,6 +25503,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       } catch (e) {
         console.error("Catch-up push failed:", e);
         prevDataRef.current = advancePrevForTables(remote, merged, e.okTables || []);
+        settlePendingRef.current(e.landed, e.refused);
         setPendingCount(countPendingChanges(prevDataRef.current, merged));
         if (e.failures) setSyncFailureDetail(e.failures);
         if (e.warnings && e.warnings.length) setSyncWarnings(e.warnings);
@@ -25217,6 +25513,8 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         try {
           const recovering = syncStatusRef.current === "offline";
           const res = await fetchRemoteTables(client, recovering ? null : syncWatermarksRef.current);
+          const allTables = Object.keys(SYNC_TABLES).length + 2;
+          if ((res.failed || []).length >= allTables) return;
           noteWatermarks(res);
           const remote2 = res.data;
           skipNextPushRef.current = true;
@@ -25225,8 +25523,9 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           markSynced();
           if (syncStatusRef.current === "offline") {
             try {
-              const pushRes = await pushSyncChanges(client, remote2, merged2, { skipTables: res.failed });
+              const pushRes = await pushSyncChanges(client, remote2, merged2, { skipTables: res.failed, pending: pendingColumnsRef.current, baseIsRemote: true });
               prevDataRef.current = merged2;
+              settlePendingRef.current(pushRes.landed, pushRes.refused);
               setSyncStatus("connected");
               setPendingCount(0);
               setSyncFailureDetail(null);
@@ -25237,6 +25536,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
             } catch (e) {
               console.error("Offline-recovery push failed:", e);
               prevDataRef.current = advancePrevForTables(remote2, merged2, e.okTables || []);
+              settlePendingRef.current(e.landed, e.refused);
               setPendingCount(countPendingChanges(prevDataRef.current, merged2));
               if (e.failures) setSyncFailureDetail(e.failures);
               if (e.warnings && e.warnings.length) setSyncWarnings(e.warnings);
