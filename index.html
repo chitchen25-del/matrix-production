@@ -6535,7 +6535,9 @@ ${line}` : line;
     notes: "Notes",
     date: "Date",
     floorNote: "Note to the floor",
-    strongTape: "Strong tape"
+    strongTape: "Strong tape",
+    customer: "Customer",
+    customerId: "Customer record"
   };
   var changeFieldLabel = (f) => CHANGE_FIELD_LABELS[f] || f;
   var changeFieldValue = (v) => {
@@ -8149,8 +8151,10 @@ ${line}` : line;
       let c = customers.find((x) => x && !x.deleted && custNorm(x.companyName) === custNorm(o.customer));
       if (!c) {
         const id = "cust-" + String(o.customer).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-        c = customers.find((x) => x && x.id === id) || { id, companyName: String(o.customer).trim(), createdAt: stamp, updatedAt: stamp, updatedBy: currentActor(), deleted: false };
-        if (!customers.includes(c)) customers = [...customers, c];
+        const old = customers.find((x) => x && x.id === id);
+        c = old ? old.deleted ? { ...old, deleted: false, deletedAt: null, updatedAt: stamp, updatedBy: currentActor() } : old : { id, companyName: String(o.customer).trim(), createdAt: stamp, updatedAt: stamp, updatedBy: currentActor(), deleted: false };
+        if (!old) customers = [...customers, c];
+        else if (c !== old) customers = customers.map((x) => x === old ? c : x);
       }
       return { ...o, customerId: c.id };
     });
@@ -9073,7 +9077,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-23.1";
+  var APP_VERSION = "2026-09-23.2";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -10167,6 +10171,51 @@ ${line}` : line;
         }
       }
     ));
+  }
+  function OrderCustomerField({ order, data, updateOrder }) {
+    const [draft, setDraft] = useState(order.customer || "");
+    const [said, setSaid] = useState("");
+    useEffect(() => {
+      setDraft(order.customer || "");
+    }, [order.id, order.customer]);
+    const listId = `customers-for-${order.id}`;
+    const commit = () => {
+      const typed = String(draft || "").trim();
+      if (!typed) {
+        setDraft(order.customer || "");
+        setSaid("A customer can't be blank \u2014 kept " + (order.customer || "as it was") + ".");
+        return;
+      }
+      if (custNorm(typed) === custNorm(order.customer)) {
+        setDraft(order.customer || "");
+        setSaid("");
+        return;
+      }
+      let c = findCustomer(data, typed);
+      if (!c) {
+        const near = nearCustomer(data, typed);
+        if (near && window.confirm(`Is "${typed}" the same customer as "${near.companyName}", already on file?
+
+OK = yes, use ${near.companyName}
+Cancel = no, add ${typed} as a new customer`)) c = near;
+      }
+      const was = order.customer || "";
+      if (c) updateOrder(order.id, { customer: c.companyName, customerId: c.id });
+      else updateOrder(order.id, { customer: typed, customerId: null });
+      setSaid(`Now ${c ? c.companyName : typed}${c ? "" : " (new customer)"} \u2014 was ${was}.`);
+    };
+    return /* @__PURE__ */ React.createElement("div", { className: "mb-3", style: { maxWidth: 420 }, "data-order-customer-field": true }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Customer"), /* @__PURE__ */ React.createElement(
+      TextInput,
+      {
+        value: draft,
+        list: listId,
+        onChange: (e) => setDraft(e.target.value),
+        onBlur: commit,
+        onKeyDown: (e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+        }
+      }
+    ), /* @__PURE__ */ React.createElement("datalist", { id: listId }, (data.customers || []).filter((c) => c && !c.deleted && c.companyName).map((c) => /* @__PURE__ */ React.createElement("option", { key: c.id, value: c.companyName }))), said && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, said));
   }
   function StrongTapeTick({ order, onChange }) {
     const on = !!(order && order.strongTape === true);
@@ -11900,7 +11949,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
           if (patch.stage && patch.stage !== "Shipped") next.shippedDate = null;
           return next;
         });
-        const logPatch = patch.stage && order && patch.stage !== order.stage ? appendLog(prevData, {
+        let logPatch = patch.stage && order && patch.stage !== order.stage ? appendLog(prevData, {
           action: "stage_change",
           entity: "order",
           entityId: id,
@@ -11908,6 +11957,17 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
           before: { stage: order.stage },
           after: { stage: patch.stage }
         }) : {};
+        if (order && "customer" in patch && String(patch.customer || "") !== String(order.customer || "")) {
+          logPatch = appendLog({ ...prevData, ...logPatch }, {
+            action: "customer_change",
+            entity: "order",
+            entityId: id,
+            summary: `${id} customer ${order.customer || "(none)"} \u2192 ${patch.customer}`,
+            before: { customer: order.customer || "", customerId: order.customerId || null },
+            after: { customer: patch.customer, customerId: patch.customerId || null },
+            fields: ["customer", "customerId"]
+          });
+        }
         let movements = prevData.movements;
         if (order && order.stage === "Shipped" && patch.stage && patch.stage !== "Shipped") {
           const stamp = (/* @__PURE__ */ new Date()).toISOString(), who = currentActor();
@@ -13341,7 +13401,7 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
           return;
         }
         setShippedPrintJob({ order: o });
-      } }, "\u{1F5A8} Shipping manifest")), /* @__PURE__ */ React.createElement("div", { className: "mb-3", style: { maxWidth: 420 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Address (shown on the printed packing list)"), /* @__PURE__ */ React.createElement(
+      } }, "\u{1F5A8} Shipping manifest")), lineEditMode && /* @__PURE__ */ React.createElement(OrderCustomerField, { order: o, data, updateOrder }), /* @__PURE__ */ React.createElement("div", { className: "mb-3", style: { maxWidth: 420 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Address (shown on the printed packing list)"), /* @__PURE__ */ React.createElement(
         TextInput,
         {
           value: o.address || "",
