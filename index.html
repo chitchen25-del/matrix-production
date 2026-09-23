@@ -8565,6 +8565,40 @@ ${line}` : line;
     }
     return out;
   }
+  function lostOwedColumns(localRows, remoteRows, owedById, nowMs, graceMs = 15e3) {
+    const localById = new Map((localRows || []).map((r) => [r.id, r]));
+    const out = [];
+    for (const r of remoteRows || []) {
+      const owed = owedById && owedById[r.id];
+      if (!owed || owed === "*") continue;
+      const local = localById.get(r.id);
+      if (!local || local.deleted || r.deleted) continue;
+      const t = local.updatedAt ? new Date(local.updatedAt).getTime() : NaN;
+      if (!(nowMs - t > graceMs)) continue;
+      const fields = Object.keys(owed).filter((f) => Object.prototype.hasOwnProperty.call(local, f));
+      const differ = cloudFieldsDiffer(Object.fromEntries(fields.map((f) => [f, local[f]])), Object.fromEntries(fields.map((f) => [f, r[f]])));
+      if (differ.length) out.push({ id: r.id, fields: differ });
+    }
+    return out;
+  }
+  function cloudFieldsDiffer(local, remote) {
+    const skip = /* @__PURE__ */ new Set(["id", "updatedAt", "updatedBy", "deletedAt"]);
+    const norm = (v) => v === void 0 || v === "" ? null : v;
+    const stable = (v) => JSON.stringify(v, (k, x) => x && typeof x === "object" && !Array.isArray(x) ? Object.keys(x).sort().reduce((o, key) => {
+      o[key] = x[key];
+      return o;
+    }, {}) : x);
+    const same = (a, b) => {
+      a = norm(a);
+      b = norm(b);
+      if (a === b) return true;
+      if (a === null || b === null) return false;
+      if (typeof a !== "object" && typeof b !== "object" && String(a).trim() !== "" && !isNaN(Number(a)) && !isNaN(Number(b))) return Number(a) === Number(b);
+      if (typeof a === "object" || typeof b === "object") return stable(a) === stable(b);
+      return String(a) === String(b);
+    };
+    return Object.keys(remote || {}).filter((k) => !skip.has(k) && !same(local[k], remote[k]));
+  }
   function owedCols(owed) {
     if (!owed || owed === "*") return [];
     return Array.isArray(owed) ? owed : Object.keys(owed);
@@ -9761,7 +9795,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-23.17";
+  var APP_VERSION = "2026-09-23.19";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -22281,6 +22315,16 @@ Plan it?`
       setEscapeOpen(false);
     };
     const boxesLeftOnReel = reel && mpb > 0 ? Math.floor((Number(reel.remaining) || 0) / mpb) : null;
+    const reelOnFile = form.baselineBatchCode ? (data && data.glueLineBatches || []).find((g) => g && !g.deleted && String(g.batchNumber || "").trim().toUpperCase() === String(form.baselineBatchCode).trim().toUpperCase()) : null;
+    const reelSize = reelOnFile ? String(reelOnFile.productSize || "").trim() : "";
+    useEffect(() => {
+      if (!reelSize) return;
+      const want = specDimensions(reelSize).join("x"), have = specDimensions(spec).join("x");
+      if (want && want === have) return;
+      const m = reelSize.match(/^(PX Plus|PX|Smart Formes|Phoenix XL|Ken|Ultra SR)\s+(.*)$/i);
+      touchedRef.current = false;
+      setForm((f) => ({ ...f, range: m ? m[1] : specDimensions(reelSize).length >= 2 ? "PX Plus" : "Custom", size: m ? m[2] : reelSize, pt: ptOf(reelSize) || f.pt, allocations: [] }));
+    }, [form.baselineBatchCode, reelSize]);
     return /* @__PURE__ */ React.createElement("div", { className: "mx-bond-steps", style: { display: "grid", gap: "0 56px" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-bond-col" }, /* @__PURE__ */ React.createElement(
       BondStep,
       {
@@ -23299,6 +23343,19 @@ Plan it?`
         setAddError(String(form.amountMade || "").trim() ? `"${form.amountMade}" isn't a number of boxes \u2014 retype how many were made.` : "Enter how many boxes were made.");
         return;
       }
+      const gateReelAndCode = (f) => {
+        const specF = f.range === "Custom" ? String(f.size || "").trim() : `${f.range} ${String(f.size || "").trim()}`.trim();
+        const dimsF = specDimensions(specF).join("x");
+        const code = String(f.baselineBatchCode || "").trim().toUpperCase();
+        const g = code ? (data.glueLineBatches || []).find((x) => x && !x.deleted && String(x.batchNumber || "").trim().toUpperCase() === code) : null;
+        const rs = g ? String(g.productSize || "").trim() : "";
+        if (rs && specDimensions(rs).length && dimsF && specDimensions(rs).join("x") !== dimsF)
+          return `Reel ${code} is ${rs}, but this entry says ${specF}. Pick the reel again (or correct the size) \u2014 a box is the size of the reel it came off.`;
+        const box = String(f.boxNumber || "").trim().toUpperCase();
+        const other = box && dimsF ? (data.bondingRuns || []).find((r) => r && !r.deleted && String(r.boxNumber || "").trim().toUpperCase() === box && specDimensions(r.productSize).length && specDimensions(r.productSize).join("x") !== dimsF) : null;
+        if (other) return `Box code ${box} is already ${other.productSize} \u2014 one code is one product. Use the next code.`;
+        return null;
+      };
       const err = allRefusals([
         () => validateBatchAndBox(form, null),
         () => validateAllocations(form),
@@ -23308,7 +23365,8 @@ Plan it?`
         () => gateAgainstPlan(form),
         () => gateLocation(form),
         () => gateCarton(form),
-        () => gateStrongTape(form)
+        () => gateStrongTape(form),
+        () => gateReelAndCode(form)
       ]);
       if (err) {
         setAddError(err);
@@ -26815,6 +26873,8 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const pollIntervalRef = useRef(null);
     const prevDataRef = useRef(storedData);
     const skipNextPushRef = useRef(false);
+    const mergeBaseRef = useRef(null);
+    const lostLocalRef = useRef([]);
     const channelRef = useRef(null);
     const visibilityPullRef = useRef(null);
     const focusPullRef = useRef(null);
@@ -26962,14 +27022,40 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         setPendingCount(0);
         return;
       }
-      if (skipNextPushRef.current) {
+      if (mergeBaseRef.current) {
         skipNextPushRef.current = false;
-        prevDataRef.current = storedData;
-        if (syncStatus === "connected" || syncStatus === "saving") {
-          setPendingCount(0);
-          markSynced();
+        let base = mergeBaseRef.current;
+        mergeBaseRef.current = null;
+        const lost = lostLocalRef.current || [];
+        lostLocalRef.current = [];
+        if (lost.length) {
+          const swap = {};
+          for (const l of lost) (swap[l.key] = swap[l.key] || /* @__PURE__ */ new Map()).set(l.id, l);
+          base = { ...base };
+          for (const [key, m] of Object.entries(swap)) if (Array.isArray(base[key]))
+            base[key] = base[key].map((r) => {
+              const l = m.get(r.id);
+              if (!l) return r;
+              const o = { ...r };
+              for (const f of l.fields) o[f] = l.remote[f];
+              return o;
+            });
+          const what = lost.slice(0, 4).map((l) => `${l.label}: ${l.fields.join(", ")}`).join("; ");
+          setSyncWarnings((cur) => [...(cur || []).filter((w) => !w.resent), {
+            resent: true,
+            table: [...new Set(lost.map((l) => l.key))].join(", "),
+            message: `${lost.length} ${lost.length === 1 ? "change" : "changes"} made on this device had not reached the cloud \u2014 sent now (${what}${lost.length > 4 ? ", \u2026" : ""}).`
+          }]);
+          for (const l of lost.slice(0, 20)) reportAppEvent({ kind: "resent", table: l.key, rowId: l.id, message: `Lost send re-sent: ${l.fields.join(", ")}` });
         }
-        return;
+        prevDataRef.current = base;
+        if (base === storedData) {
+          if (syncStatus === "connected" || syncStatus === "saving") {
+            setPendingCount(0);
+            markSynced();
+          }
+          return;
+        }
       }
       notePending(prevDataRef.current, storedData);
       if (syncStatus !== "connected" && syncStatus !== "saving") {
@@ -27119,16 +27205,26 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         return out;
       };
       const clashes = [];
+      const lost = [];
+      const nowMs = Date.now();
       for (const [key, { table, cols }] of Object.entries(SYNC_TABLES)) {
+        const owedHere = owedFields(table, cols);
         merged[key] = mergeById(
           currentData[key],
           remote[key],
           pending,
           key === "orders" ? ORDER_MAP_MERGE_FIELDS : null,
-          owedFields(table, cols),
+          owedHere,
           (id, fields) => clashes.push({ table, id, fields })
         );
+        for (const l of lostOwedColumns(currentData[key], remote[key], owedHere, nowMs)) {
+          const local = (currentData[key] || []).find((r) => r.id === l.id), rem = (remote[key] || []).find((r) => r.id === l.id);
+          if (!local || !rem) continue;
+          const label = key === "cases" ? `${local.orderId || ""} case ${local.caseNum}` : local.boxNumber || local.batchNumber || local.id;
+          lost.push({ key, id: l.id, fields: l.fields, remote: rem, local, label });
+        }
       }
+      lostLocalRef.current = lost;
       if (clashes.length) {
         const was = pendingColumnsRef.current;
         const now = clearPendingColumns(was, clashes.map((c) => {
@@ -27196,7 +27292,11 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           }
         }
         skipNextPushRef.current = true;
-        setDataRaw(retireFossils(syncCaseRowsToLedger(merged, null)));
+        {
+          const x = retireFossils(syncCaseRowsToLedger(merged, null));
+          mergeBaseRef.current = x;
+          setDataRaw(x);
+        }
         prevDataRef.current = merged;
         setPendingCount(0);
         markSynced();
@@ -27224,7 +27324,11 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         noteWatermarks(res);
         const remote = res.data;
         skipNextPushRef.current = true;
-        setDataRaw((prevData) => retireFossils(syncCaseRowsToLedger(mergeRemoteIntoData(prevData, remote), null)));
+        setDataRaw((prevData) => {
+          const x = retireFossils(syncCaseRowsToLedger(mergeRemoteIntoData(prevData, remote), null));
+          mergeBaseRef.current = x;
+          return x;
+        });
         setSyncStatus("connected");
         flash("Refreshed from cloud");
       } catch (e) {
@@ -27254,7 +27358,11 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       }
       skipNextPushRef.current = true;
       const merged = mergeRemoteIntoData(dataRef.current, remote);
-      setDataRaw(retireFossils(syncCaseRowsToLedger(merged, null)));
+      {
+        const x = retireFossils(syncCaseRowsToLedger(merged, null));
+        mergeBaseRef.current = x;
+        setDataRaw(x);
+      }
       localStorage.setItem(SYNC_PREF_KEY, "true");
       localStorage.setItem("matrixSyncEmail", email);
       setSyncEmail(email);
@@ -27289,9 +27397,21 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           noteWatermarks(res);
           const remote2 = res.data;
           skipNextPushRef.current = true;
-          const merged2 = mergeRemoteIntoData(dataRef.current, remote2);
-          setDataRaw(retireFossils(syncCaseRowsToLedger(merged2, null)));
+          const baseUsed = dataRef.current;
+          const merged2 = mergeRemoteIntoData(baseUsed, remote2);
+          const x0 = retireFossils(syncCaseRowsToLedger(merged2, null));
+          setDataRaw((prev) => {
+            const x = prev === baseUsed ? x0 : retireFossils(syncCaseRowsToLedger(mergeRemoteIntoData(prev, remote2), null));
+            mergeBaseRef.current = x;
+            return x;
+          });
           markSynced();
+          if (typeof window.__mxAfterMerge === "function") {
+            try {
+              window.__mxAfterMerge();
+            } catch (e) {
+            }
+          }
           if (syncStatusRef.current === "offline") {
             try {
               const pushRes = await pushSyncChanges(client, remote2, merged2, { skipTables: res.failed, pending: pendingColumnsRef.current, baseIsRemote: true });
