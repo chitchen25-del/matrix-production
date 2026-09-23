@@ -620,10 +620,11 @@
     { id: "mat-case-5", category: "cases", name: "5 box capacity", unit: "cases", currentStock: 0, lastStockTakeDate: null },
     { id: "mat-case-reel", category: "cases", name: "Reels", unit: "cases", currentStock: 0, lastStockTakeDate: null }
   ];
-  var CATALOGUE = { products: [], productForms: [] };
-  function setCatalogue(products, productForms) {
-    if (CATALOGUE.products === (products || CATALOGUE.products) && CATALOGUE.productForms === (productForms || CATALOGUE.productForms) && products && productForms) return;
-    CATALOGUE = { products: products || [], productForms: productForms || [] };
+  var CATALOGUE = { products: [], productForms: [], productAliases: [] };
+  function setCatalogue(products, productForms, productAliases) {
+    const al = productAliases || CATALOGUE.productAliases || [];
+    if (CATALOGUE.products === (products || CATALOGUE.products) && CATALOGUE.productForms === (productForms || CATALOGUE.productForms) && CATALOGUE.productAliases === al && products && productForms) return;
+    CATALOGUE = { products: products || [], productForms: productForms || [], productAliases: al };
   }
   var ACTOR = "Team";
   var DEVICE = "Device";
@@ -1102,6 +1103,46 @@
     }
     return out;
   }
+  function bondingOffer(data, needing, orders, lineItems, pt) {
+    const rows = productionOutstandingRows(orders || data.orders || [], lineItems || data.lineItems || [], data.bondingRuns || [], data.stockPicks || []);
+    const withPt = (ls) => pt && !/\d\s*-?\s*\d?\s*pt\b/i.test(String(ls)) ? `${ls} ${pt}` : ls;
+    const rowFor = (ls) => {
+      const k = productRowKey(withPt(ls));
+      const hit = rows.find((r) => productRowKey(r.spec) === k);
+      if (hit || pt) return hit || null;
+      const range = (x) => String(x || "").replace(/\s*\d.*$/, "").trim().toUpperCase();
+      const loose = rows.filter((r) => looseSpecMatch(r.spec, ls) && range(r.spec) === range(ls));
+      return loose.length === 1 ? loose[0] : null;
+    };
+    return (needing || []).map((n) => {
+      let pr = rowFor(n.lineSpec);
+      let part = pr ? pr.breakdown.find((b) => b.orderId === n.orderId) : null;
+      if (!part) {
+        const tw = twinCartonSpec(n.lineSpec);
+        const pr2 = tw ? rowFor(tw) : null;
+        const part2 = pr2 ? pr2.breakdown.find((b) => b.orderId === n.orderId) : null;
+        if (part2) {
+          pr = pr2;
+          part = part2;
+        }
+      }
+      const order = (orders || data.orders || []).find((o) => o.id === n.orderId) || null;
+      const outstanding = part ? Number(part.qty) || 0 : 0;
+      const stillToMake = part ? Math.max(0, Number(part.toMake) || 0) : 0;
+      const want = orderBoxTypeFor(order, n.lineSpec), strong = isStrongTapeOrder(order);
+      const shelf = pr ? (pr.shelfBoxes || []).filter((b) => shelfBoxFitsBoxType({ boxTypeId: b.boxTypeId }, want) && b.strong === strong) : [];
+      const room = Number(n.needs) || 0;
+      return {
+        ...n,
+        outstanding,
+        toMake: Math.min(stillToMake, room),
+        covered: Math.max(0, outstanding - stillToMake),
+        shelf,
+        planShort: stillToMake > room ? stillToMake - room : 0,
+        planOver: !part && room > 0 ? room : 0
+      };
+    });
+  }
   function productRowKey(spec) {
     return productKey(spec) + (isReelSpec(spec) ? "|REEL" : "|BOX");
   }
@@ -1114,8 +1155,17 @@
   function productionOutstandingRowsFresh(orders, lineItems, bondingRuns, stockPicks) {
     return productionOutstandingRowsStored(orders, lineItems, ledgerCorrectedRuns(bondingRuns), stockPicks);
   }
+  function productOfForm(fid) {
+    if (!fid) return null;
+    try {
+      const f = formById(CATALOGUE, fid);
+      return f ? f.productId : null;
+    } catch (e) {
+      return null;
+    }
+  }
   function productionOutstandingRowsStored(orders, lineItems, bondingRuns, stockPicks) {
-    const activeOrders = orders.filter((o) => o.stage !== "Packing" && o.stage !== "Shipped");
+    const activeOrders = orders.filter((o) => o && !o.deleted && o.stage !== "Shipped" && o.stage !== "Cancelled");
     const map = /* @__PURE__ */ new Map();
     for (const order of activeOrders) {
       for (const item of whatsLeftRows(lineItems, bondingRuns, order.id)) {
@@ -1129,6 +1179,7 @@
         row.orderIds.add(order.id);
         if (order.priority != null) row.priority = row.priority == null ? order.priority : Math.min(row.priority, order.priority);
         if (order.dueDate) row.earliestDueDate = row.earliestDueDate == null || order.dueDate < row.earliestDueDate ? order.dueDate : row.earliestDueDate;
+        if (item.formId) (row.formIds = row.formIds || /* @__PURE__ */ new Set()).add(item.formId);
         row.breakdown.push({
           orderId: order.id,
           customer: order.customer,
@@ -1144,10 +1195,19 @@
     const shelf = boxedStockAvailable(bondingRuns, stockPicks || []);
     const unchecked = uncheckedShelfStock(bondingRuns);
     for (const row of map.values()) {
-      const candidates = shelf.filter((b) => looseSpecMatch(b.productSize, row.spec) && stockFormMatchesLine(b, row.spec)).map((b) => ({ ...b, left: Number(b.available || 0) }));
-      const uncheckedCands = unchecked.filter((b) => looseSpecMatch(b.productSize, row.spec) && stockFormMatchesLine(b, row.spec)).map((b) => ({ ...b, left: Number(b.available || 0) }));
+      const rowProducts = new Set([...row.formIds || []].map(productOfForm).filter(Boolean));
+      const sameProduct = (b) => {
+        const p = productOfForm(b.formId);
+        return p && rowProducts.size ? rowProducts.has(p) : looseSpecMatch(b.productSize, row.spec);
+      };
+      const candidates = shelf.filter((b) => sameProduct(b) && stockFormMatchesLine(b, row.spec)).map((b) => ({ ...b, left: Number(b.available || 0) }));
+      const uncheckedCands = unchecked.filter((b) => sameProduct(b) && stockFormMatchesLine(b, row.spec)).map((b) => ({ ...b, left: Number(b.available || 0) }));
       let uncheckedCovered = 0;
       const uncheckedBoxes = [];
+      row.shelfBoxes = [
+        ...candidates.map((b) => ({ code: b.boxNumber, bay: b.location || "", qty: Number(b.available || 0), checked: true, boxTypeId: b.boxTypeId || null, strong: isStrongTapeBoxCode(b.boxNumber) })),
+        ...uncheckedCands.map((b) => ({ code: b.boxNumber, bay: b.location || "", qty: Number(b.available || 0), checked: false, boxTypeId: b.boxTypeId || null, strong: isStrongTapeBoxCode(b.boxNumber) }))
+      ].filter((x) => x.qty > 0);
       row.freeOnShelf = candidates.reduce((t, b) => t + b.left, 0);
       let covered = 0;
       const toMakeByBox = {};
@@ -1213,7 +1273,7 @@
       let status = "Not started";
       if (made >= Number(li.qty)) status = "Complete";
       else if (made > 0) status = "In progress";
-      return { id: li.id, spec: li.description, ordered: Number(li.qty), made, remaining, status };
+      return { id: li.id, spec: li.description, ordered: Number(li.qty), made, remaining, status, formId: li.formId || null };
     });
   }
   function isReelSpec(spec) {
@@ -1367,15 +1427,25 @@
     if (fromLineItems.length > 0) return fromLineItems[0];
     return null;
   }
+  var reelPool = (k) => k ? String(k).replace(/^smart-formes-/, "px-plus-") : k;
+  function demandSizeKey(spec) {
+    try {
+      const res = resolveProduct({ products: CATALOGUE.products }, String(spec || "").replace(/\s*\((\d+(\.\d+)?)m\)$/, "").trim());
+      return res && res.status === "exact" && res.product ? sizeKeyOfProduct(res.product) : null;
+    } catch (e) {
+      return null;
+    }
+  }
   function glueLineScheduleRowsStored(orders, lineItems, glueLineBatches, bondingRuns = [], stockPicks = [], ncrs = [], glueRuns = []) {
     const resolved = (glueLineBatches || []).map((b) => glueSettingsFor(b, glueRuns));
     glueLineBatches = resolved;
     const demand = productionOutstandingRows(orders, lineItems, bondingRuns, stockPicks).filter((d) => classifySize(d.spec) !== "boughtin");
     const scrappedBatches = new Set((ncrs || []).map((n) => n.batchNumber));
-    return demand.map((d) => {
+    const built = demand.map((d) => {
       const metersPerBox = knownMeterageForSpec(d.spec, null, bondingRuns, lineItems) || METERS_PER_BOX_DEFAULT;
       const neededMeters = Math.ceil((d.toMake ?? d.qty) * metersPerBox);
-      const availableReels = (glueLineBatches || []).filter((g) => !g.deleted && g.cleared !== "Yes" && !scrappedBatches.has(g.batchNumber) && sameSizeSpec(g.productSize, d.spec));
+      const dKey = demandSizeKey(d.spec);
+      const availableReels = (glueLineBatches || []).filter((g) => !g.deleted && g.cleared !== "Yes" && !scrappedBatches.has(g.batchNumber) && (g.sizeKey && dKey ? reelPool(g.sizeKey) === reelPool(dKey) : sameSizeSpec(g.productSize, d.spec)));
       const reelMetres = (g) => Math.max(0, Number(g.meterage || 0) - batchMeterageUsed(bondingRuns, g.batchNumber));
       const glueLinedMeters = availableReels.reduce((s, g) => s + reelMetres(g), 0);
       const uncheckedMeters = availableReels.filter((g) => g.checked !== "Yes").reduce((s, g) => s + reelMetres(g), 0);
@@ -1414,9 +1484,38 @@
            quantities, NOT an apportionment of `toMake`. `toMake` is net of shelf
            stock pooled across every order, and splitting that between them would
            be a guess dressed as a number. */
-        breakdown: d.breakdown || []
+        breakdown: d.breakdown || [],
+        _pool: dKey ? reelPool(dKey) : `name:${d.spec}`,
+        _reels: availableReels.map((g) => ({ id: g.id || g.batchNumber, m: reelMetres(g), unchecked: g.checked !== "Yes" }))
       };
-    }).filter((r) => r.stillToGlueLine > 0);
+    });
+    const byPool = /* @__PURE__ */ new Map();
+    for (const r of built) (byPool.get(r._pool) || byPool.set(r._pool, []).get(r._pool)).push(r);
+    for (const group of byPool.values()) {
+      if (group.length < 2) continue;
+      const reels = /* @__PURE__ */ new Map();
+      for (const r of group) for (const x of r._reels) reels.set(x.id, x);
+      let left = [...reels.values()].reduce((t, x) => t + x.m, 0);
+      let leftUnchecked = [...reels.values()].filter((x) => x.unchecked).reduce((t, x) => t + x.m, 0);
+      group.sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999) || String(a.earliestDueDate || "9999").localeCompare(String(b.earliestDueDate || "9999")) || String(a.spec).localeCompare(String(b.spec)));
+      for (const r of group) {
+        const share = Math.min(r.neededMeters, left);
+        left -= share;
+        const uShare = Math.min(share, leftUnchecked);
+        leftUnchecked -= uShare;
+        r.glueLinedMeters = share;
+        r.uncheckedMeters = uShare;
+        r.stillToGlueLine = Math.max(0, r.neededMeters - share);
+        r.boxesGlued = Math.min(r.qtyNeeded, Math.floor(share / r.metersPerBox));
+        r.boxesToGlue = Math.max(0, Math.ceil(r.stillToGlueLine / r.metersPerBox));
+        r.needsExtrusion = classifySize(r.spec) === "7mm" && share <= 0;
+      }
+    }
+    for (const r of built) {
+      delete r._pool;
+      delete r._reels;
+    }
+    return built.filter((r) => r.stillToGlueLine > 0);
   }
   function refsEquivalent(data, a, b) {
     if (!a || !b) return false;
@@ -1567,7 +1666,8 @@
             boxTypeId: k === "unknown" ? null : k,
             baselineBatchCode: meta.baselineBatchCode || "",
             packageType: meta.packageType || null,
-            metersPerBox: Number(meta.metersPerBox) || null
+            metersPerBox: Number(meta.metersPerBox) || null,
+            formId: meta.formId || null
           });
         }
       }
@@ -2381,6 +2481,51 @@
       };
     }).filter((r) => r.stillToExtrude > 0);
     return { waiting, toExtrude };
+  }
+  function productPipeline(prodRows, glueRows, runs) {
+    const key = (s) => productRowKey(String(s || "").replace(/\s*\((\d+(\.\d+)?)m\)$/, ""));
+    const glueBy = new Map((glueRows || []).map((g) => [key(g.spec), g]));
+    const dateOf = new Map((runs || []).filter((r) => r && !r.deleted && r.boxNumber).map((r) => [String(r.boxNumber).toUpperCase(), r.date || ""]));
+    const out = /* @__PURE__ */ new Map();
+    for (const r of prodRows || []) {
+      const g = glueBy.get(key(r.spec)) || null;
+      const boxes = (r.shelfBoxes || []).map((b) => ({ ...b, date: dateOf.get(String(b.code).toUpperCase()) || "" })).sort((a, b) => (a.date || "9999") < (b.date || "9999") ? -1 : (a.date || "9999") > (b.date || "9999") ? 1 : String(a.code).localeCompare(String(b.code)));
+      const sum = (f) => boxes.filter(f).reduce((t, b) => t + (Number(b.qty) || 0), 0);
+      const ready = sum((b) => b.checked && b.bay), check = sum((b) => !b.checked), find = sum((b) => b.checked && !b.bay);
+      const onShelf = ready + check + find, covered = Number(r.covered) || 0;
+      const orders = [...r.breakdown || []].sort((a, b) => {
+        const pa = a.priority ?? 999, pb = b.priority ?? 999;
+        if (pa !== pb) return pa - pb;
+        const da = a.dueDate || "9999-12-31", db = b.dueDate || "9999-12-31";
+        return da < db ? -1 : da > db ? 1 : String(a.orderId).localeCompare(String(b.orderId));
+      }).map((b) => ({
+        orderId: b.orderId,
+        customer: b.customer,
+        dueDate: b.dueDate || null,
+        needs: Number(b.qty) || 0,
+        short: Math.max(0, Number(b.toMake) || 0),
+        covered: Math.max(0, (Number(b.qty) || 0) - Math.max(0, Number(b.toMake) || 0)),
+        strongTape: !!b.strongTape,
+        boxType: b.boxType
+      }));
+      out.set(r.spec, {
+        spec: r.spec,
+        needed: Number(r.qty) || 0,
+        covered,
+        toMake: Number(r.toMake) || 0,
+        onShelf,
+        ready,
+        check,
+        find,
+        spare: Math.max(0, onShelf - covered),
+        reelMetres: g ? Number(g.glueLinedMeters) || 0 : null,
+        toGlueMetres: g ? Number(g.stillToGlueLine) || 0 : null,
+        reelCount: g ? Number(g.reelCount) || 0 : null,
+        orders,
+        boxes
+      });
+    }
+    return out;
   }
 
   // mx_promises.js
@@ -6040,6 +6185,34 @@
       return { error: inLocked.length ? `${box.boxNumber} is in ${orderId} case ${inLocked.join(", ")}, which is confirmed. A confirmed case only changes from a photo of the case \u2014 nothing has been written.` : `${orderId} does not hold ${qty} of ${box.boxNumber} in its cases \u2014 nothing has been written.` };
     }
     return { moves: takes.map((t) => moveUnplaced({ boxNumber: box.boxNumber, spec: box.productSize, qty: t.qty, orderId, caseNum: t.caseNum, source: "pick", sourceId, note })) };
+  }
+  function planVsOrder(data, orderId) {
+    const key = (s) => productRowKey(String(s || "").replace(/\s*\((\d+(\.\d+)?)m\)$/, ""));
+    const ordered = /* @__PURE__ */ new Map(), planned = /* @__PURE__ */ new Map(), name = /* @__PURE__ */ new Map();
+    for (const li of data.lineItems || []) {
+      if (!li || li.deleted || li.orderId !== orderId) continue;
+      if (isDelivery(li.description) || isSmallItem(li.description)) continue;
+      const q = (Number(li.qty) || 0) - (Number(li.packedOutsideQty) || 0);
+      if (q <= 0) continue;
+      const k = key(li.description);
+      ordered.set(k, (ordered.get(k) || 0) + q);
+      if (!name.has(k)) name.set(k, li.description);
+    }
+    for (const c of data.cases || []) {
+      if (!c || c.deleted || c.orderId !== orderId) continue;
+      for (const [spec, q] of Object.entries(casePlanned(c))) {
+        const k = key(spec);
+        planned.set(k, (planned.get(k) || 0) + (Number(q) || 0));
+        if (!name.has(k)) name.set(k, spec);
+      }
+    }
+    const hasPlan = planned.size > 0;
+    const out = [];
+    for (const k of /* @__PURE__ */ new Set([...ordered.keys(), ...planned.keys()])) {
+      const o = ordered.get(k) || 0, p = planned.get(k) || 0;
+      if (o !== p && hasPlan) out.push({ spec: String(name.get(k) || k).replace(/\s*\((\d+(\.\d+)?)m\)$/, ""), ordered: o, planned: p, diff: p - o });
+    }
+    return out.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
   }
 
   // mx_catalogue.js
@@ -9795,7 +9968,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-23.19";
+  var APP_VERSION = "2026-09-23.22";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -9936,6 +10109,7 @@ ${line}` : line;
           const outgoing = actor ? changed.map((r) => ({ ...r, updated_by: actor })) : changed;
           const owedHere = opts.pending && opts.pending[table] || {};
           const inserts = [], patches = [];
+          const authorOf = new Map(changed.map((r) => [r.id, String(r.updated_by || "").trim().toLowerCase()]));
           for (const r of outgoing) {
             const before = prevById.get(r.id);
             const owed = owedHere[r.id];
@@ -9943,6 +10117,7 @@ ${line}` : line;
               inserts.push(r);
               continue;
             }
+            if (opts.baseIsRemote && !owed && actor && authorOf.get(r.id) && authorOf.get(r.id) !== String(actor).trim().toLowerCase()) continue;
             let patch = rowPatch(before, r);
             if (opts.baseIsRemote && owed) {
               const cols = owedCols(owed);
@@ -10222,7 +10397,7 @@ ${line}` : line;
       const short = !it.damaged && Number(it.confirmedQty) < Number(it.proposedQty);
       const isConfirmed = it.confirmed === true && !it.damaged;
       const caseNum = it.caseOverride ?? suggestedCase;
-      return /* @__PURE__ */ React.createElement(React.Fragment, { key: it.id }, isNewGroup && /* @__PURE__ */ React.createElement("div", { style: { background: NAVY, color: "#fff", padding: "10px 14px", borderRadius: 8, marginTop: i ? 20 : 0, marginBottom: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, fontSize: 16 } }, /* @__PURE__ */ React.createElement(Spec, { s: it.displaySpec || it.productSize, size: 14 })), summary && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, opacity: 0.85, marginTop: 2 } }, "Needs ", summary.needed ?? "\u2014", " \xB7 On the shelf ", summary.available, summary.unconfirmedCarton > 0 ? ` \u2014 ${summary.unconfirmedCarton} need the carton confirmed` : "", summary.needed != null && summary.available < summary.needed ? " \u2014 short" : "")), /* @__PURE__ */ React.createElement("div", { id: `pick-card-${it.id}`, "data-pick-card": it.boxNumber, style: { background: "#fff", border: `2px solid ${it.damaged ? BORDER : isConfirmed ? GREEN : short ? AMBER : "#E4E4E0"}`, borderRadius: 8, padding: 16, marginBottom: 12, opacity: it.damaged ? 0.55 : 1, outline: scannedId === it.id ? `4px solid ${ORANGE}` : "none" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "font-mono", style: { fontWeight: 600, fontSize: 18 } }, it.boxNumber), it.location && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 3 } }, "Bay ", /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { color: INK, fontWeight: 500 } }, it.location))), /* @__PURE__ */ React.createElement("div", { style: { textAlign: "right" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: INK_MUTED } }, "Expected"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 24, fontWeight: 700 } }, it.proposedQty))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: INK_MUTED, marginBottom: 6 } }, "Batch"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", borderRadius: 8, border: `1px solid ${BORDER}`, background: it.damaged ? "#F2F2F0" : it.isNewlyAdded ? "#EAF7EE" : "#fff", marginBottom: 8 } }, /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "monospace", fontWeight: 600, fontSize: 15 } }, it.baselineBatchCode || "\u2014", it.isNewlyAdded && /* @__PURE__ */ React.createElement("span", { style: { color: GREEN, fontWeight: 700, marginLeft: 6 } }, "NEW")), !it.damaged && /* @__PURE__ */ React.createElement(
+      return /* @__PURE__ */ React.createElement(React.Fragment, { key: it.id }, isNewGroup && /* @__PURE__ */ React.createElement("div", { style: { background: NAVY, color: "#fff", padding: "10px 14px", borderRadius: 8, marginTop: i ? 20 : 0, marginBottom: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, fontSize: 16 } }, /* @__PURE__ */ React.createElement(Spec, { s: it.displaySpec || it.productSize, size: 14 })), summary && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, opacity: 0.85, marginTop: 2 } }, "Needs ", summary.needed ?? "\u2014", " \xB7 On the shelf ", summary.available, summary.unconfirmedCarton > 0 ? ` \u2014 ${summary.unconfirmedCarton} need the carton confirmed` : "", summary.needed != null && summary.available < summary.needed ? " \u2014 short" : "")), /* @__PURE__ */ React.createElement("div", { id: `pick-card-${it.id}`, "data-pick-card": it.boxNumber, style: { background: "#fff", border: `2px solid ${it.damaged ? BORDER : isConfirmed ? GREEN : short ? AMBER : "#E4E4E0"}`, borderRadius: 8, padding: 16, marginBottom: 12, opacity: it.damaged ? 0.55 : 1, outline: scannedId === it.id ? `4px solid ${ORANGE}` : "none" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "font-mono", style: { fontWeight: 600, fontSize: 18 } }, it.boxNumber), it.location && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 3 } }, "Bay ", /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { color: INK, fontWeight: 500 } }, it.location)), it.date && /* @__PURE__ */ React.createElement("div", { "data-pick-made": it.boxNumber, style: { fontSize: 12.5, color: INK_MUTED, marginTop: 2 } }, "Made ", it.date, " \u2014 oldest first")), /* @__PURE__ */ React.createElement("div", { style: { textAlign: "right" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: INK_MUTED } }, "Expected"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 24, fontWeight: 700 } }, it.proposedQty))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: INK_MUTED, marginBottom: 6 } }, "Batch"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", borderRadius: 8, border: `1px solid ${BORDER}`, background: it.damaged ? "#F2F2F0" : it.isNewlyAdded ? "#EAF7EE" : "#fff", marginBottom: 8 } }, /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "monospace", fontWeight: 600, fontSize: 15 } }, it.baselineBatchCode || "\u2014", it.isNewlyAdded && /* @__PURE__ */ React.createElement("span", { style: { color: GREEN, fontWeight: 700, marginLeft: 6 } }, "NEW")), !it.damaged && /* @__PURE__ */ React.createElement(
         "button",
         {
           onClick: () => setBatchPickerOpenFor(batchPickerOpenFor === it.id ? null : it.id),
@@ -13682,7 +13857,8 @@ Read the next screen carefully before you agree to it.`
         confirmedQty: proposedById[b.id] ?? 0,
         damaged: false,
         caseOverride: null,
-        baselineBatchCode: b.baselineBatchCode || ""
+        baselineBatchCode: b.baselineBatchCode || "",
+        date: b.date || ""
       }));
       setPendingPickFor(order.id);
       setPendingPickItems(items);
@@ -14603,7 +14779,16 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
           setShipError({ ...shipError, [o.id]: null });
           updateOrder(o.id, { stage: e.target.value });
         }
-      }, style: { width: "100%" } }, Object.keys(STAGE_COLORS).map((s) => /* @__PURE__ */ React.createElement("option", { key: s }, s))), shipError[o.id] && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: RED, maxWidth: 260 } }, shipError[o.id])), /* @__PURE__ */ React.createElement("div", { "data-due-field": "1" }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Due date", !o.dueDate && /* @__PURE__ */ React.createElement("span", null, " \u2014 none set"), o.dueDate && /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => updateOrder(o.id, { dueDate: null }), style: { marginLeft: 8, background: "none", border: "none", color: NAVY, textDecoration: "underline", cursor: "pointer", fontSize: 12, padding: 0 } }, "clear")), /* @__PURE__ */ React.createElement(TextInput, { type: "date", value: o.dueDate || "", onChange: (e) => updateOrder(o.id, { dueDate: e.target.value || null }), style: { width: "100%", minHeight: 44, boxSizing: "border-box" } })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Carton type"), /* @__PURE__ */ React.createElement(Select, { value: o.boxType || "", onChange: (e) => updateOrder(o.id, { boxType: e.target.value }), style: { width: "100%" } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014"), BOX_TYPES.map((b) => /* @__PURE__ */ React.createElement("option", { key: b, value: b }, b))))), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-3 items-center pb-3" }, /* @__PURE__ */ React.createElement(Button, { variant: "danger", onClick: () => removeOrder(o.id) }, "Delete order"), /* @__PURE__ */ React.createElement(
+      }, style: { width: "100%" } }, Object.keys(STAGE_COLORS).map((s) => /* @__PURE__ */ React.createElement("option", { key: s }, s))), shipError[o.id] && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: RED, maxWidth: 260 } }, shipError[o.id]), (() => {
+        let pv = [];
+        try {
+          pv = planVsOrder(data, o.id);
+        } catch (e) {
+          pv = [];
+        }
+        if (!pv.length) return null;
+        return /* @__PURE__ */ React.createElement("div", { "data-plan-check": o.id, className: "text-xs mt-1", style: { color: "#8A4B00", maxWidth: 320 } }, "Case plan doesn't match the order \u2014 ", pv.slice(0, 3).map((x) => `${x.spec}: ordered ${x.ordered}, plan holds ${x.planned}`).join("; "), pv.length > 3 ? ` (+${pv.length - 3} more)` : "");
+      })()), /* @__PURE__ */ React.createElement("div", { "data-due-field": "1" }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Due date", !o.dueDate && /* @__PURE__ */ React.createElement("span", null, " \u2014 none set"), o.dueDate && /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => updateOrder(o.id, { dueDate: null }), style: { marginLeft: 8, background: "none", border: "none", color: NAVY, textDecoration: "underline", cursor: "pointer", fontSize: 12, padding: 0 } }, "clear")), /* @__PURE__ */ React.createElement(TextInput, { type: "date", value: o.dueDate || "", onChange: (e) => updateOrder(o.id, { dueDate: e.target.value || null }), style: { width: "100%", minHeight: 44, boxSizing: "border-box" } })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Carton type"), /* @__PURE__ */ React.createElement(Select, { value: o.boxType || "", onChange: (e) => updateOrder(o.id, { boxType: e.target.value }), style: { width: "100%" } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014"), BOX_TYPES.map((b) => /* @__PURE__ */ React.createElement("option", { key: b, value: b }, b))))), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-3 items-center pb-3" }, /* @__PURE__ */ React.createElement(Button, { variant: "danger", onClick: () => removeOrder(o.id) }, "Delete order"), /* @__PURE__ */ React.createElement(
         Button,
         {
           variant: lineEditMode ? "accent" : "ghost",
@@ -14998,9 +15183,29 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       "+ Add order"
     )), (!newOrder.customer.trim() || !newOrder.boxType) && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: INK_MUTED } }, !newOrder.customer.trim() ? "Enter a customer" : "Choose a box type", " to add this order.")));
   }
+  var pipeChip = (text, color, bg) => /* @__PURE__ */ React.createElement("span", { style: { display: "inline-block", borderRadius: 10, padding: "1px 8px", fontSize: 11.5, fontWeight: 700, color, background: bg, marginRight: 4 } }, text);
+  function PipelineLine({ p }) {
+    if (!p) return null;
+    const st = { background: "#F4F5F8", border: `1px solid ${BORDER}`, borderRadius: 6, padding: "1px 7px", fontSize: 12, whiteSpace: "nowrap" };
+    const arrow = /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 12 } }, "\u2192");
+    return /* @__PURE__ */ React.createElement("div", { "data-pipeline": p.spec, style: { display: "flex", flexWrap: "wrap", gap: 5, alignItems: "center", marginTop: 5, fontWeight: 400 } }, /* @__PURE__ */ React.createElement("span", { style: st }, "needed ", /* @__PURE__ */ React.createElement("b", { className: "font-mono" }, p.needed)), arrow, /* @__PURE__ */ React.createElement("span", { style: st }, "shelf covers ", /* @__PURE__ */ React.createElement("b", { className: "font-mono" }, p.covered)), arrow, /* @__PURE__ */ React.createElement("span", { style: st }, "to bond ", /* @__PURE__ */ React.createElement("b", { className: "font-mono" }, p.toMake)), p.reelMetres != null && /* @__PURE__ */ React.createElement(React.Fragment, null, arrow, /* @__PURE__ */ React.createElement("span", { style: st }, "reel on rack ", /* @__PURE__ */ React.createElement("b", { className: "font-mono" }, Math.round(p.reelMetres), " m")), arrow, /* @__PURE__ */ React.createElement("span", { style: { ...st, borderColor: p.toGlueMetres > 0 ? ORANGE : BORDER } }, "to glue ", /* @__PURE__ */ React.createElement("b", { className: "font-mono" }, Math.round(p.toGlueMetres || 0), " m"))), /* @__PURE__ */ React.createElement("span", { style: { marginLeft: 4 } }, p.ready > 0 && pipeChip(`${p.ready} ready`, "#2E7D52", "#E6F4EC"), p.check > 0 && pipeChip(`${p.check} check`, "#8A4B00", "#FFF1DC"), p.find > 0 && pipeChip(`${p.find} find`, RED, "#FBE9E6"), p.spare > 0 && pipeChip(`spare ${p.spare}`, NAVY, "#E8EBF6")));
+  }
+  function ProductPanel({ p }) {
+    if (!p) return null;
+    const td = { padding: "4px 6px", borderTop: `1px solid ${BORDER}`, fontSize: 12.5, verticalAlign: "top" };
+    const th = { ...td, borderTop: 0, color: INK_MUTED, fontSize: 11.5, fontWeight: 600, textAlign: "left" };
+    return /* @__PURE__ */ React.createElement("div", { "data-product-panel": p.spec, onClick: (e) => e.stopPropagation(), style: { marginTop: 8, border: `1px solid ${BORDER}`, borderRadius: 8, padding: 10, background: "#FBFBFD", cursor: "default" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: NAVY, marginBottom: 4 } }, "If nothing more is made \u2014 most urgent first"), /* @__PURE__ */ React.createElement("table", { style: { width: "100%", borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("tbody", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: th }, "Order"), /* @__PURE__ */ React.createElement("th", { style: { ...th, textAlign: "right" } }, "Needs"), /* @__PURE__ */ React.createElement("th", { style: th })), p.orders.map((o) => /* @__PURE__ */ React.createElement("tr", { key: o.orderId, "data-short-row": o.orderId }, /* @__PURE__ */ React.createElement("td", { style: td }, o.customer, " ", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, o.orderId, o.dueDate ? ` \xB7 due ${o.dueDate}` : "", o.strongTape ? " \xB7 strong tape" : "")), /* @__PURE__ */ React.createElement("td", { style: { ...td, textAlign: "right", fontWeight: 700 }, className: "font-mono" }, o.needs), /* @__PURE__ */ React.createElement("td", { style: td }, o.short > 0 ? /* @__PURE__ */ React.createElement(React.Fragment, null, pipeChip(`short ${o.short}`, RED, "#FBE9E6"), o.covered > 0 && /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, o.covered, " covered")) : pipeChip("covered", "#2E7D52", "#E6F4EC")))))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: NAVY, margin: "10px 0 4px" } }, "On the shelf \u2014 oldest first"), p.boxes.length ? /* @__PURE__ */ React.createElement("table", { style: { width: "100%", borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("tbody", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: th }, "Box"), /* @__PURE__ */ React.createElement("th", { style: { ...th, textAlign: "right" } }, "Qty"), /* @__PURE__ */ React.createElement("th", { style: th }, "Bay"), /* @__PURE__ */ React.createElement("th", { style: th }, "Made")), p.boxes.slice(0, 12).map((b) => /* @__PURE__ */ React.createElement("tr", { key: b.code + (b.bay || "") }, /* @__PURE__ */ React.createElement("td", { style: td, className: "font-mono" }, b.code, " ", !b.checked && pipeChip("check it", "#8A4B00", "#FFF1DC"), b.checked && !b.bay && pipeChip("find it", RED, "#FBE9E6"), b.strong && pipeChip("S", RED, "#FBE9E6")), /* @__PURE__ */ React.createElement("td", { style: { ...td, textAlign: "right", fontWeight: 700 }, className: "font-mono" }, b.qty), /* @__PURE__ */ React.createElement("td", { style: td }, b.bay || /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "no bay")), /* @__PURE__ */ React.createElement("td", { style: { ...td, color: INK_MUTED } }, b.date || "\u2014"))), p.boxes.length > 12 && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { style: { ...td, color: INK_MUTED }, colSpan: 4 }, "\u2026 ", p.boxes.length - 12, " more")))) : /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, "None on the shelf."), p.reelMetres != null && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED, marginTop: 8 } }, "Reels on the rack: ", p.reelCount || 0, " \xB7 ", Math.round(p.reelMetres), " m \xB7 still to glue ", Math.round(p.toGlueMetres || 0), " m"));
+  }
   function ProductionListView({ data, initialCategory, autoPrint, onConsumeJump }) {
     const [viewMode, setViewMode] = useState(initialCategory ? "size" : "size");
     const allRows = productionOutstandingRows(data.orders, data.lineItems, data.bondingRuns, data.stockPicks);
+    const pipes = useMemo(() => {
+      try {
+        return productPipeline(allRows, glueLineScheduleRows(data.orders, data.lineItems, data.glueLineBatches, data.bondingRuns, data.stockPicks, data.ncrs || [], data.glueRuns || []), data.bondingRuns);
+      } catch (e) {
+        return /* @__PURE__ */ new Map();
+      }
+    }, [allRows, data]);
     const reelReadiness = React.useMemo(() => {
       const scrapped = new Set((data.ncrs || []).map((n) => n.batchNumber));
       const reels = (data.glueLineBatches || []).map((b) => glueSettingsFor(b, data.glueRuns || [])).filter((g) => !g.deleted && g.cleared !== "Yes" && !scrapped.has(g.batchNumber));
@@ -15130,7 +15335,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
               borderBottom: i < Math.min(prodListShown, rows2.length) - 1 ? `1px solid ${BORDER}` : "none"
             }
           },
-          /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 500, minWidth: 0 } }, /* @__PURE__ */ React.createElement(Spec, { s: r.spec, size: 14 }), /* @__PURE__ */ React.createElement(StrongTapeBadge, { row: r })),
+          /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 500, minWidth: 0 } }, /* @__PURE__ */ React.createElement(Spec, { s: r.spec, size: 14 }), /* @__PURE__ */ React.createElement(StrongTapeBadge, { row: r }), /* @__PURE__ */ React.createElement(PipelineLine, { p: pipes.get(r.spec) }), expandedSpec === r.spec && /* @__PURE__ */ React.createElement(ProductPanel, { p: pipes.get(r.spec) })),
           /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: INK_MUTED, lineHeight: 1.5, minWidth: 0 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block" } }, r.orderIds.size, " order", r.orderIds.size === 1 ? "" : "s", r.priority != null && /* @__PURE__ */ React.createElement("span", { style: { color: urgent ? RED : INK_MUTED, fontWeight: urgent ? 600 : 400 } }, " \xB7 priority ", r.priority)), expandedSpec === r.spec && /* @__PURE__ */ React.createElement("span", { style: { display: "block", marginTop: 7, color: INK } }, Object.values((r.breakdown || []).reduce((acc, b) => {
             const k = `${b.orderId || ""}|${b.customer || "(no customer name)"}`;
             if (!acc[k]) acc[k] = { orderId: b.orderId || "", customer: b.customer || "(no customer name)", qty: 0, due: b.dueDate || b.due || null, priority: b.priority ?? null, strongTape: !!b.strongTape };
@@ -15167,7 +15372,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
           style: { borderTop: `1px solid ${BORDER}` }
         },
         /* @__PURE__ */ React.createElement("td", { className: "px-2 text-center", style: { color: INK_MUTED } }),
-        /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 no-wrap" }, /* @__PURE__ */ React.createElement(Spec, { s: r.spec }), /* @__PURE__ */ React.createElement(StrongTapeBadge, { row: r }), (() => {
+        /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 no-wrap" }, /* @__PURE__ */ React.createElement(Spec, { s: r.spec }), /* @__PURE__ */ React.createElement(StrongTapeBadge, { row: r }), /* @__PURE__ */ React.createElement(PipelineLine, { p: pipes.get(r.spec) }), (() => {
           const s = reelReadiness(r.spec);
           if (s.ready > 0) return /* @__PURE__ */ React.createElement(
             "span",
@@ -15198,7 +15403,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
         /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, Number(r.toMake ?? r.qty), Number(r.covered || 0) > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: GREEN, fontWeight: 500 } }, r.covered, " on shelf")),
         /* @__PURE__ */ React.createElement("td", { className: "text-right px-3", style: { color: INK_MUTED } }, r.orderIds.size),
         /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, r.priority != null ? /* @__PURE__ */ React.createElement(Badge, { color: r.priority <= 2 ? RED : INK_MUTED, solid: r.priority <= 2 }, "P", r.priority) : /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014"))
-      ), isOpen && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", null), /* @__PURE__ */ React.createElement("td", { colSpan: 4, className: "px-3 pb-3" }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-xs", style: { background: "#F7F7F5" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("th", { className: "text-left py-1" }, "Customer"), /* @__PURE__ */ React.createElement("th", { className: "text-right py-1" }, "Qty needed"))), /* @__PURE__ */ React.createElement("tbody", null, byCustomer.map((c) => /* @__PURE__ */ React.createElement("tr", { key: c.customer, style: { borderTop: "1px solid #E5E5E0" } }, /* @__PURE__ */ React.createElement("td", { className: "py-1" }, c.customer, c.strongTape && /* @__PURE__ */ React.createElement("span", { style: { marginLeft: 6, fontWeight: 700, color: RED } }, "STRONG TAPE \xB7 S boxes only")), /* @__PURE__ */ React.createElement("td", { className: "text-right py-1 font-medium" }, c.qty))))))));
+      ), isOpen && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", null), /* @__PURE__ */ React.createElement("td", { colSpan: 4, className: "px-3 pb-3" }, /* @__PURE__ */ React.createElement(ProductPanel, { p: pipes.get(r.spec) }), /* @__PURE__ */ React.createElement("table", { className: "w-full text-xs", style: { background: "#F7F7F5" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { color: INK_MUTED } }, /* @__PURE__ */ React.createElement("th", { className: "text-left py-1" }, "Customer"), /* @__PURE__ */ React.createElement("th", { className: "text-right py-1" }, "Qty needed"))), /* @__PURE__ */ React.createElement("tbody", null, byCustomer.map((c) => /* @__PURE__ */ React.createElement("tr", { key: c.customer, style: { borderTop: "1px solid #E5E5E0" } }, /* @__PURE__ */ React.createElement("td", { className: "py-1" }, c.customer, c.strongTape && /* @__PURE__ */ React.createElement("span", { style: { marginLeft: 6, fontWeight: 700, color: RED } }, "STRONG TAPE \xB7 S boxes only")), /* @__PURE__ */ React.createElement("td", { className: "text-right py-1 font-medium" }, c.qty))))))));
     }), rows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 4 }, "Nothing outstanding in ", catLabel, ".")))), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto print-clean", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product spec"), /* @__PURE__ */ React.createElement(Th, null, "Customer"), /* @__PURE__ */ React.createElement(Th, { w: 90 }, "Order"), /* @__PURE__ */ React.createElement(ThR, { w: 80 }, "Qty"))), /* @__PURE__ */ React.createElement("tbody", null, rows.flatMap((r, ri) => [
       ...r.breakdown.map((b, bi) => /* @__PURE__ */ React.createElement("tr", { key: r.spec + "-" + bi, className: ri % 2 ? "" : "bg-black/[0.015]", style: { borderTop: bi === 0 ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-3 no-wrap" }, bi === 0 ? r.spec : ""), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, b.customer, b.strongTape && /* @__PURE__ */ React.createElement("span", { style: { marginLeft: 6, fontSize: 10.5, fontWeight: 700, color: RED, whiteSpace: "nowrap" } }, "STRONG TAPE \xB7 S boxes only"), b.boxType && b.boxType !== DEFAULT_BOX_TYPE && /* @__PURE__ */ React.createElement("span", { style: { marginLeft: 6, fontSize: 10.5, fontWeight: 700, color: "#7A4D00", background: "#FFF0A6", borderRadius: 999, padding: "1px 7px", whiteSpace: "nowrap" } }, b.boxType, " boxes")), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, b.orderId)), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, b.qty, b.toMake != null && b.toMake !== b.qty && /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 11, marginLeft: 6 } }, "make ", b.toMake)))),
       /* @__PURE__ */ React.createElement("tr", { key: r.spec + "-total", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-1.5 px-3 no-wrap font-semibold", colSpan: 3, style: { textAlign: "right", color: INK_MUTED } }, r.freeOnShelf > 0 || r.uncheckedCovered > 0 ? /* @__PURE__ */ React.createElement(React.Fragment, null, "Ordered ", /* @__PURE__ */ React.createElement("b", { style: { color: INK } }, r.qty), (r.covered ?? r.freeOnShelf) - (r.uncheckedCovered || 0) > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, " \xB7 ", /* @__PURE__ */ React.createElement("span", { style: { color: GREEN } }, (r.covered ?? r.freeOnShelf) - (r.uncheckedCovered || 0), " free on the shelf")), r.shelfWrongBox > 0 && /* @__PURE__ */ React.createElement("span", { style: { color: AMBER } }, " \xB7 ", r.shelfWrongBox, " more on the shelf in the wrong box"), " \xB7 to make") : /* @__PURE__ */ React.createElement(React.Fragment, null, "Total to make"), r.uncheckedCovered > 0 && /* @__PURE__ */ React.createElement("div", { "data-unchecked-cover": true, style: { fontSize: 11.5, fontWeight: 700, color: AMBER } }, r.uncheckedCovered, " on the shelf not yet checked (", (r.uncheckedBoxes || []).join(", "), ") \u2014 check ", r.uncheckedCovered === 1 ? "it" : "them", ", don't make more"), r.toMake > 0 && r.byBoxType && Object.keys(r.byBoxType).some((k) => k !== DEFAULT_BOX_TYPE) && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: "#7A4D00" } }, Object.entries(r.byBoxType).map(([k, v]) => `${v} in ${k} boxes`).join(" \xB7 "))), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-bold", style: { color: r.toMake === 0 ? GREEN : INK } }, r.toMake === 0 ? "covered" : r.toMake))
@@ -22247,8 +22452,8 @@ Plan it?`
       const own = ordersNeedingSpec(data, offerSpec).needing.map((n) => ({ ...n, lineSpec: offerSpec }));
       const twin = twinCartonSpec(offerSpec);
       const other = twin ? ordersNeedingSpec(data, twin).needing.filter((n) => !own.some((o) => o.orderId === n.orderId)).map((n) => ({ ...n, lineSpec: twin })) : [];
-      return [...own, ...other];
-    }, [offerSpec, data, lineItems]);
+      return bondingOffer(data, [...own, ...other], orders, lineItems, form.pt);
+    }, [offerSpec, data, lineItems, form.pt]);
     const allocs = form.allocations || [];
     const allocFor = (id) => allocs.find((a) => a.orderId === id);
     const allocated = allocs.reduce((s, a) => s + (Number(a.qty) || 0), 0);
@@ -22274,12 +22479,13 @@ Plan it?`
       for (const n of needing) {
         if (left <= 0) break;
         if (isStrongTapeOrder(orders.find((o) => o.id === n.orderId))) continue;
-        const q = Math.min(n.needs, left);
+        const q = Math.min(n.toMake, left);
+        if (q <= 0) continue;
         next.push({ orderId: n.orderId, qty: q, boxTypeId: boxTypeIdForName(materials, boxTypeFor(n.orderId)) });
         left -= q;
       }
       setForm((f) => ({ ...f, allocations: next }));
-    }, [made, spec, needing.length]);
+    }, [made, spec, needing.length, needing.map((n) => `${n.orderId}:${n.toMake}`).join(",")]);
     const setAlloc = (orderId, qty) => {
       touchedRef.current = true;
       const q = Math.max(0, Number(qty) || 0);
@@ -22451,7 +22657,12 @@ Plan it?`
         } }, r.orderId), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15 } }, r.customer), r.strong && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: RED, marginTop: 2, letterSpacing: "0.03em" } }, "STRONG TAPE \xB7 S boxes only"), closed && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED, marginTop: 2 } }, r.strong ? "This run is going to ordinary-tape orders \u2014 clear those to use this one." : "This run is going to a strong-tape order \u2014 clear that to use this one."), (() => {
           const note = String(((orders || []).find((o) => o.id === r.orderId) || {}).floorNote || "").trim();
           return note ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: NAVY, marginTop: 2, whiteSpace: "pre-wrap" } }, note) : null;
-        })(), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 3, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(BoxTypeMark, { type: bt }), r.needs > 0 && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: INK_MUTED } }, "needs ", r.needs, (r.room || []).length > 0 && /* @__PURE__ */ React.createElement("span", { style: { color: NAVY, fontWeight: 600 } }, " \u2192 case ", (r.room || []).slice(0, 3).map((x) => `${x.caseNum} (${x.spaces})`).join(", "), (r.room || []).length > 3 ? "\u2026" : "")), r.extra && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: RED } }, "doesn't need this size"))), /* @__PURE__ */ React.createElement(
+        })(), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 3, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(BoxTypeMark, { type: bt }), r.needs > 0 && !r.extra && (r.toMake < r.needs || r.planOver > 0) && (() => {
+          const bays = [...new Set((r.shelf || []).map((b) => b.bay).filter(Boolean))];
+          const onShelf = (r.shelf || []).reduce((t, b) => t + b.qty, 0);
+          const unchecked = (r.shelf || []).filter((b) => !b.checked).length;
+          return /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: INK_MUTED }, "data-bond-covered": r.orderId }, r.planOver > 0 ? /* @__PURE__ */ React.createElement(React.Fragment, null, "has all it ordered \u2014 ", /* @__PURE__ */ React.createElement("span", { style: { color: RED } }, "its plan holds ", r.planOver, " more")) : r.toMake > 0 ? /* @__PURE__ */ React.createElement(React.Fragment, null, "needs ", r.toMake, (r.room || []).length > 0 && /* @__PURE__ */ React.createElement("span", { style: { color: NAVY, fontWeight: 600 } }, " \u2192 case ", (r.room || []).slice(0, 3).map((x) => `${x.caseNum} (${Math.min(x.spaces, r.toMake)})`).join(", ")), " \xB7 ", r.covered, " covered by the shelf", bays.length ? ` in ${bays.slice(0, 3).join(", ")}` : "") : /* @__PURE__ */ React.createElement(React.Fragment, null, "covered \u2014 ", onShelf, " on the shelf", bays.length ? ` in ${bays.slice(0, 3).join(", ")}` : "", unchecked ? " (check them first)" : ""));
+        })(), r.needs > 0 && !(r.toMake < r.needs || r.planOver > 0) && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: INK_MUTED } }, "needs ", r.needs, (r.room || []).length > 0 && /* @__PURE__ */ React.createElement("span", { style: { color: NAVY, fontWeight: 600 } }, " \u2192 case ", (r.room || []).slice(0, 3).map((x) => `${x.caseNum} (${x.spaces})`).join(", "), (r.room || []).length > 3 ? "\u2026" : "")), r.extra && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: RED } }, "doesn't need this size"))), /* @__PURE__ */ React.createElement(
           "input",
           {
             type: "number",
@@ -22464,7 +22675,11 @@ Plan it?`
           }
         )));
       }),
-      spec && made > 0 && /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 76px", gap: 12, alignItems: "center", padding: "9px 0", borderTop: rowsShown.length ? `1px solid ${BORDER}` : 0, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("div", null, "To the shelf", /* @__PURE__ */ React.createElement("div", { style: { marginTop: 4, maxWidth: 150 } }, /* @__PURE__ */ React.createElement(
+      spec && made > 0 && /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 76px", gap: 12, alignItems: "center", padding: "9px 0", borderTop: rowsShown.length ? `1px solid ${BORDER}` : 0, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("div", null, "To the shelf", (() => {
+        const stillWanted = needing.reduce((t, n) => t + (isStrongId(n.orderId) ? 0 : Math.max(0, Number(n.toMake) || 0)), 0);
+        const over2 = Math.min(toShelf, Math.max(0, made - Math.max(allocated, stillWanted)));
+        return over2 > 0 ? /* @__PURE__ */ React.createElement("div", { "data-bond-spare": true, style: { color: "#8A4B00", fontSize: 12.5, fontWeight: 700, marginTop: 2 } }, over2, " over \u2014 no order needs these; they go to the shelf as spare") : null;
+      })(), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 4, maxWidth: 150 } }, /* @__PURE__ */ React.createElement(
         Select,
         {
           value: form.shelfBoxTypeId || boxTypeIdForName(materials, DEFAULT_BOX_TYPE) || "",
@@ -26587,7 +26802,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     );
     const ledgerReservations = NO_PROMISES;
     setLedgerMovements(storedData.movements || []);
-    setCatalogue(storedData.products || [], storedData.productForms || []);
+    setCatalogue(storedData.products || [], storedData.productForms || [], storedData.productAliases || []);
     refreshActorAndDevice();
     setLedgerCaseHoldings(ledgerCases, storedData.orders || []);
     setBoxMaterials(storedData.materials);
