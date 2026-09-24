@@ -1971,6 +1971,52 @@
     }
     return out;
   }
+  function kPinEquivalent(data, description) {
+    const desc = String(description || "").trim();
+    if (!desc) return null;
+    const products = (data && data.products || []).filter((p) => p && !p.deleted && p.active !== false);
+    const res = resolveProduct(data, desc);
+    const prod = res && res.status === "exact" ? res.product : null;
+    const family = prod ? String(prod.family || "") : "";
+    if (/^ken$/i.test(family) || /^(speedy crease|ken px)/i.test(desc)) return null;
+    const metres = (desc.match(/\((\d+(?:\.\d+)?)\s*m\)\s*$/) || [])[0] || "";
+    const withMetres = (name) => {
+      const d = metres ? `${name} ${metres}` : name;
+      const fid = formIdFor(data, d) || formIdFor(data, name);
+      return { description: fid && metres && !formIdFor(data, d) ? name : d, formId: fid || null };
+    };
+    if (/^ultra sr/i.test(desc) || /^ultra sr$/i.test(family)) {
+      const dims = specDimensions(desc);
+      const mm = dims.length ? Number(dims[dims.length - 1]) : NaN;
+      if (!(mm > 0)) return { flag: `${desc}: no size to convert to Speedy Crease Metal` };
+      const thou = mm / 0.0254;
+      const colour = (prod && prod.colour || (desc.match(/^ultra sr\s+([a-z]+)/i) || [])[1] || "").toLowerCase();
+      const metal = products.map((p) => {
+        const m2 = String(p.displayName || "").match(/^Speedy Crease Metal #(\d+)\s+([A-Za-z]+)/i);
+        return m2 ? { p, n: Number(m2[1]), colour: m2[2].toLowerCase() } : null;
+      }).filter(Boolean);
+      if (!metal.length) return { flag: `${desc}: the catalogue has no Speedy Crease Metal` };
+      const best = Math.min(...metal.map((x) => Math.abs(x.n - thou)));
+      if (best > thou * 0.05) return { flag: `${desc}: no Speedy Crease Metal near ${thou.toFixed(0)} thou (${mm}mm) in the catalogue` };
+      let pick = metal.filter((x) => Math.abs(x.n - thou) === best);
+      if (pick.length > 1) {
+        const byColour = pick.filter((x) => x.colour === colour);
+        if (byColour.length === 1) pick = byColour;
+      }
+      if (pick.length !== 1) return { flag: `${desc}: #${pick[0].n} is ${pick.map((x) => x.colour).join(" or ")} \u2014 say which` };
+      const out = withMetres(pick[0].p.displayName);
+      return { ...out, from: desc, why: `${mm}mm = ${thou.toFixed(0)} thou \u2192 #${pick[0].n}${pick[0].colour !== colour ? ` (${pick[0].colour} in the catalogue)` : ""}` };
+    }
+    if (/^px plus/i.test(desc) || /^px plus$/i.test(family)) {
+      const rest = desc.replace(/^px plus\s*/i, "").replace(/\s*\((\d+(?:\.\d+)?)\s*m\)\s*$/, "").trim();
+      for (const name of [`Ken PX ${rest}`, `Speedy Crease ${rest}`]) {
+        const r2 = resolveProduct(data, name);
+        if (r2 && r2.status === "exact" && /^ken$/i.test(String(r2.product.family || ""))) return { ...withMetres(r2.product.displayName), from: desc, why: "PX Plus on K pins" };
+      }
+      return { flag: `${desc}: no K-pin (Ken PX / Speedy Crease) version in the catalogue \u2014 add it` };
+    }
+    return { flag: `${desc}: not a Speedy Crease product \u2014 K-pin customers only take Speedy Crease or Speedy Crease Metal` };
+  }
 
   // mx_production.js
   var PVC_COLOUR_BY_HEIGHT = { "0.40": "Blue", "0.50": "Red", "0.60": "Yellow", "0.80": "Green" };
@@ -2623,6 +2669,8 @@
     if (desc.includes("profile")) return "boughtin";
     if (desc.includes("shim")) return "shim";
     if (desc.includes("exceed")) return "rubber";
+    const metalGap = speedyCreaseMetalGap(spec);
+    if (metalGap !== null) return metalGap >= 3.5 ? "12mm" : "7mm";
     const hasDoubleSuffix = /\bd\d+(\.\d+)?\b/i.test(spec || "");
     if (hasDoubleSuffix) return "12mm";
     if (desc.includes("mini") || desc.includes("o/s")) return "7mm";
@@ -2636,8 +2684,14 @@
   function batchMeterageUsed(bondingRuns, batchNumber) {
     return bondingRuns.filter((r) => r.baselineBatchCode === batchNumber).reduce((s, r) => s + Number(r.amountMade || 0) * Number(r.metersPerBox || 0), 0);
   }
+  function speedyCreaseMetalGap(spec) {
+    const m = String(spec || "").match(/speedy\s+crease\s+metal\s+#\s*(\d+(?:\.\d+)?)/i);
+    return m ? Math.round(Number(m[1]) * 0.0254 * 1e3) / 1e3 : null;
+  }
   function gapFromSpec(spec) {
     const s = spec || "";
+    const metal = speedyCreaseMetalGap(s);
+    if (metal !== null) return metal;
     const xMatch = s.match(/x\s*(\d+(?:\.\d+)?)\s*mm/i);
     if (xMatch) return parseFloat(xMatch[1]);
     const colourMatch = s.match(/\b(?:mauve|silver|buff|violet|white|sky|lime|yellow|rose|slate|green|brown|red|black|blue|orange)\s+(\d+(?:\.\d+)?)\s*mm\b/i);
@@ -8397,6 +8451,7 @@ ${line}` : line;
         customerVat: "customer_vat",
         customerEori: "customer_eori",
         accountNumber: "account_number",
+        kPins: "k_pins",
         createdAt: "created_at",
         updatedAt: "updated_at",
         updatedBy: "updated_by"
@@ -9973,7 +10028,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-23.23";
+  var APP_VERSION = "2026-09-23.24";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -10122,7 +10177,7 @@ ${line}` : line;
               inserts.push(r);
               continue;
             }
-            if (opts.baseIsRemote && !owed && actor && authorOf.get(r.id) && authorOf.get(r.id) !== String(actor).trim().toLowerCase()) continue;
+            if (opts.baseIsRemote && !owed && !(actor && authorOf.get(r.id) === String(actor).trim().toLowerCase())) continue;
             let patch = rowPatch(before, r);
             if (opts.baseIsRemote && owed) {
               const cols = owedCols(owed);
@@ -12406,21 +12461,38 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
           strongTape: !!strongTape,
           boxType: boxType || ""
         };
-        const newLineItems = parsed.lineItems.map((li, i) => ({
-          id: uid("li"),
-          orderId: id,
-          description: catalogueName(prevData, li.description || ""),
-          customerRef: li.customerRef || null,
-          formId: formIdForLine(prevData, { description: li.description || "" }),
-          qty: Number(li.qty) || 0,
-          unitPrice: Number(li.unitPrice) || 0
-        }));
+        const kPins = isKPinCustomer(prevData, custName);
+        const kNotes = [];
+        const newLineItems = parsed.lineItems.map((li, i) => {
+          let description = catalogueName(prevData, li.description || ""), formId = formIdForLine(prevData, { description: li.description || "" });
+          if (kPins) {
+            const k = kPinEquivalent(prevData, description);
+            if (k && k.description) {
+              kNotes.push(`${k.from} \u2192 ${k.description} (${k.why})`);
+              description = k.description;
+              formId = k.formId || formIdForLine(prevData, { description });
+            } else if (k && k.flag) kNotes.push(`CHECK: ${k.flag}`);
+          }
+          return {
+            id: uid("li"),
+            orderId: id,
+            description,
+            customerRef: li.customerRef || (kPins && description !== catalogueName(prevData, li.description || "") ? li.description : null) || null,
+            formId,
+            qty: Number(li.qty) || 0,
+            unitPrice: Number(li.unitPrice) || 0
+          };
+        });
+        if (kNotes.length) setTimeout(() => window.alert(`${custName} is made on K pins \u2014 lines converted for you to check:
+
+${kNotes.join("\n")}`), 0);
         const planRows = planRowsForNewOrder(id, newLineItems, { actor: currentActor(), data: prevData });
         const notPlanned = plannableLines(prevData, newLineItems).excluded;
         return {
           ...prevData,
           orders: [...prevData.orders, newOrder],
           lineItems: [...prevData.lineItems, ...newLineItems],
+          ...kNotes.length ? appendLog(prevData, { action: "kpins_converted", entity: "order", entityId: id, summary: `K pins (${custName}): ${kNotes.join("; ")}` }) : {},
           cases: [...prevData.cases || [], ...planRows],
           ...appendLog(prevData, {
             action: "packing_planned",
@@ -13549,10 +13621,26 @@ To clear this: check the size and the pt, or add it as a new product before orde
         );
         return;
       }
+      let lineDesc = description;
+      {
+        const ord = (data.orders || []).find((o) => o.id === orderId);
+        if (ord && isKPinCustomer(data, ord.customer)) {
+          const k = kPinEquivalent(data, description);
+          if (k && k.description) {
+            lineDesc = k.description;
+            window.alert(`${ord.customer} is made on K pins \u2014
+${k.from}
+is entered as
+${k.description}
+(${k.why})`);
+          } else if (k && k.flag) window.alert(`${ord.customer} is made on K pins \u2014 CHECK:
+${k.flag}`);
+        }
+      }
       const newLi = {
         id: uid("li"),
         orderId,
-        description,
+        description: lineDesc,
         qty: Number(newLine.qty),
         unitPrice: Number(newLine.unitPrice || 0),
         ...extrasLabel ? { amendmentLabel: extrasLabel } : {}
@@ -14785,14 +14873,21 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
           updateOrder(o.id, { stage: e.target.value });
         }
       }, style: { width: "100%" } }, Object.keys(STAGE_COLORS).map((s) => /* @__PURE__ */ React.createElement("option", { key: s }, s))), shipError[o.id] && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: RED, maxWidth: 260 } }, shipError[o.id]), (() => {
+        let kBad = [];
+        try {
+          if (isKPinCustomer(data, o.customer)) kBad = (data.lineItems || []).filter((li) => li && !li.deleted && li.orderId === o.id && !isDelivery(li.description) && !isSmallItem(li.description)).map((li) => ({ li, k: kPinEquivalent(data, li.description) })).filter((x) => x.k);
+        } catch (e) {
+          kBad = [];
+        }
+        const kFlag = kBad.length ? /* @__PURE__ */ React.createElement("div", { "data-kpin-check": o.id, className: "text-xs mt-1", style: { color: "#8A4B00", maxWidth: 320 } }, "K-pin customer \u2014 not Speedy Crease: ", kBad.slice(0, 3).map((x) => x.k.description ? `${x.li.description} (should be ${x.k.description})` : x.k.flag).join("; "), kBad.length > 3 ? ` (+${kBad.length - 3} more)` : "") : null;
         let pv = [];
         try {
           pv = planVsOrder(data, o.id);
         } catch (e) {
           pv = [];
         }
-        if (!pv.length) return null;
-        return /* @__PURE__ */ React.createElement("div", { "data-plan-check": o.id, className: "text-xs mt-1", style: { color: "#8A4B00", maxWidth: 320 } }, "Case plan doesn't match the order \u2014 ", pv.slice(0, 3).map((x) => `${x.spec}: ordered ${x.ordered}, plan holds ${x.planned}`).join("; "), pv.length > 3 ? ` (+${pv.length - 3} more)` : "");
+        if (!pv.length) return kFlag;
+        return /* @__PURE__ */ React.createElement(React.Fragment, null, kFlag, /* @__PURE__ */ React.createElement("div", { "data-plan-check": o.id, className: "text-xs mt-1", style: { color: "#8A4B00", maxWidth: 320 } }, "Case plan doesn't match the order \u2014 ", pv.slice(0, 3).map((x) => `${x.spec}: ordered ${x.ordered}, plan holds ${x.planned}`).join("; "), pv.length > 3 ? ` (+${pv.length - 3} more)` : ""));
       })()), /* @__PURE__ */ React.createElement("div", { "data-due-field": "1" }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Due date", !o.dueDate && /* @__PURE__ */ React.createElement("span", null, " \u2014 none set"), o.dueDate && /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => updateOrder(o.id, { dueDate: null }), style: { marginLeft: 8, background: "none", border: "none", color: NAVY, textDecoration: "underline", cursor: "pointer", fontSize: 12, padding: 0 } }, "clear")), /* @__PURE__ */ React.createElement(TextInput, { type: "date", value: o.dueDate || "", onChange: (e) => updateOrder(o.id, { dueDate: e.target.value || null }), style: { width: "100%", minHeight: 44, boxSizing: "border-box" } })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Carton type"), /* @__PURE__ */ React.createElement(Select, { value: o.boxType || "", onChange: (e) => updateOrder(o.id, { boxType: e.target.value }), style: { width: "100%" } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014"), BOX_TYPES.map((b) => /* @__PURE__ */ React.createElement("option", { key: b, value: b }, b))))), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-3 items-center pb-3" }, /* @__PURE__ */ React.createElement(Button, { variant: "danger", onClick: () => removeOrder(o.id) }, "Delete order"), /* @__PURE__ */ React.createElement(
         Button,
         {
@@ -15201,6 +15296,11 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     const th = { ...td, borderTop: 0, color: INK_MUTED, fontSize: 11.5, fontWeight: 600, textAlign: "left" };
     return /* @__PURE__ */ React.createElement("div", { "data-product-panel": p.spec, onClick: (e) => e.stopPropagation(), style: { marginTop: 8, border: `1px solid ${BORDER}`, borderRadius: 8, padding: 10, background: "#FBFBFD", cursor: "default" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: NAVY, marginBottom: 4 } }, "If nothing more is made \u2014 most urgent first"), /* @__PURE__ */ React.createElement("table", { style: { width: "100%", borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("tbody", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: th }, "Order"), /* @__PURE__ */ React.createElement("th", { style: { ...th, textAlign: "right" } }, "Needs"), /* @__PURE__ */ React.createElement("th", { style: th })), p.orders.map((o) => /* @__PURE__ */ React.createElement("tr", { key: o.orderId, "data-short-row": o.orderId }, /* @__PURE__ */ React.createElement("td", { style: td }, o.customer, " ", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, o.orderId, o.dueDate ? ` \xB7 due ${o.dueDate}` : "", o.strongTape ? " \xB7 strong tape" : "")), /* @__PURE__ */ React.createElement("td", { style: { ...td, textAlign: "right", fontWeight: 700 }, className: "font-mono" }, o.needs), /* @__PURE__ */ React.createElement("td", { style: td }, o.short > 0 ? /* @__PURE__ */ React.createElement(React.Fragment, null, pipeChip(`short ${o.short}`, RED, "#FBE9E6"), o.covered > 0 && /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, o.covered, " covered")) : pipeChip("covered", "#2E7D52", "#E6F4EC")))))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: NAVY, margin: "10px 0 4px" } }, "On the shelf \u2014 oldest first"), p.boxes.length ? /* @__PURE__ */ React.createElement("table", { style: { width: "100%", borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("tbody", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: th }, "Box"), /* @__PURE__ */ React.createElement("th", { style: { ...th, textAlign: "right" } }, "Qty"), /* @__PURE__ */ React.createElement("th", { style: th }, "Bay"), /* @__PURE__ */ React.createElement("th", { style: th }, "Made")), p.boxes.slice(0, 12).map((b) => /* @__PURE__ */ React.createElement("tr", { key: b.code + (b.bay || "") }, /* @__PURE__ */ React.createElement("td", { style: td, className: "font-mono" }, b.code, " ", !b.checked && pipeChip("check it", "#8A4B00", "#FFF1DC"), b.checked && !b.bay && pipeChip("find it", RED, "#FBE9E6"), b.strong && pipeChip("S", RED, "#FBE9E6")), /* @__PURE__ */ React.createElement("td", { style: { ...td, textAlign: "right", fontWeight: 700 }, className: "font-mono" }, b.qty), /* @__PURE__ */ React.createElement("td", { style: td }, b.bay || /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "no bay")), /* @__PURE__ */ React.createElement("td", { style: { ...td, color: INK_MUTED } }, b.date || "\u2014"))), p.boxes.length > 12 && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { style: { ...td, color: INK_MUTED }, colSpan: 4 }, "\u2026 ", p.boxes.length - 12, " more")))) : /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, "None on the shelf."), p.reelMetres != null && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED, marginTop: 8 } }, "Reels on the rack: ", p.reelCount || 0, " \xB7 ", Math.round(p.reelMetres), " m \xB7 still to glue ", Math.round(p.toGlueMetres || 0), " m"));
   }
+  function isKPinCustomer(data, customerName) {
+    const n = String(customerName || "").trim().toLowerCase();
+    if (!n) return false;
+    return (data && data.customers || []).some((c) => c && !c.deleted && c.kPins && String(c.companyName || c.id || "").trim().toLowerCase() === n);
+  }
   function ProductionListView({ data, initialCategory, autoPrint, onConsumeJump }) {
     const [viewMode, setViewMode] = useState(initialCategory ? "size" : "size");
     const allRows = productionOutstandingRows(data.orders, data.lineItems, data.bondingRuns, data.stockPicks);
@@ -15587,7 +15687,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
             })
           };
         });
-        return /* @__PURE__ */ React.createElement(Panel, { key: rec.id, className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-3", style: { color: INK_MUTED } }, "What we know about them"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 12, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(CustomerField, { rec, put, label: "Who to ring", field: "contactName", placeholder: "name" }), /* @__PURE__ */ React.createElement(CustomerField, { rec, put, label: "Telephone", field: "contactPhone", placeholder: "number" }), /* @__PURE__ */ React.createElement(CustomerField, { rec, put, label: "Email", field: "contactEmail", placeholder: "address" }), /* @__PURE__ */ React.createElement(CustomerField, { rec, put, label: "Account number", field: "accountNumber", placeholder: "on their paperwork" }), /* @__PURE__ */ React.createElement("label", { className: "text-xs", style: { color: INK_MUTED, flex: "1 1 180px" } }, /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 3 } }, "VAT treatment"), /* @__PURE__ */ React.createElement(
+        return /* @__PURE__ */ React.createElement(Panel, { key: rec.id, className: "p-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-3", style: { color: INK_MUTED } }, "What we know about them"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 12, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(CustomerField, { rec, put, label: "Who to ring", field: "contactName", placeholder: "name" }), /* @__PURE__ */ React.createElement(CustomerField, { rec, put, label: "Telephone", field: "contactPhone", placeholder: "number" }), /* @__PURE__ */ React.createElement(CustomerField, { rec, put, label: "Email", field: "contactEmail", placeholder: "address" }), /* @__PURE__ */ React.createElement(CustomerField, { rec, put, label: "Account number", field: "accountNumber", placeholder: "on their paperwork" }), /* @__PURE__ */ React.createElement("label", { className: "text-xs", "data-kpins-tick": true, style: { color: INK_MUTED, flex: "1 1 260px", display: "flex", gap: 8, alignItems: "flex-start" } }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", defaultChecked: !!rec.kPins, onChange: (e) => put("kPins", e.target.checked), style: { marginTop: 2 } }), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("b", { style: { color: INK } }, "K pins"), " \u2014 every line is Speedy Crease or Speedy Crease Metal. Order entry turns Ultra SR and PX Plus into their K-pin versions, and says so.")), /* @__PURE__ */ React.createElement("label", { className: "text-xs", style: { color: INK_MUTED, flex: "1 1 180px" } }, /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 3 } }, "VAT treatment"), /* @__PURE__ */ React.createElement(
           "select",
           {
             defaultValue: rec.vatTreatment || "",
