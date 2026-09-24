@@ -1442,6 +1442,9 @@
     }
   }
   function glueLineScheduleRowsStored(orders, lineItems, glueLineBatches, bondingRuns = [], stockPicks = [], ncrs = [], glueRuns = []) {
+    return glueLineNeedRowsAll(orders, lineItems, glueLineBatches, bondingRuns, stockPicks, ncrs, glueRuns).filter((r) => r.stillToGlueLine > 0).map(({ pool, poolMetres, ...r }) => r);
+  }
+  function glueLineNeedRowsAll(orders, lineItems, glueLineBatches, bondingRuns = [], stockPicks = [], ncrs = [], glueRuns = []) {
     const resolved = (glueLineBatches || []).map((b) => glueSettingsFor(b, glueRuns));
     glueLineBatches = resolved;
     const demand = productionOutstandingRows(orders, lineItems, bondingRuns, stockPicks).filter((d) => classifySize(d.spec) !== "boughtin");
@@ -1516,11 +1519,19 @@
         r.needsExtrusion = classifySize(r.spec) === "7mm" && share <= 0;
       }
     }
+    const poolMetres = /* @__PURE__ */ new Map();
     for (const r of built) {
+      const m = poolMetres.get(r._pool) || /* @__PURE__ */ new Map();
+      for (const x of r._reels) m.set(x.id, x.m);
+      poolMetres.set(r._pool, m);
+    }
+    for (const r of built) {
+      r.pool = r._pool;
+      r.poolMetres = [...(poolMetres.get(r._pool) || /* @__PURE__ */ new Map()).values()].reduce((t, m) => t + m, 0);
       delete r._pool;
       delete r._reels;
     }
-    return built.filter((r) => r.stillToGlueLine > 0);
+    return built;
   }
   function refsEquivalent(data, a, b) {
     if (!a || !b) return false;
@@ -2712,6 +2723,37 @@
     for (const [list, m] of Object.entries(out)) res[list] = [...m.entries()].map(([size, e]) => ({ size, last: e })).sort((a, b) => a.size.localeCompare(b.size));
     return res;
   }
+  function glueRunTarget(data, productSize, overmakePct = 10) {
+    const d = data || {};
+    const rows = glueLineNeedRowsAll(d.orders || [], d.lineItems || [], d.glueLineBatches || [], d.bondingRuns || [], d.stockPicks || [], d.ncrs || [], d.glueRuns || []);
+    const key = glueSizeKey(d, productSize);
+    const pool = key ? key.replace(/^smart-formes-/, "px-plus-") : null;
+    const mine = rows.filter((r) => pool ? r.pool === pool : sameSizeSpec(r.spec, productSize));
+    const over = 1 + Math.max(0, Number(overmakePct) || 0) / 100;
+    const boxes = mine.reduce((t, r) => t + (Number(r.qtyNeeded) || 0), 0);
+    const needMetres = mine.reduce((t, r) => t + (Number(r.neededMeters) || 0), 0);
+    const target = Math.ceil(needMetres * over);
+    const onRack = mine.length ? Math.round(Math.max(...mine.map((r) => Number(r.poolMetres) || 0))) : 0;
+    const still = Math.max(0, target - onRack);
+    const perBox = boxes > 0 ? needMetres / boxes : null;
+    const shortBoxes = perBox && onRack < needMetres ? Math.ceil((needMetres - onRack) / perBox - 1e-9) : 0;
+    const orders = mine.flatMap((r) => (r.breakdown || []).map((b) => ({ orderId: b.orderId, customer: b.customer, boxes: Number(b.qty) || 0, boxType: b.boxType || null, spec: r.spec }))).filter((o) => o.boxes > 0);
+    return {
+      productSize,
+      pool,
+      boxes,
+      needMetres,
+      overmakePct: Math.max(0, Number(overmakePct) || 0),
+      target,
+      onRack,
+      still,
+      enough: boxes > 0 && still <= 0,
+      spare: Math.max(0, onRack - target),
+      shortBoxes,
+      orders,
+      nothingNeeded: boxes === 0
+    };
+  }
 
   // mx_promises.js
   function shelfReservations(...args) {
@@ -2786,7 +2828,7 @@
   }
 
   // mx_planning.js
-  var SMALL_KEYWORDS = ["profile tape", "shim tape"];
+  var SMALL_KEYWORDS = ["profile tape", "profitape", "shim tape", "super shim", "pet film"];
   function isSmallItem(desc) {
     const d = (desc || "").toLowerCase();
     return SMALL_KEYWORDS.some((k) => d.includes(k));
@@ -2800,7 +2842,7 @@
   var ULTRA_SR_COLOURS = /\b(mauve|silver|buff|violet|white|sky|lime|yellow|rose|slate|green|brown|red|black|blue|orange)\s+\d+(\.\d+)?\s*mm\b/i;
   function classifySize(spec) {
     const desc = (spec || "").toLowerCase();
-    if (desc.includes("profile")) return "boughtin";
+    if (desc.includes("profile") || desc.includes("profitape") || desc.includes("pet film")) return "boughtin";
     if (desc.includes("shim")) return "shim";
     if (desc.includes("exceed")) return "rubber";
     const metalGap = speedyCreaseMetalGap(spec);
@@ -3625,6 +3667,39 @@
     const available = onShelf;
     const bays = [...new Set((data.bondingRuns || []).filter((r) => r && !r.deleted && String(r.boxNumber || "").trim().toUpperCase() === want).map((r) => String(r.location || "").trim()).filter((loc) => BOX_LOCATIONS.includes(loc)))].sort();
     return { inCases, packed, onShelf, onShelfRaw, promised, available, bays, unplaced: bays.length ? 0 : onShelf };
+  }
+  function caseProducts(movements, runs, orderId, caseNum) {
+    const want = Number(caseNum);
+    const net = /* @__PURE__ */ new Map();
+    for (const m of movements || []) {
+      if (!m || m.deleted || m.orderId !== orderId) continue;
+      if (m.kind !== "placed" && m.kind !== "unplaced") continue;
+      if (m.caseNum == null || m.caseNum === "" || Number(m.caseNum) !== want) continue;
+      const k = `${m.boxNumber}|${m.formId || ""}`;
+      const e = net.get(k) || { box: m.boxNumber, formId: m.formId || "", ledgerSpec: m.spec || "", qty: 0 };
+      e.qty += (m.kind === "placed" ? 1 : -1) * (Number(m.qty) || 0);
+      net.set(k, e);
+    }
+    const rowsOf = /* @__PURE__ */ new Map();
+    for (const r of runs || []) {
+      if (!r || r.deleted || !r.boxNumber) continue;
+      if (!rowsOf.has(r.boxNumber)) rowsOf.set(r.boxNumber, []);
+      rowsOf.get(r.boxNumber).push(r);
+    }
+    return [...net.values()].filter((e) => e.qty > 0).map((e) => {
+      const rows = rowsOf.get(e.box) || [];
+      const mine = e.formId ? rows.filter((r) => r.formId === e.formId) : [];
+      const pool = mine.length ? mine : rows;
+      const row = pool.find((r) => r.workNumber === orderId) || pool[0];
+      const spec = row ? row.productSize : String(e.ledgerSpec).replace(/\s*\(\d+(\.\d+)?m\)\s*$/, "") || e.box;
+      return { box: e.box, spec, qty: e.qty };
+    });
+  }
+  function orderCaseProducts(movements, runs, orderId, cases) {
+    const n = {};
+    const nums = new Set((cases || []).filter((c) => c && !c.deleted && c.orderId === orderId).map((c) => Number(c.caseNum)));
+    for (const caseNum of nums) for (const x of caseProducts(movements, runs, orderId, caseNum)) n[x.spec] = (n[x.spec] || 0) + x.qty;
+    return n;
   }
   function orderHoldings(movements, orderId) {
     const byBox = /* @__PURE__ */ new Map();
@@ -5341,16 +5416,15 @@
       const inCase = Object.values(c.contents || {}).reduce((t, n) => t + (Number(n) || 0), 0);
       const map = casePlanned(c);
       if (!Object.keys(map).length) continue;
-      const byBox = Object.entries(c.contents || {});
-      const specOf = (box) => {
+      const fromLedger = caseProducts(data.movements || LEDGER_MOVEMENTS, data.bondingRuns, orderId, c.caseNum);
+      const byBox = fromLedger.length ? fromLedger.map((x) => [x.box, x.qty, x.spec]) : Object.entries(c.contents || {}).map(([box, q]) => {
         const run = (data.bondingRuns || []).find((r) => r && !r.deleted && r.boxNumber === box);
-        return run ? run.productSize : box;
-      };
+        return [box, q, run ? run.productSize : box];
+      });
       const matched = {};
       let unmatched = 0;
-      for (const [box, q] of byBox) {
+      for (const [box, q, bs] of byBox) {
         const n = Number(q) || 0;
-        const bs = specOf(box);
         const hit = Object.keys(map).find((spec) => looseSpecMatch(spec, bs));
         if (hit) matched[hit] = (matched[hit] || 0) + n;
         else unmatched += n;
@@ -9342,7 +9416,7 @@ ${line}` : line;
     return { ...data, cases: rows };
   }
   function appendPlanDifference(setData, data, order) {
-    const items = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description));
+    const items = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description) && !isSmallItem(li.description));
     const existing = (data.cases || []).filter((c) => !c.deleted && c.orderId === order.id && hasCasePlan(c)).flatMap((c) => Object.entries(casePlanned(c)).map(([spec, qty]) => ({ caseNum: Number(c.caseNum), spec, qty: Number(qty) || 0 })));
     const extra = planAmendment(items, existing);
     if (!extra.length) return;
@@ -9991,9 +10065,13 @@ ${line}` : line;
        typo made a new product.
        It is excluded from the glue line below alongside Exceed: neither is
        glue-lined, and offering them there invites a batch that cannot exist. */
-    "Profile Tape": ["0.03mm Blue", "0.05mm Red", "0.08mm Yellow"]
+    "Profile Tape": ["0.03mm Blue", "0.05mm Red", "0.08mm Yellow"],
+    /* Bought in and sold on like Profile Tape (Chris, 24 Sep 2026, off the box
+       label): a roll, never made, never cased. The catalogue holds it as family
+       "Paper+PET Film", form Roll 50m; isSmallItem knows it by "pet film". */
+    "Paper+PET Film": ["110um 1200mm x 50m"]
   };
-  var GLUE_LINE_RANGES = Object.keys(PRODUCT_RANGES).filter((r) => r !== "Exceed" && r !== "Profile Tape");
+  var GLUE_LINE_RANGES = Object.keys(PRODUCT_RANGES).filter((r) => r !== "Exceed" && r !== "Profile Tape" && r !== "Paper+PET Film");
   var DEFAULT_PRODUCT_RANGES = JSON.parse(JSON.stringify(PRODUCT_RANGES));
   var BOX_AMOUNTS = [15, 18, 19.5, 20.25, 21, 24, 36, 60];
   var REEL_AMOUNTS = [30, 33, 36, 39, 45];
@@ -10162,7 +10240,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-24.1";
+  var APP_VERSION = "2026-09-24.4";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -10738,7 +10816,7 @@ ${line}` : line;
     { key: "12mm", label: "12mm" },
     { key: "shim", label: "Shim Tape" },
     { key: "rubber", label: "Rubber" },
-    { key: "boughtin", label: "Profitape" }
+    { key: "boughtin", label: "Profitape & film" }
   ];
   var BONDING_BOXES_PER_DAY_MAX = 280;
   function printInFrame(frameId, html, size = null) {
@@ -14042,18 +14120,7 @@ Read the next screen carefully before you agree to it.`
       if (selected.length === 0) return false;
       const orderItemsForPick = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description));
       const { byLineItem } = groupAssignedRunsByLineItem(data.bondingRuns, order.id, orderItemsForPick, orderBoxes(LEDGER_MOVEMENTS, data.bondingRuns, order.id));
-      const placedForOrder = (() => {
-        const n = {};
-        for (const c of data.cases || []) {
-          if (!c || c.deleted || c.orderId !== order.id) continue;
-          for (const [box, qty] of Object.entries(c.contents || {})) {
-            const run = (data.bondingRuns || []).find((r) => !r.deleted && r.boxNumber === box);
-            const spec = run ? run.productSize : box;
-            n[spec] = (n[spec] || 0) + (Number(qty) || 0);
-          }
-        }
-        return n;
-      })();
+      const placedForOrder = orderCaseProducts(data.movements || LEDGER_MOVEMENTS, data.bondingRuns, order.id, data.cases);
       const remainingBySpec = {};
       for (const { li } of byLineItem) {
         let placed = 0;
@@ -14115,18 +14182,7 @@ Read the next screen carefully before you agree to it.`
       const candidates = matchingBoxesFor(order);
       const orderItemsForPick = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description));
       const { byLineItem } = groupAssignedRunsByLineItem(data.bondingRuns, order.id, orderItemsForPick, orderBoxes(LEDGER_MOVEMENTS, data.bondingRuns, order.id));
-      const placedForOrder = (() => {
-        const n = {};
-        for (const c of data.cases || []) {
-          if (!c || c.deleted || c.orderId !== order.id) continue;
-          for (const [box, qty] of Object.entries(c.contents || {})) {
-            const run = (data.bondingRuns || []).find((r) => !r.deleted && r.boxNumber === box);
-            const spec = run ? run.productSize : box;
-            n[spec] = (n[spec] || 0) + (Number(qty) || 0);
-          }
-        }
-        return n;
-      })();
+      const placedForOrder = orderCaseProducts(data.movements || LEDGER_MOVEMENTS, data.bondingRuns, order.id, data.cases);
       const chosen = [];
       const usedIds = /* @__PURE__ */ new Set();
       for (const { li } of byLineItem) {
@@ -24681,6 +24737,14 @@ Plan it?`
   );
   function GlueEntrySteps({ data = {}, form, setForm, openRun, openReel = null, runError = "", allRows = [], nextRunCode = "", justConfirmed = null, onConfirmReel, existingBatchNumbers = [], orderOptions = [], materials = [], onStartRun, onStartReel, onFinishReel, onSaveRunSettings, onEndRun, onSubmit, error, runTotals, children, renderFullForm }) {
     const [everyField, setEveryField] = useState(false);
+    const runTarget = useMemo(() => {
+      if (!openRun || !openRun.productSize) return null;
+      try {
+        return glueRunTarget(data, openRun.productSize, scheduleSettingsOf(data).overmakePct);
+      } catch (e) {
+        return null;
+      }
+    }, [openRun, data.orders, data.lineItems, data.glueLineBatches, data.bondingRuns, data.stockPicks, data.glueRuns, data.movements, data.scheduleSettings, data.products]);
     const spec = form.range === "Custom" ? String(form.size || "").trim() : `${form.range} ${String(form.size || "").trim()}`.trim();
     const direct = form.direct === true;
     const metres = Number(form.meterage) || 0;
@@ -24809,7 +24873,14 @@ Plan it?`
       const sinceLast = minutesSinceLastReel(form.date || todayISO(), allRows);
       const expectedHrs = metres2 > 0 ? metres2 / 11 / 60 : null;
       const paceOff = expectedHrs != null && sinceLast != null && sinceLast > 0 && (expectedHrs * 60 > sinceLast * 2 || expectedHrs * 60 < sinceLast / 2);
-      return /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 560 } }, /* @__PURE__ */ React.createElement("div", { style: { padding: "13px 16px", borderRadius: "6px 6px 0 0", background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, letterSpacing: ".08em", textTransform: "uppercase", opacity: 0.85 } }, "In run mode"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15.5, marginTop: 2 } }, openRun.productSize || "-", " \xB7 ", openRun.direct ? "direct" : "from reel " + (openRun.plCode || "-"))), /* @__PURE__ */ React.createElement("div", { style: { border: `1px solid ${BORDER}`, borderTop: 0, borderRadius: "0 0 6px 6px", padding: 16, background: "#fff" } }, justConfirmed && /* @__PURE__ */ React.createElement("div", { style: { background: "#EAF3DE", borderRadius: 4, padding: "11px 12px", marginBottom: 14, color: "#173404", fontSize: 14 } }, justConfirmed.code, " entered \u2014 ", justConfirmed.metres, "m", justConfirmed.weight != null ? ", " + justConfirmed.weight + "g" : "", justConfirmed.runtimeHrs ? ", ran " + formatRuntime(justConfirmed.runtimeHrs) : ""), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, "Reel ", (runTotals ? runTotals.reels : 0) + 1, " of this run"), /* @__PURE__ */ React.createElement("div", { className: "font-mono", style: { fontSize: 27, fontWeight: 700, color: INK, margin: "4px 0 14px" } }, nextRunCode), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED, display: "block" } }, "Metres", /* @__PURE__ */ React.createElement(
+      return /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 560 } }, /* @__PURE__ */ React.createElement("div", { style: { padding: "13px 16px", borderRadius: "6px 6px 0 0", background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, letterSpacing: ".08em", textTransform: "uppercase", opacity: 0.85 } }, "In run mode"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15.5, marginTop: 2 } }, openRun.productSize || "-", " \xB7 ", openRun.direct ? "direct" : "from reel " + (openRun.plCode || "-"))), /* @__PURE__ */ React.createElement("div", { style: { border: `1px solid ${BORDER}`, borderTop: 0, borderRadius: "0 0 6px 6px", padding: 16, background: "#fff" } }, justConfirmed && /* @__PURE__ */ React.createElement("div", { style: { background: "#EAF3DE", borderRadius: 4, padding: "11px 12px", marginBottom: 14, color: "#173404", fontSize: 14 } }, justConfirmed.code, " entered \u2014 ", justConfirmed.metres, "m", justConfirmed.weight != null ? ", " + justConfirmed.weight + "g" : "", justConfirmed.runtimeHrs ? ", ran " + formatRuntime(justConfirmed.runtimeHrs) : ""), runTarget && (() => {
+        const t = runTarget;
+        const ordered = t.orders.reduce((n, o) => n + o.boxes, 0);
+        const who = t.orders.map((o) => `${o.customer} ${o.boxes}${o.boxType && o.boxType !== "PX Plus" ? " (" + o.boxType + ")" : ""}`).join(" \xB7 ") + (ordered > t.boxes ? ` \xB7 less ${ordered - t.boxes} already on the shelf` : "");
+        if (t.nothingNeeded) return /* @__PURE__ */ React.createElement("div", { "data-glue-target": "none", style: { borderRadius: 4, padding: "11px 12px", marginBottom: 14, background: "#F4F4F2", color: INK, fontSize: 14, lineHeight: 1.45 } }, "No live order needs this size \u2014 anything glued now is for stock.");
+        if (t.enough) return /* @__PURE__ */ React.createElement("div", { "data-glue-target": "enough", style: { borderRadius: 4, padding: "12px 13px", marginBottom: 14, background: "#EAF3DE", color: "#173404", lineHeight: 1.45 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 17, fontWeight: 700 } }, "Enough glued for every order \u2014 you can finish the run."), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, marginTop: 4 } }, t.onRack, " m on the rack covers ", t.boxes, " box", t.boxes === 1 ? "" : "es", " + ", t.overmakePct, "% set-up (", t.target, " m)", t.spare > 0 ? ` \xB7 ${t.spare} m spare` : "", "."), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, marginTop: 3, opacity: 0.85 } }, who));
+        return /* @__PURE__ */ React.createElement("div", { "data-glue-target": "short", style: { borderRadius: 4, padding: "12px 13px", marginBottom: 14, background: "#FFF4E0", color: INK, lineHeight: 1.45, border: `1px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, "Still to glue for the orders"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 26, fontWeight: 700 } }, t.still, " m"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, marginTop: 2 } }, "Needs ", t.target, " m: ", t.boxes, " box", t.boxes === 1 ? "" : "es", " (", t.needMetres, " m) + ", t.overmakePct, "% set-up. On the rack ", t.onRack, " m, this run's reels included."), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, marginTop: 3, color: INK_MUTED } }, who));
+      })(), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, "Reel ", (runTotals ? runTotals.reels : 0) + 1, " of this run"), /* @__PURE__ */ React.createElement("div", { className: "font-mono", style: { fontSize: 27, fontWeight: 700, color: INK, margin: "4px 0 14px" } }, nextRunCode), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED, display: "block" } }, "Metres", /* @__PURE__ */ React.createElement(
         TextInput,
         {
           value: form.meterage,
@@ -24864,7 +24935,17 @@ Plan it?`
         "button",
         {
           type: "button",
+          "data-finish-run": true,
           onClick: () => {
+            const t = runTarget;
+            if (t && !t.enough && !t.nothingNeeded && typeof window !== "undefined") {
+              const why = t.shortBoxes > 0 ? `${t.still} m still to glue \u2014 the orders for this size are about ${t.shortBoxes} box${t.shortBoxes === 1 ? "" : "es"} short even before set-up scrap.` : `${t.still} m short of the ${t.overmakePct}% set-up allowance \u2014 enough on paper, but bonding set-up may leave an order a box or two short.`;
+              if (!window.confirm(`Finishing now leaves ${why}
+
+Glue another reel, or finish anyway?
+
+OK = finish anyway \xB7 Cancel = keep the run open`)) return;
+            }
             setRunSetup(false);
             if (onEndRun) onEndRun();
           },
