@@ -1108,61 +1108,11 @@
     }
     return out;
   }
-  function bondingOffer(data, needing, orders, lineItems, pt) {
-    const rows = productionOutstandingRows(orders || data.orders || [], lineItems || data.lineItems || [], data.bondingRuns || [], data.stockPicks || []);
-    const withPt = (ls) => pt && !/\d\s*-?\s*\d?\s*pt\b/i.test(String(ls)) ? `${ls} ${pt}` : ls;
-    const rowFor = (ls) => {
-      const want = withPt(ls);
-      const byParts = rows.filter((r) => sameProductParts(r.spec, want));
-      const exactPt = byParts.filter((r) => (productParts(r.spec).pt || "") === (productParts(want).pt || ""));
-      if (exactPt.length === 1) return exactPt[0];
-      if (byParts.length === 1) return byParts[0];
-      const k = productRowKey(want);
-      const hit = rows.find((r) => productRowKey(r.spec) === k);
-      if (hit || pt) return hit || null;
-      const range = (x) => String(x || "").replace(/\s*\d.*$/, "").trim().toUpperCase();
-      const loose = rows.filter((r) => looseSpecMatch(r.spec, ls) && range(r.spec) === range(ls));
-      return loose.length === 1 ? loose[0] : null;
-    };
-    return (needing || []).map((n) => {
-      let pr = rowFor(n.lineSpec);
-      let part = pr ? pr.breakdown.find((b) => b.orderId === n.orderId) : null;
-      if (!part) {
-        const tw = twinCartonSpec(n.lineSpec);
-        const pr2 = tw ? rowFor(tw) : null;
-        const part2 = pr2 ? pr2.breakdown.find((b) => b.orderId === n.orderId) : null;
-        if (part2) {
-          pr = pr2;
-          part = part2;
-        }
-      }
-      const order = (orders || data.orders || []).find((o) => o.id === n.orderId) || null;
-      const outstanding = part ? Number(part.qty) || 0 : 0;
-      const stillToMake = part ? Math.max(0, Number(part.toMake) || 0) : 0;
-      const want = orderBoxTypeFor(order, n.lineSpec), strong = isStrongTapeOrder(order);
-      const shelf = pr ? (pr.shelfBoxes || []).filter((b) => shelfBoxFitsBoxType({ boxTypeId: b.boxTypeId }, want) && b.strong === strong) : [];
-      const room = Number(n.needs) || 0;
-      const noLine = !part && !(lineItems || data.lineItems || []).some((li) => li && !li.deleted && li.orderId === n.orderId && (sameProductParts(li.description, withPt(n.lineSpec)) || sameProductParts(li.description, n.lineSpec)));
-      return {
-        ...n,
-        outstanding,
-        toMake: Math.min(stillToMake, room),
-        covered: Math.max(0, outstanding - stillToMake),
-        shelf,
-        noLine,
-        planShort: stillToMake > room ? stillToMake - room : 0,
-        planOver: !part && !noLine && room > 0 ? room : 0
-      };
-    });
-  }
   function sameProductParts(a, b) {
-    const pa = productParts(a), pb = productParts(b);
-    const range = (x) => String(x || "").replace(/\s*\d.*$/, "").trim().toUpperCase();
-    if (range(a) !== range(b)) return false;
-    if (pa.thickness !== pb.thickness || pa.gos !== pb.gos) return false;
-    if ((pa.variant || "") !== (pb.variant || "")) return false;
-    if (isReelSpec(a) !== isReelSpec(b)) return false;
-    return !pa.pt || !pb.pt || pa.pt === pb.pt;
+    const words3 = (t) => String(t || "").toUpperCase().replace(/\(\s*\d+(\.\d+)?\s*M\s*\)/g, " ").replace(/\b\d\s*-\s*\d\s*PT\b|\b\d\s*PT\b/g, " ").replace(/(\d)MM\b/g, "$1").replace(/\bMM\b/g, " ").replace(/\bREELS\b/g, "REEL").split(/[\s,]+/).filter(Boolean).map((w) => /^\d+(\.\d+)?$/.test(w) ? String(Number(w)) : w).sort().join(" ");
+    if (words3(a) !== words3(b)) return false;
+    const pa = productParts(a).pt, pb = productParts(b).pt;
+    return !pa || !pb || pa === pb;
   }
   function productRowKey(spec) {
     return productKey(spec) + (isReelSpec(spec) ? "|REEL" : "|BOX");
@@ -1960,7 +1910,7 @@
           }
         }
         try {
-          if (!cases.length) {
+          if (false) {
             const items = orderLineItems(data.lineItems, r.workNumber).filter((li) => !isDelivery(li.description) && !isSmallItem(li.description));
             const { byLineItem } = groupAssignedRunsByLineItem(runsAfter, r.workNumber, items);
             const caseRows = buildCombinedCases(
@@ -9480,8 +9430,8 @@ ${line}` : line;
     }
     return out.sort((a, b) => (a.date || "9999").localeCompare(b.date || "9999") || a.boxNumber.localeCompare(b.boxNumber));
   }
-  function walkProducts(data, order) {
-    const lines = orderLineItems(data.lineItems || [], order.id).filter((li) => !isDelivery(li.description) && !isSmallItem(li.description));
+  function walkProducts(data, order, onlyLine = null) {
+    const lines = orderLineItems(data.lineItems || [], order.id).filter((li) => !isDelivery(li.description) && !isSmallItem(li.description) && (!onlyLine || onlyLine(li)));
     const groups = /* @__PURE__ */ new Map();
     for (const li of lines) {
       const k = walkProductKey(li);
@@ -9579,7 +9529,7 @@ ${line}` : line;
     if (left > 0) return { error: group.roomTotal ? `The case plan has room for only ${group.roomTotal} more ${group.label}.` : `The case plan has no room left for ${group.label}.`, route, short: left };
     return { route };
   }
-  function pickFacts(data, order, group, card, qty, preferCase, tickId, who = "") {
+  function pickFacts(data, order, group, card, qty, preferCase, tickId, who = "", opts = {}) {
     const q = Math.round(Number(qty) || 0);
     if (!(q > 0)) return { error: "Set how many first." };
     const shelfNow = Math.max(0, (placeOf(data, card.boxNumber) || {}).onShelf || 0);
@@ -9598,9 +9548,9 @@ ${line}` : line;
         qty: x.qty,
         orderId: order.id,
         caseNum: x.caseNum,
-        source: "pick",
+        source: opts.source || "pick",
         sourceId: card.runId,
-        note: `Picked by phone for ${order.id}${who ? ` (${who})` : ""}`,
+        note: opts.note || `Picked by phone for ${order.id}${who ? ` (${who})` : ""}`,
         boxTypeId: card.carton
       }),
       id: `mv-${tickId}-${i}`,
@@ -9732,6 +9682,37 @@ ${line}` : line;
       { ...moveCounted({ boxNumber: code, spec: productSize, qty: n, source: "found", sourceId: row.id, boxTypeId: boxTypeId || null }), id: `mv-${tickId}-1`, formId }
     ];
     return { row, moves, qty: n };
+  }
+  function bondingOfferFromWalk(data, needing, orders, lineItems, pt) {
+    const d = { ...data, orders: orders || data.orders || [], lineItems: lineItems || data.lineItems || [] };
+    const withPt = (ls) => pt && !/\d\s*-?\s*\d?\s*pt\b/i.test(String(ls)) ? `${ls} ${pt}` : ls;
+    return (needing || []).map((n) => {
+      const order = d.orders.find((o) => o.id === n.orderId) || null;
+      const room = Number(n.needs) || 0;
+      if (!order) return { ...n, outstanding: 0, toMake: 0, covered: 0, shelf: [], noLine: true, planShort: 0, planOver: 0 };
+      const want = withPt(n.lineSpec);
+      const matches = (spec) => (li) => sameProductParts(li.description, spec);
+      let g = walkProducts(d, order, matches(want))[0] || walkProducts(d, order, matches(n.lineSpec))[0];
+      if (!g) {
+        const tw = twinCartonSpec(n.lineSpec);
+        if (tw) g = walkProducts(d, order, matches(withPt(tw)))[0] || walkProducts(d, order, matches(tw))[0];
+      }
+      if (!g) return { ...n, outstanding: 0, toMake: 0, covered: 0, shelf: [], noLine: true, planShort: 0, planOver: 0 };
+      const outstanding = g.stillToPick;
+      const covered = Math.min(outstanding, g.shelf);
+      const stillToMake = Math.max(0, outstanding - covered);
+      const shelf = g.supply.map((s) => ({ boxNumber: s.boxNumber, bay: (s.bays || []).join("/"), qty: s.onShelf, checked: !s.unchecked, boxTypeId: s.carton }));
+      return {
+        ...n,
+        outstanding,
+        toMake: Math.min(stillToMake, room),
+        covered,
+        shelf,
+        noLine: false,
+        planShort: stillToMake > room ? stillToMake - room : 0,
+        planOver: outstanding === 0 && room > 0 ? room : 0
+      };
+    });
   }
 
   // mx_writes.js
@@ -10677,7 +10658,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-24.10";
+  var APP_VERSION = "2026-09-24.11";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -11496,6 +11477,87 @@ ${line}` : line;
     }
     if (left > 0) return { error: `${orderId}'s case plan has room for only ${q - left} of ${spec}.` };
     return { patch: recordMovements(data, put), placed: put.map((m) => ({ caseNum: m.caseNum, qty: m.qty })) };
+  }
+  function bondingRunFactsToTakeBack(data, runIds) {
+    const ids = new Set(runIds || []);
+    const own = (data.movements || []).filter((m) => m && !m.deleted && m.source === "bonding" && ids.has(m.sourceId));
+    if (!own.length) return { ids: [] };
+    const codes = new Set(own.map((m) => String(m.boxNumber || "").trim().toUpperCase()));
+    const last = own.reduce((t, m) => String(m.at || "") > t ? String(m.at || "") : t, "");
+    const ownIds = new Set(own.map((m) => m.id));
+    const since = (data.movements || []).filter((m) => m && !m.deleted && !ownIds.has(m.id) && codes.has(String(m.boxNumber || "").trim().toUpperCase()) && String(m.at || "") > last);
+    if (since.length) {
+      const first = since[0];
+      return { error: `${first.boxNumber} has moved since it was logged (${first.kind}${first.orderId ? ` on ${first.orderId}` : ""}, ${String(first.at || "").slice(0, 16).replace("T", " ")}). Deleting the run now would leave the records wrong, so nothing was changed. Correct the count or move the boxes in History and movement instead.` };
+    }
+    return { ids: [...ownIds] };
+  }
+  function bondingEditOrderMoves(data, before, after) {
+    const code = String(after && after.boxNumber || "").trim().toUpperCase();
+    if (!before || !after || !code) return { data, lines: [] };
+    const held = (d, oid) => {
+      const per = /* @__PURE__ */ new Map();
+      for (const m of d.movements || []) {
+        if (!m || m.deleted || m.orderId !== oid || m.caseNum == null || m.caseNum === "") continue;
+        if (String(m.boxNumber || "").trim().toUpperCase() !== code || m.kind !== "placed" && m.kind !== "unplaced") continue;
+        per.set(Number(m.caseNum), (per.get(Number(m.caseNum)) || 0) + (m.kind === "placed" ? 1 : -1) * (Number(m.qty) || 0));
+      }
+      return per;
+    };
+    const total = (per) => [...per.values()].reduce((t, q) => t + Math.max(0, q), 0);
+    const takeOut = (d, oid, qty, note) => {
+      const per = held(d, oid);
+      const moves = [];
+      let left = qty;
+      for (const cn of [...per.keys()].sort((a, b) => b - a)) {
+        if (left <= 0) break;
+        const n = Math.min(Math.max(0, per.get(cn)), left);
+        if (n <= 0) continue;
+        moves.push(moveUnplaced({ boxNumber: code, spec: after.productSize, qty: n, orderId: oid, caseNum: cn, source: "bonding", sourceId: after.id, note }));
+        left -= n;
+      }
+      return { moves, cases: moves.map((m) => m.caseNum) };
+    };
+    let next = data;
+    const lines = [];
+    const oldOrder = before.workNumber || null, newOrder = after.workNumber || null;
+    if (oldOrder && oldOrder !== newOrder) {
+      const h = total(held(next, oldOrder));
+      if (h > 0) {
+        const t = takeOut(next, oldOrder, h, `Run moved to ${newOrder || "the shelf"} on the bonding edit`);
+        next = recordMovements(next, t.moves);
+        lines.push(`${h} \xD7 ${code} out of ${oldOrder} case${t.cases.length === 1 ? "" : "s"} ${t.cases.join(", ")}`);
+      }
+    }
+    if (newOrder) {
+      const have = total(held(next, newOrder));
+      const onShelf = Math.max(0, (placeOf(next, code) || {}).onShelf || 0);
+      const askedRaw = Number(after.onOrderQty || 0);
+      const asked = askedRaw > 0 ? askedRaw : oldOrder !== newOrder ? have + onShelf : have;
+      if (asked > have) {
+        const more = Math.min(asked - have, onShelf);
+        if (more > 0) {
+          const res = placeShelfBoxesIntoOrder(next, {
+            boxNumber: code,
+            spec: after.productSize,
+            formId: after.formId,
+            orderId: newOrder,
+            qty: more,
+            sourceId: after.id,
+            source: "bonding",
+            note: `Bonding Line row edited \u2014 into ${newOrder}`
+          });
+          if (res.error) return { error: res.error };
+          next = res.patch;
+          lines.push(`${more} \xD7 ${code} into ${newOrder} ${res.placed.map((x) => `case ${x.caseNum}${res.placed.length > 1 ? ` (${x.qty})` : ""}`).join(", ")}`);
+        }
+      } else if (asked < have && askedRaw > 0) {
+        const t = takeOut(next, newOrder, have - asked, "Bonding Line row edited \u2014 fewer on the order");
+        next = recordMovements(next, t.moves);
+        lines.push(`${have - asked} \xD7 ${code} out of ${newOrder} case${t.cases.length === 1 ? "" : "s"} ${t.cases.join(", ")}, back to the shelf`);
+      }
+    }
+    return { data: next, lines };
   }
   function moveBoxRow(data, rowId, dest) {
     if (String(rowId || "").includes("~") && !(data.bondingRuns || []).some((r) => r.id === rowId)) {
@@ -23322,7 +23384,7 @@ Plan it?`
       const own = ordersNeedingSpec(data, offerSpec).needing.map((n) => ({ ...n, lineSpec: offerSpec }));
       const twin = twinCartonSpec(offerSpec);
       const other = twin ? ordersNeedingSpec(data, twin).needing.filter((n) => !own.some((o) => o.orderId === n.orderId)).map((n) => ({ ...n, lineSpec: twin })) : [];
-      return bondingOffer(data, [...own, ...other], orders, lineItems, form.pt);
+      return bondingOfferFromWalk(data, [...own, ...other], orders, lineItems, form.pt);
     }, [offerSpec, data, lineItems, form.pt]);
     const allocs = form.allocations || [];
     const allocFor = (id) => allocs.find((a) => a.orderId === id);
@@ -24500,40 +24562,55 @@ Plan it?`
           bondingRuns: runsAfter,
           glueLineBatches: batchCode ? prevData.glueLineBatches.map((b) => b.batchNumber === batchCode ? { ...b, cleared: reelCleared || autoCleared ? "Yes" : b.cleared || "No" } : b) : prevData.glueLineBatches
         };
-        working = recordMovements(working, [
-          ...newRuns.map((r) => moveMade({ boxNumber: r.boxNumber, spec: r.productSize, qty: Number(r.amountMade) || 0, reelCode: r.baselineBatchCode || null, source: "bonding", sourceId: r.id })),
-          ...destinations.flatMap((r0) => {
-            const r = { ...r0, id: idOf[r0.id] || r0.id };
-            return r.workNumber && Number(r.onOrderQty) > 0 ? (() => {
-              const g = (going || []).find((x) => x && x.kind === "order" && x.orderId === r.workNumber && String(x.boxNumber || "") === String(r.boxNumber || ""));
-              const split = g && Array.isArray(g.split) && g.split.length ? g.split : [];
-              const firstCase = split.length ? split[0].caseNum : g && g.cases && g.cases.length ? Number(g.cases[0]) : null;
-              return [
-                moveAllocated({
-                  boxNumber: r.boxNumber,
-                  spec: r.productSize,
-                  qty: Number(r.onOrderQty),
-                  orderId: r.workNumber,
-                  caseNum: firstCase,
-                  reelCode: r.baselineBatchCode || null,
-                  source: "bonding",
-                  sourceId: r.id
-                }),
-                ...split.map((sp) => movePlaced({
-                  boxNumber: r.boxNumber,
-                  spec: r.productSize,
-                  qty: sp.qty,
-                  orderId: r.workNumber,
-                  caseNum: sp.caseNum,
-                  reelCode: r.baselineBatchCode || null,
-                  source: "bonding",
-                  sourceId: r.id,
-                  note: "Placed at bonding \u2014 the case bonding named is the move"
-                }))
-              ];
-            })() : [];
-          })
-        ]);
+        working = recordMovements(working, newRuns.map((r) => ({ ...moveMade({
+          boxNumber: r.boxNumber,
+          spec: r.productSize,
+          qty: Number(r.amountMade) || 0,
+          reelCode: r.baselineBatchCode || null,
+          source: "bonding",
+          sourceId: r.id
+        }), id: `mv-bd-${r.id}-made`, formId: r.formId || null })));
+        const bondActor = String(currentActor() || "").split("@")[0];
+        for (const r0 of destinations) {
+          const r = { ...r0, id: idOf[r0.id] || r0.id };
+          if (!(r.workNumber && Number(r.onOrderQty) > 0)) continue;
+          const row = newRuns.find((x) => x.id === r.id) || r;
+          const code = String(row.boxNumber || "").trim().toUpperCase();
+          const order = (working.orders || []).find((o) => o.id === r.workNumber);
+          const g = (going || []).find((x) => x && x.kind === "order" && x.orderId === r.workNumber && String(x.boxNumber || "").trim().toUpperCase() === code);
+          const shown = g && Array.isArray(g.split) ? g.split.filter((x) => Number(x.qty) > 0) : [];
+          const grp = order ? walkProducts(working, order, (li) => runFillsLine(row, li))[0] : null;
+          const card = grp ? grp.supply.find((x) => x.boxNumber === code && x.carton === (row.boxTypeId || null)) || grp.supply.find((x) => x.boxNumber === code) : null;
+          const res = grp && card ? pickFacts(
+            working,
+            order,
+            grp,
+            { ...card, runId: row.id, formId: row.formId || card.formId },
+            Number(r.onOrderQty),
+            shown.length ? shown[0].caseNum : null,
+            `bd-${row.id}-${r.workNumber}`.replace(/[^A-Za-z0-9-]/g, ""),
+            bondActor,
+            { source: "bonding", note: "Placed at bonding \u2014 the case bonding named is the move" }
+          ) : { error: `${r.workNumber} doesn't take ${row.productSize} any more, or the boxes can't be found on the records.` };
+          if (res.error) {
+            const why = `Nothing was saved. ${res.error} The screen showed ${shown.map((x) => `${x.qty} into case ${x.caseNum}`).join(", ") || "no case"} \u2014 look at step 3 again and log it once more.`;
+            try {
+              setTimeout(() => window.alert(why), 0);
+            } catch (e) {
+            }
+            return prevData;
+          }
+          const same = res.route.length === shown.length && res.route.every((x, i) => x.caseNum === Number(shown[i].caseNum) && x.qty === Number(shown[i].qty));
+          if (!same) {
+            const why = `Nothing was saved \u2014 ${r.workNumber}'s cases changed since step 3 showed ${shown.map((x) => `${x.qty} into case ${x.caseNum}`).join(", ") || "no case"}. They would now go ${res.route.map((x) => `${x.qty} into case ${x.caseNum}`).join(", ")}. Look at step 3 again and log it once more.`;
+            try {
+              setTimeout(() => window.alert(why), 0);
+            } catch (e) {
+            }
+            return prevData;
+          }
+          working = recordMovements(working, res.moves);
+        }
         if (reelCleared && batchCode) {
           const b = prevData.glueLineBatches.find((x) => x.batchNumber === batchCode);
           const d = b ? reelDiscrepancy(b, runsAfter) : null;
@@ -24625,32 +24702,66 @@ Plan it?`
         timerId
       });
       if (goesToOrder && typeof jumpToPacking === "function") {
+        const meta = {
+          id: newRun.id,
+          ids: newRuns.map((r) => r.id),
+          batchCode,
+          previousBatchCleared,
+          boxTypes: isBox ? newRuns.filter((r) => r.boxTypeId && Number(r.amountMade) > 0).map((r) => ({ id: r.boxTypeId, qty: Number(r.amountMade) })) : []
+        };
+        try {
+          window.dispatchEvent(new CustomEvent("mx-undo-offer", { detail: { label: newRun.boxNumber || newRun.productSize, undo: () => undoRuns(meta), ms: 8e3 } }));
+        } catch (e) {
+        }
         jumpToPacking(firstToOrder.workNumber, [newRun.boxNumber]);
       }
     };
     const undoJustAdded = () => {
       if (!justAdded) return;
       clearTimeout(justAdded.timerId);
+      undoRuns(justAdded);
+      setJustAdded(null);
+    };
+    const undoRuns = (justAdded2) => {
       setData((prevData) => {
+        const back = bondingRunFactsToTakeBack(prevData, justAdded2.ids || [justAdded2.id]);
+        if (back.error) {
+          try {
+            setTimeout(() => window.alert(back.error), 0);
+          } catch (e) {
+          }
+          return prevData;
+        }
+        const at = (/* @__PURE__ */ new Date()).toISOString(), gone = new Set(back.ids);
         let working = {
           ...prevData,
-          bondingRuns: prevData.bondingRuns.filter((r) => !(justAdded.ids || [justAdded.id]).includes(r.id)),
-          glueLineBatches: justAdded.batchCode ? prevData.glueLineBatches.map((b) => b.batchNumber === justAdded.batchCode ? { ...b, cleared: justAdded.previousBatchCleared } : b) : prevData.glueLineBatches
+          movements: (prevData.movements || []).map((m) => gone.has(m.id) ? { ...m, deleted: true, deletedAt: at, updatedAt: at, note: `${m.note ? m.note + " \xB7 " : ""}Taken back \u2014 the run was undone` } : m),
+          bondingRuns: prevData.bondingRuns.filter((r) => !(justAdded2.ids || [justAdded2.id]).includes(r.id)),
+          glueLineBatches: justAdded2.batchCode ? prevData.glueLineBatches.map((b) => b.batchNumber === justAdded2.batchCode ? { ...b, cleared: justAdded2.previousBatchCleared } : b) : prevData.glueLineBatches
         };
-        for (const bt of justAdded.boxTypes || []) {
-          working = { ...working, ...recordMaterialMovement(working, bt.id, bt.qty, "manual", justAdded.id, "Undo \u2014 box entry removed") };
+        for (const bt of justAdded2.boxTypes || []) {
+          working = { ...working, ...recordMaterialMovement(working, bt.id, bt.qty, "manual", justAdded2.id, "Undo \u2014 box entry removed") };
         }
         return working;
       });
-      setJustAdded(null);
     };
     const removeRow = (id) => {
       const target = bondingRuns.find((x) => x.id === id);
       if (!window.confirm(`Delete box ${target?.boxNumber || "?"} (${target?.amountMade ?? "?"} \xD7 ${target?.productSize || "?"})? Nothing is lost \u2014 if it's a mistake, Chris can put it straight back.`)) return;
       setData((prevData) => {
         const r = prevData.bondingRuns.find((x) => x.id === id);
+        const back = bondingRunFactsToTakeBack(prevData, [id]);
+        if (back.error) {
+          try {
+            setTimeout(() => window.alert(back.error), 0);
+          } catch (e) {
+          }
+          return prevData;
+        }
+        const at = (/* @__PURE__ */ new Date()).toISOString(), gone = new Set(back.ids);
         return {
           ...prevData,
+          movements: (prevData.movements || []).map((m) => gone.has(m.id) ? { ...m, deleted: true, deletedAt: at, updatedAt: at, note: `${m.note ? m.note + " \xB7 " : ""}Taken back \u2014 the run was deleted` } : m),
           bondingRuns: prevData.bondingRuns.filter((x) => x.id !== id),
           ...appendLog(prevData, {
             action: "delete",
@@ -24759,27 +24870,17 @@ Plan it?`
       }
       setEditError("");
       {
-        const upc = (s) => String(s || "").trim().toUpperCase();
         const beforeRow = (data.bondingRuns || []).find((r) => r.id === editingId);
         const afterRow = beforeRow ? { ...beforeRow, ...toRun(formForSave, editingId) } : null;
-        if (beforeRow && afterRow && afterRow.workNumber && Number(afterRow.onOrderQty) > 0) {
-          const movedOrder = !!beforeRow.workNumber && beforeRow.workNumber !== afterRow.workNumber;
-          if (movedOrder) {
-            const inOldCases = (data.movements || []).filter((m) => m && !m.deleted && m.orderId === beforeRow.workNumber && upc(m.boxNumber) === upc(beforeRow.boxNumber)).reduce((t, m) => t + (m.kind === "placed" ? Number(m.qty) || 0 : m.kind === "unplaced" ? -(Number(m.qty) || 0) : 0), 0);
-            if (inOldCases > 0) {
-              setEditError(`${inOldCases} of ${beforeRow.boxNumber} are already in ${beforeRow.workNumber}'s cases. Changing the work number here would leave them promised to ${afterRow.workNumber} while they sit in ${beforeRow.workNumber}'s case. Take them out with Stock \u2192 Wrong stock in a case, then book them.`);
-              return;
-            }
-          }
-          const delta = Number(afterRow.onOrderQty || 0) - (movedOrder ? 0 : Number(beforeRow.onOrderQty || 0));
-          if (delta > 0) {
-            const placeErr = placeRefusalFor(predictRunDestinations(data, [{ ...afterRow, onOrderQty: delta, toStock: 0 }]));
-            if (placeErr) {
-              setEditError(placeErr);
-              return;
-            }
-          }
+        const trial = bondingEditOrderMoves(data, beforeRow, afterRow);
+        if (trial.error) {
+          setEditError(trial.error);
+          return;
         }
+        if (trial.lines.length && typeof window !== "undefined" && !window.confirm(`Saving this moves boxes:
+${trial.lines.join("\n")}
+
+Go ahead?`)) return;
       }
       const batchCode = (editForm.baselineBatchCode || "").trim();
       const reelCleared = editForm.reelCleared === "Yes";
@@ -24805,112 +24906,14 @@ Plan it?`
               note: `Bonding Line row edited \u2014 ${before.amountMade} to ${after.amountMade}`
             });
           }
-          const orderDelta = Number(after.onOrderQty || 0) - beforeOnOrder;
-          const orderId = after.workNumber || before.workNumber;
-          if (orderDelta > 0 && orderId && after.boxNumber) {
-            const pending = [{ ...after, onOrderQty: orderDelta, toStock: 0 }];
-            const going = predictRunDestinations(next, pending);
-            const g = (going || []).find((x) => x && x.kind === "order" && x.orderId === orderId && String(x.boxNumber || "") === String(after.boxNumber || ""));
-            const split = g && Array.isArray(g.split) && g.split.length ? g.split : [];
-            const firstCase = split.length ? split[0].caseNum : g && g.cases && g.cases.length ? Number(g.cases[0]) : null;
-            next = recordMovements(next, [
-              moveAllocated({
-                boxNumber: after.boxNumber,
-                spec: after.productSize,
-                qty: orderDelta,
-                orderId,
-                caseNum: firstCase,
-                reelCode: after.baselineBatchCode || null,
-                source: "bonding",
-                sourceId: after.id,
-                note: `Bonding Line row edited \u2014 on order ${beforeOnOrder} to ${after.onOrderQty || 0}`
-              }),
-              ...split.map((sp) => movePlaced({
-                boxNumber: after.boxNumber,
-                spec: after.productSize,
-                qty: sp.qty,
-                orderId,
-                caseNum: sp.caseNum,
-                reelCode: after.baselineBatchCode || null,
-                source: "bonding",
-                sourceId: after.id,
-                note: "Placed at bonding \u2014 the case bonding named is the move"
-              }))
-            ]);
-          } else if (orderDelta < 0 && orderId && after.boxNumber) {
-            next = recordMovement(next, {
-              kind: "unallocated",
-              boxNumber: after.boxNumber,
-              spec: after.productSize,
-              qty: Math.abs(orderDelta),
-              orderId,
-              source: "bonding",
-              sourceId: after.id,
-              note: `Bonding Line row edited \u2014 on order ${beforeOnOrder} to ${after.onOrderQty}`
-            });
-          }
-          if (before.workNumber && after.workNumber && before.workNumber !== after.workNumber && after.boxNumber) {
-            if (beforeOnOrder > 0) {
-              next = recordMovement(next, moveUnallocated({
-                boxNumber: after.boxNumber,
-                spec: after.productSize,
-                qty: beforeOnOrder,
-                orderId: before.workNumber,
-                source: "bonding",
-                sourceId: after.id,
-                note: `Row moved to ${after.workNumber}`
-              }));
-            }
-            const pendingMove = [{ ...after, onOrderQty: Number(after.onOrderQty || 0), toStock: 0 }];
-            const gm = (predictRunDestinations(next, pendingMove) || []).find((x) => x && x.kind === "order" && x.orderId === after.workNumber && String(x.boxNumber || "") === String(after.boxNumber || ""));
-            const splitM = gm && Array.isArray(gm.split) && gm.split.length ? gm.split : [];
-            next = recordMovements(next, [
-              moveAllocated({
-                boxNumber: after.boxNumber,
-                spec: after.productSize,
-                qty: Number(after.onOrderQty || 0),
-                orderId: after.workNumber,
-                caseNum: splitM.length ? splitM[0].caseNum : null,
-                source: "bonding",
-                sourceId: after.id,
-                note: `Row moved from ${before.workNumber}`
-              }),
-              ...splitM.map((sp) => movePlaced({
-                boxNumber: after.boxNumber,
-                spec: after.productSize,
-                qty: sp.qty,
-                orderId: after.workNumber,
-                caseNum: sp.caseNum,
-                reelCode: after.baselineBatchCode || null,
-                source: "bonding",
-                sourceId: after.id,
-                note: "Placed at bonding \u2014 the case bonding named is the move"
-              }))
-            ]);
-          }
         }
-        if (before && after && after.workNumber && after.boxNumber) {
-          const held = Number((projectBox(next.movements, after.boxNumber).byOrder || {})[after.workNumber] || 0);
-          const onShelf = Math.max(0, (placeOf(next, after.boxNumber) || {}).onShelf || 0);
-          const asked = Number(after.onOrderQty || 0) > 0 ? Number(after.onOrderQty) : before.workNumber !== after.workNumber ? held + onShelf : held;
-          const more = Math.min(asked - held, onShelf);
-          if (more > 0) {
-            const res = placeShelfBoxesIntoOrder(next, {
-              boxNumber: after.boxNumber,
-              spec: after.productSize,
-              formId: after.formId,
-              orderId: after.workNumber,
-              qty: more,
-              sourceId: after.id,
-              source: "bonding",
-              note: `Bonding Line row edited \u2014 into ${after.workNumber}`
-            });
-            if (res.error) {
-              setTimeout(() => setEditError(res.error), 0);
-              return prevData;
-            }
-            next = res.patch;
+        if (before && after) {
+          const om = bondingEditOrderMoves(next, before, after);
+          if (om.error) {
+            setTimeout(() => setEditError(om.error), 0);
+            return prevData;
           }
+          next = om.data;
         }
         if (batchCode) {
           next = applyRowsWithLog(
@@ -27672,6 +27675,22 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       }
       return fn();
     };
+    const [globalUndo, setGlobalUndo] = useState(null);
+    useEffect(() => {
+      let t = null;
+      const on = (e) => {
+        const d = e.detail || {};
+        if (typeof d.undo !== "function") return;
+        clearTimeout(t);
+        setGlobalUndo({ label: d.label, undo: d.undo });
+        t = setTimeout(() => setGlobalUndo(null), d.ms || 8e3);
+      };
+      window.addEventListener("mx-undo-offer", on);
+      return () => {
+        window.removeEventListener("mx-undo-offer", on);
+        clearTimeout(t);
+      };
+    }, []);
     const setDataRef = useRef(null);
     const setData = (updater) => {
       setDataRaw((prevStored) => {
@@ -28961,7 +28980,11 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     return /* @__PURE__ */ React.createElement("div", { className: "app-root", style: { minHeight: "100vh", color: INK } }, /* @__PURE__ */ React.createElement("div", { id: "print-portal-root" }), /* @__PURE__ */ React.createElement("div", { className: "no-print" }, /* @__PURE__ */ React.createElement(HazardStripe, { height: 4 })), scanOpen && /* @__PURE__ */ React.createElement(ScanOverlay, { onResult: handleScan, onClose: () => setScanOpen(false), knownCodes: scanKnownCodes }), /* @__PURE__ */ React.createElement(ScanNotice, { notice: scanNotice, onScanAgain: () => {
       setScanNotice(null);
       setScanOpen(true);
-    }, onClose: () => setScanNotice(null) }), /* @__PURE__ */ React.createElement("div", { className: "mobile-header no-print", style: { position: "relative" } }, /* @__PURE__ */ React.createElement(
+    }, onClose: () => setScanNotice(null) }), globalUndo && /* @__PURE__ */ React.createElement("div", { "data-global-undo": true, className: "no-print fixed bottom-5 right-5 z-50 flex items-center gap-3 px-4 py-2.5 rounded shadow-lg text-sm text-white", style: { background: NAVY } }, /* @__PURE__ */ React.createElement("span", null, "Added ", globalUndo.label), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+      const u = globalUndo.undo;
+      setGlobalUndo(null);
+      u();
+    }, className: "font-semibold underline", style: { color: "#fff" } }, "Undo"), /* @__PURE__ */ React.createElement("button", { onClick: () => setGlobalUndo(null), className: "opacity-60 hover:opacity-100" }, "\u2715")), /* @__PURE__ */ React.createElement("div", { className: "mobile-header no-print", style: { position: "relative" } }, /* @__PURE__ */ React.createElement(
       "button",
       {
         onClick: () => setMobileMenuOpen(true),
