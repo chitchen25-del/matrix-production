@@ -67,10 +67,10 @@
      the old CDN tags when they are not, and it says loudly which it did. The
      gate is offline_test.js, which fails unless the real page renders with no
      network at all — so a CDN build cannot quietly reach the floor. -->
-<script src="https://cdn.tailwindcss.com"></script>
-<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="vendor/react.production.min.js"></script>
+<script src="vendor/react-dom.production.min.js"></script>
+<script src="vendor/supabase.js"></script>
+<link rel="stylesheet" href="vendor/tailwind.css" />
 <style>
   /* No overflow-x: hidden here — that was tried as a safety net against
      stray width bugs, but it's too blunt an instrument: it also blocks
@@ -1112,7 +1112,12 @@
     const rows = productionOutstandingRows(orders || data.orders || [], lineItems || data.lineItems || [], data.bondingRuns || [], data.stockPicks || []);
     const withPt = (ls) => pt && !/\d\s*-?\s*\d?\s*pt\b/i.test(String(ls)) ? `${ls} ${pt}` : ls;
     const rowFor = (ls) => {
-      const k = productRowKey(withPt(ls));
+      const want = withPt(ls);
+      const byParts = rows.filter((r) => sameProductParts(r.spec, want));
+      const exactPt = byParts.filter((r) => (productParts(r.spec).pt || "") === (productParts(want).pt || ""));
+      if (exactPt.length === 1) return exactPt[0];
+      if (byParts.length === 1) return byParts[0];
+      const k = productRowKey(want);
       const hit = rows.find((r) => productRowKey(r.spec) === k);
       if (hit || pt) return hit || null;
       const range = (x) => String(x || "").replace(/\s*\d.*$/, "").trim().toUpperCase();
@@ -1137,16 +1142,27 @@
       const want = orderBoxTypeFor(order, n.lineSpec), strong = isStrongTapeOrder(order);
       const shelf = pr ? (pr.shelfBoxes || []).filter((b) => shelfBoxFitsBoxType({ boxTypeId: b.boxTypeId }, want) && b.strong === strong) : [];
       const room = Number(n.needs) || 0;
+      const noLine = !part && !(lineItems || data.lineItems || []).some((li) => li && !li.deleted && li.orderId === n.orderId && (sameProductParts(li.description, withPt(n.lineSpec)) || sameProductParts(li.description, n.lineSpec)));
       return {
         ...n,
         outstanding,
         toMake: Math.min(stillToMake, room),
         covered: Math.max(0, outstanding - stillToMake),
         shelf,
+        noLine,
         planShort: stillToMake > room ? stillToMake - room : 0,
-        planOver: !part && room > 0 ? room : 0
+        planOver: !part && !noLine && room > 0 ? room : 0
       };
     });
+  }
+  function sameProductParts(a, b) {
+    const pa = productParts(a), pb = productParts(b);
+    const range = (x) => String(x || "").replace(/\s*\d.*$/, "").trim().toUpperCase();
+    if (range(a) !== range(b)) return false;
+    if (pa.thickness !== pb.thickness || pa.gos !== pb.gos) return false;
+    if ((pa.variant || "") !== (pb.variant || "")) return false;
+    if (isReelSpec(a) !== isReelSpec(b)) return false;
+    return !pa.pt || !pb.pt || pa.pt === pb.pt;
   }
   function productRowKey(spec) {
     return productKey(spec) + (isReelSpec(spec) ? "|REEL" : "|BOX");
@@ -1853,12 +1869,12 @@
     return memoCall("pickableNow", args, () => pickableNowFresh(...args));
   }
   function pickableNowFresh(data) {
-    const up = (x) => String(x || "").trim().toUpperCase();
+    const up2 = (x) => String(x || "").trim().toUpperCase();
     const runs = (data.bondingRuns || []).filter((r) => r && !r.deleted && !r._synth && r.boxNumber && r.formId);
     const byForm = /* @__PURE__ */ new Map();
     const seen = /* @__PURE__ */ new Set();
     for (const r of runs) {
-      const box = up(r.boxNumber);
+      const box = up2(r.boxNumber);
       if (seen.has(box)) continue;
       seen.add(box);
       const n = Math.max(0, (placeOf(data, box) || {}).onShelf || 0);
@@ -1867,13 +1883,13 @@
       byForm.get(r.formId).push({ box: r.boxNumber, left: n, bay: String(r.location || "").trim() });
     }
     for (const list of byForm.values()) list.sort((a, b) => a.box.localeCompare(b.box));
-    const formOfBox = new Map(runs.map((r) => [up(r.boxNumber), r.formId]));
+    const formOfBox = new Map(runs.map((r) => [up2(r.boxNumber), r.formId]));
     const held = ledgerCaseContents(data.movements || []);
     const inCases = (orderId, formId) => {
       let t = 0;
       for (const [k, c] of held) {
         if (!k.startsWith(orderId + "|")) continue;
-        for (const [box, q] of Object.entries(c)) if (formOfBox.get(up(box)) === formId) t += Number(q) || 0;
+        for (const [box, q] of Object.entries(c)) if (formOfBox.get(up2(box)) === formId) t += Number(q) || 0;
       }
       return t;
     };
@@ -2360,11 +2376,11 @@
     const norm = (x) => String(x || "").toLowerCase().replace(/\s+/g, " ").trim();
     const want = norm(wantRaw);
     if (!want) return [];
-    const up = (x) => String(x || "").trim().toUpperCase();
+    const up2 = (x) => String(x || "").trim().toUpperCase();
     const glued = /* @__PURE__ */ new Map();
     for (const g of data.glueLineBatches || []) {
       if (!g || g.deleted) continue;
-      const code = up(g.plCode || g.sourceReelBatch);
+      const code = up2(g.plCode || g.sourceReelBatch);
       if (!code) continue;
       glued.set(code, (glued.get(code) || 0) + (Number(g.meterage) || 0));
     }
@@ -2376,7 +2392,7 @@
       if (String(e.checked || "").trim().toLowerCase() !== "yes") continue;
       if (e.cleared === true) continue;
       const total = Number(e.meterage) || 0;
-      const used = glued.get(up(e.batchNumber)) || 0;
+      const used = glued.get(up2(e.batchNumber)) || 0;
       const left = total - used;
       if (left <= 0) continue;
       out.push({ code: e.batchNumber, total, used, left });
@@ -2793,15 +2809,15 @@
     return next;
   }
   function promisedNotPacked(data) {
-    const up = (x) => String(x || "").trim().toUpperCase();
+    const up2 = (x) => String(x || "").trim().toUpperCase();
     const live = new Set((data.orders || []).filter((o) => o && !o.deleted && !["Shipped", "Cancelled"].includes(o.stage || "")).map((o) => o.id));
     const by = /* @__PURE__ */ new Map();
     for (const r of promiseRows(data)) {
       if (!live.has(r.orderId)) continue;
-      const k = `${r.orderId}|${up(r.boxNumber)}`;
+      const k = `${r.orderId}|${up2(r.boxNumber)}`;
       const e = by.get(k) || {
         orderId: r.orderId,
-        boxNumber: up(r.boxNumber),
+        boxNumber: up2(r.boxNumber),
         spec: r.spec || "",
         allocated: 0,
         placed: 0,
@@ -2815,7 +2831,7 @@
       if (r.since && (!e.since || String(r.since) < String(e.since))) e.since = r.since;
       by.set(k, e);
     }
-    const runOf = (box) => (data.bondingRuns || []).find((r) => r && !r.deleted && up(r.boxNumber) === box);
+    const runOf = (box) => (data.bondingRuns || []).find((r) => r && !r.deleted && up2(r.boxNumber) === box);
     return [...by.values()].map((e) => {
       const r = runOf(e.boxNumber);
       return {
@@ -6300,19 +6316,19 @@
     return out;
   }
   function resolveCaseContents(data, orderId, caseNum, found, putBack) {
-    const up = (x) => String(x || "").trim().toUpperCase();
+    const up2 = (x) => String(x || "").trim().toUpperCase();
     const runs = (data.bondingRuns || []).filter((r) => r && !r.deleted);
     const cases = (data.cases || []).filter((c) => c && !c.deleted);
     const movs = (data.movements || []).filter((m) => m && !m.deleted);
     const moves = [], flags = [], notes = [];
     const specOf = (box) => {
-      const r = runs.find((x) => up(x.boxNumber) === up(box) && x.productSize);
+      const r = runs.find((x) => up2(x.boxNumber) === up2(box) && x.productSize);
       return r ? r.productSize : null;
     };
     const placedAt = (box) => {
       const by = /* @__PURE__ */ new Map();
       for (const m of movs) {
-        if (up(m.boxNumber) !== up(box) || m.caseNum == null) continue;
+        if (up2(m.boxNumber) !== up2(box) || m.caseNum == null) continue;
         if (m.kind !== "placed" && m.kind !== "unplaced") continue;
         const k = `${m.orderId}|${Number(m.caseNum)}`;
         by.set(k, (by.get(k) || 0) + (m.kind === "placed" ? Number(m.qty) || 0 : -(Number(m.qty) || 0)));
@@ -6321,7 +6337,7 @@
     };
     const allocatedTo = (box) => promisedByOrder(data, box);
     for (const row2 of found || []) {
-      const box = up(row2.boxNumber), qty = Number(row2.qty) || 0;
+      const box = up2(row2.boxNumber), qty = Number(row2.qty) || 0;
       if (!box || qty <= 0) continue;
       const spec = specOf(box);
       if (!spec) {
@@ -6407,7 +6423,7 @@
       }));
     }
     for (const row2 of putBack || []) {
-      const box = up(row2.boxNumber), qty = Number(row2.qty) || 0;
+      const box = up2(row2.boxNumber), qty = Number(row2.qty) || 0;
       if (!box || qty <= 0) continue;
       const spec = specOf(box);
       for (const at of placedAt(box).filter((p) => p.orderId === orderId && p.caseNum === Number(caseNum))) {
@@ -6628,9 +6644,9 @@
     const core = `${letter}${yearDigit}${day}`;
     let highest = 0;
     for (const c of existingCodes || []) {
-      const up = String(c || "").trim().toUpperCase();
-      if (!up) continue;
-      const body = prefix && up.startsWith(prefix) ? up.slice(prefix.length) : up;
+      const up2 = String(c || "").trim().toUpperCase();
+      if (!up2) continue;
+      const body = prefix && up2.startsWith(prefix) ? up2.slice(prefix.length) : up2;
       if (!body.startsWith(core)) continue;
       const m = body.slice(core.length).match(/^(\d{2})/);
       if (m) highest = Math.max(highest, Number(m[1]));
@@ -6915,13 +6931,13 @@
     return /SD[B4]S$/.test(String(code || "").trim().toUpperCase());
   }
   function strongTapeBoxCode(code) {
-    const up = String(code || "").trim().toUpperCase();
-    if (!up || isStrongTapeBoxCode(up) || !/SD[B4]$/.test(up)) return up;
-    return up + STRONG_TAPE_MARK;
+    const up2 = String(code || "").trim().toUpperCase();
+    if (!up2 || isStrongTapeBoxCode(up2) || !/SD[B4]$/.test(up2)) return up2;
+    return up2 + STRONG_TAPE_MARK;
   }
   function standardTapeBoxCode(code) {
-    const up = String(code || "").trim().toUpperCase();
-    return isStrongTapeBoxCode(up) ? up.slice(0, -1) : up;
+    const up2 = String(code || "").trim().toUpperCase();
+    return isStrongTapeBoxCode(up2) ? up2.slice(0, -1) : up2;
   }
   var RETIRED_SUFFIX_INITIALS = { G: "a former operator" };
   function normaliseBoxSuffix(suffix) {
@@ -7486,10 +7502,10 @@ ${line}` : line;
     }).sort((a, b) => b.votes - a.votes);
   }
   function classifyScan(text, data) {
-    const t = String(text || "").trim(), up = t.toUpperCase();
-    const box = (data.bondingRuns || []).find((r) => r && !r.deleted && String(r.boxNumber || "").toUpperCase() === up) || ((data.movements || []).some((m) => m && !m.deleted && String(m.boxNumber || "").toUpperCase() === up) ? { boxNumber: up } : null);
-    if (box) return { kind: "box", code: box.boxNumber || up };
-    const reel = (data.glueLineBatches || []).find((g) => g && !g.deleted && String(g.batchNumber || "").toUpperCase() === up);
+    const t = String(text || "").trim(), up2 = t.toUpperCase();
+    const box = (data.bondingRuns || []).find((r) => r && !r.deleted && String(r.boxNumber || "").toUpperCase() === up2) || ((data.movements || []).some((m) => m && !m.deleted && String(m.boxNumber || "").toUpperCase() === up2) ? { boxNumber: up2 } : null);
+    if (box) return { kind: "box", code: box.boxNumber || up2 };
+    const reel = (data.glueLineBatches || []).find((g) => g && !g.deleted && String(g.batchNumber || "").toUpperCase() === up2);
     if (reel) return { kind: "reel", code: reel.batchNumber, reel };
     if (/^[A-Z ]*\d+(\.\d+)?\s*x\s*\d+(\.\d+)?\s*mm$/i.test(t) || /\d(\.\d)?mm$/i.test(t)) return { kind: "product", text: t };
     return { kind: "unknown", text: t };
@@ -9395,6 +9411,329 @@ ${line}` : line;
     return orders === d.orders && runs === d.bondingRuns && materials === d.materials && reels === d.glueLineBatches ? d : { ...d, orders, bondingRuns: runs, materials, glueLineBatches: reels };
   }
 
+  // mx_pickwalk.js
+  var up = (s) => String(s || "").trim().toUpperCase();
+  var famOf = (fid) => String(fid || "").replace(/-\d.*$/, "");
+  function walkProductKey(li) {
+    const f = li && li.formId ? formById(CATALOGUE, li.formId) : null;
+    if (f && (f.productId || f.product_id)) return `F:${f.productId || f.product_id}|${f.reel ? "R" : "B"}`;
+    const t = String(li && li.description || "");
+    const p = productParts(t);
+    const range = t.replace(/\s*\d.*$/, "").trim().toUpperCase();
+    return `T:${range}|${p.thickness ?? ""}x${p.gos ?? ""}|${p.variant || ""}|${p.pt || ""}|${isReelSpec(t) ? "R" : "B"}`;
+  }
+  function runFillsLine(r, li) {
+    if (!r || !li) return false;
+    if (r.formId && li.formId) return r.formId === li.formId || famOf(r.formId) === famOf(li.formId) && runMatchesLine(r, li);
+    return runMatchesLine(r, li) && stockFormMatchesLine(r, li.description);
+  }
+  function inCasesFor(data, order, lines) {
+    const nums = new Set((data.cases || []).filter((c) => c && !c.deleted && c.orderId === order.id).map((c) => Number(c.caseNum)));
+    let n = 0;
+    for (const caseNum of nums) {
+      for (const x of caseProducts(data.movements || [], data.bondingRuns || [], order.id, caseNum)) {
+        if (lines.some((li) => looseSpecMatch(x.spec, li.description))) n += x.qty;
+      }
+    }
+    return n;
+  }
+  function walkSupply(data, order, lines) {
+    const mats = data.materials || [];
+    const byCode = /* @__PURE__ */ new Map();
+    for (const r of data.bondingRuns || []) {
+      if (!r || r.deleted || !r.boxNumber) continue;
+      if (!lines.some((li) => runFillsLine(r, li))) continue;
+      const k = up(r.boxNumber);
+      if (!byCode.has(k)) byCode.set(k, []);
+      byCode.get(k).push(r);
+    }
+    const out = [];
+    for (const [code, rows] of byCode) {
+      if (!tapeFits(code, order)) continue;
+      const place = placeOf(data, code);
+      if (!(place.onShelf > 0)) continue;
+      const c = cartonStockFor(data, code, mats);
+      let parts = Object.entries(c && c.byCarton || {}).map(([k, v]) => [k, Number(v && v.onShelf) || 0]).filter(([, q]) => q > 0);
+      if (!parts.length) parts = [[(rows.find((r) => r.boxTypeId) || {}).boxTypeId || "unknown", place.onShelf]];
+      for (const [carton, q0] of parts) {
+        const onShelf = Math.min(q0, place.onShelf);
+        if (onShelf <= 0) continue;
+        const boxTypeId = carton === "unknown" ? null : carton;
+        const meta = rows.find((r) => (r.boxTypeId || "unknown") === carton) || rows[0];
+        const fit2 = cartonMismatch({ boxTypeId, productSize: meta.productSize }, order, mats);
+        if (fit2 === "wrong") continue;
+        const dates = rows.map((r) => r.date).filter(Boolean).sort();
+        out.push({
+          key: `${code}|${carton}`,
+          boxNumber: code,
+          carton: boxTypeId,
+          onShelf,
+          date: dates[0] || "",
+          bays: place.bays || [],
+          unchecked: !rows.some((r) => r.checked === "Yes"),
+          cartonUnknown: fit2 === "unconfirmed",
+          runId: meta.id,
+          formId: meta.formId || null,
+          productSize: meta.productSize
+        });
+      }
+    }
+    return out.sort((a, b) => (a.date || "9999").localeCompare(b.date || "9999") || a.boxNumber.localeCompare(b.boxNumber));
+  }
+  function walkProducts(data, order) {
+    const lines = orderLineItems(data.lineItems || [], order.id).filter((li) => !isDelivery(li.description) && !isSmallItem(li.description));
+    const groups = /* @__PURE__ */ new Map();
+    for (const li of lines) {
+      const k = walkProductKey(li);
+      if (!groups.has(k)) groups.set(k, { key: k, lines: [] });
+      groups.get(k).lines.push(li);
+    }
+    let prodRows = null;
+    const out = [];
+    for (const g of groups.values()) {
+      const first = g.lines[0];
+      const f = first.formId ? formById(CATALOGUE, first.formId) : null;
+      const label = f && (f.displayName || f.name) || String(first.description || "").replace(/\s*\(\d+(\.\d+)?m\)\s*$/, "");
+      const wants = g.lines.reduce((t, li) => t + (Number(li.qty) || 0), 0);
+      const inCases = inCasesFor(data, order, g.lines);
+      const stillToPick = Math.max(0, wants - inCases);
+      const need = (ordersNeedingSpec(data, first.description, [], { formId: first.formId || void 0 }).needing || []).find((n) => n.orderId === order.id);
+      const room = (need && need.room || []).map((r) => ({ caseNum: Number(r.caseNum), spaces: Number(r.spaces) || 0 })).filter((r) => r.spaces > 0).sort((a, b) => a.caseNum - b.caseNum);
+      const supply = walkSupply(data, order, g.lines);
+      const shelf = supply.reduce((t, s) => t + s.onShelf, 0);
+      let stillToMake = Math.max(0, stillToPick - shelf);
+      if (stillToMake > 0) {
+        if (!prodRows) {
+          try {
+            prodRows = productionOutstandingRows(data.orders || [], data.lineItems || [], data.bondingRuns || [], data.stockPicks || []);
+          } catch (e) {
+            prodRows = [];
+          }
+        }
+        const row = prodRows.find((r) => (r.breakdown || []).some((b) => b.orderId === order.id) && g.lines.some((li) => looseSpecMatch(r.spec, li.description)));
+        const part = row && row.breakdown.find((b) => b.orderId === order.id);
+        if (part && Number(part.toMake) >= 0) stillToMake = Math.min(stillToPick, Math.max(stillToMake, Number(part.toMake) || 0));
+      }
+      const roomTotal = room.reduce((t, r) => t + r.spaces, 0);
+      out.push({
+        key: g.key,
+        label,
+        lines: g.lines,
+        spec: first.description,
+        formId: first.formId || null,
+        wants,
+        inCases,
+        stillToPick,
+        room,
+        roomTotal,
+        supply,
+        shelf,
+        stillToMake,
+        complete: stillToPick === 0
+      });
+    }
+    return out;
+  }
+  function walkCards(group, walk) {
+    const w = walk || {};
+    const typed = w.typed || {}, pinned = w.pinned || [], skipped = new Set(w.skipped || []);
+    const avail = group.supply.filter((s) => !skipped.has(s.key));
+    const pinIdx = (k) => {
+      const i = pinned.indexOf(k);
+      return i < 0 ? Infinity : i;
+    };
+    const ordered = [...avail].sort((a, b) => pinIdx(a.key) - pinIdx(b.key) || 0);
+    let left = group.stillToPick;
+    for (const s of ordered) if (typed[s.key] != null) left -= Math.max(0, Number(typed[s.key]) || 0);
+    const cards = [];
+    for (const s of ordered) {
+      if (typed[s.key] != null) {
+        cards.push({ ...s, qty: Math.max(0, Number(typed[s.key]) || 0), typed: true });
+        continue;
+      }
+      const take = Math.max(0, Math.min(s.onShelf, left));
+      if (take <= 0) continue;
+      left -= take;
+      cards.push({ ...s, qty: take, typed: false });
+    }
+    return cards;
+  }
+  function caseRoute(group, qty, preferCase = null) {
+    const q = Math.round(Number(qty) || 0);
+    const room = [...group.room];
+    if (preferCase != null) {
+      const i = room.findIndex((r) => r.caseNum === Number(preferCase));
+      if (i < 0) return { error: `Case ${preferCase} has no room for ${group.label} in this order's plan.` };
+      room.unshift(room.splice(i, 1)[0]);
+    }
+    const route = [];
+    let left = q;
+    for (const r of room) {
+      if (left <= 0) break;
+      const n = Math.min(r.spaces, left);
+      if (n > 0) {
+        route.push({ caseNum: r.caseNum, qty: n });
+        left -= n;
+      }
+    }
+    if (left > 0) return { error: group.roomTotal ? `The case plan has room for only ${group.roomTotal} more ${group.label}.` : `The case plan has no room left for ${group.label}.`, route, short: left };
+    return { route };
+  }
+  function pickFacts(data, order, group, card, qty, preferCase, tickId, who = "") {
+    const q = Math.round(Number(qty) || 0);
+    if (!(q > 0)) return { error: "Set how many first." };
+    const shelfNow = Math.max(0, (placeOf(data, card.boxNumber) || {}).onShelf || 0);
+    const s = group.supply.find((x) => x.key === card.key);
+    const here = Math.min(shelfNow, s ? s.onShelf : 0);
+    if (q > here) return { error: `The system shows only ${here} \xD7 ${card.boxNumber} on the shelf. If you've more in your hand, use Found a box to add them first.` };
+    if (!tapeFits(card.boxNumber, order)) return { error: `${card.boxNumber} is the wrong tape for ${order.id}.` };
+    if (card.cartonUnknown) return { error: `${card.boxNumber} has no carton recorded, so it can't be booked to a customer. Ask Chris to set it.` };
+    if (q > group.stillToPick) return { error: `${order.id} only needs ${group.stillToPick} more ${group.label}.` };
+    const r = caseRoute(group, q, preferCase);
+    if (r.error) return { error: r.error };
+    const moves = r.route.map((x, i) => ({
+      ...movePlaced({
+        boxNumber: card.boxNumber,
+        spec: card.productSize,
+        qty: x.qty,
+        orderId: order.id,
+        caseNum: x.caseNum,
+        source: "pick",
+        sourceId: card.runId,
+        note: `Picked by phone for ${order.id}${who ? ` (${who})` : ""}`,
+        boxTypeId: card.carton
+      }),
+      id: `mv-${tickId}-${i}`,
+      formId: card.formId || null
+    }));
+    return { moves, route: r.route };
+  }
+  function notThereFacts(data, order, card, tickId, who = "") {
+    const n = Math.max(0, Math.min((placeOf(data, card.boxNumber) || {}).onShelf || 0, card.onShelf || 0));
+    if (!(n > 0)) return { error: `${card.boxNumber} already reads 0 on the shelf.` };
+    const bays = (card.bays || []).join("/") || "no bay";
+    return { qty: n, moves: [{ ...moveAdjusted({
+      boxNumber: card.boxNumber,
+      spec: card.productSize,
+      qty: -n,
+      source: "notthere",
+      sourceId: card.runId,
+      note: `Not there \u2014 ${n} not found at ${bays} while picking ${order.id}${who ? ` (${who})` : ""}`,
+      boxTypeId: card.carton
+    }), id: `mv-${tickId}-0`, formId: card.formId || null }] };
+  }
+  function putBackFacts(notThereMove, qty, tickId, who = "") {
+    const n = Math.max(0, Math.min(Math.abs(Number(notThereMove.qty) || 0), Math.round(Number(qty) || 0)));
+    if (!(n > 0)) return { error: "Say how many were found." };
+    return { qty: n, moves: [{
+      ...moveAdjusted({
+        boxNumber: notThereMove.boxNumber,
+        spec: notThereMove.spec,
+        qty: n,
+        source: "foundagain",
+        sourceId: notThereMove.id,
+        note: `Found again \u2014 ${n} put back (marked not there ${String(notThereMove.at || "").slice(0, 10)})${who ? ` (${who})` : ""}`,
+        boxTypeId: notThereMove.boxTypeId || null
+      }),
+      id: `mv-${tickId}-0`,
+      formId: notThereMove.formId || null
+    }] };
+  }
+  function damagedFacts(data, card, qty, reason, tickId, who = "") {
+    const why = String(reason || "").trim();
+    if (!why) return { error: "Say what's wrong with them first." };
+    const n = Math.round(Number(qty) || 0);
+    const here = Math.max(0, (placeOf(data, card.boxNumber) || {}).onShelf || 0);
+    if (!(n > 0)) return { error: "Say how many are damaged." };
+    if (n > here) return { error: `The system shows only ${here} \xD7 ${card.boxNumber} on the shelf.` };
+    return { qty: n, moves: [{ ...moveScrapped({
+      boxNumber: card.boxNumber,
+      spec: card.productSize,
+      qty: n,
+      source: "damaged",
+      sourceId: card.runId,
+      note: `Damaged: ${why}${who ? ` (${who})` : ""}`,
+      boxTypeId: card.carton
+    }), id: `mv-${tickId}-0`, formId: card.formId || null }] };
+  }
+  function notThereOpen(data, sinceISO = null) {
+    const back = /* @__PURE__ */ new Map();
+    for (const m of data.movements || []) if (m && !m.deleted && m.kind === "adjusted" && m.source === "foundagain" && m.sourceId)
+      back.set(m.sourceId, (back.get(m.sourceId) || 0) + (Number(m.qty) || 0));
+    return (data.movements || []).filter((m) => m && !m.deleted && m.kind === "adjusted" && m.source === "notthere" && Number(m.qty) < 0 && (!sinceISO || String(m.at || "") >= sinceISO)).map((m) => ({ ...m, missing: Math.abs(Number(m.qty)) - (back.get(m.id) || 0) })).filter((m) => m.missing > 0).sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+  }
+  function tickStatus(data, entry, inCloud = () => false) {
+    const ids = entry.moveIds || [];
+    if (!ids.length) return "missing";
+    const have = new Set((data.movements || []).filter((m) => m && !m.deleted).map((m) => m.id));
+    if (!ids.every((id) => have.has(id))) return "missing";
+    return ids.every((id) => inCloud(id)) ? "cloud" : "phone";
+  }
+  function walkCases(data, order, walk) {
+    const mine = new Set((walk && walk.log || []).filter((e) => e.kind === "booked" && !e.undone).flatMap((e) => e.moveIds || []));
+    const since = walk && walk.startedAt || "";
+    const out = [];
+    for (const c of (data.cases || []).filter((x) => x && !x.deleted && x.orderId === order.id).sort((a, b) => Number(a.caseNum) - Number(b.caseNum))) {
+      const caseNum = Number(c.caseNum);
+      const contents = caseProducts(data.movements || [], data.bondingRuns || [], order.id, caseNum);
+      const hot = /* @__PURE__ */ new Map(), others = /* @__PURE__ */ new Map();
+      for (const m of data.movements || []) {
+        if (!m || m.deleted || m.orderId !== order.id || Number(m.caseNum) !== caseNum || m.kind !== "placed") continue;
+        if (mine.has(m.id)) hot.set(up(m.boxNumber), (hot.get(up(m.boxNumber)) || 0) + (Number(m.qty) || 0));
+        else if (since && String(m.at || "") >= since) others.set(up(m.boxNumber), m.source === "bonding" ? `bonding${m.actor ? ", " + String(m.actor).split("@")[0] : ""}` : m.actor ? String(m.actor).split("@")[0] : m.source);
+      }
+      const lines = [];
+      for (const x of contents) {
+        const h = Math.min(hot.get(up(x.box)) || 0, x.qty);
+        if (x.qty - h > 0) lines.push({ box: x.box, qty: x.qty - h, hot: false, by: others.get(up(x.box)) || null });
+        if (h > 0) lines.push({ box: x.box, qty: h, hot: true, by: null });
+      }
+      const total = contents.reduce((t, x) => t + x.qty, 0);
+      const planned = Object.values(casePlanned(c)).reduce((t, q) => t + (Number(q) || 0), 0);
+      out.push({ caseNum, lines, total, planned, room: Math.max(0, planned - total) });
+    }
+    return out;
+  }
+  function foundBoxRecord({ boxNumber, productSize, formId, metersPerBox, qty, bay, boxTypeId, date, tickId, who = "" }) {
+    const n = Math.round(Number(qty) || 0);
+    const code = up(boxNumber);
+    if (!code) return { error: "Scan or type the box code." };
+    if (!(n > 0)) return { error: "Say how many." };
+    if (!formId) return { error: "Choose which product it is." };
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    const row = {
+      id: `br-${tickId}`,
+      boxNumber: code,
+      productSize,
+      formId,
+      baselineBatchCode: "",
+      evaCode: "",
+      tapeCode: "",
+      amountMade: n,
+      onOrderQty: 0,
+      toStock: n,
+      workNumber: null,
+      customerName: "",
+      metersPerBox: Number(metersPerBox) || null,
+      date: date || stamp.slice(0, 10),
+      checked: "Yes",
+      packageType: "Box",
+      evaCleared: false,
+      location: bay || "",
+      timeOfDay: "",
+      runtimeHrs: "",
+      boxTypeId: boxTypeId || "",
+      comments: `Found while picking${who ? ` by ${who}` : ""} \u2014 was on the shelf but never logged. Confirm reel and date from the paper record.`,
+      createdAt: stamp,
+      updatedAt: stamp
+    };
+    const moves = [
+      { ...moveMade({ boxNumber: code, spec: productSize, qty: n, source: "found", sourceId: row.id, note: "Found while picking \u2014 not previously logged", boxTypeId: boxTypeId || null }), id: `mv-${tickId}-0`, formId },
+      { ...moveCounted({ boxNumber: code, spec: productSize, qty: n, source: "found", sourceId: row.id, boxTypeId: boxTypeId || null }), id: `mv-${tickId}-1`, formId }
+    ];
+    return { row, moves, qty: n };
+  }
+
   // mx_writes.js
   function fillCustomerReferences(d) {
     if (!d || !Array.isArray(d.orders) || !d.orders.some((o) => o && !o.deleted && !o.customerId && String(o.customer || "").trim())) return d;
@@ -9659,11 +9998,12 @@ ${line}` : line;
   function recordMovement(prev, m) {
     if (m && Number(m.qty) === 0 && m.kind !== "adjusted") return prev;
     if (m && (m.kind === "allocated" || m.kind === "unallocated")) return prev;
+    if (m && m.id && (prev.movements || []).some((x) => x && x.id === m.id)) return prev;
     const why = movementRefusal(prev, m);
     if (why) return refuseMovement(prev, m, why);
     const stamp = (/* @__PURE__ */ new Date()).toISOString();
     const row = {
-      id: uid("mv"),
+      id: m && m.id || uid("mv"),
       at: stamp,
       actor: currentActor(),
       device: currentDevice(),
@@ -9679,6 +10019,8 @@ ${line}` : line;
       sourceId: m.sourceId || null,
       boxTypeId: cartonOfEntry(prev, m),
       // the carton these boxes are in; null = read from the bonding rows (20 Sep 2026)
+      ...m && m.formId ? { formId: m.formId } : {},
+      // the product, when the caller knows it (a code can be two products)
       updatedAt: stamp
     };
     const isPromise = row.kind === "allocated" || row.kind === "unallocated";
@@ -10335,7 +10677,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-24.7";
+  var APP_VERSION = "2026-09-24.8";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -10582,308 +10924,433 @@ ${line}` : line;
     return { known: true, stale: days >= BACKUP_STALE_DAYS, days, label };
   }
   var CODED_MATERIAL_CATEGORIES = ["pvc", "glue"];
-  function BatchPicker({ alternatives, onPick, onAddFound, onClose, knownCodes = [], orderBoxType = null, onConfirmCarton = null }) {
-    const [addingNew, setAddingNew] = useState(false);
-    const [newBoxNumber, setNewBoxNumber] = useState("");
-    const [newBatchCode, setNewBatchCode] = useState("");
-    const [newQty, setNewQty] = useState("");
-    return /* @__PURE__ */ React.createElement("div", { style: { border: `1px solid ${BORDER}`, borderRadius: 8, padding: 10, marginBottom: 14, background: "#FAFAF8" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, fontWeight: 600, color: INK_MUTED } }, "Other stock available for this spec"), /* @__PURE__ */ React.createElement("button", { onClick: onClose, style: { background: "none", border: "none", color: INK_MUTED, fontSize: 12, cursor: "pointer" } }, "\u2715")), alternatives.length === 0 && !addingNew && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginBottom: 8 } }, "No other genuinely available stock found for this spec."), alternatives.map((alt) => alt.boxTypeIssue === "unconfirmed" ? (
-      /* Carton never recorded. Offered, but it cannot be picked until the
-         person at the shelf says which carton it is in — they can see it,
-         the app cannot. */
-      /* @__PURE__ */ React.createElement("div", { key: alt.id, style: { padding: "8px 10px", marginBottom: 6, borderRadius: 6, border: "1px solid #E8C77A", background: "#FFF6E5" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "monospace", fontWeight: 600, fontSize: 14 } }, alt.boxNumber), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: INK_MUTED } }, alt.available, " available", alt.baselineBatchCode ? ` \xB7 batch ${alt.baselineBatchCode}` : "", alt.location ? ` \xB7 ${alt.location}` : ""), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: "#8A6100", fontWeight: 600, marginTop: 4 } }, "Carton not recorded \u2014 look at the box."), orderBoxType && onConfirmCarton && (() => {
-        const mat = BOX_MATERIALS.find((m) => m.name === orderBoxType) || DEFAULT_MATERIALS.find((m) => m.name === orderBoxType);
-        return mat ? /* @__PURE__ */ React.createElement(
-          "button",
-          {
-            type: "button",
-            onClick: () => {
-              onConfirmCarton(alt.boxNumber, mat.id);
-              onPick({ ...alt, boxTypeId: mat.id, boxTypeIssue: null });
-            },
-            style: { marginTop: 6, padding: "7px 10px", borderRadius: 6, border: `1px solid ${NAVY}`, background: NAVY, color: "#fff", fontWeight: 600, fontSize: 13, cursor: "pointer" }
-          },
-          "It's a ",
-          orderBoxType,
-          " carton \u2014 use it"
-        ) : null;
-      })(), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: INK_MUTED, marginTop: 4 } }, "If it isn't, leave it \u2014 a box in the wrong carton is not stock this order can take."))
-    ) : /* @__PURE__ */ React.createElement(
-      "button",
-      {
-        key: alt.id,
-        onClick: () => onPick(alt),
-        style: { display: "block", width: "100%", textAlign: "left", padding: "8px 10px", marginBottom: 6, borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", cursor: "pointer" }
-      },
-      /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "monospace", fontWeight: 600, fontSize: 14 } }, alt.boxNumber),
-      /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: INK_MUTED } }, alt.available, " available", alt.baselineBatchCode ? ` \xB7 batch ${alt.baselineBatchCode}` : "", alt.location ? ` \xB7 ${alt.location}` : "")
-    )), !addingNew ? /* @__PURE__ */ React.createElement(
-      "button",
-      {
-        onClick: () => setAddingNew(true),
-        style: { display: "block", width: "100%", textAlign: "center", padding: "10px", borderRadius: 6, border: `1px dashed ${NAVY}`, background: "#fff", color: NAVY, fontWeight: 600, fontSize: 13, cursor: "pointer" }
-      },
-      "+ Add found batch"
-    ) : /* @__PURE__ */ React.createElement("div", { style: { padding: 10, borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: INK_MUTED, marginBottom: 8 } }, "Found on the shelf but not in the list above? Register it here."), newBoxNumber.trim().length >= 4 && boxCodeNearMisses(newBoxNumber, knownCodes).length > 0 && /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 6, padding: "7px 9px", borderRadius: 6, background: "#FFF6E5", border: "1px solid #E8C77A" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "#8A6100" } }, "Close to a code already on record:"), boxCodeNearMisses(newBoxNumber, knownCodes).map((n) => /* @__PURE__ */ React.createElement(
-      "button",
-      {
-        key: n.code,
-        type: "button",
-        onClick: () => setNewBoxNumber(n.code),
-        style: {
-          display: "block",
-          marginTop: 4,
-          width: "100%",
-          textAlign: "left",
-          background: "#fff",
-          border: `1px solid ${BORDER}`,
-          borderRadius: 4,
-          padding: "5px 8px",
-          cursor: "pointer"
-        }
-      },
-      /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { fontWeight: 700 } }, n.code),
-      n.swapped ? /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11.5, color: "#8A6100" } }, " \xB7 two characters the other way round") : null
-    ))), /* @__PURE__ */ React.createElement(
-      "input",
-      {
-        type: "text",
-        placeholder: "Box number",
-        value: newBoxNumber,
-        onChange: (e) => setNewBoxNumber(e.target.value),
-        style: { display: "block", width: "100%", boxSizing: "border-box", fontFamily: "monospace", fontSize: 14, height: 38, borderRadius: 6, border: `1px solid ${BORDER}`, marginBottom: 6, padding: "0 8px" }
-      }
-    ), /* @__PURE__ */ React.createElement(
-      "input",
-      {
-        type: "text",
-        placeholder: "Batch code (optional)",
-        value: newBatchCode,
-        onChange: (e) => setNewBatchCode(e.target.value),
-        style: { display: "block", width: "100%", boxSizing: "border-box", fontFamily: "monospace", fontSize: 14, height: 38, borderRadius: 6, border: `1px solid ${BORDER}`, marginBottom: 6, padding: "0 8px" }
-      }
-    ), /* @__PURE__ */ React.createElement(
-      "input",
-      {
-        type: "number",
-        inputMode: "numeric",
-        placeholder: "Quantity found",
-        value: newQty,
-        onChange: (e) => setNewQty(e.target.value),
-        style: { display: "block", width: "100%", boxSizing: "border-box", fontSize: 16, textAlign: "center", height: 38, borderRadius: 6, border: `1px solid ${BORDER}`, marginBottom: 8 }
-      }
-    ), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement(
-      "button",
-      {
-        onClick: () => setAddingNew(false),
-        style: { flex: 1, height: 38, borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", fontSize: 13, cursor: "pointer" }
-      },
-      "Cancel"
-    ), /* @__PURE__ */ React.createElement(
-      "button",
-      {
-        disabled: !newBoxNumber.trim() || !newQty,
-        onClick: () => onAddFound(newBoxNumber, newBatchCode, newQty),
-        style: { flex: 1, height: 38, borderRadius: 6, border: "none", background: newBoxNumber.trim() && newQty ? GREEN : BORDER, color: "#fff", fontWeight: 600, fontSize: 13, cursor: newBoxNumber.trim() && newQty ? "pointer" : "not-allowed" }
-      },
-      "Use this"
-    ))));
+  var WALK_HOT_BG = "#FF9F1C";
+  var WALK_HOT_INK = "#3A1F00";
+  function newWalk(orderId) {
+    return { orderId, startedAt: (/* @__PURE__ */ new Date()).toISOString(), typed: {}, cases: {}, pinned: [], skipped: [], log: [] };
   }
-  function PickByPhoneView({ pendingPickItems, productSummary, pendingCaseSuggestions, setPickItemQty, setPickItemDamaged, setPickItemCase, setPickItemConfirmed, alternativeBatchesFor, swapPickItemBatch, addFoundBatchForPickItem, confirmPickAndAllocate, commitOnePick, cancelPendingPick, order, confirmCartonForBox = null }) {
-    const confirmBox = (id) => setPickItemConfirmed(id, true);
-    const unconfirmBox = (id) => setPickItemConfirmed(id, false);
-    const [batchPickerOpenFor, setBatchPickerOpenFor] = useState(null);
-    const [scannedId, setScannedId] = useState(null);
-    const casesFor = (it) => {
-      const br = pendingCaseSuggestions[it.boxNumber] || [];
-      return br.length > 1 ? br : [{ caseNum: it.caseOverride ?? (br.length === 1 ? br[0].caseNum : null), qty: Number(it.confirmedQty) || 0 }];
+  function PickWalk({ data, setData, order, walk, setWalk, onDone, jumpToPacking }) {
+    const [, force] = useState(0);
+    useEffect(() => {
+      const f = () => force((x) => x + 1);
+      window.addEventListener("mx-synced", f);
+      return () => window.removeEventListener("mx-synced", f);
+    }, []);
+    const inCloud = (id) => {
+      try {
+        return !!(window.__mxInCloud && window.__mxInCloud(id));
+      } catch (e) {
+        return false;
+      }
     };
+    const who = String(currentActor() || "").split("@")[0];
+    const groups = useMemo(() => walkProducts(data, order), [data, order]);
+    const [sheet, setSheet] = useState(null);
+    const [errors, setErrors] = useState({});
+    const [flash, setFlash] = useState({ changed: {}, gone: [] });
+    const shown = useRef(null);
+    const cardsOf = (g) => walkCards(g, walk);
+    const [scanned, setScanned] = useState(null);
+    const [scanNote, setScanNote] = useState(null);
     useEffect(() => {
       const onScan = (e) => {
         const d = e.detail || {};
         const code = String(d.text || "").trim().toUpperCase();
-        const it = (pendingPickItems || []).find((x) => String(x.boxNumber || "").toUpperCase() === code);
-        if (it) {
-          d.handled = true;
-          if (it.committed) {
-            d.notice = { ok: true, title: `${code} is already ticked`, body: `${it.confirmedQty} in case ${it.committedCase ?? "\u2014"}.` };
+        if (!code || d.handled) return;
+        for (const g of groups) {
+          const card = cardsOf(g).find((c) => c.boxNumber === code);
+          if (card) {
+            d.handled = true;
+            setScanned(card.key);
+            setScanNote(null);
+            setTimeout(() => {
+              const el = document.getElementById(`pick-card-${card.key}`);
+              if (el && el.scrollIntoView) el.scrollIntoView({ block: "center", behavior: "smooth" });
+            }, 60);
             return;
           }
-          if (it.damaged) {
-            d.notice = { ok: false, title: `${code} is marked damaged on this sheet`, body: "Un-mark it on its card first if it's good." };
+          const s = g.supply.find((x) => x.boxNumber === code);
+          if (s) {
+            d.handled = true;
+            setWalk((w) => ({ ...w, pinned: [s.key, ...(w.pinned || []).filter((k) => k !== s.key)], skipped: (w.skipped || []).filter((k) => k !== s.key) }));
+            setScanned(s.key);
+            setScanNote(`${code} put on the walk for ${g.label}.`);
             return;
           }
-          setScannedId(it.id);
-          setTimeout(() => {
-            const el = document.getElementById(`pick-card-${it.id}`);
-            if (el && el.scrollIntoView) el.scrollIntoView({ block: "center", behavior: "smooth" });
-          }, 50);
-          return;
         }
         const known = window.__mxBoxSpec ? window.__mxBoxSpec(code) : null;
-        if (!known) return;
-        d.handled = true;
-        const same = (pendingPickItems || []).filter((x) => (x.displaySpec || x.productSize) && sameProductSpec(x.displaySpec || x.productSize, known));
-        d.notice = {
-          ok: false,
-          title: `${code} isn't on this pick sheet \u2014 nothing ticked`,
-          body: same.length ? `For ${known} the sheet has ${same.map((x) => x.boxNumber).join(", ")}. If you picked ${code} instead, use Change batch on that card.` : `${known} isn't on this pick at all.`
-        };
+        if (known) {
+          d.handled = true;
+          d.notice = { ok: false, title: `${code} isn't wanted on ${order.id} \u2014 nothing ticked`, body: `It's ${known}. This order doesn't need any of that, or none of it is on the shelf.` };
+          return;
+        }
+        if (/^[A-Z]\d{5}[A-Z0-9]{2,4}$/.test(code)) {
+          d.handled = true;
+          setSheet({ kind: "found", code });
+        }
       };
       window.addEventListener("mx-scan", onScan);
       return () => window.removeEventListener("mx-scan", onScan);
-    }, [pendingPickItems]);
-    const scannedItem = scannedId ? (pendingPickItems || []).find((x) => x.id === scannedId && !x.committed && !x.damaged) : null;
-    return /* @__PURE__ */ React.createElement("div", null, scannedItem && (() => {
-      const cs = casesFor(scannedItem);
-      const one2 = cs.length === 1;
-      return /* @__PURE__ */ React.createElement("div", { "data-pick-scan": true, style: {
-        position: "fixed",
-        left: 10,
-        right: 10,
-        bottom: "calc(env(safe-area-inset-bottom, 0px) + 12px)",
-        zIndex: 78,
-        background: "#fff",
-        border: `2px solid ${GREEN}`,
-        borderRadius: 10,
-        padding: 12,
-        boxShadow: "0 6px 24px rgba(0,0,0,.25)"
-      } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, color: GREEN, fontSize: 15 } }, "\u2713 ", scannedItem.boxNumber, " \u2014 on this sheet"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, margin: "6px 0 8px" } }, scannedItem.confirmedQty, " ", one2 ? /* @__PURE__ */ React.createElement(React.Fragment, null, "into ", /* @__PURE__ */ React.createElement("b", null, "case ", cs[0].caseNum ?? "\u2014")) : /* @__PURE__ */ React.createElement(React.Fragment, null, "split: ", cs.map((c) => `${c.qty} into case ${c.caseNum}`).join(", ")), scannedItem.location ? ` \xB7 from bay ${scannedItem.location}` : ""), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2" }, Number(scannedItem.confirmedQty) > 0 && (one2 ? cs[0].caseNum != null : true) ? /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => {
-        commitOnePick(order, scannedItem);
-        setScannedId(null);
-      } }, "\u2713 In case ", one2 ? cs[0].caseNum : "") : /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: RED, fontWeight: 700 } }, "Set the count or case on its card first"), /* @__PURE__ */ React.createElement(Button, { onClick: () => setScannedId(null) }, "Change on the card"), /* @__PURE__ */ React.createElement(Button, { onClick: () => {
-        setScannedId(null);
-        window.__mxOpenScanner && window.__mxOpenScanner();
-      } }, "\u{1F4F7} Next")));
-    })(), pendingPickItems.map((it, i) => {
-      const isNewGroup = i === 0 || (pendingPickItems[i - 1].displaySpec || pendingPickItems[i - 1].productSize) !== (it.displaySpec || it.productSize);
-      const summary = productSummary[it.displaySpec || it.productSize];
-      const caseBreakdown = pendingCaseSuggestions[it.boxNumber] || [];
-      const isSplitCase = caseBreakdown.length > 1;
-      const suggestedCase = caseBreakdown.length === 1 ? caseBreakdown[0].caseNum : null;
-      const short = !it.damaged && Number(it.confirmedQty) < Number(it.proposedQty);
-      const isConfirmed = it.confirmed === true && !it.damaged;
-      const caseNum = it.caseOverride ?? suggestedCase;
-      return /* @__PURE__ */ React.createElement(React.Fragment, { key: it.id }, isNewGroup && /* @__PURE__ */ React.createElement("div", { style: { background: NAVY, color: "#fff", padding: "10px 14px", borderRadius: 8, marginTop: i ? 20 : 0, marginBottom: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, fontSize: 16 } }, /* @__PURE__ */ React.createElement(Spec, { s: it.displaySpec || it.productSize, size: 14 })), summary && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, opacity: 0.85, marginTop: 2 } }, "Needs ", summary.needed ?? "\u2014", " \xB7 On the shelf ", summary.available, summary.unconfirmedCarton > 0 ? ` \u2014 ${summary.unconfirmedCarton} need the carton confirmed` : "", summary.needed != null && summary.available < summary.needed ? " \u2014 short" : "")), /* @__PURE__ */ React.createElement("div", { id: `pick-card-${it.id}`, "data-pick-card": it.boxNumber, style: { background: "#fff", border: `2px solid ${it.damaged ? BORDER : isConfirmed ? GREEN : short ? AMBER : "#E4E4E0"}`, borderRadius: 8, padding: 16, marginBottom: 12, opacity: it.damaged ? 0.55 : 1, outline: scannedId === it.id ? `4px solid ${ORANGE}` : "none" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "font-mono", style: { fontWeight: 600, fontSize: 18 } }, it.boxNumber), it.location && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 3 } }, "Bay ", /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { color: INK, fontWeight: 500 } }, it.location)), it.date && /* @__PURE__ */ React.createElement("div", { "data-pick-made": it.boxNumber, style: { fontSize: 12.5, color: INK_MUTED, marginTop: 2 } }, "Made ", it.date, " \u2014 oldest first")), /* @__PURE__ */ React.createElement("div", { style: { textAlign: "right" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: INK_MUTED } }, "Expected"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 24, fontWeight: 700 } }, it.proposedQty))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: INK_MUTED, marginBottom: 6 } }, "Batch"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", borderRadius: 8, border: `1px solid ${BORDER}`, background: it.damaged ? "#F2F2F0" : it.isNewlyAdded ? "#EAF7EE" : "#fff", marginBottom: 8 } }, /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "monospace", fontWeight: 600, fontSize: 15 } }, it.baselineBatchCode || "\u2014", it.isNewlyAdded && /* @__PURE__ */ React.createElement("span", { style: { color: GREEN, fontWeight: 700, marginLeft: 6 } }, "NEW")), !it.damaged && /* @__PURE__ */ React.createElement(
-        "button",
-        {
-          onClick: () => setBatchPickerOpenFor(batchPickerOpenFor === it.id ? null : it.id),
-          style: { background: "none", border: "none", color: NAVY, fontSize: 13, fontWeight: 600, textDecoration: "underline", cursor: "pointer", padding: 0 }
-        },
-        "Change batch"
-      )), batchPickerOpenFor === it.id && /* @__PURE__ */ React.createElement(
-        BatchPicker,
-        {
-          knownCodes: (pendingPickItems || []).map((x) => x.boxNumber).concat(
-            (alternativeBatchesFor(order, it.displaySpec || it.productSize, it.id) || []).map((a) => a.boxNumber)
-          ),
-          alternatives: alternativeBatchesFor(order, it.displaySpec || it.productSize, it.id),
-          onPick: (alt) => {
-            swapPickItemBatch(it.id, alt);
-            setBatchPickerOpenFor(null);
-            unconfirmBox(it.id);
-          },
-          onAddFound: (boxNumber, batchCode, qty) => {
-            addFoundBatchForPickItem(it.id, boxNumber, batchCode, qty);
-            setBatchPickerOpenFor(null);
-            unconfirmBox(it.id);
-          },
-          onClose: () => setBatchPickerOpenFor(null),
-          orderBoxType: order && order.boxType ? order.boxType : null,
-          onConfirmCarton: confirmCartonForBox
-        }
-      ), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: INK_MUTED, marginBottom: 6 } }, "Found on shelf"), /* @__PURE__ */ React.createElement(
-        "input",
-        {
-          type: "number",
-          inputMode: "numeric",
-          value: it.confirmedQty,
-          disabled: it.damaged,
-          onChange: (e) => {
-            setPickItemQty(it.id, e.target.value === "" ? 0 : Number(e.target.value));
-            unconfirmBox(it.id);
-          },
-          style: { display: "block", width: "100%", boxSizing: "border-box", textAlign: "center", fontSize: 28, fontWeight: 700, height: 50, borderRadius: 8, border: `1px solid ${BORDER}`, background: it.damaged ? "#F2F2F0" : short ? "#FFF8EF" : "#fff", marginBottom: 8 }
-        }
-      ), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10, marginBottom: 14 } }, /* @__PURE__ */ React.createElement(
-        "button",
-        {
-          onClick: () => {
-            setPickItemQty(it.id, Math.max(0, Number(it.confirmedQty) - 1));
-            unconfirmBox(it.id);
-          },
-          disabled: it.damaged,
-          style: { flex: "1 1 0", minWidth: 0, height: 46, fontSize: 22, borderRadius: 8, border: `1px solid ${BORDER}`, background: "#fff", cursor: "pointer" }
-        },
-        "\u2212"
-      ), /* @__PURE__ */ React.createElement(
-        "button",
-        {
-          onClick: () => {
-            setPickItemQty(it.id, Number(it.confirmedQty) + 1);
-            unconfirmBox(it.id);
-          },
-          disabled: it.damaged,
-          style: { flex: "1 1 0", minWidth: 0, height: 46, fontSize: 22, borderRadius: 8, border: `1px solid ${BORDER}`, background: "#fff", cursor: "pointer" }
-        },
-        "+"
-      )), it.committed ? (
-        /* CONFIRMED, AND IT SAYS SO. (Chris, 9 Sep)
-           The line is written — allocated to the order and placed in
-           its case. It stays on screen so the picker can see what they
-           have already done without counting boxes twice. */
-        /* @__PURE__ */ React.createElement("div", { style: {
-          background: "#FFF1DC",
-          border: `1.5px solid ${ORANGE}`,
-          borderRadius: 8,
-          padding: "12px 14px",
-          textAlign: "center"
-        } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, fontWeight: 700, color: "#8A4B00" } }, it.damaged ? "Confirmed \u2014 recorded as damaged" : `Confirmed \u2014 ${it.confirmedQty} in case ${it.committedCase ?? caseNum ?? "\u2014"}`))
-      ) : /* @__PURE__ */ React.createElement(React.Fragment, null, !it.damaged && Number(it.confirmedQty) > 0 && /* @__PURE__ */ React.createElement("div", { style: { background: "#EAF7EE", border: `1.5px solid ${GREEN}`, borderRadius: 8, padding: "10px 14px", marginBottom: 10 } }, isSplitCase ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: "#1B7A3D", marginBottom: 2 } }, "Too many for one case \u2014 split it:"), caseBreakdown.map((c, ci) => /* @__PURE__ */ React.createElement("div", { key: ci, style: { fontSize: 15, fontWeight: 700, color: "#1B7A3D" } }, c.qty, " into case ", c.caseNum))) : /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 700, color: "#1B7A3D" } }, "Goes in case ", caseNum ?? "\u2014"), !isSplitCase && /* @__PURE__ */ React.createElement(
-        "input",
-        {
-          type: "number",
-          inputMode: "numeric",
-          min: "1",
-          value: it.caseOverride ?? suggestedCase ?? "",
-          placeholder: "Different case?",
-          onChange: (e) => setPickItemCase(it.boxNumber, e.target.value === "" ? null : Number(e.target.value)),
-          style: {
-            width: "100%",
-            boxSizing: "border-box",
-            height: 40,
-            textAlign: "center",
-            fontSize: 14,
-            borderRadius: 8,
-            marginTop: 8,
-            border: `1px solid ${BORDER}`,
-            background: it.caseOverride != null ? "#FFF3E6" : "#fff"
+    }, [groups, walk]);
+    const setCarton = (c, boxTypeId) => setData((prev) => {
+      const n = { ...prev, bondingRuns: (prev.bondingRuns || []).map((r) => r && !r.deleted && String(r.boxNumber).toUpperCase() === c.boxNumber && !r.boxTypeId ? { ...r, boxTypeId, updatedAt: (/* @__PURE__ */ new Date()).toISOString() } : r) };
+      return { ...n, ...appendLog(n, { action: "carton_confirmed", entity: "bondingRun", entityId: c.boxNumber, summary: `Carton confirmed at the shelf for ${c.boxNumber} while picking ${order.id}` }) };
+    });
+    useEffect(() => {
+      const now = {};
+      for (const g of groups) for (const c of cardsOf(g)) now[c.key] = { qty: c.qty, typed: c.typed, box: c.boxNumber };
+      const before = shown.current;
+      shown.current = now;
+      if (!before) return;
+      const changed = {}, gone = [];
+      for (const [k, v] of Object.entries(now)) if (before[k] && !v.typed && before[k].qty !== v.qty) changed[k] = before[k].qty;
+      for (const [k, v] of Object.entries(before)) if (!now[k] && !(walk.log || []).some((e) => e.key === k && Date.now() - Date.parse(e.at) < 4e3)) gone.push(v.box);
+      if (Object.keys(changed).length || gone.length) {
+        setFlash({ changed, gone });
+        const t = setTimeout(() => setFlash({ changed: {}, gone: [] }), 8e3);
+        return () => clearTimeout(t);
+      }
+    }, [groups, walk]);
+    const setErr = (k, msg) => setErrors((e) => ({ ...e, [k]: msg }));
+    const logged = (moves, entry) => setWalk((w) => ({ ...w, log: [...w.log || [], { ...entry, moveIds: moves.map((m) => m.id), at: (/* @__PURE__ */ new Date()).toISOString() }] }));
+    const writeFacts = (moves, summary) => setData((prev) => {
+      const n = recordMovements(prev, moves);
+      return { ...n, ...appendLog(n, {
+        action: "stock_adjustment",
+        entity: "bondingRun",
+        entityId: order.id,
+        summary: `${summary} (pick walk)`,
+        after: { movementsSourceId: moves[0] && moves[0].id }
+      }) };
+    });
+    const tickIdFor = (card, what) => `pk-${order.id}-${card.boxNumber}-${what}-${(walk.log || []).length}`.replace(/[^A-Za-z0-9-]/g, "");
+    const forget = (key) => setWalk((w) => {
+      const typed = { ...w.typed || {} };
+      const cases2 = { ...w.cases || {} };
+      delete typed[key];
+      delete cases2[key];
+      return { ...w, typed, cases: cases2 };
+    });
+    const book = (g, c) => {
+      const r = pickFacts(data, order, g, c, c.qty, (walk.cases || {})[c.key] ?? null, tickIdFor(c, `b${c.qty}`), who);
+      if (r.error) {
+        setErr(c.key, r.error);
+        return;
+      }
+      setErr(c.key, null);
+      writeFacts(r.moves, `Picked ${c.qty} \xD7 ${c.boxNumber} into ${r.route.map((x) => `case ${x.caseNum}`).join(" and ")}`);
+      logged(r.moves, { kind: "booked", key: c.key, group: g.key, box: c.boxNumber, qty: c.qty, route: r.route });
+      forget(c.key);
+    };
+    const notThere = (g, c) => {
+      const r = notThereFacts(data, order, c, tickIdFor(c, "nt"), who);
+      if (r.error) {
+        setErr(c.key, r.error);
+        return;
+      }
+      if (!window.confirm(`${c.boxNumber} not there \u2014 take all ${r.qty} off the shelf? You can put them back if they turn up.`)) return;
+      writeFacts(r.moves, `Not there: ${r.qty} \xD7 ${c.boxNumber}`);
+      logged(r.moves, { kind: "notthere", key: c.key, group: g.key, box: c.boxNumber, qty: r.qty });
+      forget(c.key);
+    };
+    const markChecked = (c) => setData((prev) => {
+      const n = { ...prev, bondingRuns: (prev.bondingRuns || []).map((r) => r && !r.deleted && String(r.boxNumber).toUpperCase() === c.boxNumber && r.checked !== "Yes" ? { ...r, checked: "Yes", updatedAt: (/* @__PURE__ */ new Date()).toISOString() } : r) };
+      return { ...n, ...appendLog(n, { action: "edit", entity: "bondingRun", entityId: c.boxNumber, summary: `${c.boxNumber} checked at the shelf while picking ${order.id}` }) };
+    });
+    const undo = (e) => {
+      const all = (data.movements || []).filter((m) => (e.moveIds || []).includes(m.id) && !m.deleted);
+      if (!all.length) {
+        setWalk((w) => ({ ...w, log: (w.log || []).map((x) => x === e ? { ...x, undone: true } : x) }));
+        return;
+      }
+      const back = all.map((m, i) => {
+        const id = `${m.id}-undo`;
+        if (m.kind === "placed") return { ...moveUnplaced({ boxNumber: m.boxNumber, spec: m.spec, qty: m.qty, orderId: m.orderId, caseNum: m.caseNum, source: "pick", sourceId: m.sourceId, note: "Undo on the pick walk" }), id, formId: m.formId || null };
+        if (m.kind === "scrapped") return { ...moveAdjusted({ boxNumber: m.boxNumber, spec: m.spec, qty: Number(m.qty), source: "pick", sourceId: m.id, note: "Undo \u2014 not damaged after all" }), id, formId: m.formId || null };
+        if (m.kind === "adjusted") return { ...moveAdjusted({ boxNumber: m.boxNumber, spec: m.spec, qty: -Number(m.qty), source: m.source === "notthere" ? "foundagain" : "pick", sourceId: m.id, note: "Undo on the pick walk" }), id, formId: m.formId || null };
+        if (m.kind === "made") return { ...moveAdjusted({ boxNumber: m.boxNumber, spec: m.spec, qty: -Number(m.qty), source: "pick", sourceId: m.id, note: "Undo \u2014 found box added in error" }), id, formId: m.formId || null };
+        return null;
+      }).filter(Boolean);
+      if (!window.confirm(`Undo: ${e.kind === "booked" ? `take ${e.qty} \xD7 ${e.box} back out of case ${(e.route || []).map((x) => x.caseNum).join(" and ")}` : e.kind === "notthere" ? `put ${e.qty} \xD7 ${e.box} back on the shelf` : e.kind === "damaged" ? `put ${e.qty} \xD7 ${e.box} back \u2014 not damaged` : `remove the ${e.qty} \xD7 ${e.box} just added`}?`)) return;
+      writeFacts(back, `Undo ${e.kind} ${e.qty} \xD7 ${e.box}`);
+      setWalk((w) => ({ ...w, log: (w.log || []).map((x) => x.at === e.at && x.key === e.key ? { ...x, undone: true, undoIds: back.map((b) => b.id) } : x) }));
+    };
+    const reasonFor = (e) => {
+      const refused = window.__mxRefusedReasons || {};
+      for (const id of e.moveIds || []) if (refused[id]) return `The database refused it: ${refused[id]}`;
+      const iss = (data.issues || []).filter((i) => i && String(i.boxNumber || "").toUpperCase() === String(e.box || "").toUpperCase() && String(i.raisedAt || "") >= String(e.at || "").slice(0, 19)).pop();
+      return iss ? iss.summary : "It didn't reach the records. Try again, or tell Chris.";
+    };
+    const statusLine = (e) => {
+      if (e.undone) return null;
+      const st = tickStatus(data, e, inCloud);
+      const what = e.kind === "booked" ? `${e.qty} \xD7 ${e.box} in case ${(e.route || []).map((x) => x.caseNum).join(" and ")}` : e.kind === "notthere" ? `${e.box} \u2014 ${e.qty} marked not there` : e.kind === "damaged" ? `${e.qty} \xD7 ${e.box} damaged` : e.kind === "found" ? `${e.qty} \xD7 ${e.box} added` : `${e.qty} \xD7 ${e.box} put back`;
+      const tone = st === "cloud" ? { bd: GREEN, fg: GREEN, bg: "#EAF7EE", t: `\u2713 ${what}` } : st === "phone" ? { bd: AMBER, fg: "#8A4B00", bg: "#FFF3E6", t: `${what} \u2014 saved on this phone, not in the cloud yet` } : { bd: RED, fg: RED, bg: "#FDECEA", t: `Not recorded \u2014 ${what}. ${reasonFor(e)}` };
+      return /* @__PURE__ */ React.createElement("div", { key: `${e.key}-${e.at}`, "data-walk-status": st, style: {
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 8,
+        border: `1.5px solid ${tone.bd}`,
+        background: tone.bg,
+        borderRadius: 8,
+        padding: "8px 10px",
+        marginBottom: 8
+      } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 14.5, fontWeight: 600, color: tone.fg } }, tone.t), st !== "missing" && /* @__PURE__ */ React.createElement("button", { onClick: () => undo(e), style: { background: "#fff", border: `1px solid ${BORDER}`, borderRadius: 6, padding: "6px 10px", fontSize: 13, cursor: "pointer" } }, "Undo"));
+    };
+    const bigBtn = { height: 48, borderRadius: 8, fontSize: 15, fontWeight: 600, cursor: "pointer", border: `1px solid ${BORDER}`, background: "#fff" };
+    const cases = sheet && (sheet.kind === "cases" || sheet.kind === "summary") ? walkCases(data, order, walk) : null;
+    const bookedCount = (walk.log || []).filter((e) => e.kind === "booked" && !e.undone && tickStatus(data, e, inCloud) !== "missing").length;
+    return /* @__PURE__ */ React.createElement("div", { "data-pick-walk": order.id }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 12, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, fontSize: 17 } }, order.id, " ", /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 400, color: INK_MUTED, fontSize: 14 } }, order.customer)), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement("button", { "data-walk-found": true, onClick: () => setSheet({ kind: "found" }), style: { ...bigBtn, padding: "0 12px" } }, "\u{1F4F7} Found a box"), /* @__PURE__ */ React.createElement("button", { "data-walk-cases": true, onClick: () => setSheet({ kind: "cases" }), style: { ...bigBtn, padding: "0 12px", borderColor: NAVY, color: NAVY } }, "Cases", bookedCount ? ` \xB7 ${bookedCount} booked` : ""))), scanNote && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: GREEN, textAlign: "center", marginBottom: 10 } }, scanNote), flash.gone.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: INK_MUTED, textAlign: "center", marginBottom: 10 } }, [...new Set(flash.gone)].join(", "), " no longer needed \u2014 gone from the walk"), groups.map((g) => {
+      const cards = cardsOf(g);
+      const done = (walk.log || []).filter((e) => e.group === g.key && !e.undone);
+      return /* @__PURE__ */ React.createElement("div", { key: g.key, "data-walk-product": g.label, style: { marginBottom: 22 } }, /* @__PURE__ */ React.createElement("div", { "data-walk-header": true, style: { background: g.complete ? "#EAF7EE" : "#fff", border: `2px solid ${g.complete ? GREEN : NAVY}`, borderRadius: 10, padding: "12px 14px", marginBottom: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, fontSize: 15, color: g.complete ? GREEN : INK } }, /* @__PURE__ */ React.createElement(Spec, { s: g.label, size: 14 })), g.complete ? /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginTop: 6 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, fontWeight: 600, color: GREEN } }, "\u2713 Picked \u2014 line complete"), /* @__PURE__ */ React.createElement("div", { "data-walk-left": true, style: { fontSize: 40, fontWeight: 700, lineHeight: 1, color: GREEN } }, g.wants)) : /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginTop: 6 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, "Order wants"), /* @__PURE__ */ React.createElement("div", { "data-walk-wants": true, style: { fontSize: 26, fontWeight: 700, color: NAVY } }, g.wants)), /* @__PURE__ */ React.createElement("div", { style: { textAlign: "right" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, "Still to pick"), /* @__PURE__ */ React.createElement("div", { "data-walk-left": true, style: { fontSize: 46, fontWeight: 800, lineHeight: 1 } }, g.stillToPick))), !g.complete && g.inCases > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED, marginTop: 4 } }, g.inCases, " already in cases"), !g.complete && g.stillToMake > 0 && cards.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: GREEN, marginTop: 6 } }, "\u2713 Shelf picked"), !g.complete && g.stillToMake > 0 && /* @__PURE__ */ React.createElement("div", { "data-walk-make": true, style: { background: "#FFF3E6", border: `1px solid ${AMBER}`, borderRadius: 6, padding: "8px 10px", marginTop: 8, fontSize: 15, fontWeight: 700, color: "#8A4B00" } }, g.stillToMake, " still to be made \u2014 bonding line"), !g.complete && g.roomTotal < g.stillToPick && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: RED, fontWeight: 600, marginTop: 6 } }, "The case plan has room for ", g.roomTotal, " of the ", g.stillToPick, " still needed. Fix the plan on Packing (case card \u2192 Move or Count) before booking the rest.")), done.map(statusLine), !g.complete && cards.map((c) => {
+        const typed = (walk.typed || {})[c.key] != null;
+        const chosen = (walk.cases || {})[c.key] ?? null;
+        const r = caseRoute(g, c.qty, chosen);
+        const routeText = r.route && r.route.length > 1 ? r.route.map((x) => `${x.qty} in ${x.caseNum}`).join(" \xB7 ") : r.route && r.route[0] ? `case ${r.route[0].caseNum}` : "";
+        const setQty = (n) => setWalk((w) => ({ ...w, typed: { ...w.typed || {}, [c.key]: Math.max(0, Math.round(Number(n) || 0)) } }));
+        return /* @__PURE__ */ React.createElement("div", { key: c.key, id: `pick-card-${c.key}`, "data-pick-card": c.boxNumber, "data-walk-scanned": scanned === c.key ? "1" : void 0, style: { background: "#fff", border: `${scanned === c.key ? 3 : 2}px solid ${scanned === c.key ? GREEN : typed ? AMBER : "#E4E4E0"}`, borderRadius: 10, padding: 14, marginBottom: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "font-mono", style: { fontWeight: 700, fontSize: 19 } }, c.boxNumber), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 2 } }, c.bays.length ? `Bay ${c.bays.join(" / ")}` : "No bay recorded", c.date ? ` \xB7 made ${c.date}` : ""), flash.changed[c.key] != null && /* @__PURE__ */ React.createElement("div", { "data-walk-was": true, style: { fontSize: 13, fontWeight: 700, color: "#8A4B00", marginTop: 2 } }, "was ", flash.changed[c.key], " \xB7 now ", c.qty), typed && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: "#8A4B00", marginTop: 2 } }, "you set ", c.qty)), /* @__PURE__ */ React.createElement("div", { "data-walk-qty": true, style: { fontSize: 30, fontWeight: 800 } }, c.qty)), c.cartonUnknown && !c.unchecked ? /* @__PURE__ */ React.createElement("div", { "data-walk-carton": true, style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: "#8A4B00", fontWeight: 600, marginBottom: 6 } }, "No carton recorded \u2014 which box is it in?"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } }, (data.materials || []).filter((m) => m && m.category === "boxes" && !m.deleted).map((m) => /* @__PURE__ */ React.createElement("button", { key: m.id, onClick: () => setCarton(c, m.id), style: { ...bigBtn, padding: "0 12px" } }, m.name)))) : c.unchecked ? /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 14, color: "#8A4B00", fontWeight: 600 } }, "Not checked yet"), /* @__PURE__ */ React.createElement("button", { onClick: () => markChecked(c), style: { ...bigBtn, padding: "0 14px" } }, "It's here \u2014 check it")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 10 } }, /* @__PURE__ */ React.createElement("button", { "aria-label": "One fewer", onClick: () => setQty(c.qty - 1), style: { ...bigBtn, flex: 1, fontSize: 22 } }, "\u2212"), /* @__PURE__ */ React.createElement(
+          "input",
+          {
+            type: "number",
+            inputMode: "numeric",
+            value: c.qty,
+            onChange: (e) => setQty(e.target.value),
+            style: { flex: 1, minWidth: 0, textAlign: "center", fontSize: 22, fontWeight: 700, height: 48, borderRadius: 8, border: `1px solid ${BORDER}` }
           }
-        }
-      )), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 10 } }, /* @__PURE__ */ React.createElement(
-        "button",
-        {
-          onClick: () => setPickItemDamaged(it.id, !it.damaged),
-          style: { flex: "1 1 0", minWidth: 0, height: 52, borderRadius: 8, border: `1px solid ${it.damaged ? RED : BORDER}`, background: it.damaged ? RED : "#fff", color: it.damaged ? "#fff" : INK, fontWeight: 600, fontSize: 14, cursor: "pointer" }
-        },
-        it.damaged ? "\u2713 Damaged" : "Mark damaged"
-      ), !it.damaged && Number(it.confirmedQty) > 0 && /* @__PURE__ */ React.createElement(
-        "button",
-        {
-          onClick: () => commitOnePick(order, it),
-          style: { flex: "2 1 0", minWidth: 0, height: 52, borderRadius: 8, border: "none", background: GREEN, color: "#fff", fontWeight: 700, fontSize: 16, cursor: "pointer" }
-        },
-        "\u2713 In case ",
-        isSplitCase ? "" : caseNum ?? ""
-      ), !it.damaged && Number(it.confirmedQty) === 0 && /* @__PURE__ */ React.createElement("div", { style: { flex: "2 1 0", minWidth: 0, height: 52, borderRadius: 8, border: `1px solid ${BORDER}`, background: "#F2F2F0", color: INK_MUTED, fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center" } }, "Not on shelf \u2014 nothing to pick")))));
-    }), /* @__PURE__ */ React.createElement("div", { style: { paddingTop: 16, paddingBottom: 8 } }, /* @__PURE__ */ React.createElement(
-      "button",
+        ), /* @__PURE__ */ React.createElement("button", { "aria-label": "One more", onClick: () => setQty(c.qty + 1), style: { ...bigBtn, flex: 1, fontSize: 22 } }, "+")), g.room.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED, marginBottom: 4 } }, "Put in case"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } }, g.room.map((x) => {
+          const on = chosen != null ? chosen === x.caseNum : r.route && r.route[0] && r.route[0].caseNum === x.caseNum;
+          return /* @__PURE__ */ React.createElement(
+            "button",
+            {
+              key: x.caseNum,
+              "data-walk-case": x.caseNum,
+              onClick: () => setWalk((w) => ({ ...w, cases: { ...w.cases || {}, [c.key]: x.caseNum } })),
+              style: { ...bigBtn, minWidth: 56, fontSize: 17, border: on ? `2.5px solid ${NAVY}` : `1px solid ${BORDER}`, color: on ? NAVY : INK }
+            },
+            x.caseNum
+          );
+        }), chosen != null && /* @__PURE__ */ React.createElement("button", { onClick: () => setWalk((w) => {
+          const cs = { ...w.cases || {} };
+          delete cs[c.key];
+          return { ...w, cases: cs };
+        }), style: { ...bigBtn, padding: "0 12px", fontSize: 13 } }, "Clear"))), errors[c.key] && /* @__PURE__ */ React.createElement("div", { "data-walk-error": true, style: { marginTop: 10, color: RED, fontWeight: 600, fontSize: 14 } }, errors[c.key]), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(
+          "button",
+          {
+            "data-walk-tick": true,
+            disabled: !(c.qty > 0) || !!r.error,
+            onClick: () => book(g, c),
+            style: { ...bigBtn, flex: "2 1 0", border: "none", background: c.qty > 0 && !r.error ? GREEN : BORDER, color: "#fff", fontSize: 16 }
+          },
+          "\u2713 In ",
+          routeText || "case"
+        ), /* @__PURE__ */ React.createElement("button", { "data-walk-notthere": true, onClick: () => notThere(g, c), style: { ...bigBtn, flex: "1 1 0" } }, "Not there"), /* @__PURE__ */ React.createElement("button", { "data-walk-damaged": true, onClick: () => setSheet({ kind: "damaged", g, c, qty: c.qty, reason: "" }), style: { ...bigBtn, flex: "1 1 0" } }, "Damaged")), r.error && c.qty > 0 && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8, color: RED, fontSize: 13.5, fontWeight: 600 } }, r.error)), /* @__PURE__ */ React.createElement("button", { "data-walk-change": true, onClick: () => setSheet({ kind: "batch", g, c }), style: { background: "none", border: "none", color: NAVY, textDecoration: "underline", fontSize: 14, marginTop: 10, padding: 0, cursor: "pointer" } }, "Change batch"));
+      }), !g.complete && cards.length === 0 && g.stillToMake === 0 && g.stillToPick > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED } }, "Nothing of this on the shelf. Use Found a box if you've found some."));
+    }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 8 } }, /* @__PURE__ */ React.createElement("button", { "data-walk-finish": true, onClick: () => setSheet({ kind: "summary" }), style: { ...bigBtn, flex: 1, background: NAVY, color: "#fff", border: "none" } }, "Finish \u2014 see the cases")), sheet && /* @__PURE__ */ React.createElement(
+      PickWalkSheet,
       {
-        onClick: cancelPendingPick,
-        style: { width: "100%", height: 44, background: "#fff", color: INK, fontWeight: 600, fontSize: 14, borderRadius: 8, border: `1px solid ${BORDER}`, cursor: "pointer" }
-      },
-      "Close this pick"
-    )));
+        sheet,
+        setSheet,
+        data,
+        setData,
+        order,
+        walk,
+        setWalk,
+        groups,
+        cases,
+        who,
+        writeFacts,
+        logged,
+        undo,
+        inCloud,
+        onDone,
+        jumpToPacking,
+        setErr,
+        forget
+      }
+    ));
+  }
+  function PickWalkSheet({ sheet, setSheet, data, setData, order, walk, setWalk, groups, cases, who, writeFacts, logged, undo, inCloud, onDone, jumpToPacking, setErr, forget }) {
+    const close = () => setSheet(null);
+    const box = {
+      position: "fixed",
+      left: 0,
+      right: 0,
+      bottom: 0,
+      top: "8%",
+      zIndex: 80,
+      background: "#fff",
+      borderTopLeftRadius: 14,
+      borderTopRightRadius: 14,
+      boxShadow: "0 -6px 24px rgba(0,0,0,.25)",
+      padding: "16px 14px calc(env(safe-area-inset-bottom, 0px) + 16px)",
+      overflowY: "auto"
+    };
+    const btn = { height: 48, borderRadius: 8, fontSize: 15, fontWeight: 600, cursor: "pointer", border: `1px solid ${BORDER}`, background: "#fff", padding: "0 14px" };
+    const head = (t) => /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 18, fontWeight: 700 } }, t), /* @__PURE__ */ React.createElement("button", { onClick: close, style: btn }, "Close"));
+    const [code, setCode] = useState(sheet.code || "");
+    const [qty, setQty] = useState(sheet.qty != null ? String(sheet.qty) : "");
+    const [reason, setReason] = useState("");
+    const [formKey, setFormKey] = useState("");
+    const [carton, setCarton] = useState("");
+    const [err, setE] = useState("");
+    useEffect(() => {
+      if (sheet.kind !== "found") return;
+      const onScan = (e) => {
+        const d = e.detail || {};
+        const t = String(d.text || "").trim().toUpperCase();
+        if (!t) return;
+        d.handled = true;
+        d.notice = null;
+        setCode(t);
+      };
+      window.addEventListener("mx-scan", onScan);
+      return () => window.removeEventListener("mx-scan", onScan);
+    }, [sheet.kind]);
+    if (sheet.kind === "batch") {
+      const { g, c } = sheet;
+      const onCards = new Set(walkCards(g, walk).map((x) => x.key));
+      const all = g.supply;
+      const choose = (s) => {
+        setWalk((w) => {
+          const typed = { ...w.typed || {} };
+          const cs = { ...w.cases || {} };
+          if (s.key !== c.key) {
+            if (typed[c.key] != null) {
+              typed[s.key] = Math.min(typed[c.key], s.onShelf);
+              delete typed[c.key];
+            }
+            if (cs[c.key] != null) {
+              cs[s.key] = cs[c.key];
+              delete cs[c.key];
+            }
+          }
+          return {
+            ...w,
+            typed,
+            cases: cs,
+            pinned: [s.key, ...(w.pinned || []).filter((k) => k !== s.key)],
+            skipped: s.key === c.key ? (w.skipped || []).filter((k) => k !== s.key) : [.../* @__PURE__ */ new Set([...(w.skipped || []).filter((k) => k !== s.key), c.key])]
+          };
+        });
+        close();
+      };
+      return /* @__PURE__ */ React.createElement("div", { style: box, "data-walk-sheet": "batch" }, head(`Change batch \u2014 ${g.label}`), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: INK_MUTED, marginBottom: 10 } }, "Every batch of this product on the shelf, oldest first."), all.map((s) => /* @__PURE__ */ React.createElement("button", { key: s.key, "data-walk-batch": s.boxNumber, onClick: () => choose(s), style: {
+        ...btn,
+        width: "100%",
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        marginBottom: 8,
+        border: s.key === c.key ? `2.5px solid ${NAVY}` : `1px solid ${BORDER}`
+      } }, /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { fontSize: 16 } }, s.boxNumber), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 14, fontWeight: 400 } }, s.onShelf, " \xB7 ", s.bays.join("/") || "no bay", " \xB7 ", s.date || "?", s.key !== c.key && onCards.has(s.key) ? /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " \xB7 on another card") : null, (walk.skipped || []).includes(s.key) ? /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " \xB7 skipped") : null, s.unchecked ? /* @__PURE__ */ React.createElement("span", { style: { color: "#8A4B00" } }, " \xB7 not checked") : null))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: INK_MUTED, marginTop: 6 } }, "Not in this list? Use Found a box."));
+    }
+    if (sheet.kind === "damaged") {
+      const { g, c } = sheet;
+      const go = () => {
+        const r = damagedFacts(data, c, qty, reason, `pk-${order.id}-${c.boxNumber}-dm-${(walk.log || []).length}`.replace(/[^A-Za-z0-9-]/g, ""), who);
+        if (r.error) {
+          setE(r.error);
+          return;
+        }
+        writeFacts(r.moves, `Damaged: ${r.qty} \xD7 ${c.boxNumber} \u2014 ${reason}`);
+        logged(r.moves, { kind: "damaged", key: c.key, group: g.key, box: c.boxNumber, qty: r.qty });
+        forget(c.key);
+        close();
+      };
+      return /* @__PURE__ */ React.createElement("div", { style: box, "data-walk-sheet": "damaged" }, head(`${c.boxNumber} damaged`), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 14 } }, "How many"), /* @__PURE__ */ React.createElement("input", { type: "number", inputMode: "numeric", value: qty, onChange: (e) => setQty(e.target.value), style: { display: "block", width: 120, height: 44, fontSize: 18, textAlign: "center", margin: "4px 0 12px", borderRadius: 8, border: `1px solid ${BORDER}` } }), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 14 } }, "What's wrong with them"), /* @__PURE__ */ React.createElement("input", { "data-walk-reason": true, value: reason, onChange: (e) => setReason(e.target.value), placeholder: "Crushed carton, strip lifting\u2026", style: { display: "block", width: "100%", boxSizing: "border-box", height: 44, fontSize: 16, margin: "4px 0 12px", borderRadius: 8, border: `1px solid ${BORDER}`, padding: "0 10px" } }), err && /* @__PURE__ */ React.createElement("div", { style: { color: RED, fontWeight: 600, marginBottom: 10 } }, err), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement("button", { onClick: close, style: { ...btn, flex: 1 } }, "Cancel"), /* @__PURE__ */ React.createElement("button", { "data-walk-scrap": true, onClick: go, style: { ...btn, flex: 1, background: RED, color: "#fff", border: "none" } }, "Take off the system")));
+    }
+    if (sheet.kind === "found") {
+      const cd = String(code || "").trim().toUpperCase();
+      const rows = cd ? (data.bondingRuns || []).filter((r) => r && !r.deleted && String(r.boxNumber || "").toUpperCase() === cd) : [];
+      const known = rows.length > 0;
+      const missing = cd ? notThereOpen(data).filter((m) => String(m.boxNumber || "").toUpperCase() === cd) : [];
+      const place = known ? placeOf(data, cd) : null;
+      const tid = (w) => `pk-${order.id}-${cd}-${w}-${(walk.log || []).length}`.replace(/[^A-Za-z0-9-]/g, "");
+      const boxMats = (data.materials || []).filter((m) => m && m.category === "boxes" && !m.deleted);
+      const putBack = (m) => {
+        const r = putBackFacts(m, m.missing, tid("pb"), who);
+        if (r.error) {
+          setE(r.error);
+          return;
+        }
+        writeFacts(r.moves, `Put back ${r.qty} \xD7 ${cd} (found again)`);
+        logged(r.moves, { kind: "putback", key: `${cd}|found`, group: null, box: cd, qty: r.qty });
+        close();
+      };
+      const addMore = () => {
+        const n = Math.round(Number(qty) || 0);
+        if (!(n > 0)) {
+          setE("Say how many you've found.");
+          return;
+        }
+        const shelf = place && place.onShelf || 0;
+        const meta = rows.find((r) => r.formId) || rows[0];
+        const m = { ...moveCounted({ boxNumber: cd, spec: meta.productSize, qty: shelf + n, source: "found", sourceId: meta.id, note: `Found ${n} more while picking ${order.id} (${who})` }), id: `mv-${tid("fc")}-0`, formId: meta.formId || null };
+        writeFacts([m], `Found ${n} more \xD7 ${cd}`);
+        logged([m], { kind: "found", key: `${cd}|found`, group: null, box: cd, qty: n });
+        close();
+      };
+      const addNew = () => {
+        const g = groups.find((x) => x.key === formKey);
+        if (!g) {
+          setE("Choose which product it is.");
+          return;
+        }
+        if (!carton) {
+          setE("Choose which box it's in.");
+          return;
+        }
+        const f = g.formId ? formById(CATALOGUE, g.formId) : null;
+        const rec = foundBoxRecord({ boxNumber: cd, productSize: g.label, formId: g.formId, metersPerBox: f && f.metres, qty, bay: "", boxTypeId: carton, date: codeImpliedDateISO ? codeImpliedDateISO(cd) : null, tickId: tid("nw"), who });
+        if (rec.error) {
+          setE(rec.error);
+          return;
+        }
+        setData((prev) => {
+          let n = { ...prev, bondingRuns: [...prev.bondingRuns || [], rec.row] };
+          n = recordMovements(n, rec.moves);
+          n = raiseIssue(n, {
+            kind: "unrecorded_box",
+            orderId: order.id,
+            boxNumber: cd,
+            summary: `${cd} found while picking ${order.id} \u2014 ${rec.qty} \xD7 ${g.label}`,
+            detail: "Was on the shelf but had no record. Confirm its reel and date against the paper, then clear this."
+          });
+          return { ...n, ...appendLog(n, { action: "add", entity: "bondingRun", entityId: rec.row.id, summary: `Box ${cd} found while picking ${order.id}: ${rec.qty} \xD7 ${g.label}` }) };
+        });
+        logged(rec.moves, { kind: "found", key: `${cd}|${carton}`, group: g.key, box: cd, qty: rec.qty });
+        setWalk((w) => ({ ...w, pinned: [`${cd}|${carton}`, ...w.pinned || []] }));
+        close();
+      };
+      return /* @__PURE__ */ React.createElement("div", { style: box, "data-walk-sheet": "found" }, head("Found a box"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 12 } }, /* @__PURE__ */ React.createElement(
+        "input",
+        {
+          "data-walk-code": true,
+          value: code,
+          onChange: (e) => {
+            setCode(e.target.value.toUpperCase());
+            setE("");
+          },
+          placeholder: "Box code",
+          autoCapitalize: "characters",
+          autoCorrect: "off",
+          spellCheck: "false",
+          style: { flex: 1, minWidth: 0, height: 48, fontSize: 18, fontFamily: "monospace", borderRadius: 8, border: `1px solid ${BORDER}`, padding: "0 10px" }
+        }
+      ), /* @__PURE__ */ React.createElement("button", { onClick: () => window.__mxOpenScanner && window.__mxOpenScanner(), style: btn }, "\u{1F4F7} Scan")), cd && known && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, marginBottom: 8 } }, /* @__PURE__ */ React.createElement("b", { className: "font-mono" }, cd), " is on the system \u2014 ", place.onShelf, " on the shelf", place.bays.length ? ` at ${place.bays.join("/")}` : "", place.inCases.length ? `, ${place.inCases.map((x) => `${x.qty} in ${x.orderId} case ${x.caseNum}`).join(", ")}` : "", "."), missing.map((m) => /* @__PURE__ */ React.createElement("div", { key: m.id, style: { border: `1.5px solid ${AMBER}`, borderRadius: 8, padding: 10, marginBottom: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14.5, marginBottom: 6 } }, m.missing, " marked not there on ", String(m.at || "").slice(0, 10), ". Put them back?"), /* @__PURE__ */ React.createElement("button", { "data-walk-putback": true, onClick: () => putBack(m), style: { ...btn, width: "100%" } }, "Put ", m.missing, " back"))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, margin: "8px 0 4px" } }, "Found more than the system shows? How many more:"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement("input", { type: "number", inputMode: "numeric", value: qty, onChange: (e) => setQty(e.target.value), style: { width: 100, height: 48, fontSize: 18, textAlign: "center", borderRadius: 8, border: `1px solid ${BORDER}` } }), /* @__PURE__ */ React.createElement("button", { "data-walk-addmore": true, onClick: addMore, style: { ...btn, flex: 1 } }, "Add to the shelf"))), cd && !known && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, marginBottom: 10 } }, /* @__PURE__ */ React.createElement("b", { className: "font-mono" }, cd), " isn't on the system."), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, marginBottom: 4 } }, "Which product is it?"), groups.map((g) => /* @__PURE__ */ React.createElement("button", { key: g.key, onClick: () => setFormKey(g.key), style: { ...btn, width: "100%", marginBottom: 6, textAlign: "left", border: formKey === g.key ? `2.5px solid ${NAVY}` : `1px solid ${BORDER}` } }, g.label)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, margin: "8px 0 4px" } }, "Which box is it in?"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 } }, boxMats.map((m) => /* @__PURE__ */ React.createElement("button", { key: m.id, onClick: () => setCarton(m.id), style: { ...btn, border: carton === m.id ? `2.5px solid ${NAVY}` : `1px solid ${BORDER}` } }, m.name))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement("input", { "data-walk-foundqty": true, type: "number", inputMode: "numeric", value: qty, onChange: (e) => setQty(e.target.value), placeholder: "How many", style: { width: 110, height: 48, fontSize: 18, textAlign: "center", borderRadius: 8, border: `1px solid ${BORDER}` } }), /* @__PURE__ */ React.createElement("button", { "data-walk-addnew": true, onClick: addNew, style: { ...btn, flex: 1, background: GREEN, color: "#fff", border: "none" } }, "Add and put on this walk"))), err && /* @__PURE__ */ React.createElement("div", { style: { color: RED, fontWeight: 600, marginTop: 10 } }, err));
+    }
+    const log = walk.log || [];
+    const nt = log.filter((e) => e.kind === "notthere" && !e.undone);
+    const hotUndo = (caseNum, box2) => log.filter((e) => e.kind === "booked" && !e.undone && e.box === box2 && (e.route || []).some((x) => x.caseNum === caseNum));
+    return /* @__PURE__ */ React.createElement("div", { style: box, "data-walk-sheet": sheet.kind }, head(sheet.kind === "summary" ? "Walk summary" : "Cases"), (cases || []).map((cs) => /* @__PURE__ */ React.createElement("div", { key: cs.caseNum, "data-walk-casecard": cs.caseNum, style: { borderTop: `1px solid ${BORDER}`, padding: "10px 0" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 24, fontWeight: 700 } }, "Case ", cs.caseNum), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15, fontWeight: 600, color: cs.total && cs.room === 0 ? GREEN : INK_MUTED } }, cs.total === 0 ? "Empty" : cs.room === 0 ? "Full" : `Room for ${cs.room}`)), cs.lines.map((l, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 16 } }, /* @__PURE__ */ React.createElement("span", { "data-walk-hot": l.hot ? "1" : void 0, style: l.hot ? { background: WALK_HOT_BG, color: WALK_HOT_INK, fontWeight: 800, borderRadius: 6, padding: "3px 8px" } : {} }, l.qty, " \xD7 ", /* @__PURE__ */ React.createElement("span", { className: "font-mono" }, l.box)), l.by && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: INK_MUTED } }, l.by), l.hot && hotUndo(cs.caseNum, l.box).slice(-1).map((e) => /* @__PURE__ */ React.createElement("button", { key: e.at, onClick: () => undo(e), style: { ...btn, height: 34, fontSize: 13 } }, "Undo")))))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 6 } }, /* @__PURE__ */ React.createElement("span", { style: { background: WALK_HOT_BG, color: WALK_HOT_INK, borderRadius: 4, padding: "1px 6px", fontWeight: 700 } }, "Orange"), " = booked on this walk"), sheet.kind === "summary" && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 14, fontSize: 15, lineHeight: 1.7 } }, nt.length > 0 && /* @__PURE__ */ React.createElement("div", null, "Not there: ", nt.map((e) => `${e.box} \xD7 ${e.qty}`).join(", ")), groups.filter((g) => g.stillToPick > 0).map((g) => /* @__PURE__ */ React.createElement("div", { key: g.key }, g.label, ": ", g.stillToPick, " still to pick", g.stillToMake > 0 ? /* @__PURE__ */ React.createElement("b", { style: { color: "#8A4B00" } }, " \xB7 ", g.stillToMake, " still to make") : "")), groups.every((g) => g.complete) && /* @__PURE__ */ React.createElement("div", { style: { color: GREEN, fontWeight: 700 } }, "\u2713 Every line picked")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 14 } }, jumpToPacking && /* @__PURE__ */ React.createElement("button", { onClick: () => {
+      close();
+      jumpToPacking(order.id);
+    }, style: { ...btn, flex: 1 } }, "Packing list"), sheet.kind === "summary" ? /* @__PURE__ */ React.createElement("button", { "data-walk-done": true, onClick: () => {
+      close();
+      onDone();
+    }, style: { ...btn, flex: 1, background: NAVY, color: "#fff", border: "none" } }, "Done") : /* @__PURE__ */ React.createElement("button", { onClick: close, style: { ...btn, flex: 1 } }, "Back to the walk")));
   }
   function MakeListsPanel({ order, data }) {
     const { bondingItems, glueItems, shelfItems = [] } = useMemo(() => computeMakeLists(order, data), [order, data]);
@@ -12140,6 +12607,24 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       " on STRONG TAPE"
     );
   }
+  function NotThereList({ data, setData }) {
+    const open = notThereOpen(data).slice(0, 20);
+    if (!open.length) return null;
+    const who = String(currentActor() || "").split("@")[0];
+    const putBack = (m) => {
+      if (!window.confirm(`Put ${m.missing} \xD7 ${m.boxNumber} back on the shelf?`)) return;
+      const r = putBackFacts(m, m.missing, `pk-dp-${m.id}-${Date.now().toString(36)}`.replace(/[^A-Za-z0-9-]/g, ""), who);
+      if (r.error) {
+        window.alert(r.error);
+        return;
+      }
+      setData((prev) => {
+        const n = recordMovements(prev, r.moves);
+        return { ...n, ...appendLog(n, { action: "stock_adjustment", entity: "bondingRun", entityId: m.boxNumber, summary: `Found again: ${r.qty} \xD7 ${m.boxNumber} put back on the shelf` }) };
+      });
+    };
+    return /* @__PURE__ */ React.createElement("section", { "data-notthere-list": true, style: { margin: "14px 0", border: `1.5px solid ${AMBER}`, borderRadius: 10, padding: "12px 14px", background: "#FFF8F0" } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, fontSize: 16, marginBottom: 6 } }, "Not there \u2014 still missing (", open.length, ")"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: INK_MUTED, marginBottom: 8 } }, "Marked not there while picking. If you find them, put them back here \u2014 don't add them as new."), open.map((m) => /* @__PURE__ */ React.createElement("div", { key: m.id, style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "6px 0", borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14.5 } }, /* @__PURE__ */ React.createElement("b", { className: "font-mono" }, m.boxNumber), " \xD7 ", m.missing, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " \xB7 ", String(m.note || "").replace(/^Not there — /, ""), " \xB7 ", String(m.at || "").slice(0, 10))), /* @__PURE__ */ React.createElement("button", { onClick: () => putBack(m), style: { height: 40, padding: "0 12px", borderRadius: 6, border: `1px solid ${NAVY}`, background: "#fff", color: NAVY, fontWeight: 600, cursor: "pointer" } }, "Found \u2014 put back"))));
+  }
   function TodayView({ data, setData, jumpToProduction, jumpToOrder, jumpToDiscrepancies }) {
     const [showAllExtrude, setShowAllExtrude] = useState(false);
     const [showAllWaiting, setShowAllWaiting] = useState(false);
@@ -12227,7 +12712,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       const dateLine = d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" });
       const fri = d.getDay() === 5;
       return /* @__PURE__ */ React.createElement("header", { style: { marginBottom: 4 } }, /* @__PURE__ */ React.createElement("h1", { style: { fontSize: "clamp(25px, 6.4vw, 34px)", lineHeight: 1.1, letterSpacing: "-0.022em", fontWeight: 600, margin: 0, color: NAVY_DEEP } }, dateLine), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6, fontSize: 15, color: INK_MUTED } }, "Bonding runs what was glued ", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, "yesterday"), ". Reels on the rack, matched against what's still outstanding, urgent first."), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 2, fontSize: 14, color: INK_MUTED } }, fri ? "Line stops 14:00 today." : "Line stops 17:00 today."));
-    })(), planMoves && planMoves.later.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-3" }, /* @__PURE__ */ React.createElement(PlanSlipsLine, { slips: planMoves, compact: true })), (() => {
+    })(), /* @__PURE__ */ React.createElement(NotThereList, { data, setData }), planMoves && planMoves.later.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-3" }, /* @__PURE__ */ React.createElement(PlanSlipsLine, { slips: planMoves, compact: true })), (() => {
       const today = todayISO();
       const runs = (data.bondingRuns || []).filter((r) => !r.deleted && !r.packingOnly && r.date === today);
       const boxes = runs.reduce((s, r) => s + (Number(r.amountMade) || 0), 0);
@@ -12528,14 +13013,14 @@ Here's the order:`;
     const isSplit = raw != null && typeof raw === "object";
     const at = isSplit ? caseNum : raw ?? caseNum;
     const moved = raw != null;
-    const up = (x) => String(x || "").trim().toUpperCase();
-    const mine = (cases || []).flatMap((c) => c.contributions || []).filter((r) => up(r.boxNumber) === up(boxNumber)).reduce((t, r) => t + (Number(r.qty) || 0), 0);
+    const up2 = (x) => String(x || "").trim().toUpperCase();
+    const mine = (cases || []).flatMap((c) => c.contributions || []).filter((r) => up2(r.boxNumber) === up2(boxNumber)).reduce((t, r) => t + (Number(r.qty) || 0), 0);
     const moveRefusal = (n) => {
       if (!Array.isArray(cases) || !cases.length) return null;
       const dest = cases.find((c) => Number(c.caseNum) === Number(n));
       if (!dest) return `There is no case ${n} on this order.`;
       const cap = Number(dest.maxSize) || CASE_MAX_SIZE_DEFAULT;
-      const held = (dest.contributions || []).filter((r) => up(r.boxNumber) !== up(boxNumber)).reduce((t, r) => t + (Number(r.qty) || 0), 0);
+      const held = (dest.contributions || []).filter((r) => up2(r.boxNumber) !== up2(boxNumber)).reduce((t, r) => t + (Number(r.qty) || 0), 0);
       if (held + mine > cap) {
         return `Case ${n} holds ${held} of ${cap} \u2014 the other ${mine} will not fit.`;
       }
@@ -13694,6 +14179,7 @@ ${kNotes.join("\n")}`), 0);
     });
     const [printingSheet, setPrintingSheet] = useState(null);
     const [pendingPick, setPendingPick, pickDraftRestored, discardPickDraft] = useDraftState("pendingPick", { orderId: null, items: [] }, { orderId: null, items: [] });
+    const [pickWalk, setPickWalk] = useDraftState("pickWalk", { orderId: null }, { orderId: null });
     const pendingPickFor = pendingPick.orderId;
     const pendingPickItems = pendingPick.items;
     const setPendingPickFor = (v) => setPendingPick((prev) => ({ ...prev, orderId: typeof v === "function" ? v(prev.orderId) : v }));
@@ -14391,113 +14877,32 @@ Read the next screen carefully before you agree to it.`
       if (!pendingPickFor) return {};
       const order = data.orders.find((o) => o.id === pendingPickFor);
       if (!order) return {};
-      const existingOverrides = order.caseOverrides || {};
-      const simulatedRuns = data.bondingRuns.map((r) => {
-        const match = pendingPickItems.find((it) => it.id === r.id);
-        if (!match || match.damaged) return r;
-        const qty = Math.max(0, Number(match.confirmedQty) || 0);
-        return { ...r, workNumber: order.id, onOrderQty: Number(r.onOrderQty || 0) + qty };
-      });
-      const orderItems = orderLineItems(data.lineItems, order.id).filter((li) => !isDelivery(li.description));
-      const { byLineItem: fullByLineItem } = groupAssignedRunsByLineItem(simulatedRuns, order.id, orderItems);
-      const byLineItem = fullByLineItem.map((g) => {
-        const assignedQty = g.runs.reduce((s, r) => s + Number(r.onOrderQty || 0), 0);
-        const pickingNow = g.runs.reduce((s, r) => {
-          const it = pendingPickItems.find((x) => x.id === r.id && !x.damaged);
-          return s + (it ? Math.max(0, Number(it.confirmedQty) || 0) : 0);
-        }, 0);
-        const outstanding = Math.max(0, Number(g.li.qty) - (assignedQty - pickingNow));
-        return { ...g, li: { ...g.li, qty: outstanding } };
-      }).filter((g) => g.li.qty > 0);
-      const plannedForOrder = plannedCasesFor(data, order.id);
-      const planRoute = (spec, qty) => {
-        const out = [];
-        let left = qty;
-        for (const p of plannedForOrder) {
-          if (left <= 0) break;
-          if (!looseSpecMatch(p.spec, spec)) continue;
-          const room = p.outstanding;
-          if (room <= 0) continue;
-          const take = Math.min(room, left);
-          out.push({ caseNum: p.caseNum, qty: take });
-          left -= take;
-        }
-        return out;
-      };
-      const orderCaseRows = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === order.id);
-      const confirmedNums = new Set(orderCaseRows.filter((c) => c.confirmed).map((c) => Number(c.caseNum)));
-      const takenNums = new Set(orderCaseRows.map((c) => Number(c.caseNum)));
-      for (const n of Object.values(existingOverrides)) if (n != null) takenNums.add(Number(n));
-      let nextFreeNum = (Number(order.startingCaseNum) || 0) + 1;
-      const takeNextFree = () => {
-        while (takenNums.has(nextFreeNum)) nextFreeNum++;
-        takenNums.add(nextFreeNum);
-        return nextFreeNum++;
-      };
-      const boxToCases = {};
-      const pickedBoxNumbers = new Set(pendingPickItems.filter((it) => !it.damaged).map((it) => it.boxNumber));
-      for (const c of buildCombinedCases(byLineItem, 1, packedOutsideSpecs(order, lineItems), order.caseLayout)) {
-        if (!c.contributions.some((row) => row.boxNumber && pickedBoxNumbers.has(row.boxNumber))) continue;
-        const knownNum = c.contributions.map((row) => row.boxNumber && existingOverrides[row.boxNumber]).find((n) => n != null);
-        const caseNum = knownNum != null && !confirmedNums.has(Number(knownNum)) ? knownNum : takeNextFree();
-        for (const row of c.contributions) {
-          if (!row.boxNumber) continue;
-          const ovr = existingOverrides[row.boxNumber];
-          const finalCaseNum = ovr != null && !confirmedNums.has(Number(ovr)) ? ovr : caseNum;
-          if (!boxToCases[row.boxNumber]) boxToCases[row.boxNumber] = [];
-          const already = boxToCases[row.boxNumber].find((e) => e.caseNum === finalCaseNum);
-          if (already) already.qty += row.qty;
-          else boxToCases[row.boxNumber].push({ caseNum: finalCaseNum, qty: row.qty });
-        }
-      }
-      if (plannedForOrder.length) {
-        const bySpec = /* @__PURE__ */ new Map();
-        for (const it of pendingPickItems) {
-          if (it.damaged || !it.boxNumber) continue;
-          const run = (data.bondingRuns || []).find((r) => !r.deleted && r.boxNumber === it.boxNumber);
-          const spec = run ? run.productSize : null;
-          if (!spec) continue;
-          if (!bySpec.has(spec)) bySpec.set(spec, []);
-          bySpec.get(spec).push(it);
-        }
-        for (const [spec, its] of bySpec) {
-          const total = its.reduce((t, i) => t + Math.max(0, Number(i.confirmedQty) || 0), 0);
-          const route = planRoute(spec, total);
-          if (!route.length) continue;
-          let ri = 0;
-          for (const it of its) {
-            let need = Math.max(0, Number(it.confirmedQty) || 0);
-            const places = [];
-            while (need > 0 && ri < route.length) {
-              const take = Math.min(need, route[ri].qty);
-              if (take > 0) places.push({ caseNum: route[ri].caseNum, qty: take });
-              route[ri].qty -= take;
-              need -= take;
-              if (route[ri].qty <= 0) ri++;
-            }
-            if (places.length) boxToCases[it.boxNumber] = places;
+      const groups = walkProducts(data, order);
+      const left = new Map(groups.map((g) => [g.key, g.room.map((r) => ({ ...r }))]));
+      const out = {};
+      for (const it of pendingPickItems) {
+        if (!it || it.damaged || it.committed || !it.boxNumber) continue;
+        const run = (data.bondingRuns || []).find((r) => r && !r.deleted && r.id === it.id) || (data.bondingRuns || []).find((r) => r && !r.deleted && String(r.boxNumber || "").toUpperCase() === String(it.boxNumber).toUpperCase());
+        const g = run && groups.find((x) => x.lines.some((li) => runFillsLine(run, li)));
+        if (!g) continue;
+        const rooms = left.get(g.key) || [];
+        const pref = it.caseOverride != null ? rooms.findIndex((r) => r.caseNum === Number(it.caseOverride)) : -1;
+        const order2 = pref >= 0 ? [rooms[pref], ...rooms.filter((_, i) => i !== pref)] : rooms;
+        let need = Math.max(0, Number(it.confirmedQty) || 0);
+        const places = [];
+        for (const r of order2) {
+          if (need <= 0) break;
+          const n = Math.min(r.spaces, need);
+          if (n > 0) {
+            places.push({ caseNum: r.caseNum, qty: n });
+            r.spaces -= n;
+            need -= n;
           }
         }
-        return boxToCases;
+        if (places.length) out[it.boxNumber] = places;
       }
-      const pickedQty = /* @__PURE__ */ new Map();
-      for (const it of pendingPickItems) {
-        if (it.damaged || !it.boxNumber) continue;
-        pickedQty.set(it.boxNumber, (pickedQty.get(it.boxNumber) || 0) + Math.max(0, Number(it.confirmedQty) || 0));
-      }
-      for (const [box, places] of Object.entries(boxToCases)) {
-        let left = pickedQty.has(box) ? pickedQty.get(box) : places.reduce((t, p) => t + p.qty, 0);
-        places.sort((a, b) => a.caseNum - b.caseNum);
-        for (const p of places) {
-          const take = Math.min(p.qty, left);
-          p.qty = take;
-          left -= take;
-        }
-        boxToCases[box] = places.filter((p) => p.qty > 0);
-        if (!boxToCases[box].length) delete boxToCases[box];
-      }
-      return boxToCases;
-    }, [pendingPickFor, pendingPickItems, data.bondingRuns, data.lineItems, data.orders, data.cases]);
+      return out;
+    }, [pendingPickFor, pendingPickItems, data]);
     useEffect(() => {
       if (!printIntent) return;
       if (pendingPickFor !== printIntent || !pendingPickItems.length) return;
@@ -14842,160 +15247,97 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
   \u2026and ${skipped.length - 8} more` : "") + "\n\nCommit the ticked ones?"
         )) return;
       }
-      let shortfalls = [];
-      setData((prevData) => {
-        shortfalls = [];
-        const newDamagedPicks = [];
-        const updatedRuns = prevData.bondingRuns.map((r) => {
-          const damagedMatch = damagedItems.find((it) => it.id === r.id);
-          if (damagedMatch) {
-            const trueAvailable2 = Math.max(Number(r.toStock || 0), placeOf(ledgerView(), r.boxNumber).onShelf);
-            if (trueAvailable2 > 0) {
-              newDamagedPicks.push({
-                id: uid("pick"),
-                boxNumber: r.boxNumber,
-                productSpec: r.productSize,
-                qtyPicked: trueAvailable2,
-                datePicked: todayISO(),
-                pickedFor: "DAMAGED",
-                comments: `Found damaged while picking for ${order.id}`
-              });
-            }
-            return { ...r, toStock: 0 };
-          }
-          const match = toApply.find((it) => it.id === r.id);
-          if (!match) return r;
-          const requested = Number(match.confirmedQty);
-          const alreadyPicked = (data.stockPicks || []).filter((p) => p.boxNumber === r.boxNumber).reduce((t, p) => t + (Number(p.qtyPicked) || 0), 0);
-          const fromLedger = Math.max(0, placeOf(ledgerView(), r.boxNumber).onShelf - alreadyPicked);
-          const trueAvailable = Math.max(Number(r.toStock || 0), fromLedger);
-          const qty = Math.min(requested, trueAvailable);
-          if (qty < requested) shortfalls.push({ boxNumber: r.boxNumber, requested, actual: qty });
-          const correctedBatch = match.baselineBatchCode !== void 0 && match.baselineBatchCode !== (r.baselineBatchCode || "") ? match.baselineBatchCode : r.baselineBatchCode;
-          return {
-            ...r,
-            workNumber: order.id,
-            onOrderQty: Number(r.onOrderQty || 0) + qty,
-            toStock: Math.max(trueAvailable - qty, 0),
-            baselineBatchCode: correctedBatch
+      const shortfalls = [];
+      const failures = [];
+      const stamp36 = Date.now().toString(36);
+      const actorName = String(currentActor() || "").split("@")[0];
+      let working = data;
+      const allMoves = [];
+      const newRows = [];
+      const placedRoutes = {};
+      for (const it of damagedItems) {
+        const n = Math.max(0, (placeOf(working, it.boxNumber) || {}).onShelf || 0);
+        if (!(n > 0)) continue;
+        const m = { ...moveScrapped({ boxNumber: it.boxNumber, spec: it.productSize, qty: n, source: "pick", note: `Found damaged while picking for ${order.id}` }), id: `mv-pk-${order.id}-${it.boxNumber}-dm-${stamp36}`.replace(/[^A-Za-z0-9-]/g, "") };
+        working = recordMovements(working, [m]);
+        allMoves.push(m);
+      }
+      for (const it of toApply) {
+        if (it.isNewlyAdded) {
+          const row = {
+            id: it.id,
+            boxNumber: it.boxNumber,
+            productSize: it.productSize,
+            amountMade: Number(it.confirmedQty),
+            onOrderQty: 0,
+            toStock: Number(it.confirmedQty),
+            workNumber: null,
+            customerName: "",
+            baselineBatchCode: it.baselineBatchCode,
+            checked: "Yes",
+            packageType: "Box",
+            date: todayISO(),
+            updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+            updatedBy: "Pick \u2014 found on shelf, not previously logged",
+            comments: "Found on the shelf while picking \u2014 confirm reel and date from the paper."
           };
-        });
-        const newlyAddedRuns = toApply.filter((it) => it.isNewlyAdded).map((it) => ({
-          id: it.id,
-          boxNumber: it.boxNumber,
-          productSize: it.productSize,
-          amountMade: Number(it.confirmedQty),
-          onOrderQty: Number(it.confirmedQty),
-          toStock: 0,
-          workNumber: order.id,
-          customerName: order.customer,
-          baselineBatchCode: it.baselineBatchCode,
-          checked: "Yes",
-          packageType: "Box",
-          date: todayISO(),
-          updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-          updatedBy: "Pick by phone \u2014 found on shelf, not previously logged"
-        }));
-        const runsAfterNewAdditions = [...updatedRuns, ...newlyAddedRuns];
-        const existingOverrides = ((prevData.orders || []).find((x) => x.id === order.id) || order).caseOverrides || {};
-        const newOverrides = { ...existingOverrides };
-        toApply.forEach((it) => {
-          if (it.caseOverride != null) {
-            newOverrides[it.boxNumber] = it.caseOverride;
-            return;
-          }
-          const suggested = pendingCaseSuggestions[it.boxNumber];
-          if (suggested && suggested.length === 1) newOverrides[it.boxNumber] = suggested[0].caseNum;
-        });
-        const boxesWithCases = toApply.map((it) => {
-          const shortfall = shortfalls.find((s) => s.boxNumber === it.boxNumber);
-          const saved = newOverrides[it.boxNumber];
-          const split = pendingCaseSuggestions[it.boxNumber];
-          const cases = saved != null ? [saved] : split ? split.map((c) => c.caseNum) : [];
-          return { ...it, available: shortfall ? shortfall.actual : Number(it.confirmedQty), cases };
-        });
-        if (receipt) setPrintJob({ order, boxes: boxesWithCases });
-        const adjustedCount = toApply.filter((it) => Number(it.confirmedQty) !== Number(it.proposedQty)).length;
-        const batchCorrectedCount = toApply.filter((it) => {
-          const r = prevData.bondingRuns.find((row) => row.id === it.id);
-          return r && it.baselineBatchCode !== void 0 && it.baselineBatchCode !== (r.baselineBatchCode || "");
-        }).length;
-        const summaryParts = [`Assigned ${toApply.length} box${toApply.length === 1 ? "" : "es"} from stock to order ${order.id}`];
-        if (adjustedCount > 0) summaryParts.push(`${adjustedCount} corrected against what was physically found`);
-        if (batchCorrectedCount > 0) summaryParts.push(`${batchCorrectedCount} batch code${batchCorrectedCount === 1 ? "" : "s"} corrected against what was physically on the box`);
-        if (newlyAddedRuns.length > 0) summaryParts.push(`${newlyAddedRuns.length} genuinely new (found on the shelf, never previously logged)`);
-        if (damagedItems.length > 0) summaryParts.push(`${damagedItems.length} written off as damaged while picking`);
-        if (pendingPickItems.length - toApply.length - damagedItems.length > 0) summaryParts.push(`${pendingPickItems.length - toApply.length - damagedItems.length} not found on the shelf`);
-        if (shortfalls.length > 0) summaryParts.push(`${shortfalls.length} further reduced \u2014 already partly claimed elsewhere since the pick list was generated`);
-        let result = {
-          ...prevData,
-          bondingRuns: runsAfterNewAdditions,
-          orders: prevData.orders,
-          // placements live in the cases table now
-          stockPicks: [...prevData.stockPicks || [], ...newDamagedPicks],
-          ...appendLog(prevData, {
-            action: "stock_adjustment",
-            entity: "bondingRun",
-            entityId: order.id,
-            summary: summaryParts.join(", "),
-            before: { boxes: toApply.map((it) => ({ id: it.id, boxNumber: it.boxNumber, proposedQty: it.proposedQty, confirmedQty: it.confirmedQty })) },
-            after: { workNumber: order.id }
-          })
-        };
-        const moves = [];
-        for (const it of toApply) {
-          const r = prevData.bondingRuns.find((row) => row.id === it.id);
-          const taken = it.isNewlyAdded ? Number(it.confirmedQty) : Math.min(Number(it.confirmedQty), Number(r?.toStock || 0));
-          if (taken <= 0) continue;
-          if (it.isNewlyAdded) moves.push(moveMade({ boxNumber: it.boxNumber, spec: it.productSize, qty: taken, reelCode: it.baselineBatchCode || null, source: "pick", note: "Found on shelf while picking \u2014 not previously logged" }));
-          moves.push(moveAllocated({ boxNumber: it.boxNumber, spec: it.productSize || r?.productSize, qty: taken, orderId: order.id, reelCode: r?.baselineBatchCode || it.baselineBatchCode || null, source: "pick" }));
+          const m = { ...moveMade({ boxNumber: it.boxNumber, spec: it.productSize, qty: Number(it.confirmedQty), reelCode: it.baselineBatchCode || null, source: "pick", sourceId: row.id, note: "Found on shelf while picking \u2014 not previously logged" }), id: `mv-pk-${row.id}-made` };
+          working = recordMovements({ ...working, bondingRuns: [...working.bondingRuns || [], row] }, [m]);
+          newRows.push(row);
+          allMoves.push(m);
         }
-        for (const dmg of newDamagedPicks) moves.push(moveScrapped({ boxNumber: dmg.boxNumber, spec: dmg.productSpec, qty: Number(dmg.qtyPicked), source: "pick", note: dmg.comments }));
-        const unplacedPicks = [];
-        for (const it of toApply) {
-          const r = prevData.bondingRuns.find((row) => row.id === it.id);
-          const taken = it.isNewlyAdded ? Number(it.confirmedQty) : Math.min(Number(it.confirmedQty), Number(r?.toStock || 0));
-          if (taken <= 0) continue;
-          const spec = it.productSize || r?.productSize || null;
-          const saved = newOverrides[it.boxNumber];
-          if (saved != null && typeof saved !== "object") {
-            moves.push(movePlaced({ boxNumber: it.boxNumber, spec, qty: taken, orderId: order.id, caseNum: Number(saved), source: "pick" }));
-            continue;
-          }
-          const split = pendingCaseSuggestions[it.boxNumber];
-          if (!Array.isArray(split) || !split.length) {
-            unplacedPicks.push({ boxNumber: it.boxNumber, qty: taken });
-            continue;
-          }
-          let left = taken;
-          for (const s of split) {
-            if (left <= 0) break;
-            const q = Math.min(Number(s.qty) || 0, left);
-            if (q <= 0) continue;
-            moves.push(movePlaced({ boxNumber: it.boxNumber, spec, qty: q, orderId: order.id, caseNum: Number(s.caseNum), source: "pick" }));
-            left -= q;
-          }
+        const run = (working.bondingRuns || []).find((r2) => r2 && !r2.deleted && r2.id === it.id) || (working.bondingRuns || []).find((r2) => r2 && !r2.deleted && String(r2.boxNumber || "").toUpperCase() === String(it.boxNumber).toUpperCase());
+        const groups = walkProducts(working, order);
+        const g = run && groups.find((x) => x.lines.some((li) => runFillsLine(run, li)));
+        if (!g) {
+          failures.push(`${it.boxNumber}: ${order.id} doesn't ask for this product`);
+          continue;
         }
-        result = recordMovements(result, moves);
-        for (const u of unplacedPicks) {
-          result = raiseIssue(result, {
-            kind: "pick_no_case",
-            orderId: order.id,
-            boxNumber: u.boxNumber,
-            summary: `${u.qty} of ${u.boxNumber} were picked for ${order.id} with no case chosen \u2014 not moved`,
-            detail: `A box is either on a shelf or in a case. This pick named no case for ${u.boxNumber}, so nothing was recorded and the ${u.qty} boxes still read as on the shelf. Put them in a case from the case map, or pick them again choosing the case.`
-          });
+        const code = String(it.boxNumber).toUpperCase();
+        const card = g.supply.find((x) => x.boxNumber === code && (!run.boxTypeId || x.carton === run.boxTypeId)) || g.supply.find((x) => x.boxNumber === code);
+        if (!card) {
+          failures.push(`${it.boxNumber}: the system shows none of it on the shelf that ${order.id} can take`);
+          continue;
         }
-        return result;
+        const want = Math.max(0, Number(it.confirmedQty) || 0);
+        const qty = Math.min(want, card.onShelf, g.stillToPick);
+        if (qty < want) shortfalls.push({ boxNumber: it.boxNumber, requested: want, actual: qty });
+        if (qty <= 0) continue;
+        const r = pickFacts(working, order, g, card, qty, it.caseOverride ?? null, `pk-${order.id}-${code}-${stamp36}`.replace(/[^A-Za-z0-9-]/g, ""), actorName);
+        if (r.error) {
+          failures.push(`${it.boxNumber}: ${r.error}`);
+          continue;
+        }
+        working = recordMovements(working, r.moves);
+        allMoves.push(...r.moves);
+        placedRoutes[it.boxNumber] = r.route;
+      }
+      const booked = toApply.filter((it) => placedRoutes[it.boxNumber]);
+      if (receipt) setPrintJob({ order, boxes: booked.map((it) => ({ ...it, available: placedRoutes[it.boxNumber].reduce((t, x) => t + x.qty, 0), cases: placedRoutes[it.boxNumber].map((x) => x.caseNum) })) });
+      if (allMoves.length) setData((prevData) => {
+        let n = newRows.length ? { ...prevData, bondingRuns: [...prevData.bondingRuns || [], ...newRows.filter((r) => !(prevData.bondingRuns || []).some((x) => x.id === r.id))] } : prevData;
+        n = recordMovements(n, allMoves);
+        return { ...n, ...appendLog(n, {
+          action: "stock_adjustment",
+          entity: "bondingRun",
+          entityId: order.id,
+          summary: `Picked ${booked.length} box${booked.length === 1 ? "" : "es"} into ${order.id}'s cases${damagedItems.length ? `, ${damagedItems.length} written off as damaged` : ""}${failures.length ? `, ${failures.length} not booked` : ""}`,
+          before: { boxes: toApply.map((it) => ({ id: it.id, boxNumber: it.boxNumber, proposedQty: it.proposedQty, confirmedQty: it.confirmedQty })) },
+          after: { movementsSourceId: allMoves[0] && allMoves[0].id }
+        }) };
       });
+      if (failures.length && typeof window !== "undefined") window.alert(`NOT BOOKED \u2014 ${failures.length} line${failures.length === 1 ? "" : "s"}:
+
+${failures.join("\n")}
+
+Everything else was booked.`);
       if (shortfalls.length > 0) {
         setAllocateShortfallWarning({ orderId: order.id, shortfalls });
       }
       if (keepRest) {
         for (const it of toApply) {
-          const sug = pendingCaseSuggestions[it.boxNumber];
-          const used = it.caseOverride != null ? it.caseOverride : Array.isArray(sug) && sug.length ? sug.map((x) => x.caseNum).join(" and ") : null;
-          setPickItemCommitted(it.id, true, used);
+          const used = placedRoutes[it.boxNumber];
+          if (used) setPickItemCommitted(it.id, true, used.map((x) => x.caseNum).join(" and "));
         }
         for (const it of damagedItems) setPickItemCommitted(it.id, true);
       } else {
@@ -15404,23 +15746,21 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
             message: "Your pick walk was restored \u2014 the quantities and cases you'd already entered are still here. Nothing was confirmed."
           }
         ), /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-3", style: { borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-1" }, "Go and check this against real stock before confirming"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Grouped by product, oldest first within each. Find each box: correct the quantity if it's short, tick Damaged if it's unusable, and check the Case # it's going in \u2014 a suggestion's filled in already, change it if you're packing differently. Nothing is allocated until you hit Confirm below.")), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 flex-wrap mb-2" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => printAndAllocate(o) }, "\u{1F5A8} Print pick sheet"), /* @__PURE__ */ React.createElement(Button, { variant: pickByPhone ? "accent" : "ghost", onClick: () => setPickByPhone(!pickByPhone) }, "\u{1F4F1} ", pickByPhone ? "Back to full view" : "Pick by phone"), anyAdjusted && /* @__PURE__ */ React.createElement("span", { className: "text-sm font-semibold", style: { color: AMBER } }, "Confirmed total ", totalConfirmed, " differs from proposed ", totalProposed), damagedCount > 0 && /* @__PURE__ */ React.createElement("span", { className: "text-sm font-semibold", style: { color: RED } }, damagedCount, " box", damagedCount === 1 ? "" : "es", " marked damaged \u2014 written off, not allocated")), customizingPick && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, `Remove anything you don't want, or use "+ Add another box" on a product if you find you're short \u2014 it goes straight back to unpicked stock either way, nothing's touched until you Confirm.`), pickByPhone ? /* @__PURE__ */ React.createElement(
-          PickByPhoneView,
+          PickWalk,
           {
-            setPickItemConfirmed,
-            pendingPickItems,
-            productSummary,
-            pendingCaseSuggestions,
-            setPickItemQty,
-            setPickItemDamaged,
-            setPickItemCase,
-            alternativeBatchesFor,
-            confirmCartonForBox,
-            swapPickItemBatch,
-            addFoundBatchForPickItem,
-            confirmPickAndAllocate,
-            commitOnePick,
-            cancelPendingPick,
-            order: o
+            data,
+            setData,
+            order: o,
+            jumpToPacking,
+            walk: pickWalk && pickWalk.orderId === o.id ? pickWalk : newWalk(o.id),
+            setWalk: (fn) => setPickWalk((prev) => {
+              const base = prev && prev.orderId === o.id ? prev : newWalk(o.id);
+              return typeof fn === "function" ? fn(base) : fn;
+            }),
+            onDone: () => {
+              setPickWalk({ orderId: null });
+              cancelPendingPick();
+            }
           }
         ) : /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto mb-3", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, customizingPick && /* @__PURE__ */ React.createElement("th", { style: { width: 36 } }), /* @__PURE__ */ React.createElement(Th, { w: 100 }, "Location"), /* @__PURE__ */ React.createElement(Th, { w: 130 }, "Box number"), /* @__PURE__ */ React.createElement(Th, null, "Product size"), /* @__PURE__ */ React.createElement(ThR, { w: 80 }, "Proposed"), /* @__PURE__ */ React.createElement(ThR, { w: 100 }, "Found on shelf"), /* @__PURE__ */ React.createElement(Th, { w: 80 }, "Damaged"), /* @__PURE__ */ React.createElement(Th, { w: 80 }, "Case #"))), /* @__PURE__ */ React.createElement("tbody", null, pendingPickItems.map((it, i) => {
           const short = !it.damaged && Number(it.confirmedQty) < Number(it.proposedQty);
@@ -23183,7 +23523,7 @@ Plan it?`
           const bays = [...new Set((r.shelf || []).map((b) => b.bay).filter(Boolean))];
           const onShelf = (r.shelf || []).reduce((t, b) => t + b.qty, 0);
           const unchecked = (r.shelf || []).filter((b) => !b.checked).length;
-          return /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: INK_MUTED }, "data-bond-covered": r.orderId }, r.planOver > 0 ? /* @__PURE__ */ React.createElement(React.Fragment, null, "has all it ordered \u2014 ", /* @__PURE__ */ React.createElement("span", { style: { color: RED } }, "its plan holds ", r.planOver, " more")) : r.toMake > 0 ? /* @__PURE__ */ React.createElement(React.Fragment, null, "needs ", r.toMake, (r.room || []).length > 0 && /* @__PURE__ */ React.createElement("span", { style: { color: NAVY, fontWeight: 600 } }, " \u2192 case ", (r.room || []).slice(0, 3).map((x) => `${x.caseNum} (${Math.min(x.spaces, r.toMake)})`).join(", ")), " \xB7 ", r.covered, " covered by the shelf", bays.length ? ` in ${bays.slice(0, 3).join(", ")}` : "") : /* @__PURE__ */ React.createElement(React.Fragment, null, "covered \u2014 ", onShelf, " on the shelf", bays.length ? ` in ${bays.slice(0, 3).join(", ")}` : "", unchecked ? " (check them first)" : ""));
+          return /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: INK_MUTED }, "data-bond-covered": r.orderId }, r.noLine ? /* @__PURE__ */ React.createElement("span", { style: { color: RED } }, "can't find this order's line for this product \u2014 check the order's lines before booking") : r.planOver > 0 ? /* @__PURE__ */ React.createElement(React.Fragment, null, "has all it ordered \u2014 ", /* @__PURE__ */ React.createElement("span", { style: { color: RED } }, "its plan holds ", r.planOver, " more")) : r.toMake > 0 ? /* @__PURE__ */ React.createElement(React.Fragment, null, "needs ", r.toMake, (r.room || []).length > 0 && /* @__PURE__ */ React.createElement("span", { style: { color: NAVY, fontWeight: 600 } }, " \u2192 case ", (r.room || []).slice(0, 3).map((x) => `${x.caseNum} (${Math.min(x.spaces, r.toMake)})`).join(", ")), " \xB7 ", r.covered, " covered by the shelf", bays.length ? ` in ${bays.slice(0, 3).join(", ")}` : "") : /* @__PURE__ */ React.createElement(React.Fragment, null, "covered \u2014 ", onShelf, " on the shelf", bays.length ? ` in ${bays.slice(0, 3).join(", ")}` : "", unchecked ? " (check them first)" : ""));
         })(), r.needs > 0 && !(r.toMake < r.needs || r.planOver > 0) && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: INK_MUTED } }, "needs ", r.needs, (r.room || []).length > 0 && /* @__PURE__ */ React.createElement("span", { style: { color: NAVY, fontWeight: 600 } }, " \u2192 case ", (r.room || []).slice(0, 3).map((x) => `${x.caseNum} (${x.spaces})`).join(", "), (r.room || []).length > 3 ? "\u2026" : "")), r.extra && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: RED } }, "doesn't need this size"))), /* @__PURE__ */ React.createElement(
           "input",
           {
@@ -27634,6 +27974,17 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     }, [storedData]);
     const pollIntervalRef = useRef(null);
     const prevDataRef = useRef(storedData);
+    const cloudIdsRef = useRef(/* @__PURE__ */ new Set());
+    const noteLanded = (landed) => {
+      for (const l of landed || []) if (l && l.table === "movements" && l.id) cloudIdsRef.current.add(l.id);
+      try {
+        window.dispatchEvent(new Event("mx-synced"));
+      } catch (e) {
+      }
+    };
+    useEffect(() => {
+      window.__mxInCloud = (id) => cloudIdsRef.current.has(id);
+    }, []);
     const skipNextPushRef = useRef(false);
     const mergeBaseRef = useRef(null);
     const lostLocalRef = useRef([]);
@@ -27851,6 +28202,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         setPendingCount(0);
         setSyncFailureDetail(null);
         markSynced();
+        noteLanded(res && res.landed);
         settlePendingRef.current(res && res.landed, res && res.refused);
         {
           const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -27872,6 +28224,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         const okTables = err.okTables || [];
         prevDataRef.current = advancePrevForTables(prev, storedData, okTables);
         settlePendingRef.current(err.landed, err.refused);
+        noteLanded(err.landed);
         releasePendingDeletions(okTables);
         setPendingCount(countPendingChanges(prevDataRef.current, storedData));
         if (err.warnings && err.warnings.length) setSyncWarnings(err.warnings);
@@ -28046,6 +28399,10 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         const ruled = refused.flatMap((r) => (r.reasons || []).map((x) => ({ table: r.table, id: x.row_id, reason: x.reason })));
         const onCloud = new Set((refusedFresh || []).flatMap((f) => (f.rows || []).map((r) => r.id)));
         const drop = ruled.filter((x) => !onCloud.has(x.id));
+        try {
+          window.__mxRefusedReasons = { ...window.__mxRefusedReasons || {}, ...Object.fromEntries(drop.map((x) => [x.id, x.reason])) };
+        } catch (e) {
+        }
         if (drop.length) {
           const dropIds = new Set(drop.map((x) => x.id));
           for (const [key, { table }] of Object.entries(SYNC_TABLES)) {
@@ -28134,6 +28491,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       try {
         const res = await pushSyncChanges(client, remote, merged, { skipTables: connectRes.failed, pending: pendingColumnsRef.current, baseIsRemote: true });
         prevDataRef.current = merged;
+        noteLanded(res && res.landed);
         settlePendingRef.current(res.landed, res.refused);
         setPendingCount(0);
         setSyncFailureDetail(null);
@@ -28144,6 +28502,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       } catch (e) {
         console.error("Catch-up push failed:", e);
         prevDataRef.current = advancePrevForTables(remote, merged, e.okTables || []);
+        noteLanded(e && e.landed);
         settlePendingRef.current(e.landed, e.refused);
         setPendingCount(countPendingChanges(prevDataRef.current, merged));
         if (e.failures) setSyncFailureDetail(e.failures);
@@ -28178,6 +28537,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
             try {
               const pushRes = await pushSyncChanges(client, remote2, merged2, { skipTables: res.failed, pending: pendingColumnsRef.current, baseIsRemote: true });
               prevDataRef.current = merged2;
+              noteLanded(pushRes && pushRes.landed);
               settlePendingRef.current(pushRes.landed, pushRes.refused);
               setSyncStatus("connected");
               setPendingCount(0);
@@ -28189,6 +28549,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
             } catch (e) {
               console.error("Offline-recovery push failed:", e);
               prevDataRef.current = advancePrevForTables(remote2, merged2, e.okTables || []);
+              noteLanded(e && e.landed);
               settlePendingRef.current(e.landed, e.refused);
               setPendingCount(countPendingChanges(prevDataRef.current, merged2));
               if (e.failures) setSyncFailureDetail(e.failures);
