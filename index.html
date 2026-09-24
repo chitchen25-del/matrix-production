@@ -2578,6 +2578,140 @@
     }
     return out;
   }
+  var TOOL_SIZE_RE = /(\d+(?:\.\d+)?)\s*[xX]\s*(\d+(?:\.\d+)?)/;
+  function toolRowShape(row) {
+    const t = String(row && row.size || "");
+    const m = t.match(TOOL_SIZE_RE);
+    return {
+      thickness: m ? Number(m[1]) : null,
+      gos: m ? Number(m[2]) : null,
+      double: doubleGapOf(t),
+      narrow: /\bN\s*$/.test(t),
+      colours: String(row && row.comments || "").split(/[,/]/).map((c) => c.trim().toLowerCase()).filter(Boolean)
+    };
+  }
+  function toolingPlaceFor(data, productSize) {
+    const text = String(productSize || "").trim();
+    if (!text) return null;
+    const r = resolveProduct(data, text);
+    let product = r && r.status === "exact" ? r.product : null;
+    if (!product && r && r.candidates && r.candidates.length) {
+      const c = r.candidates, same = (k) => c.every((p) => String(p[k] ?? "") === String(c[0][k] ?? ""));
+      if (same("family") && same("base") && same("thickness") && same("gos") && same("variant")) product = c[0];
+    }
+    const parts = productParts(text);
+    const family = String(product && product.family || (text.match(/^\s*(PX Plus|PX|Smart Formes|Ultra SR|Ken|Speedy Crease|Phoenix XL|Exceed|Profi\w*)/i) || [])[1] || "");
+    const base = String(product && product.base || "").toLowerCase();
+    const num = (v) => v == null || v === "" || !Number.isFinite(Number(v)) ? null : Number(v);
+    const thickness = num(product && product.thickness) ?? parts.thickness;
+    const gos = num(product && product.gos) ?? parts.gos;
+    const double = doubleGapOf(text) || (/^D\d/i.test(String(product && product.variant || "")) ? String(product.variant).toUpperCase() : null);
+    const colour = ((text.match(/\b(mauve|silver|buff|violet|navy|white|sky|lime|yellow|rose|slate|green|brown|red|black|blue|orange|cream|grey|gold|cloud|maroon|bronze|burgundy)\b/i) || [])[1] || "").toLowerCase() || null;
+    const narrow = /\bnarrow\b/i.test(text);
+    const fam = family.toLowerCase();
+    let lists;
+    if (isKenPin(text) || fam === "ken" || fam.startsWith("speedy")) lists = ["ken"];
+    else if (/phoenix xl|exceed|profi/.test(fam)) lists = [];
+    else if (double || base.includes("double")) lists = ["doubles"];
+    else if (isOffCentre(text) || narrow || base.includes("off-centre")) lists = ["offcentre"];
+    else if (isMini(text) || base.includes("mini")) lists = ["mini"];
+    else if (fam === "ultra sr") lists = ["mini", "standard"];
+    else lists = ["standard"];
+    return { lists, thickness, gos, double, colour, narrow, ultra: fam === "ultra sr" || /speedy crease metal/i.test(text) };
+  }
+  function toolingRowsFor(place, tooling) {
+    if (!place) return [];
+    for (const list of place.lists) {
+      const rows = tooling && tooling[list] || [];
+      const shaped = rows.map((r) => ({ r, s: toolRowShape(r) }));
+      const kenPart = (r) => list !== "ken" ? true : place.ultra ? String(r.id).startsWith("ken-mini-") : !String(r.id).startsWith("ken-mini-");
+      const exact = shaped.filter(({ r, s }) => kenPart(r) && s.thickness != null && s.thickness === place.thickness && s.gos === place.gos && (s.double || null) === (place.double || null) && s.narrow === place.narrow);
+      if (exact.length) return exact.map((x) => ({ list, row: x.r }));
+      if (place.ultra && place.colour && (list === "mini" || list === "ken")) {
+        const byColour = shaped.filter(({ r, s }) => kenPart(r) && s.colours.includes(place.colour));
+        if (byColour.length) return byColour.map((x) => ({ list, row: x.r }));
+      }
+    }
+    return [];
+  }
+  function extrusionEvents(data) {
+    const d = data || {}, out = [];
+    const when = (id, date) => {
+      const t = timestampFromUid(id);
+      return t > 15e11 ? t : Date.parse(date || "") || 0;
+    };
+    const has = (e) => [e.pin, e.screwSpeed, e.haulOff, e.height].some((v) => v != null && String(v).trim() !== "");
+    for (const [key, source] of [["extrusion1", "Extruder 1"], ["extrusion2", "Extruder 2"]]) {
+      for (const r of d[key] || []) {
+        if (!r || r.deleted) continue;
+        const e = {
+          source,
+          batch: r.batchNumber || "",
+          productSize: r.productSize || "",
+          pin: r.pinSize || "",
+          screwSpeed: r.screwSpeed || "",
+          haulOff: r.lineSpeed || "",
+          height: r.height || "",
+          date: r.date || "",
+          at: when(r.id, r.date)
+        };
+        if (has(e)) out.push(e);
+      }
+    }
+    for (const b of d.glueLineBatches || []) {
+      if (!b || b.deleted) continue;
+      const s = glueSettingsFor(b, d.glueRuns);
+      if (s.direct !== true) continue;
+      const e = {
+        source: "Glue line (Direct)",
+        batch: b.batchNumber || "",
+        productSize: s.productSize || "",
+        pin: s.extPinSize || "",
+        screwSpeed: s.extScrewSpeed || "",
+        haulOff: s.extLineSpeed || "",
+        height: s.extHeight || "",
+        date: b.date || "",
+        at: when(b.id, b.date)
+      };
+      if (has(e)) out.push(e);
+    }
+    return out;
+  }
+  function lastToolingUse(data, tooling) {
+    const byRow = /* @__PURE__ */ new Map();
+    for (const e of extrusionEvents(data)) {
+      for (const { row } of toolingRowsFor(toolingPlaceFor(data, e.productSize), tooling)) {
+        const had = byRow.get(row.id);
+        if (!had || e.at > had.at) byRow.set(row.id, e);
+      }
+    }
+    return byRow;
+  }
+  function samePin(a, b) {
+    const n = (p) => {
+      const t = String(p || "").toUpperCase().replace(/\s+/g, "");
+      const m = t.match(/^([A-Z]+)(\d+)$/);
+      return m ? m[2] + m[1] : t;
+    };
+    return n(a) === n(b);
+  }
+  function toolingUnplaced(data, tooling) {
+    const out = {};
+    for (const e of extrusionEvents(data)) {
+      const place = toolingPlaceFor(data, e.productSize);
+      if (!place || !place.lists.length || toolingRowsFor(place, tooling).length) continue;
+      if (place.thickness == null || place.gos == null) continue;
+      const list = place.lists[place.lists.length - 1] === "standard" && place.lists.includes("mini") ? "mini" : place.lists[0];
+      const f = (n) => Number(n).toFixed(2);
+      const size = `${f(place.thickness)} x ${f(place.gos)}${place.double ? " " + place.double : ""}${place.narrow ? " N" : list === "offcentre" ? " O/S" : ""}`;
+      const bucket = out[list] ||= /* @__PURE__ */ new Map();
+      const had = bucket.get(size);
+      if (!had || e.at > had.at) bucket.set(size, e);
+    }
+    const res = {};
+    for (const [list, m] of Object.entries(out)) res[list] = [...m.entries()].map(([size, e]) => ({ size, last: e })).sort((a, b) => a.size.localeCompare(b.size));
+    return res;
+  }
 
   // mx_promises.js
   function shelfReservations(...args) {
@@ -10028,7 +10162,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-23.24";
+  var APP_VERSION = "2026-09-24.1";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -19406,20 +19540,21 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     ] })))));
   }
   var ToolingRowFields = ({ values, setValues, lastRunFor }) => /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Product size"), /* @__PURE__ */ React.createElement(TextInput, { placeholder: "e.g. 0.40 x 1.30 or 0.40 x 1.30 D3", value: values.size, onChange: (e) => setValues({ ...values, size: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 110 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Width class"), /* @__PURE__ */ React.createElement(Select, { value: values.widthCategory, onChange: (e) => setValues({ ...values, widthCategory: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Any / not set"), WIDTH_CATEGORIES.map((w) => /* @__PURE__ */ React.createElement("option", { key: w, value: w }, w)))), /* @__PURE__ */ React.createElement("div", { style: { width: 100 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Pin number"), /* @__PURE__ */ React.createElement(TextInput, { value: values.pin, onChange: (e) => setValues({ ...values, pin: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 100 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Screw speed"), /* @__PURE__ */ React.createElement(TextInput, { value: values.screwSpeed, onChange: (e) => setValues({ ...values, screwSpeed: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 80 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Guide"), /* @__PURE__ */ React.createElement(TextInput, { value: values.guide, onChange: (e) => setValues({ ...values, guide: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 90 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Haul off"), /* @__PURE__ */ React.createElement(TextInput, { value: values.haulOff, onChange: (e) => setValues({ ...values, haulOff: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { className: "flex-1 min-w-[160px]" }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Comments"), /* @__PURE__ */ React.createElement(TextInput, { value: values.comments, onChange: (e) => setValues({ ...values, comments: e.target.value }) })));
-  function ToolingCategorySection({ title, rows, setRows, lastRunFor }) {
+  function ToolingCategorySection({ title, rows, setRows, lastRunFor, unplaced = [] }) {
     const undo = useUndoToast();
     const blank = { size: "", pin: "", widthCategory: "", screwSpeed: "", comments: "", guide: "", haulOff: "" };
     const [form, setForm, draftRestored, discardDraft] = useDraftForm("tooling-" + (title || "untitled"), blank);
     const [editingId, setEditingId, editForm, setEditForm, editRestored, discardEdit] = useDraftEdit("edit-tooling-" + (title || "untitled"));
     const { sorted: sortedToolingRows, sortBy: toolSortBy, sortDir: toolSortDir, toggleSort: toolToggleSort } = useSortableRows(
       rows.map((r) => {
-        const run = lastRunFor(r.size, r.widthCategory);
+        const run = lastRunFor(r);
         return {
           ...r,
-          lastPinUsed: run?.pinSize || "\u2014",
+          lastPinUsed: run?.pin || "\u2014",
           lastScrewSpeedUsed: run?.screwSpeed || "\u2014",
-          lastHaulOffUsed: run?.lineSpeed || "\u2014",
-          lastBaseHeight: run?.height || "\u2014"
+          lastHaulOffUsed: run?.haulOff || "\u2014",
+          lastBaseHeight: run?.height || "\u2014",
+          lastFrom: run ? [run.batch, run.source, run.at ? new Date(run.at).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : ""].filter(Boolean).join(" \xB7 ") : ""
         };
       }),
       "size",
@@ -19464,11 +19599,18 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     ), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-2 items-end" }, /* @__PURE__ */ React.createElement(ToolingRowFields, { values: form, setValues: setForm, lastRunFor }), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: addRow }, "+ Add"))), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(SortTh, { col: "size", sortBy: toolSortBy, sortDir: toolSortDir, onSort: toolToggleSort, className: "text-left px-3 py-2", style: { width: 140 } }, "Product size"), /* @__PURE__ */ React.createElement(SortTh, { col: "widthCategory", sortBy: toolSortBy, sortDir: toolSortDir, onSort: toolToggleSort, className: "text-left px-3 py-2", style: { width: 100 } }, "Width class"), /* @__PURE__ */ React.createElement(SortTh, { col: "pin", sortBy: toolSortBy, sortDir: toolSortDir, onSort: toolToggleSort, className: "text-left px-3 py-2", style: { width: 100 } }, "Pin number"), /* @__PURE__ */ React.createElement(Th, { w: 100 }, "Screw speed"), /* @__PURE__ */ React.createElement(Th, null, "Comments"), /* @__PURE__ */ React.createElement(Th, { w: 80 }, "Guide"), /* @__PURE__ */ React.createElement(ThR, { w: 90 }, "Haul off"), /* @__PURE__ */ React.createElement(SortTh, { col: "lastPinUsed", sortBy: toolSortBy, sortDir: toolSortDir, onSort: toolToggleSort, className: "text-left px-3 py-2", style: { width: 110 } }, "Last pin used"), /* @__PURE__ */ React.createElement(SortTh, { col: "lastScrewSpeedUsed", sortBy: toolSortBy, sortDir: toolSortDir, onSort: toolToggleSort, className: "text-right px-3 py-2", style: { width: 120 } }, "Last screw speed"), /* @__PURE__ */ React.createElement(SortTh, { col: "lastHaulOffUsed", sortBy: toolSortBy, sortDir: toolSortDir, onSort: toolToggleSort, className: "text-right px-3 py-2", style: { width: 110 } }, "Last haul off"), /* @__PURE__ */ React.createElement(SortTh, { col: "lastBaseHeight", sortBy: toolSortBy, sortDir: toolSortDir, onSort: toolToggleSort, className: "text-right px-3 py-2", style: { width: 100 } }, "Base height"), /* @__PURE__ */ React.createElement("th", { style: { width: 70 } }))), /* @__PURE__ */ React.createElement("tbody", null, sortedToolingRows.map((r, i) => {
       const isEditing = editingId === r.id;
       const lastPin = r.lastPinUsed;
-      const mismatch = lastPin !== "\u2014" && r.pin && lastPin !== r.pin;
+      const mismatch = lastPin !== "\u2014" && r.pin && !samePin(lastPin, r.pin);
       const screwMismatch = r.lastScrewSpeedUsed !== "\u2014" && r.screwSpeed && String(r.lastScrewSpeedUsed) !== String(r.screwSpeed);
       const haulOffMismatch = r.lastHaulOffUsed !== "\u2014" && r.haulOff && String(r.lastHaulOffUsed) !== String(r.haulOff);
-      return /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}`, background: isEditing ? "#FFF8EF" : void 0 } }, isEditing ? /* @__PURE__ */ React.createElement("td", { className: "px-3 py-2", colSpan: 10 }, /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-2 items-end" }, /* @__PURE__ */ React.createElement(ToolingRowFields, { values: editForm, setValues: setEditForm, lastRunFor }))) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 no-wrap" }, /* @__PURE__ */ React.createElement(Spec, { s: r.size })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.widthCategory ? /* @__PURE__ */ React.createElement(Badge, { color: NAVY }, r.widthCategory) : /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.pin || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, r.screwSpeed || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.comments || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.guide || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, r.haulOff || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs", style: { color: mismatch ? RED : lastPin === "\u2014" ? INK_MUTED : GREEN } }, lastPin)), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs", style: { color: screwMismatch ? RED : r.lastScrewSpeedUsed === "\u2014" ? INK_MUTED : GREEN } }, r.lastScrewSpeedUsed)), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs", style: { color: haulOffMismatch ? RED : r.lastHaulOffUsed === "\u2014" ? INK_MUTED : GREEN } }, r.lastHaulOffUsed)), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs", style: { color: r.lastBaseHeight === "\u2014" ? INK_MUTED : INK } }, r.lastBaseHeight))), /* @__PURE__ */ React.createElement("td", { className: "px-2 whitespace-nowrap" }, isEditing ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: saveEdit, title: "Save", className: "opacity-60 hover:opacity-100 px-1", style: { color: GREEN } }, "\u2713"), /* @__PURE__ */ React.createElement("button", { onClick: cancelEdit, title: "Cancel", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: () => startEdit(r), title: "Edit", className: "opacity-40 hover:opacity-100 px-1" }, "\u270E"), /* @__PURE__ */ React.createElement("button", { onClick: () => removeRow(r.id), title: "Delete", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715"))));
-    }), rows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 11 }, "No sizes yet.")))));
+      return /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}`, background: isEditing ? "#FFF8EF" : void 0 } }, isEditing ? /* @__PURE__ */ React.createElement("td", { className: "px-3 py-2", colSpan: 10 }, /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-2 items-end" }, /* @__PURE__ */ React.createElement(ToolingRowFields, { values: editForm, setValues: setEditForm, lastRunFor }))) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 no-wrap" }, /* @__PURE__ */ React.createElement(Spec, { s: r.size })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.widthCategory ? /* @__PURE__ */ React.createElement(Badge, { color: NAVY }, r.widthCategory) : /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.pin || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, r.screwSpeed || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.comments || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, r.guide || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, r.haulOff || ""), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs", style: { color: mismatch ? RED : lastPin === "\u2014" ? INK_MUTED : GREEN } }, lastPin), r.lastFrom && /* @__PURE__ */ React.createElement("div", { className: "text-[10px] leading-tight", style: { color: INK_MUTED }, "data-last-from": true }, r.lastFrom)), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs", style: { color: screwMismatch ? RED : r.lastScrewSpeedUsed === "\u2014" ? INK_MUTED : GREEN } }, r.lastScrewSpeedUsed)), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs", style: { color: haulOffMismatch ? RED : r.lastHaulOffUsed === "\u2014" ? INK_MUTED : GREEN } }, r.lastHaulOffUsed)), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 text-right" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs", style: { color: r.lastBaseHeight === "\u2014" ? INK_MUTED : INK } }, r.lastBaseHeight))), /* @__PURE__ */ React.createElement("td", { className: "px-2 whitespace-nowrap" }, isEditing ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: saveEdit, title: "Save", className: "opacity-60 hover:opacity-100 px-1", style: { color: GREEN } }, "\u2713"), /* @__PURE__ */ React.createElement("button", { onClick: cancelEdit, title: "Cancel", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: () => startEdit(r), title: "Edit", className: "opacity-40 hover:opacity-100 px-1" }, "\u270E"), /* @__PURE__ */ React.createElement("button", { onClick: () => removeRow(r.id), title: "Delete", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715"))));
+    }), rows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 11 }, "No sizes yet.")))), unplaced.length > 0 && /* Extruded, and this list has no row for the size. Shown, never dropped;
+       Add puts it on the sheet with the settings last used, for Chris to
+       correct if the reference should differ. (24 Sep 2026) */
+    /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mt-3", "data-tooling-unplaced": true }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Extruded but not on this list (", unplaced.length, ")"), unplaced.map((u) => /* @__PURE__ */ React.createElement("div", { key: u.size, className: "flex flex-wrap items-center gap-3 py-1.5 text-sm", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("span", { style: { minWidth: 130 } }, /* @__PURE__ */ React.createElement(Spec, { s: u.size })), /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, "pin ", u.last.pin || "\u2014", " \xB7 screw ", u.last.screwSpeed || "\u2014", " \xB7 haul off ", u.last.haulOff || "\u2014", " \xB7 height ", u.last.height || "\u2014"), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, [u.last.batch, u.last.source].filter(Boolean).join(" \xB7 ")), /* @__PURE__ */ React.createElement(Button, { onClick: () => {
+      const newRow = { id: uid("tool"), size: u.size, pin: u.last.pin || "", widthCategory: "", screwSpeed: u.last.screwSpeed || "", comments: "", guide: "", haulOff: u.last.haulOff || "" };
+      setRows((prevRows) => [...prevRows, newRow]);
+      undo.offer(`tooling ${newRow.size}`, () => setRows((rs) => rs.filter((r) => r.id !== newRow.id)));
+    } }, "+ Add to sheet")))));
   }
   function undoLogEntry(data, setData, entry) {
     const { entity, action, entityId, before, after } = entry;
@@ -22150,15 +22292,16 @@ Plan it?`
   }
   function BaselineToolingView({ data, setData }) {
     const tooling = normalizeTooling(data.tooling);
-    const allExtrusionRuns = [...data.extrusion1 || [], ...data.extrusion2 || []];
     const [subTab, setSubTab] = useState("standard");
-    const lastRunFor = (size, widthCategory) => {
-      const bareSize = size.replace(/ (D[\d.]+|O\/S|N)$/i, "").trim();
-      const candidates = allExtrusionRuns.filter((r) => r.productSize && r.productSize.toLowerCase().includes(bareSize.toLowerCase()));
-      const scoped = widthCategory ? candidates.filter((r) => r.widthCategory === widthCategory) : candidates;
-      if (scoped.length === 0) return null;
-      return scoped.reduce((best, r) => timestampFromUid(r.id) > timestampFromUid(best.id) ? r : best);
-    };
+    const lastUse = useMemo(
+      () => lastToolingUse(data, tooling),
+      [data.extrusion1, data.extrusion2, data.glueLineBatches, data.glueRuns, data.products, data.productAliases, data.tooling]
+    );
+    const lastRunFor = (row) => lastUse.get(row.id) || null;
+    const unplacedByList = useMemo(
+      () => toolingUnplaced(data, tooling),
+      [data.extrusion1, data.extrusion2, data.glueLineBatches, data.glueRuns, data.products, data.productAliases, data.tooling]
+    );
     const setCategory = (key, updater) => setData((prevData) => ({
       ...prevData,
       tooling: { ...prevData.tooling, [key]: typeof updater === "function" ? updater(prevData.tooling[key]) : updater }
@@ -22170,7 +22313,7 @@ Plan it?`
       { key: "doubles", label: "Doubles" },
       { key: "ken", label: "Ken (K pins)" }
     ];
-    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Extrusion tooling", subtitle: "Reference sizes and tooling. The pin, screw speed, haul off, and base height actually last used on Extrusion (either machine) are pulled in automatically and shown in red if they don't match your reference values. Add new sizes any time." }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-5 flex-wrap" }, subTabs.map((t) => /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Extrusion tooling", subtitle: "Reference sizes and tooling. The pin, screw speed, haul off and base height last used are pulled in automatically from every extrusion \u2014 Extruder 1, Extruder 2 and Direct reels on the glue line \u2014 onto the list the product belongs to, and shown in red if they don't match your reference values. Add new sizes any time." }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-5 flex-wrap" }, subTabs.map((t) => /* @__PURE__ */ React.createElement(
       "button",
       {
         key: t.key,
@@ -22185,7 +22328,7 @@ Plan it?`
       t.label,
       " ",
       /* @__PURE__ */ React.createElement("span", { style: { opacity: 0.7 } }, "(", (tooling[t.key] || []).length, ")")
-    ))), subTab === "standard" && /* @__PURE__ */ React.createElement(ToolingCategorySection, { title: "Standard Centre", rows: tooling.standard, setRows: (r) => setCategory("standard", r), lastRunFor }), subTab === "mini" && /* @__PURE__ */ React.createElement(ToolingCategorySection, { title: "Mini Matrix Centre", rows: tooling.mini, setRows: (r) => setCategory("mini", r), lastRunFor }), subTab === "offcentre" && /* @__PURE__ */ React.createElement(ToolingCategorySection, { title: "Off Centre", rows: tooling.offcentre, setRows: (r) => setCategory("offcentre", r), lastRunFor }), subTab === "doubles" && /* @__PURE__ */ React.createElement(ToolingCategorySection, { title: "Doubles", rows: tooling.doubles, setRows: (r) => setCategory("doubles", r), lastRunFor }), subTab === "ken" && /* @__PURE__ */ React.createElement(ToolingCategorySection, { title: "Ken (K pins)", rows: tooling.ken, setRows: (r) => setCategory("ken", r), lastRunFor }));
+    ))), subTab === "standard" && /* @__PURE__ */ React.createElement(ToolingCategorySection, { title: "Standard Centre", rows: tooling.standard, setRows: (r) => setCategory("standard", r), lastRunFor, unplaced: unplacedByList.standard || [] }), subTab === "mini" && /* @__PURE__ */ React.createElement(ToolingCategorySection, { title: "Mini Matrix Centre", rows: tooling.mini, setRows: (r) => setCategory("mini", r), lastRunFor, unplaced: unplacedByList.mini || [] }), subTab === "offcentre" && /* @__PURE__ */ React.createElement(ToolingCategorySection, { title: "Off Centre", rows: tooling.offcentre, setRows: (r) => setCategory("offcentre", r), lastRunFor, unplaced: unplacedByList.offcentre || [] }), subTab === "doubles" && /* @__PURE__ */ React.createElement(ToolingCategorySection, { title: "Doubles", rows: tooling.doubles, setRows: (r) => setCategory("doubles", r), lastRunFor, unplaced: unplacedByList.doubles || [] }), subTab === "ken" && /* @__PURE__ */ React.createElement(ToolingCategorySection, { title: "Ken (K pins)", rows: tooling.ken, setRows: (r) => setCategory("ken", r), lastRunFor, unplaced: unplacedByList.ken || [] }));
   }
   function useSortableRows(rows, defaultCol, defaultDir = "asc") {
     const [sortBy, setSortBy] = useState(defaultCol);
