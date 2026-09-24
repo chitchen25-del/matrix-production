@@ -8085,11 +8085,8 @@ ${line}` : line;
   function unreadFromCustomers(data) {
     return (data.orderMessages || []).filter((m) => !m.deleted && m.authorSide === "customer" && !m.readAt).length;
   }
-  function shippingManifestDoc(order) {
-    const m = order && order.shippingManifest;
-    if (!m) return null;
-    const esc2 = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
-    const n2 = (v) => (Number(v) || 0).toFixed(2);
+  function manifestPallets(order) {
+    const m = order && order.shippingManifest || {};
     let pallets = Array.isArray(m.pallets) ? m.pallets : [];
     if (!pallets.length) {
       const assignments = liveMapEntries(order.palletAssignments || {});
@@ -8117,7 +8114,14 @@ ${line}` : line;
         };
       });
     }
-    pallets = pallets.map((p) => ({ ...p, dims: p.dims || (order.palletDims || {})[p.label] || null }));
+    return pallets.map((p) => ({ ...p, dims: p.dims || (order.palletDims || {})[p.label] || null }));
+  }
+  function shippingManifestDoc(order) {
+    const m = order && order.shippingManifest;
+    if (!m) return null;
+    const esc2 = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+    const n2 = (v) => (Number(v) || 0).toFixed(2);
+    const pallets = manifestPallets(order);
     const goodsTotal = pallets.length ? pallets.reduce((t, p) => t + (Number(p.goods) || 0), 0) : Number(m.goodsWeight) || Number(m.totalWeight) || 0;
     const tareTotal = pallets.length ? pallets.reduce((t, p) => t + (Number(p.tare) || 0), 0) : Number(m.tareWeight) || 0;
     const grossTotal = Math.round((goodsTotal + tareTotal) * 100) / 100;
@@ -8293,6 +8297,57 @@ ${line}` : line;
     <div class="sub">${esc2(day)} ${esc2(time)} \xB7 ${list.length} product${list.length === 1 ? "" : "s"} \xB7 ${total} boxes \xB7 after what's already made and on the shelf</div>
     ${list.length ? `<table><colgroup><col class="cp"><col class="cn"><col class="cf"></colgroup><thead><tr><th>Product</th><th class="n">Make</th><th>For</th></tr></thead><tbody>${body}</tbody></table>` : `<p>Nothing to make in ${esc2(group || "this group")} \u2014 every order is covered.</p>`}
   </body></html>`;
+  }
+  var ACCOUNTS_EMAIL = "accounts@creasingmatrix.com";
+  function shippingManifestEmail(order, { maxUrl = 1900 } = {}) {
+    const m = order && order.shippingManifest;
+    if (!m) return null;
+    const n2 = (v) => (Number(v) || 0).toFixed(2);
+    const short = (t) => String(t || "").replace(/\s*\((\d+(\.\d+)?)m\)\s*$/, "").trim();
+    const rows = Array.isArray(m.caseRows) ? m.caseRows : [];
+    const pallets = manifestPallets(order);
+    const byProduct = /* @__PURE__ */ new Map();
+    let boxes = 0, caseWeights = 0;
+    const caseLines = rows.map((c) => {
+      const parts = /* @__PURE__ */ new Map();
+      for (const r of c.contributions || []) {
+        const q = Number(r.qty) || 0;
+        if (!q) continue;
+        const k = short(r.spec);
+        parts.set(k, (parts.get(k) || 0) + q);
+        byProduct.set(k, (byProduct.get(k) || 0) + q);
+        boxes += q;
+      }
+      const w = Number(c.weight) || 0;
+      caseWeights += w;
+      return `Case ${c.caseNum}: ${[...parts].map(([k, q]) => `${q} x ${k}`).join(", ") || "empty"}${w ? ` - ${n2(w)} kg` : ""}`;
+    });
+    const goods = pallets.length ? pallets.reduce((t, p) => t + (Number(p.goods) || 0), 0) : Number(m.goodsWeight) || Number(m.totalWeight) || caseWeights;
+    const tare = pallets.length ? pallets.reduce((t, p) => t + (Number(p.tare) || 0), 0) : Number(m.tareWeight) || 0;
+    const shipped = m.shippedDate || order.shippedDate || "";
+    const subject = `Shipping manifest ${order.id} - ${order.customer || ""}${shipped ? ` - shipped ${shipped}` : ""}`;
+    const head = [
+      `Shipping manifest - ${order.customer || ""}`,
+      `Order ${order.id}${order.customerRef ? ` - their ref ${order.customerRef}` : ""}${shipped ? ` - shipped ${shipped}` : ""}`,
+      "",
+      "Products",
+      ...[...byProduct].sort((a, b) => a[0].localeCompare(b[0], void 0, { numeric: true })).map(([k, q]) => `  ${k}: ${q} box${q === 1 ? "" : "es"}`),
+      "",
+      `Total: ${rows.length} case${rows.length === 1 ? "" : "s"}, ${boxes} boxes. Net weight ${n2(goods)} kg. Gross weight ${n2(goods + tare)} kg.`,
+      "",
+      ...pallets.length ? ["Pallets", ...pallets.map((p) => {
+        const d = p.dims || {};
+        const dims = Number(d.w) > 0 && Number(d.d) > 0 && Number(d.h) > 0 ? ` ${d.w} x ${d.d} x ${d.h} cm.` : " Dimensions not recorded.";
+        return `  Pallet ${p.label} - cases ${caseRangeLabel(p.cases)}.${dims} Goods ${n2(p.goods)} kg + pallet ${n2(p.tare)} kg = ${n2(p.gross)} kg.`;
+      }), ""] : ["Not shipped on a pallet.", ""]
+    ];
+    const foot = ["", "All the above items are creasing matrix - plastic extrusions, used in the folding carton industry. HS Code 3921 1200 90.", "", "Matrix Engineering Ltd"];
+    const caseList = ["Case by case", ...caseLines].join("\n");
+    const full = [...head, caseList, ...foot].join("\n");
+    const urlFor = (body) => `mailto:${ACCOUNTS_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    if (urlFor(full).length <= maxUrl) return { to: ACCOUNTS_EMAIL, subject, body: full, url: urlFor(full), caseList, trimmed: false };
+    const cut = [...head, `Case by case: ${rows.length} cases - too long for an email link. Paste the copied list here, or print the manifest from the order.`, ...foot].join("\n");
+    return { to: ACCOUNTS_EMAIL, subject, body: cut, url: urlFor(cut), caseList, trimmed: true };
   }
 
   // mx_sync.js
@@ -10240,7 +10295,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-24.4";
+  var APP_VERSION = "2026-09-24.5";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -15093,7 +15148,22 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
           return;
         }
         setShippedPrintJob({ order: o });
-      } }, "\u{1F5A8} Shipping manifest")), lineEditMode && /* @__PURE__ */ React.createElement(OrderCustomerField, { order: o, data, updateOrder }), /* @__PURE__ */ React.createElement("div", { className: "mb-3", style: { maxWidth: 420 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Address (shown on the printed packing list)"), /* @__PURE__ */ React.createElement(
+      } }, "\u{1F5A8} Shipping manifest"), (o.stage === "Shipped" || mode === "completed") && o.shippingManifest && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", "data-email-accounts": o.id, onClick: () => {
+        const isWindows = typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent || "");
+        const mail = shippingManifestEmail(o, { maxUrl: isWindows ? 1900 : 12e3 });
+        if (!mail) return;
+        if (mail.trimmed) {
+          try {
+            navigator.clipboard && navigator.clipboard.writeText(mail.caseList);
+          } catch (e) {
+          }
+          setShipError({ ...shipError, [o.id]: "The case-by-case list was too long for the email link. It's copied - paste it into the email before sending." });
+        }
+        try {
+          window.location.href = mail.url;
+        } catch (e) {
+        }
+      } }, "\u2709 Email accounts")), lineEditMode && /* @__PURE__ */ React.createElement(OrderCustomerField, { order: o, data, updateOrder }), /* @__PURE__ */ React.createElement("div", { className: "mb-3", style: { maxWidth: 420 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Address (shown on the printed packing list)"), /* @__PURE__ */ React.createElement(
         TextInput,
         {
           value: o.address || "",
