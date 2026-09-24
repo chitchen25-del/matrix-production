@@ -10295,7 +10295,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-24.5";
+  var APP_VERSION = "2026-09-24.6";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -15148,21 +15148,18 @@ ${skipped.length} line${skipped.length === 1 ? " is" : "s are"} NOT ticked and w
           return;
         }
         setShippedPrintJob({ order: o });
-      } }, "\u{1F5A8} Shipping manifest"), (o.stage === "Shipped" || mode === "completed") && o.shippingManifest && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", "data-email-accounts": o.id, onClick: () => {
-        const isWindows = typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent || "");
-        const mail = shippingManifestEmail(o, { maxUrl: isWindows ? 1900 : 12e3 });
-        if (!mail) return;
-        if (mail.trimmed) {
+      } }, "\u{1F5A8} Shipping manifest"), (o.stage === "Shipped" || mode === "completed") && o.shippingManifest && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => {
+        const mail = shippingManifestEmail(o, { maxUrl: 1e5 });
+        const html = shippingManifestDoc(o);
+        if (!mail || !html) return;
+        const url = `mailto:${mail.to}?subject=${encodeURIComponent(mail.subject)}`;
+        copyManifestForEmail(html, mail.body).then((ok) => {
+          setShipError({ ...shipError, [o.id]: ok ? "The shipping manifest is copied. In the email: press and hold in the body, tap Paste, then Send." : "Couldn't copy the manifest on this device - use \u{1F5A8} Shipping manifest instead." });
           try {
-            navigator.clipboard && navigator.clipboard.writeText(mail.caseList);
+            window.location.href = url;
           } catch (e) {
           }
-          setShipError({ ...shipError, [o.id]: "The case-by-case list was too long for the email link. It's copied - paste it into the email before sending." });
-        }
-        try {
-          window.location.href = mail.url;
-        } catch (e) {
-        }
+        });
       } }, "\u2709 Email accounts")), lineEditMode && /* @__PURE__ */ React.createElement(OrderCustomerField, { order: o, data, updateOrder }), /* @__PURE__ */ React.createElement("div", { className: "mb-3", style: { maxWidth: 420 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Address (shown on the printed packing list)"), /* @__PURE__ */ React.createElement(
         TextInput,
         {
@@ -17260,6 +17257,97 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     const mapChange = (l) => l.action === "move" || l.action === "short_ship" || /amend/i.test(l.action || "") || /amendment/i.test(l.summary || "");
     const changes = printed ? log.filter((l) => mapChange(l) && String(l.at) > String(printed.at)) : [];
     return { printedAt: printed ? printed.at : null, changedSince: changes.length, lastChange: changes.sort((a, b) => String(b.at).localeCompare(String(a.at)))[0] || null };
+  }
+  var EMAIL_STYLE_PROPS = [
+    "border-top",
+    "border-right",
+    "border-bottom",
+    "border-left",
+    "border-collapse",
+    "font-size",
+    "font-weight",
+    "font-family",
+    "text-align",
+    "vertical-align",
+    "padding",
+    "margin",
+    "background-color",
+    "color",
+    "width",
+    "height",
+    "line-height",
+    "white-space"
+  ];
+  function manifestHtmlForEmail(docHtml) {
+    return new Promise((resolve) => {
+      const frame = document.createElement("iframe");
+      frame.setAttribute("aria-hidden", "true");
+      frame.style.cssText = "position:fixed;left:-10000px;top:0;width:1100px;height:800px;border:0;";
+      document.body.appendChild(frame);
+      const done = (out) => {
+        try {
+          frame.remove();
+        } catch (e) {
+        }
+        resolve(out);
+      };
+      frame.onload = () => {
+        try {
+          const doc = frame.contentDocument, win = frame.contentWindow;
+          for (const el of [...doc.body.querySelectorAll("*")].filter((e) => win.getComputedStyle(e).display === "flex")) {
+            const kids = [...el.children];
+            const t = doc.createElement("table");
+            t.setAttribute("width", "100%");
+            t.setAttribute("cellspacing", "0");
+            t.setAttribute("cellpadding", "0");
+            t.setAttribute("style", `width:100%;border-collapse:collapse;margin-top:${win.getComputedStyle(el).marginTop};border-bottom:${win.getComputedStyle(el).borderBottom}`);
+            const tr = doc.createElement("tr");
+            kids.forEach((k, i) => {
+              const td = doc.createElement("td");
+              td.setAttribute("valign", i ? "bottom" : "top");
+              td.setAttribute("style", `border:0;padding:0 0 2px;vertical-align:${el.classList.contains("lh") ? "top" : "bottom"};text-align:${i === kids.length - 1 && kids.length > 1 ? "right" : "left"}`);
+              td.appendChild(k);
+              tr.appendChild(td);
+            });
+            t.appendChild(tr);
+            el.replaceWith(t);
+          }
+          for (const el of doc.body.querySelectorAll("*")) {
+            if (el.tagName === "TABLE" && el.getAttribute("cellpadding") === "0") continue;
+            if (el.tagName === "TR" && el.parentNode && el.parentNode.getAttribute && el.parentNode.getAttribute("cellpadding") === "0") continue;
+            if (el.tagName === "TD" && el.parentNode && el.parentNode.parentNode && el.parentNode.parentNode.getAttribute && el.parentNode.parentNode.getAttribute("cellpadding") === "0") continue;
+            const cs = win.getComputedStyle(el);
+            el.setAttribute("style", EMAIL_STYLE_PROPS.map((p) => `${p}:${cs.getPropertyValue(p)}`).join(";"));
+            if (el.tagName === "TABLE" && el.getAttribute("cellpadding") !== "0") {
+              el.setAttribute("cellspacing", "0");
+              el.setAttribute("cellpadding", "2");
+              el.setAttribute("border", "1");
+            }
+            if (el.tagName === "IMG") {
+              el.setAttribute("width", "160");
+              el.setAttribute("style", "width:160px;height:auto;display:block;border:0");
+            }
+          }
+          done(`<div style="font-family:Arial,sans-serif;color:#000">${doc.body.innerHTML}</div>`);
+        } catch (e) {
+          done(null);
+        }
+      };
+      frame.srcdoc = docHtml;
+      setTimeout(() => done(null), 4e3);
+    });
+  }
+  function copyManifestForEmail(docHtml, plainText) {
+    try {
+      const Item = typeof window !== "undefined" ? window.ClipboardItem : void 0;
+      if (Item && navigator.clipboard && navigator.clipboard.write) {
+        const htmlBlob = manifestHtmlForEmail(docHtml).then((h) => new Blob([h || ""], { type: "text/html" }));
+        const textBlob = Promise.resolve(new Blob([plainText || ""], { type: "text/plain" }));
+        return navigator.clipboard.write([new Item({ "text/html": htmlBlob, "text/plain": textBlob })]).then(() => true, () => false);
+      }
+    } catch (e) {
+    }
+    return Promise.resolve(false);
   }
   function OrderPaperwork({ order, data, setData, onOpenPacking }) {
     const st = packingListStatus(data, order.id);
