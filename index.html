@@ -10677,7 +10677,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-24.9";
+  var APP_VERSION = "2026-09-24.10";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -10828,7 +10828,7 @@ ${line}` : line;
             }
             if (opts.baseIsRemote && !owed && !(actor && authorOf.get(r.id) === String(actor).trim().toLowerCase())) continue;
             let patch = rowPatch(before, r);
-            if (opts.baseIsRemote && owed) {
+            if (owed && owed !== "*" && (opts.baseIsRemote || opts.pending)) {
               const cols = owedCols(owed);
               if (patch) {
                 for (const k of Object.keys(patch)) if (!cols.includes(k)) delete patch[k];
@@ -10837,6 +10837,7 @@ ${line}` : line;
               const settled = cols.filter((c) => !(patch && c in patch));
               if (settled.length) landed.push({ table, id: r.id, cols: settled, stamp: r.updated_at, values: Object.fromEntries(settled.map((c) => [c, r[c]])) });
             }
+            if (typeof window !== "undefined" && Array.isArray(window.__mxPushLog)) window.__mxPushLog.push({ table, id: r.id, owed: owed || null, remote: !!opts.baseIsRemote, pend: !!opts.pending, cols: patch ? Object.keys(patch) : [] });
             if (!patch) continue;
             patches.push({
               id: r.id,
@@ -27664,6 +27665,13 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       return () => document.removeEventListener("wheel", guard, { capture: true });
     }, []);
     const [storedData, setDataRaw] = useState(() => retireFossils(loadData()));
+    const mergeNow = (fn) => {
+      try {
+        if (typeof ReactDOM !== "undefined" && ReactDOM.flushSync) return ReactDOM.flushSync(fn);
+      } catch (e) {
+      }
+      return fn();
+    };
     const setDataRef = useRef(null);
     const setData = (updater) => {
       setDataRaw((prevStored) => {
@@ -28086,7 +28094,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       const flush = () => {
         if (syncStatus === "connected" && syncClientRef.current) {
           const prev = prevDataRef.current;
-          pushSyncChanges(syncClientRef.current, prev, storedData).then((res) => {
+          pushSyncChanges(syncClientRef.current, prev, storedData, { pending: pendingColumnsRef.current }).then((res) => {
             prevDataRef.current = advancePrevForTables(prev, storedData, res.okTables);
             settlePendingRef.current(res.landed, res.refused);
             if (res.refused && res.refused.length) reconcileRefusedRowsRef.current(res.refused, res.refusedFresh);
@@ -28203,7 +28211,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       };
       setPendingCount(countPendingChanges(prev, storedData));
       setSyncStatus("saving");
-      pushSyncChanges(syncClientRef.current, prev, storedData).then((res) => {
+      pushSyncChanges(syncClientRef.current, prev, storedData, { pending: pendingColumnsRef.current }).then((res) => {
         prevDataRef.current = storedData;
         setSyncStatus("connected");
         setPendingCount(0);
@@ -28421,7 +28429,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         {
           const x = retireFossils(syncCaseRowsToLedger(merged, null));
           mergeBaseRef.current = x;
-          setDataRaw(x);
+          mergeNow(() => setDataRaw(x));
         }
         prevDataRef.current = merged;
         setPendingCount(0);
@@ -28450,11 +28458,11 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         noteWatermarks(res);
         const remote = res.data;
         skipNextPushRef.current = true;
-        setDataRaw((prevData) => {
+        mergeNow(() => setDataRaw((prevData) => {
           const x = retireFossils(syncCaseRowsToLedger(mergeRemoteIntoData(prevData, remote), null));
           mergeBaseRef.current = x;
           return x;
-        });
+        }));
         setSyncStatus("connected");
         flash("Refreshed from cloud");
       } catch (e) {
@@ -28487,7 +28495,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       {
         const x = retireFossils(syncCaseRowsToLedger(merged, null));
         mergeBaseRef.current = x;
-        setDataRaw(x);
+        mergeNow(() => setDataRaw(x));
       }
       localStorage.setItem(SYNC_PREF_KEY, "true");
       localStorage.setItem("matrixSyncEmail", email);
@@ -28528,11 +28536,11 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           const baseUsed = dataRef.current;
           const merged2 = mergeRemoteIntoData(baseUsed, remote2);
           const x0 = retireFossils(syncCaseRowsToLedger(merged2, null));
-          setDataRaw((prev) => {
+          mergeNow(() => setDataRaw((prev) => {
             const x = prev === baseUsed ? x0 : retireFossils(syncCaseRowsToLedger(mergeRemoteIntoData(prev, remote2), null));
             mergeBaseRef.current = x;
             return x;
-          });
+          }));
           markSynced();
           if (typeof window.__mxAfterMerge === "function") {
             try {
