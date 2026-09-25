@@ -8080,6 +8080,10 @@ ${line}` : line;
       }
       const mpb = Number(l.mpb) || 0, boxes = Number(l.boxes) || 0;
       const pool = byPool.get(l.pool) || [];
+      if (!(mpb > 0)) {
+        out.set(l.id, { use: [], spare: pool.filter((r) => (left.get(r.code) || 0) > 0).length, short: 0, noReel: pool.length === 0, known: false });
+        continue;
+      }
       let need = mpb > 0 ? boxes * mpb : 0;
       const use = [];
       if (mpb > 0) for (const r of pool) {
@@ -8099,10 +8103,11 @@ ${line}` : line;
   }
   var reelCell = (esc2, p) => {
     if (!p) return "";
+    if (p.known === false) return `<span class="rs">reel length? \u2014 not in the catalogue</span>${p.spare ? ` <span class="rg">(${p.spare} on the rack)</span>` : ""}`;
     if (!p.use.length) return `<span class="rs">no reel \u2014 glue line</span>`;
     return `${p.use.map((u) => `<span class="rc">${esc2(u.code)}${u.unchecked ? "*" : ""}</span>`).join(", ")}${p.spare ? ` <span class="rg">+${p.spare}</span>` : ""}`;
   };
-  var reelMark = (p) => !p ? "" : p.short > 0 ? `<span class="rs">${p.short} short</span>` : `<span class="rk">\u2713</span>`;
+  var reelMark = (p) => !p ? "" : p.known === false ? `<span class="rs">?</span>` : p.short > 0 ? `<span class="rs">${p.short} short</span>` : `<span class="rk">\u2713</span>`;
   var REEL_CSS = `.rc { font-family: "Courier New", monospace; font-weight: 700; } .rg { color: #555; } .rs { color: #b3261e; font-weight: 700; } .rk { color: #1d6b3a; font-weight: 700; } .key { font-size: 8.5pt; color: #444; margin-top: 8px; }`;
   var REEL_KEY = `<div class="key">\u2713 the reels cover it &nbsp;\xB7&nbsp; +2 = spare reels of that size on the rack &nbsp;\xB7&nbsp; * not checked yet &nbsp;\xB7&nbsp; use the reels in the order shown</div>`;
   function productionSheetDoc(rows, { title = "Production list", group = "", when = /* @__PURE__ */ new Date(), reels = null } = {}) {
@@ -8640,8 +8645,10 @@ ${line}` : line;
       widthChangeMin: "width_change_min",
       saturdayGlueHours: "saturday_glue_hours",
       saturdayBondHours: "saturday_bond_hours",
-      packingDays: "packing_days"
+      packingDays: "packing_days",
+      glueEntry: "glue_entry"
     } },
+    // the glue line entry form, shared between devices (25 Sep 2026)
     materials: { table: "materials", cols: { currentStock: "current_stock", lastStockTakeDate: "last_stock_take_date", batchCode: "batch_code" } },
     materialMovements: { table: "material_movements", cols: { materialId: "material_id", sourceType: "source_type", sourceId: "source_id" } },
     // reelsMade is the only numeric here. Screw speed, line speed and width are
@@ -10540,7 +10547,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-24.15";
+  var APP_VERSION = "2026-09-24.17";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -14376,10 +14383,50 @@ ${k.flag}`);
         }
         const used = (prevData.cases || []).filter((c) => !c.deleted && c.orderId === orderId).map((c) => Number(c.caseNum));
         const startAt = used.length ? Math.max(...used) : Number((prevData.orders.find((o) => o.id === orderId) || {}).startingCaseNum) || 0;
-        const rows = planRowsForNewOrder(orderId, plannable, { startingCaseNum: startAt, actor: currentActor(), data: prevData });
+        const stamp = (/* @__PURE__ */ new Date()).toISOString();
+        let remaining = Number(newLi.qty) || 0;
+        const topUps = /* @__PURE__ */ new Map();
+        if (plannable.length === 1 && remaining > 0) {
+          const liveCases = (prevData.cases || []).filter((c) => c && !c.deleted && c.orderId === orderId).sort((x, y) => Number(x.caseNum) - Number(y.caseNum));
+          const packed = new Set((prevData.movements || []).filter((m) => m && !m.deleted && m.orderId === orderId && m.caseNum != null && (m.kind === "placed" || m.kind === "unplaced")).map((m) => Number(m.caseNum)));
+          const tail = [];
+          for (let i = liveCases.length - 1; i >= 0; i--) {
+            if (packed.has(Number(liveCases[i].caseNum))) break;
+            tail.unshift(liveCases[i]);
+          }
+          const rangeOf = (s) => String(s || "").replace(/\s*\d.*$/, "").trim().toUpperCase();
+          const reel = isReelSpec(lineDesc);
+          for (const c of tail) {
+            if (remaining <= 0) break;
+            const plan = casePlanned(c);
+            const keys = Object.keys(plan);
+            if (!keys.length || isReelCase(c) !== reel || keys.some((k) => isReelSpec(k) !== reel || rangeOf(k) !== rangeOf(lineDesc))) continue;
+            const cap = reel ? 10 : CASE_MAX_SIZE_DEFAULT;
+            const had = Object.values(plan).reduce((s, q) => s + (Number(q) || 0), 0);
+            const room = cap - had;
+            if (room <= 0) continue;
+            const n = Math.min(room, remaining);
+            const total = had + n;
+            const size = reel ? 10 : (BOX_CASE_SIZES || []).slice().sort((x, y) => x - y).find((z) => z >= total) || CASE_MAX_SIZE_DEFAULT;
+            topUps.set(c.id, { planned: { ...plan, [lineDesc]: (Number(plan[lineDesc]) || 0) + n }, maxSize: size });
+            remaining -= n;
+          }
+        }
+        const rows = remaining > 0 ? planRowsForNewOrder(orderId, topUps.size ? plannable.map((l) => ({ ...l, qty: remaining })) : plannable, { startingCaseNum: startAt, actor: currentActor(), data: prevData }) : [];
+        const casesNow = (prevData.cases || []).map((c) => topUps.has(c.id) ? { ...c, ...topUps.get(c.id), updatedAt: stamp } : c);
+        if (!rows.length) return {
+          ...withLine,
+          cases: casesNow,
+          ...appendLog(prevData, {
+            action: "packing_planned",
+            entity: "order",
+            entityId: orderId,
+            summary: `Added "${description}" to ${orderId} \u2014 planned into the room in case ${[...topUps.keys()].map((id) => (casesNow.find((c) => c.id === id) || {}).caseNum).join(" and ")}`
+          })
+        };
         return {
           ...withLine,
-          cases: [...prevData.cases || [], ...rows],
+          cases: [...casesNow, ...rows],
           ...appendLog(prevData, {
             action: "packing_planned",
             entity: "order",
@@ -15847,9 +15894,17 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
         const pool = (k) => k ? String(k).replace(/^smart-formes-/, "px-plus-") : k;
         const list = batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || [], data.stockPicks || []).filter((b) => b && !b.deleted && b.cleared !== "Yes" && Number(b.remaining) > 0).map((b) => ({ code: b.batchNumber, pool: pool(b.sizeKey), remaining: Number(b.remaining), unchecked: b.checked !== "Yes", date: b.date || "" }));
         const need = new Map(glueLineNeedRowsAll(data.orders, data.lineItems, data.glueLineBatches, data.bondingRuns, data.stockPicks || [], data.ncrs || [], data.glueRuns || []).map((r) => [r.spec, r]));
+        const reelLen = (spec) => {
+          const li = (data.lineItems || []).find((l) => l && !l.deleted && l.description === spec && l.formId);
+          const f = li && (data.productForms || []).find((x) => x && x.id === li.formId);
+          if (!f || !(/reel/i.test(String(f.form || "")) || /-reel-/.test(String(f.id)))) return null;
+          return Number(f.metres) || 0;
+        };
         return { list, keyOf: (spec) => {
           const r = need.get(spec);
-          return r ? { pool: r.pool, mpb: Number(r.metersPerBox) || 0 } : null;
+          if (!r) return null;
+          const rl = reelLen(spec);
+          return { pool: r.pool, mpb: rl != null ? rl : Number(r.metersPerBox) || 0 };
         } };
       } catch (e) {
         return null;
@@ -16873,20 +16928,31 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
   };
   function packingListDoc(order, caseRows) {
     const esc2 = pEsc;
+    const canonKeys = [];
+    const canon = (k) => {
+      if (!k) return k;
+      const hit = canonKeys.find((x) => x === k || sameProductParts(x, k));
+      if (hit) return hit;
+      canonKeys.push(k);
+      return k;
+    };
     const rows = [...caseRows || []].filter((c) => !c.packedOutside).sort((a, b) => a.caseNum - b.caseNum).map((c) => {
       const v = caseView(c);
       const want = /* @__PURE__ */ new Map();
       for (const p of v.plan) {
-        const k = shortCaseSpec(p.spec) || p.spec;
+        const k = canon(shortCaseSpec(p.spec) || p.spec);
         if (p.qty > 0) want.set(k, (want.get(k) || 0) + p.qty);
       }
-      for (const l of caseContentLines(c)) if (!want.has(l.label)) want.set(l.label, (want.get(l.label) || 0) + l.qty);
+      for (const l of caseContentLines(c)) {
+        const k = canon(l.label);
+        if (!want.has(k)) want.set(k, (want.get(k) || 0) + l.qty);
+      }
       return { caseNum: v.caseNum, want };
     }).filter((r) => r.want.size > 0);
     const order_ = [];
     const seen = /* @__PURE__ */ new Set();
     for (const li of order.lines || []) {
-      const k = shortCaseSpec(li.spec);
+      const k = canon(shortCaseSpec(li.spec));
       if (k && !seen.has(k)) {
         seen.add(k);
         order_.push(k);
@@ -26218,6 +26284,69 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
       mylarVariantId: ""
     };
     const [form, setForm, draftRestored, discardDraft] = useDraftForm("glueLine", blank, { freshenOnNewDay: ["date", "timeOfDay"] });
+    const deviceUid = (() => {
+      try {
+        let u = localStorage.getItem("mxDeviceUid");
+        if (!u) {
+          u = uid("dev");
+          localStorage.setItem("mxDeviceUid", u);
+        }
+        return u;
+      } catch (e) {
+        return "dev-unknown";
+      }
+    })();
+    const sharedRow = (data.scheduleSettings || []).find((r) => r && r.id === "default" && !r.deleted) || null;
+    const shared = sharedRow && sharedRow.glueEntry && typeof sharedRow.glueEntry === "object" && sharedRow.glueEntry.form ? sharedRow.glueEntry : null;
+    const glueMine = React.useRef((() => {
+      try {
+        return localStorage.getItem("mxGlueEntryMineAt") || "";
+      } catch (e) {
+        return "";
+      }
+    })());
+    const glueApplied = React.useRef("");
+    const glueSkipJson = React.useRef(null);
+    const [glueShareNote, setGlueShareNote] = useState(null);
+    const glueStrip = (f) => {
+      const { date, timeOfDay, ...rest } = f || {};
+      return rest;
+    };
+    useEffect(() => {
+      if (!shared || !shared.at || shared.device === deviceUid) return;
+      if (shared.at === glueApplied.current || shared.at <= glueMine.current) return;
+      if (Date.now() - Date.parse(shared.at) > 12 * 3600 * 1e3) return;
+      glueApplied.current = shared.at;
+      glueSkipJson.current = JSON.stringify(glueStrip({ ...form, ...shared.form }));
+      setForm((f) => ({ ...f, ...shared.form, date: f.date, timeOfDay: f.timeOfDay }));
+      setGlueShareNote(`Updated from ${shared.by || "the other device"} \xB7 ${new Date(shared.at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`);
+    }, [shared && shared.at]);
+    const glueFirst = React.useRef(true);
+    useEffect(() => {
+      if (glueFirst.current) {
+        glueFirst.current = false;
+        return;
+      }
+      const json = JSON.stringify(glueStrip(form));
+      if (json === glueSkipJson.current) return;
+      const tm = setTimeout(() => {
+        const at = (/* @__PURE__ */ new Date()).toISOString();
+        glueMine.current = at;
+        glueSkipJson.current = json;
+        try {
+          localStorage.setItem("mxGlueEntryMineAt", at);
+        } catch (e) {
+        }
+        const entry = { form: glueStrip(form), by: `${String(currentActor() || "").split("@")[0] || "someone"}${currentDevice() && currentDevice() !== "Device" ? ` (${currentDevice()})` : ""}`, device: deviceUid, at };
+        setData((prev) => {
+          const rows2 = prev.scheduleSettings || [];
+          const has = rows2.some((r) => r && r.id === "default");
+          return { ...prev, scheduleSettings: has ? rows2.map((r) => r && r.id === "default" ? { ...r, glueEntry: entry } : r) : [...rows2, { id: "default", glueEntry: entry, deleted: false }] };
+        });
+        setGlueShareNote(null);
+      }, 1200);
+      return () => clearTimeout(tm);
+    }, [form]);
     React.useEffect(() => {
       if (form.direct !== true) return;
       const spec = form.range === "Custom" ? String(form.size || "").trim() : `${form.range} ${String(form.size || "").trim()}`.trim();
@@ -26667,7 +26796,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         style: { background: addOpen ? "none" : ORANGE, color: addOpen ? INK_MUTED : "#fff", border: addOpen ? `1px solid ${BORDER}` : "none", borderRadius: 5, padding: "10px 12px", fontSize: 13, fontWeight: 600, cursor: "pointer" }
       },
       addOpen ? "\u25BE Hide entry form" : "+ Log a new reel"
-    ), /* @__PURE__ */ React.createElement("div", { className: "phone-collapsible" + (addOpen ? " open" : "") }, /* @__PURE__ */ React.createElement(GlueNeedBanner, { data, spec: openRun ? openRun.productSize : String(form.size || "").trim() ? buildSpec(form) : "", metres: form.meterage }), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(
+    ), /* @__PURE__ */ React.createElement("div", { className: "phone-collapsible" + (addOpen ? " open" : "") }, glueShareNote && /* @__PURE__ */ React.createElement("div", { "data-glue-shared": true, style: { fontSize: 13, color: INK_MUTED, marginBottom: 6 } }, "\u21BB ", glueShareNote), /* @__PURE__ */ React.createElement(GlueNeedBanner, { data, spec: openRun ? openRun.productSize : String(form.size || "").trim() ? buildSpec(form) : "", metres: form.meterage }), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(
       GlueEntrySteps,
       {
         data,
@@ -26675,7 +26804,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         setForm,
         openRun,
         runTotals: openRunTotals,
-        onStartRun: startRun,
+        onStartRun: null,
         onConfirmReel: confirmReel,
         runError,
         allRows: rows,
