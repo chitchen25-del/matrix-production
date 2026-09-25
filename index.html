@@ -7120,6 +7120,27 @@ ${line}` : line;
   </style></head><body>${Array.from({ length: n }, () => `<div class="page">${lab}</div>`).join("")}
   <script>${SHRINK_TO_FIT_JS}<\/script></body></html>`;
   }
+  function extrusionReelLabelDoc(row, code128Svg2) {
+    const esc2 = (x) => String(x ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const code = String(row && row.batchNumber || "").trim().toUpperCase();
+    const product = String(row && row.productSize || "").replace(/\s*\((\d+(\.\d+)?)m\)\s*$/, "").toUpperCase();
+    const m = Number(row && row.meterage) > 0 ? `${Number(row.meterage)}` : "";
+    const bars = code && typeof code128Svg2 === "function" ? code128Svg2(code, { moduleMm: 0.375, heightMm: 5 }) : "";
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc2(code)}</title><style>
+  @page { size: 76mm 25mm; margin: 0; }
+  html, body { margin: 0; padding: 0; }
+  body { width: 76mm; height: 24mm; padding: 1.6mm 4mm 0 5mm; box-sizing: border-box; font-family: Arial, sans-serif; color: #000; overflow: hidden; }
+  .row { display: flex; justify-content: space-between; align-items: baseline; gap: 2mm; }
+  .code { font-size: 18pt; font-weight: 800; line-height: 1; white-space: nowrap; }
+  .m { font-size: 17pt; font-weight: 800; line-height: 1; white-space: nowrap; } .m span { font-size: 10pt; }
+  .prod { font-size: 10.5pt; font-weight: 700; line-height: 1.1; margin-top: .8mm; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bc { line-height: 0; margin-top: .8mm; } .bc svg { display: block; }
+</style></head><body>
+  <div class="row"><div class="code">${esc2(code)}</div><div class="m">${esc2(m)}<span>${m ? " m" : ""}</span></div></div>
+  <div class="prod">${esc2(product)}</div>
+  <div class="bc">${bars}</div>
+</body></html>`;
+  }
 
   // mx_scan.js
   var P128 = CODE128_WIDTHS.map((w) => [...w].map(Number));
@@ -8305,8 +8326,10 @@ ${line}` : line;
     lineDowntime: [],
     planSnapshots: [],
     labelTemplates: [],
-    runStarts: []
+    runStarts: [],
     // box labels by the app (23 Sep 2026)
+    printJobs: []
+    // labels asked for on any device, printed on the PC switched on as the print station (25 Sep 2026)
   };
   function normalizeTooling(t) {
     if (!t) return DEFAULT_TOOLING;
@@ -8635,6 +8658,13 @@ ${line}` : line;
        boxes are logged: its box code is reserved there — a unique index stops two devices taking one code —
        and its labels printed from it. */
     labelTemplates: { table: "label_templates", cols: {} },
+    printJobs: { table: "print_jobs", cols: {
+      requestedBy: "requested_by",
+      requestedDevice: "requested_device",
+      requestedAt: "requested_at",
+      printedAt: "printed_at",
+      printedBy: "printed_by"
+    } },
     runStarts: { table: "run_starts", cols: {} },
     /* How the schedule is tailored (20 Sep 2026) — one shared row, id "default". */
     scheduleSettings: { table: "schedule_settings", cols: {
@@ -10547,7 +10577,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-24.17";
+  var APP_VERSION = "2026-09-24.18";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -11974,6 +12004,82 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       iframe.contentWindow.focus();
       iframe.contentWindow.print();
     }, 250);
+  }
+  var PRINT_STATION_KEY = "mxPrintStation";
+  function queuePrint(setData, { kind, ref, doc, copies = 1, label = "" }) {
+    const id = uid("pj");
+    const who = String(currentActor() || "").split("@")[0] || "someone";
+    const at = (/* @__PURE__ */ new Date()).toISOString();
+    setData((prev) => ({
+      ...prev,
+      printJobs: [...prev.printJobs || [], {
+        id,
+        kind,
+        ref: ref || null,
+        doc,
+        copies,
+        status: "waiting",
+        requestedBy: who,
+        requestedDevice: currentDevice(),
+        requestedAt: at,
+        deleted: false
+      }],
+      ...appendLog(prev, { action: "add", entity: "printJob", entityId: id, summary: `Label asked for: ${label || kind}${ref ? ` (${ref})` : ""}` })
+    }));
+    return id;
+  }
+  function PrintStation({ data, setData }) {
+    const on = (() => {
+      try {
+        return localStorage.getItem(PRINT_STATION_KEY) === "on";
+      } catch (e) {
+        return false;
+      }
+    })();
+    const busy = useRef(/* @__PURE__ */ new Set());
+    useEffect(() => {
+      if (!on) return;
+      const waiting = (data.printJobs || []).filter((j2) => j2 && !j2.deleted && j2.status === "waiting" && !busy.current.has(j2.id)).sort((x, y) => String(x.requestedAt || "").localeCompare(String(y.requestedAt || "")));
+      if (!waiting.length) return;
+      const j = waiting[0];
+      busy.current.add(j.id);
+      const at = (/* @__PURE__ */ new Date()).toISOString();
+      setData((prev) => ({ ...prev, printJobs: (prev.printJobs || []).map((x) => x.id === j.id ? { ...x, status: "printed", printedAt: at, printedBy: currentDevice() && currentDevice() !== "Device" ? currentDevice() : "the print station" } : x) }));
+      const copies = Math.max(1, Math.min(50, Number(j.copies) || 1));
+      let n = 0;
+      const go = () => {
+        printLabelDoc(j.doc);
+        n += 1;
+        if (n < copies) setTimeout(go, 2500);
+      };
+      go();
+    }, [on, data.printJobs]);
+    return null;
+  }
+  function PrintStationPanel() {
+    const [on, setOn] = useState(() => {
+      try {
+        return localStorage.getItem(PRINT_STATION_KEY) === "on";
+      } catch (e) {
+        return false;
+      }
+    });
+    const toggle = () => {
+      const next = !on;
+      setOn(next);
+      try {
+        localStorage.setItem(PRINT_STATION_KEY, next ? "on" : "off");
+      } catch (e) {
+      }
+      window.location.reload();
+    };
+    return /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between gap-3" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: NAVY } }, "This PC prints labels"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-0.5", style: { color: INK_MUTED } }, on ? "On \u2014 labels asked for on any device print here, on this PC's label printer. Keep the app open on this PC." : "Off \u2014 turn it on only on the PC with the label printer (Dave's). Labels asked for elsewhere wait until a print station is on.")), /* @__PURE__ */ React.createElement(ToggleSwitch, { on, onChange: toggle, labelOn: "On", labelOff: "Off" })));
+  }
+  function PrintJobStatus({ data, jobId }) {
+    const j = jobId ? (data.printJobs || []).find((x) => x && x.id === jobId) : null;
+    if (!j) return null;
+    const t = (iso) => iso ? new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : "";
+    return j.status === "printed" ? /* @__PURE__ */ React.createElement("div", { "data-print-status": "printed", style: { fontSize: 13.5, fontWeight: 600, color: GREEN, marginTop: 6 } }, "\u{1F5A8} Label for ", j.ref, " printed", j.printedBy ? ` on ${j.printedBy}` : "", " ", t(j.printedAt), " \u2713") : /* @__PURE__ */ React.createElement("div", { "data-print-status": "waiting", style: { fontSize: 13.5, fontWeight: 600, color: "#8A4B00", marginTop: 6 } }, "\u{1F5A8} Label for ", j.ref, " sent to the print station ", t(j.requestedAt), " \u2014 waiting to print");
   }
   function ScanOverlay({ onResult, onClose, knownCodes = null }) {
     const videoRef = useRef(null), canvasRef = useRef(null), streamRef = useRef(null), lastRef = useRef({ text: "", n: 0 });
@@ -21103,7 +21209,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         title: "Change log",
         subtitle: "Everything that changed, who changed it, and what it was before. Revert puts one change back without touching anything else."
       }
-    ), modal, /* @__PURE__ */ React.createElement(BondingOutputPanel, { data }), /* @__PURE__ */ React.createElement(LabelPrintingPanel, null), /* @__PURE__ */ React.createElement(BoxLabelsPanel, null), /* @__PURE__ */ React.createElement(SyncHealthPanel, null), /* @__PURE__ */ React.createElement(DataHealthPanel, { data }), /* @__PURE__ */ React.createElement(WipeStockPanel, { data, setData }), /* @__PURE__ */ React.createElement(RecoveryPanel, { data, setData }), /* @__PURE__ */ React.createElement(CustomSizesPanel, { data, setData }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 10 } }, /* @__PURE__ */ React.createElement(
+    ), modal, /* @__PURE__ */ React.createElement(BondingOutputPanel, { data }), /* @__PURE__ */ React.createElement(LabelPrintingPanel, null), /* @__PURE__ */ React.createElement(PrintStationPanel, null), /* @__PURE__ */ React.createElement(BoxLabelsPanel, null), /* @__PURE__ */ React.createElement(SyncHealthPanel, null), /* @__PURE__ */ React.createElement(DataHealthPanel, { data }), /* @__PURE__ */ React.createElement(WipeStockPanel, { data, setData }), /* @__PURE__ */ React.createElement(RecoveryPanel, { data, setData }), /* @__PURE__ */ React.createElement(CustomSizesPanel, { data, setData }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 10 } }, /* @__PURE__ */ React.createElement(
       "input",
       {
         value: logQuery,
@@ -27131,6 +27237,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const BATCH_RULE_MSG = 'Extruder 2 batch codes must have "5" as the second-to-last character (e.g. ...X5Y).';
     const WIDTH_CLASS_MSG = `Pick a width class (7mm / 7mm O/S / 10mm / 12mm) before adding \u2014 Baseline Tooling's "last pin used" match depends on it.`;
     const [formError, setFormError] = useState("");
+    const [exLabelJob, setExLabelJob] = useState(null);
     const validateExtrusionBatch = (batchNumber, excludeId) => {
       const code = (batchNumber || "").trim().toUpperCase();
       if (!code) return "";
@@ -27156,6 +27263,10 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       const newRow = { id: uid("ex"), ...toRow(form) };
       const addedTo = form.extruder;
       setExtruderRows(addedTo, (prevRows) => [...prevRows, newRow]);
+      try {
+        if (localStorage.getItem(LABEL_PRINTING_KEY) !== "false") setExLabelJob(queuePrint(setData, { kind: "exReel", ref: newRow.batchNumber, doc: extrusionReelLabelDoc(newRow, code128Svg), label: `extruded reel ${newRow.batchNumber}` }));
+      } catch (e) {
+      }
       setForm({ ...blank, extruder: form.extruder, range: form.range });
       undo.offer(`${newRow.batchNumber || newRow.productSize}`, () => setExtruderRows(addedTo, (rows3) => rows3.filter((r) => r.id !== newRow.id)));
     };
@@ -27257,7 +27368,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const ncrForBatch = (batchNumber) => batchNumber ? (data.ncrs || []).find((n) => n.batchNumber === batchNumber) : null;
     const [flaggedNcr, setFlaggedNcr] = useState(null);
     const ExtruderSelect = ({ value, onChange }) => /* @__PURE__ */ React.createElement("div", { style: { width: 120 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Extruder"), /* @__PURE__ */ React.createElement(Select, { value, onChange: (e) => onChange(Number(e.target.value)) }, /* @__PURE__ */ React.createElement("option", { value: 1 }, "Extruder 1"), /* @__PURE__ */ React.createElement("option", { value: 2 }, "Extruder 2")));
-    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Extrusion", subtitle: "One row per batch \u2014 pick which extruder made it." }), /* @__PURE__ */ React.createElement(UndoToast, { state: undo }), /* @__PURE__ */ React.createElement("datalist", { id: listId }, (PRODUCT_RANGES[form.range] || []).map((s) => /* @__PURE__ */ React.createElement("option", { key: s, value: s }))), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-3", style: { color: INK_MUTED } }, "Add row"), /* @__PURE__ */ React.createElement(DraftRestoredBanner, { show: draftRestored, onDiscard: discardDraft }), /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Extrusion", subtitle: "One row per batch \u2014 pick which extruder made it." }), /* @__PURE__ */ React.createElement(UndoToast, { state: undo }), /* @__PURE__ */ React.createElement("datalist", { id: listId }, (PRODUCT_RANGES[form.range] || []).map((s) => /* @__PURE__ */ React.createElement("option", { key: s, value: s }))), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-3", style: { color: INK_MUTED } }, "Add row"), /* @__PURE__ */ React.createElement(PrintJobStatus, { data, jobId: exLabelJob }), /* @__PURE__ */ React.createElement(DraftRestoredBanner, { show: draftRestored, onDiscard: discardDraft }), /* @__PURE__ */ React.createElement(
       DraftRestoredBanner,
       {
         persist: false,
@@ -27310,6 +27421,15 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           }
         },
         editingId === r.id ? "Cancel" : "\u270E Edit"
+      ), /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          "data-ex-reprint": r.batchNumber,
+          onClick: () => setExLabelJob(queuePrint(setData, { kind: "exReel", ref: r.batchNumber, doc: extrusionReelLabelDoc(r, code128Svg), label: `extruded reel ${r.batchNumber} (reprint)` })),
+          className: "no-print mt-2 ml-2 text-xs",
+          style: { minHeight: 34, padding: "0 12px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", color: NAVY, fontWeight: 600, cursor: "pointer" }
+        },
+        "\u{1F5A8} Label"
       )), editingId === r.id && /* @__PURE__ */ React.createElement("div", { className: "no-print", style: { gridColumn: "1 / -1", marginTop: 10, paddingTop: 10, borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-2 items-end" }, /* @__PURE__ */ React.createElement(ExtruderSelect, { value: editForm.extruder, onChange: (v) => setEditForm({ ...editForm, extruder: v }) }), /* @__PURE__ */ React.createElement(ExtrusionSpecFields, { values: editForm, setValues: setEditForm, listId }), /* @__PURE__ */ React.createElement(ExtrusionRestFields, { values: editForm, setValues: setEditForm })), formError && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: RED, fontWeight: 600 } }, "\\u26A0 ", formError), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mt-3" }, /* @__PURE__ */ React.createElement(
         "button",
         {
@@ -28940,7 +29060,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     return /* @__PURE__ */ React.createElement("div", { className: "app-root", style: { minHeight: "100vh", color: INK } }, /* @__PURE__ */ React.createElement("div", { id: "print-portal-root" }), /* @__PURE__ */ React.createElement("div", { className: "no-print" }, /* @__PURE__ */ React.createElement(HazardStripe, { height: 4 })), scanOpen && /* @__PURE__ */ React.createElement(ScanOverlay, { onResult: handleScan, onClose: () => setScanOpen(false), knownCodes: scanKnownCodes }), /* @__PURE__ */ React.createElement(ScanNotice, { notice: scanNotice, onScanAgain: () => {
       setScanNotice(null);
       setScanOpen(true);
-    }, onClose: () => setScanNotice(null) }), globalUndo && /* @__PURE__ */ React.createElement("div", { "data-global-undo": true, className: "no-print fixed bottom-5 right-5 z-50 flex items-center gap-3 px-4 py-2.5 rounded shadow-lg text-sm text-white", style: { background: NAVY } }, /* @__PURE__ */ React.createElement("span", null, "Added ", globalUndo.label), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+    }, onClose: () => setScanNotice(null) }), /* @__PURE__ */ React.createElement(PrintStation, { data, setData }), globalUndo && /* @__PURE__ */ React.createElement("div", { "data-global-undo": true, className: "no-print fixed bottom-5 right-5 z-50 flex items-center gap-3 px-4 py-2.5 rounded shadow-lg text-sm text-white", style: { background: NAVY } }, /* @__PURE__ */ React.createElement("span", null, "Added ", globalUndo.label), /* @__PURE__ */ React.createElement("button", { onClick: () => {
       const u = globalUndo.undo;
       setGlobalUndo(null);
       u();
