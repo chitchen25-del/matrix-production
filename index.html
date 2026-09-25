@@ -822,37 +822,6 @@
   function isKenPin(spec) {
     return /^\s*(ken|speedy\s*crease)\b/i.test(spec || "");
   }
-  function specCandidateIndex(rows, getSpec) {
-    const buckets = /* @__PURE__ */ new Map();
-    const wild = [];
-    const keyOf = (h, g, spec) => `${h}|${g}|${isOffCentre(spec) ? 1 : 0}|${isKenPin(spec) ? 1 : 0}`;
-    rows.forEach((row, i) => {
-      const spec = getSpec(row);
-      const d = specDimensions(spec);
-      const entry = { row, i };
-      if (d.length < 2) {
-        wild.push(entry);
-        return;
-      }
-      const k = keyOf(Math.round(d[0] * 100), Math.round(d[1] * 100), spec);
-      if (!buckets.has(k)) buckets.set(k, []);
-      buckets.get(k).push(entry);
-    });
-    return {
-      candidates(spec) {
-        const d = specDimensions(spec);
-        if (d.length < 2) return rows;
-        const h = Math.round(d[0] * 100), g = Math.round(d[1] * 100);
-        const found = [...wild];
-        for (let dh = -1; dh <= 1; dh++) for (let dg = -1; dg <= 1; dg++) {
-          const b = buckets.get(keyOf(h + dh, g + dg, spec));
-          if (b) found.push(...b);
-        }
-        found.sort((a, b) => a.i - b.i);
-        return found.map((e) => e.row);
-      }
-    };
-  }
   var PRODUCT_KEY_CACHE = /* @__PURE__ */ new Map();
   function productKey(text) {
     const t = String(text || "");
@@ -1069,43 +1038,6 @@
     }
     if (!patched.size) return bondingRuns;
     const out = bondingRuns.map((r) => patched.get(r.id) || r);
-    return out;
-  }
-  function shelfReservationsStored(orders, lineItems, bondingRuns, stockPicks) {
-    const shelf = boxedStockAvailable(bondingRuns, stockPicks || []).map((b) => ({ ...b, left: Number(b.available || 0) }));
-    const shelfIndex = specCandidateIndex(shelf, (b) => b.productSize);
-    const claimants = (orders || []).filter((o) => o.stage !== "Shipped" && o.stage !== "Packing").sort((a, z) => {
-      const pa = a.priority ?? 999, pz = z.priority ?? 999;
-      if (pa !== pz) return pa - pz;
-      const da = a.dueDate || "9999-12-31", dz = z.dueDate || "9999-12-31";
-      if (da !== dz) return da < dz ? -1 : 1;
-      return String(a.id) < String(z.id) ? -1 : 1;
-    });
-    const out = /* @__PURE__ */ new Map();
-    for (const order of claimants) {
-      const items = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description) && !isSmallItem(li.description));
-      const { byLineItem } = groupAssignedRunsByLineItem(bondingRuns, order.id, items, orderBoxes(LEDGER_MOVEMENTS, bondingRuns, order.id));
-      const forOrder = /* @__PURE__ */ new Map();
-      for (const { li, runs } of byLineItem) {
-        const assigned = runs.reduce((s, r) => s + Number(r.onOrderQty || 0), 0);
-        let outstanding = Math.max(0, Number(li.qty) - assigned);
-        let taken = 0;
-        for (const box of shelfIndex.candidates(li.description)) {
-          if (outstanding <= 0) break;
-          if (box.left <= 0) continue;
-          if (!runMatchesLine(box, li, { formCheck: false })) continue;
-          if (!stockFormMatchesLine(box, li.description)) continue;
-          if (!shelfBoxFitsBoxType(box, orderBoxTypeFor(order, li.description))) continue;
-          if (!tapeFits(box.boxNumber, order)) continue;
-          const take = Math.min(box.left, outstanding);
-          box.left -= take;
-          outstanding -= take;
-          taken += take;
-        }
-        forOrder.set(li.id, taken);
-      }
-      out.set(order.id, forOrder);
-    }
     return out;
   }
   function sameProductParts(a, b) {
@@ -1777,15 +1709,20 @@
   function orderPickablePercentStored(order, lineItems, bondingRuns, stockPicks, reservations, materials) {
     const items = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description) && !isSmallItem(li.description));
     const { byLineItem } = groupAssignedRunsByLineItem(bondingRuns, order.id, items, orderBoxes(LEDGER_MOVEMENTS, bondingRuns, order.id));
-    const mine = reservations ? reservations.get(order.id) : null;
-    const boxed = mine ? null : boxedStockAvailable(bondingRuns, stockPicks || []);
+    const boxed = boxedStockAvailable(bondingRuns, stockPicks || []);
     let totalOutstanding = 0;
     let totalCoverable = 0;
     for (const { li, runs } of byLineItem) {
       const assignedQty = runs.reduce((s, r) => s + Number(r.onOrderQty || 0), 0);
       const outstanding = Math.max(0, Number(li.qty) - assignedQty);
       if (outstanding <= 0) continue;
-      const available = mine ? mine.get(li.id) || 0 : boxed.filter((b) => runMatchesLine(b, li) && !cartonMismatch(b, order, materials) && tapeFits(b.boxNumber, order)).reduce((s, b) => s + Number(b.available || 0), 0);
+      const available = (
+        /* THE SAME RULES AS THE PICKER, OR THE CARD LIES. (17 Sep 2026) The card
+           said Avrupa had 8 to pick and the walk offered none. The picker refuses
+           a box in the wrong carton and a box of the wrong form; this counted
+           both. Same three filters now, so the two can never disagree. */
+        boxed.filter((b) => runMatchesLine(b, li) && !cartonMismatch(b, order, materials) && tapeFits(b.boxNumber, order)).reduce((s, b) => s + Number(b.available || 0), 0)
+      );
       totalOutstanding += outstanding;
       totalCoverable += Math.min(outstanding, available);
     }
@@ -2721,78 +2658,6 @@
     };
   }
 
-  // mx_promises.js
-  function shelfReservations(...args) {
-    return memoCall("shelfReservations", args, () => shelfReservationsFresh(...args));
-  }
-  function shelfReservationsFresh(orders, lineItems, bondingRuns, stockPicks) {
-    return shelfReservationsStored(orders, lineItems, ledgerCorrectedRuns(bondingRuns), stockPicks);
-  }
-  function reservationsFor(data, boxNumber) {
-    return [];
-  }
-  function freeToPromise(data, boxNumber) {
-    return placeOf(data, boxNumber).available;
-  }
-  function reservedToOthers(data, boxNumber, orderId) {
-    const out = /* @__PURE__ */ new Map();
-    for (const r of reservationsFor(data, boxNumber)) {
-      if (r.orderId === orderId) continue;
-      out.set(r.orderId, (out.get(r.orderId) || 0) + (Number(r.qty) || 0));
-    }
-    return [...out.entries()].map(([id, qty]) => ({ orderId: id, qty }));
-  }
-  function promiseRows(data, filter = {}) {
-    return [];
-  }
-  function promisedOutstanding(rows) {
-    return rows.reduce((t, r) => t + Math.max(0, (Number(r.qty) || 0) - (Number(r.placedQty) || 0)), 0);
-  }
-  function promisedByOrder(data, boxNumber) {
-    const out = /* @__PURE__ */ new Map();
-    for (const r of promiseRows(data, { boxNumber })) {
-      out.set(r.orderId, (out.get(r.orderId) || 0) + (Number(r.qty) || 0));
-    }
-    return [...out.entries()].filter(([, q]) => q > 0).map(([orderId, qty]) => ({ orderId, qty }));
-  }
-  function applyMovementToReservation(next, row, stamp) {
-    return next;
-  }
-  function promisedNotPacked(data) {
-    const up2 = (x) => String(x || "").trim().toUpperCase();
-    const live = new Set((data.orders || []).filter((o) => o && !o.deleted && !["Shipped", "Cancelled"].includes(o.stage || "")).map((o) => o.id));
-    const by = /* @__PURE__ */ new Map();
-    for (const r of promiseRows(data)) {
-      if (!live.has(r.orderId)) continue;
-      const k = `${r.orderId}|${up2(r.boxNumber)}`;
-      const e = by.get(k) || {
-        orderId: r.orderId,
-        boxNumber: up2(r.boxNumber),
-        spec: r.spec || "",
-        allocated: 0,
-        placed: 0,
-        since: r.since || null,
-        caseNum: null
-      };
-      e.allocated += Number(r.qty) || 0;
-      e.placed += Number(r.placedQty) || 0;
-      if (r.caseNum != null && e.caseNum == null) e.caseNum = Number(r.caseNum);
-      if (r.spec && !e.spec) e.spec = r.spec;
-      if (r.since && (!e.since || String(r.since) < String(e.since))) e.since = r.since;
-      by.set(k, e);
-    }
-    const runOf = (box) => (data.bondingRuns || []).find((r) => r && !r.deleted && up2(r.boxNumber) === box);
-    return [...by.values()].map((e) => {
-      const r = runOf(e.boxNumber);
-      return {
-        ...e,
-        waiting: e.allocated - e.placed,
-        location: r && String(r.location || "").trim() || "",
-        customer: ((data.orders || []).find((o) => o.id === e.orderId) || {}).customer || ""
-      };
-    }).filter((e) => e.waiting > 0).sort((a, b) => (a.location ? 1 : 0) - (b.location ? 1 : 0) || String(a.since).localeCompare(String(b.since)));
-  }
-
   // mx_planning.js
   var SMALL_KEYWORDS = ["profile tape", "profitape", "shim tape", "super shim", "pet film"];
   function isSmallItem(desc) {
@@ -3472,8 +3337,7 @@
       spec: null,
       reasons: ["fully made or allocated \u2014 nothing outstanding"]
     }));
-    const reservations = shelfReservations(orders, lineItems, bondingRuns, data.stockPicks);
-    const pick = orders.filter((o) => o.stage !== "Shipped").map((o) => ({ o, pct: orderPickablePercent(o, lineItems, bondingRuns, data.stockPicks, reservations, data.materials) })).filter((x) => x.pct > 0 && x.pct < 101 && orderPctComplete(lineItems, bondingRuns, x.o.id) < 100).map(({ o, pct }) => finish({
+    const pick = orders.filter((o) => o.stage !== "Shipped").map((o) => ({ o, pct: orderPickablePercent(o, lineItems, bondingRuns, data.stockPicks, null, data.materials) })).filter((x) => x.pct > 0 && x.pct < 101 && orderPctComplete(lineItems, bondingRuns, x.o.id) < 100).map(({ o, pct }) => finish({
       lane: "pick",
       orderId: o.id,
       ...decorate(o.id),
@@ -4088,13 +3952,6 @@
     }
     if (kind === "allocated" || kind === "unallocated") {
       if (!m.orderId) return `${kind} of ${qty} \xD7 ${box}: no order. Allocation is a promise to somebody, so it has to name who.`;
-    }
-    if (kind === "allocated") {
-      const free = freeToPromise(prev, box);
-      if (qty > free) {
-        const others = reservedToOthers(prev, box, m.orderId).map((c) => `${c.qty} to ${c.orderId}`).join(", ");
-        return `Can't promise ${qty} \xD7 ${box} to ${m.orderId} \u2014 only ${Math.max(0, free)} of it ${free === 1 ? "is" : "are"} free${others ? ` (${others})` : ""}. To clear it: drop this to ${Math.max(0, free)}, take some off the other order first, or count the shelf if you think there are more there.`;
-      }
     }
     if (kind === "placed" || kind === "unplaced") {
       if (!m.orderId) return `${kind} of ${qty} \xD7 ${box}: no order. A case belongs to an order, so the order has to be named.`;
@@ -5797,10 +5654,7 @@
         others.push({ orderId: o.id, customer: o.customer, needs: 0, noPlanFor: true });
         continue;
       }
-      const allocatedUnplaced = promisedOutstanding(
-        promiseRows(data, { orderId: o.id, spec: wanted }).filter((r) => !(excludeSourceId && r.sourceId === excludeSourceId))
-      );
-      const outstanding = Math.max(0, planned - inCases - allocatedUnplaced);
+      const outstanding = Math.max(0, planned - inCases);
       room.sort((a, b) => a.caseNum - b.caseNum);
       if (outstanding > 0) {
         needing.push({
@@ -5896,8 +5750,6 @@
   function orderHasStarted(data, orderId) {
     const inCase = (data.cases || []).some((c) => c && !c.deleted && c.orderId === orderId && Object.values(c.contents || {}).some((q) => (Number(q) || 0) > 0));
     if (inCase) return { started: true, why: "boxes are already in its cases" };
-    const promised = promiseRows(data, { orderId }).reduce((t, r) => t + (Number(r.qty) || 0), 0);
-    if (promised > 0) return { started: true, why: "bonding has allocated boxes to it" };
     return { started: false, why: "" };
   }
   function arrangedCasesForOrder(data, orderId, opts = {}) {
@@ -6285,7 +6137,6 @@
       }
       return [...by.entries()].filter(([, q]) => q > 0).map(([k, q]) => ({ orderId: k.split("|")[0], caseNum: Number(k.split("|")[1]), qty: q }));
     };
-    const allocatedTo = (box) => promisedByOrder(data, box);
     for (const row2 of found || []) {
       const box = up2(row2.boxNumber), qty = Number(row2.qty) || 0;
       if (!box || qty <= 0) continue;
@@ -6348,19 +6199,6 @@
           notes.push(`${box}: ${take} moved from case ${at.caseNum}`);
         }
         needed -= take;
-      }
-      const already = allocatedTo(box).find((a) => a.orderId === orderId);
-      const toAllocate = Math.max(0, qty - here - (already ? already.qty : 0));
-      if (toAllocate > 0) {
-        moves.push(moveAllocated({
-          boxNumber: box,
-          spec,
-          qty: toAllocate,
-          orderId,
-          caseNum: Number(caseNum),
-          source: "case-fix",
-          note: `Found in case ${caseNum}`
-        }));
       }
       if (needed > 0) notes.push(`${box}: ${needed} from the shelf`);
       moves.push(movePlaced({
@@ -10006,11 +9844,7 @@ ${line}` : line;
     };
     const isPromise = row.kind === "allocated" || row.kind === "unallocated";
     const withRow = isPromise ? prev : { ...prev, movements: [...prev.movements || [], row] };
-    const next = applyMovementToReservation(
-      applyMovementToCaseRow(withRow, row, stamp),
-      row,
-      stamp
-    );
+    const next = applyMovementToCaseRow(withRow, row, stamp);
     if (m.kind === "counted" && row.boxNumber) {
       const shelfNow = placeOf(next, row.boxNumber).onShelf;
       const diff = row.qty - shelfNow;
@@ -10658,7 +10492,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-24.11";
+  var APP_VERSION = "2026-09-24.12";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -11986,9 +11820,6 @@ ${line}` : line;
   function ThR({ children, w, className = "" }) {
     return /* @__PURE__ */ React.createElement("th", { className: "text-right py-2.5 px-3 " + className, style: { width: w, fontWeight: 600, fontSize: "12.5px", letterSpacing: ".01em" } }, children);
   }
-  function Td({ children, className = "", style }) {
-    return /* @__PURE__ */ React.createElement("td", { className: "px-3 py-2 " + className, style: { fontSize: "13px", verticalAlign: "top", ...style || {} } }, children);
-  }
   function OrderNoteField({ value, onSave, label = "Note to the floor", hint = "\u2014 shows on the bonding line, the packing page and the pick sheet", placeholder = "e.g. Not on a pallet", rows = 2 }) {
     const [draft, setDraft] = useState(String(value || ""));
     const [saved, setSaved] = useState(false);
@@ -12892,7 +12723,6 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     const [stageFilter, setStageFilter] = useState("all");
     const { lineItems, bondingRuns } = data;
     const orders = data.orders.filter((o) => o.stage !== "Shipped").filter((o) => stageFilter === "all" || o.stage === stageFilter);
-    const reservations = shelfReservations(data.orders, lineItems, bondingRuns, data.stockPicks);
     const promiseByOrder = useMemo(() => {
       try {
         return new Map(orderFinishDates(data, /* @__PURE__ */ new Date()).orders.map((r) => [r.orderId, r]));
@@ -12905,7 +12735,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       totalItems: orderTotalItems(lineItems, o.id),
       outstanding: orderOutstanding(lineItems, bondingRuns, o.id),
       pct: orderPctComplete(lineItems, bondingRuns, o.id),
-      pickablePct: orderPickablePercent(o, lineItems, bondingRuns, data.stockPicks, reservations, data.materials),
+      pickablePct: orderPickablePercent(o, lineItems, bondingRuns, data.stockPicks, null, data.materials),
       caseCount: orderCaseCount(o, lineItems, bondingRuns, data.cases),
       boxTypes: orderBoxTypes(o, lineItems),
       openSheet: openPickSheets(data.pickSheets, o.id)[0] || null,
@@ -13688,28 +13518,14 @@ ${kNotes.join("\n")}`), 0);
     const shelf = placeOf(prev, boxNumber).available;
     const shortfall = delta < 0 ? Math.min(0, shelf + delta) : 0;
     if (shortfall < 0) {
-      const alloc = promiseRows(prev, { boxNumber }).filter((a) => Math.max(0, (Number(a.qty) || 0) - (Number(a.placedQty) || 0)) > 0);
-      let owed = -shortfall;
-      for (const a of [...alloc].reverse()) {
-        if (owed <= 0) break;
-        const take = Math.min(owed, Math.max(0, (Number(a.qty) || 0) - (Number(a.placedQty) || 0)));
-        next = recordMovement(next, moveUnallocated({
-          boxNumber,
-          spec,
-          qty: take,
-          orderId: a.orderId,
-          source: "bonding",
-          note: `Batch corrected to ${newQty} and the shelf could not cover it \u2014 ${take} taken back from ${a.orderId}`
-        }));
-        next = raiseIssue(next, {
-          kind: "short_allocation",
-          orderId: a.orderId,
-          boxNumber,
-          summary: `${a.orderId} is ${take} short of ${boxNumber}`,
-          detail: `Batch ${boxNumber} was corrected to ${newQty}${note ? " (" + note + ")" : ""}. The shelf could not cover the reduction, so ${take} came off ${a.orderId}. Sanction a remake or advise the customer, then clear this.`
-        });
-        owed -= take;
-      }
+      const holders = (placeOf(prev, boxNumber).inCases || []).map((x) => `${x.orderId} case ${x.caseNum} (${x.qty})`);
+      next = raiseIssue(next, {
+        kind: "short_allocation",
+        orderId: ((placeOf(prev, boxNumber).inCases || [])[0] || {}).orderId || null,
+        boxNumber,
+        summary: `${boxNumber} corrected to ${newQty} \u2014 ${-shortfall} more than the shelf held`,
+        detail: `The correction takes away ${-delta}; the shelf only had ${Math.max(0, shelf)}. The rest are recorded in ${holders.join(", ") || "no case"} \u2014 count ${holders.length === 1 ? "that case" : "those cases"} and correct it there.`
+      });
     }
     return next;
   }
@@ -14709,11 +14525,6 @@ Read the next screen carefully before you agree to it.`
     };
     const boxedStock = boxedStockAvailable(data.bondingRuns, data.stockPicks || []);
     const boxTypeMismatch = (candidate, order) => cartonMismatch(candidate, order, data.materials);
-    const allocatedElsewhere = (boxNumber, orderId) => {
-      const held = reservationsFor(data, boxNumber);
-      if (!held.length) return false;
-      return held.some((r) => r.orderId && r.orderId !== orderId) && !held.some((r) => r.orderId === orderId);
-    };
     const matchingBoxesFor = (order) => {
       const orderLines = orderLineItems(lineItems, order.id).filter((li) => !isDelivery(li.description));
       const orderSpecs = new Set(orderLines.map((li) => normalizeSpec(li.description)));
@@ -14836,7 +14647,7 @@ Read the next screen carefully before you agree to it.`
         }
         let remaining = Number(li.qty) - placed;
         if (remaining <= 0) continue;
-        const matchingCandidates = candidates.filter((c) => !usedIds.has(c.id) && runMatchesLine(c, li)).filter((c) => !allocatedElsewhere(c.boxNumber, order.id)).filter((c) => !c.boxTypeIssue).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+        const matchingCandidates = candidates.filter((c) => !usedIds.has(c.id) && runMatchesLine(c, li)).filter((c) => !c.boxTypeIssue).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
         for (const c of matchingCandidates) {
           if (remaining <= 0) break;
           if (c.boxTypeIssue) continue;
@@ -15779,24 +15590,7 @@ Everything else was booked.`);
           const matchingHere = allMatching.filter((b) => looseSpecMatch(b.productSize, spec) && stockFormMatchesLine(b, spec) && b.boxTypeIssue !== "wrong");
           const available = matchingHere.reduce((s, b) => s + Number(b.available || 0), 0);
           const unconfirmedCarton = matchingHere.filter((b) => b.boxTypeIssue === "unconfirmed").reduce((s, b) => s + Number(b.available || 0), 0);
-          const claim = (() => {
-            const boxesHere = [...new Set((pendingPickItems || []).filter((it) => (it.displaySpec || it.productSize) === spec).map((it) => it.boxNumber))];
-            const byOther = /* @__PURE__ */ new Map();
-            for (const bn of boxesHere) {
-              for (const c of reservedToOthers(data, bn, o.id)) {
-                const cur = byOther.get(c.orderId) || { qty: 0, boxes: [] };
-                cur.qty += c.qty;
-                cur.boxes.push(bn);
-                byOther.set(c.orderId, cur);
-              }
-            }
-            if (!byOther.size) return null;
-            const [orderId, v] = [...byOther.entries()].sort((a, b) => b[1].qty - a[1].qty)[0];
-            const other = (data.orders || []).find((x) => x.id === orderId);
-            if (!other) return null;
-            return { order: other, held: v.qty, boxes: v.boxes };
-          })();
-          productSummary[spec] = { needed, available, claim, unconfirmedCarton };
+          productSummary[spec] = { needed, available, unconfirmedCarton };
         }
         return /* @__PURE__ */ React.createElement("div", { className: "mt-3" }, /* @__PURE__ */ React.createElement(
           DraftRestoredBanner,
@@ -15834,7 +15628,7 @@ Everything else was booked.`);
           const isNewGroup = i === 0 || (pendingPickItems[i - 1].displaySpec || pendingPickItems[i - 1].productSize) !== (it.displaySpec || it.productSize);
           const summary = productSummary[it.displaySpec || it.productSize];
           const colCount = (customizingPick ? 1 : 0) + 7;
-          return /* @__PURE__ */ React.createElement(React.Fragment, { key: it.id }, isNewGroup && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { colSpan: colCount, className: "px-3 py-1.5", style: { background: "#EFEFEA", borderTop: `2px solid ${NAVY}` } }, /* @__PURE__ */ React.createElement("span", { className: "text-sm font-semibold", style: { color: NAVY } }, it.displaySpec || it.productSize), summary && /* @__PURE__ */ React.createElement("span", { className: "text-xs ml-3", style: { color: summary.needed != null && summary.available < summary.needed ? RED : INK_MUTED } }, "Order needs ", summary.needed != null ? summary.needed : "\u2014", " \xB7 On the shelf ", summary.available, summary.needed != null && summary.available < summary.needed ? " \u2014 short" : ""), summary && summary.claim && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: AMBER, fontWeight: 600 } }, "\u26A0 ", summary.claim.held, " of these ", summary.claim.held === 1 ? "is" : "are", " promised to ", summary.claim.order.id, " (", summary.claim.order.customer, summary.claim.order.priority != null ? `, priority ${summary.claim.order.priority}` : "", summary.claim.order.dueDate ? `, due ${summary.claim.order.dueDate}` : "", ") \u2014 ", summary.claim.boxes.join(", "), ". Taking them leaves that order short."), customizingPick && /* @__PURE__ */ React.createElement(
+          return /* @__PURE__ */ React.createElement(React.Fragment, { key: it.id }, isNewGroup && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { colSpan: colCount, className: "px-3 py-1.5", style: { background: "#EFEFEA", borderTop: `2px solid ${NAVY}` } }, /* @__PURE__ */ React.createElement("span", { className: "text-sm font-semibold", style: { color: NAVY } }, it.displaySpec || it.productSize), summary && /* @__PURE__ */ React.createElement("span", { className: "text-xs ml-3", style: { color: summary.needed != null && summary.available < summary.needed ? RED : INK_MUTED } }, "Order needs ", summary.needed != null ? summary.needed : "\u2014", " \xB7 On the shelf ", summary.available, summary.needed != null && summary.available < summary.needed ? " \u2014 short" : ""), customizingPick && /* @__PURE__ */ React.createElement(
             "button",
             {
               onClick: () => addAnotherBoxToPick(o, it.displaySpec || it.productSize),
@@ -17918,28 +17712,6 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     )));
   }
   function CaseGrid({ cases, caseWeights, setCaseWeights, palletAssignments, setPalletAssignments, highlightBoxes = null, highlightKey = null, litCases = [], caseOverrides = {}, setCaseOverrides = null, onEditCase = null, editOrder = null, editData = null, onCaseAction = null }) {
-    const onWayByCase = useMemo(() => {
-      const out = {};
-      if (!editOrder || !editData) return out;
-      const perBox = /* @__PURE__ */ new Map();
-      for (const r of promiseRows(editData, { orderId: editOrder.id })) {
-        if (r.caseNum == null) continue;
-        const k = `${r.caseNum}|${r.boxNumber}`;
-        const e = perBox.get(k) || { caseNum: r.caseNum, spec: r.spec || "", net: 0 };
-        e.net += Math.max(0, (Number(r.qty) || 0) - (Number(r.placedQty) || 0));
-        if (!e.spec && r.spec) e.spec = r.spec;
-        perBox.set(k, e);
-      }
-      for (const e of perBox.values()) {
-        if (e.net <= 0) continue;
-        const row = (cases || []).find((c) => Number(c.caseNum) === e.caseNum);
-        const planKey = row ? Object.keys(casePlanned(row)).find((k) => looseSpecMatch(k, e.spec)) : null;
-        const key = planKey || e.spec;
-        out[e.caseNum] = out[e.caseNum] || {};
-        out[e.caseNum][key] = (out[e.caseNum][key] || 0) + e.net;
-      }
-      return out;
-    }, [editOrder && editOrder.id, editData && editData.movements, cases]);
     const [editingCase, setEditingCase] = useState(null);
     const [caseAct, setCaseAct] = useState(null);
     const [sel, setSel] = useState(cases.length ? cases[0].caseNum : null);
@@ -18012,7 +17784,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
         selected: c.caseNum === sel,
         onSelect: setSel,
         lit: pulse && litCases.includes(c.caseNum),
-        onWay: onWayByCase[c.caseNum] || {}
+        onWay: {}
       }
     ))), !visibleCases.length && /* @__PURE__ */ React.createElement("div", { className: "text-sm py-6 text-center", style: { color: INK_MUTED } }, "No cases in this view."), chosen && /* @__PURE__ */ React.createElement(Panel, { className: "mt-4", style: { padding: 0, overflow: "hidden" } }, /* @__PURE__ */ React.createElement(
       "div",
@@ -18604,9 +18376,7 @@ This changes the order quantities. It is recorded in the change log and can be r
       if (!highlightBoxes || !highlightBoxes.length) return [];
       const want = new Set(highlightBoxes.map((b) => String(b).trim().toUpperCase()));
       const inCases = caseRows.filter((c) => (c.contributions || []).some((x) => x.boxNumber && want.has(String(x.boxNumber).trim().toUpperCase()))).map((c) => c.caseNum);
-      if (inCases.length) return inCases;
-      const promised = promiseRows(data, { orderId: order.id }).filter((r) => r.caseNum != null && want.has(r.boxNumber) && (Number(r.qty) || 0) > 0).map((r) => Number(r.caseNum));
-      return [...new Set(promised)].sort((a, b) => a - b);
+      return inCases;
     }, [caseRows, highlightBoxes, data.movements, order.id]);
     const totalItems = items.filter((li) => !isSmallItem(li.description)).reduce((s, li) => s + Number(li.qty || 0), 0);
     const totalWeight = Object.values(caseWeights).reduce((s, w) => s + (Number(w) || 0), 0);
@@ -19236,24 +19006,6 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       showDismissed ? `\u2190 Back to the ${live.length} still open` : `${hidden.length} set aside \u2014 show`
     ));
   }
-  function PromisedNotPackedView({ data }) {
-    const rows = useMemo(() => promisedNotPacked(data), [data]);
-    const lost = rows.filter((r) => !r.location);
-    const days = (iso) => {
-      if (!iso) return "";
-      const d = Math.floor((Date.now() - new Date(iso).getTime()) / 864e5);
-      return d <= 0 ? "today" : d === 1 ? "1 day" : `${d} days`;
-    };
-    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "mb-4 p-3", style: {
-      background: lost.length ? "#FBEAEA" : "#EAF7EE",
-      border: `1px solid ${lost.length ? RED : GREEN}`,
-      borderLeft: `4px solid ${lost.length ? RED : GREEN}`,
-      borderRadius: 4,
-      fontSize: 13.5,
-      color: INK,
-      lineHeight: 1.5
-    } }, /* @__PURE__ */ React.createElement("b", null, rows.reduce((t, r) => t + r.waiting, 0)), " boxes are promised to a live order and not yet in a case.", lost.length > 0 ? /* @__PURE__ */ React.createElement(React.Fragment, null, " ", /* @__PURE__ */ React.createElement("b", null, lost.reduce((t, r) => t + r.waiting, 0), " of them have no bay recorded"), " \u2014 those are the ones that end up on top of a case. They are listed first.") : /* @__PURE__ */ React.createElement(React.Fragment, null, " Every one of them has a bay, so every one can be found.")), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-x-auto" }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: "#F7F8FC" } }, /* @__PURE__ */ React.createElement(Th, null, "Box"), /* @__PURE__ */ React.createElement(Th, null, "Product"), /* @__PURE__ */ React.createElement(Th, null, "Order"), /* @__PURE__ */ React.createElement(Th, null, "Waiting"), /* @__PURE__ */ React.createElement(Th, null, "For"), /* @__PURE__ */ React.createElement(Th, null, "Case"), /* @__PURE__ */ React.createElement(Th, null, "Bay"))), /* @__PURE__ */ React.createElement("tbody", null, rows.map((r) => /* @__PURE__ */ React.createElement("tr", { key: `${r.orderId}|${r.boxNumber}`, style: { borderTop: `1px solid ${BORDER}`, background: r.location ? "#fff" : "#FFF6F6" } }, /* @__PURE__ */ React.createElement(Td, null, /* @__PURE__ */ React.createElement("span", { className: "font-mono" }, r.boxNumber)), /* @__PURE__ */ React.createElement(Td, null, r.spec), /* @__PURE__ */ React.createElement(Td, null, r.orderId, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: INK_MUTED } }, r.customer)), /* @__PURE__ */ React.createElement(Td, null, /* @__PURE__ */ React.createElement("b", null, r.waiting)), /* @__PURE__ */ React.createElement(Td, null, days(r.since)), /* @__PURE__ */ React.createElement(Td, null, r.caseNum != null ? `case ${r.caseNum}` : /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014")), /* @__PURE__ */ React.createElement(Td, null, r.location ? r.location : /* @__PURE__ */ React.createElement("span", { style: { color: RED, fontWeight: 700 } }, "no bay \u2014 find it")))), rows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 7 }, "Nothing is waiting. Everything promised is in a case.")))));
-  }
   function PickLauncher({ data, onPick }) {
     const rows = useMemo(() => pickableNow(data), [data]);
     return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: INK_MUTED, marginBottom: 12, lineHeight: 1.5 } }, "Orders with boxes free on the shelf that they still need \u2014 most urgent first. Tap one to pick it."), rows.length === 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-5", style: { textAlign: "center", color: INK_MUTED } }, "Nothing on the shelf is needed by an order right now."), rows.map((r) => /* @__PURE__ */ React.createElement(
@@ -19519,7 +19271,6 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       { key: "boxes", label: "Live box stock" },
       { key: "reels", label: "Live reel stock" },
       { key: "discrepancies", label: "Discrepancies" },
-      { key: "waiting", label: "Promised, not packed" },
       { key: "wrongcase", label: "Wrong stock in a case" },
       ...stockAdmin ? [{ key: "stocktaker", label: "Stock taker" }] : []
     ];
@@ -19545,7 +19296,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         background: tab === t.key ? "rgba(255,255,255,0.25)" : "#FBEAEA",
         color: tab === t.key ? "#fff" : RED
       } }, openCount)
-    ))), tab === "history" && /* @__PURE__ */ React.createElement(BoxHistoryView, { data, setData, initialQuery: lookUp || initialQuery }), tab === "boxes" && /* @__PURE__ */ React.createElement(LiveBoxStockView, { data }), tab === "reels" && /* @__PURE__ */ React.createElement(LiveReelStockView, { data }), tab === "waiting" && /* @__PURE__ */ React.createElement(PromisedNotPackedView, { data }), tab === "wrongcase" && /* @__PURE__ */ React.createElement(WrongStockInCaseView, { data, setData }), tab === "discrepancies" && /* @__PURE__ */ React.createElement(DiscrepanciesView, { data, setData, jumpToOrder, onLookUp: (ref) => {
+    ))), tab === "history" && /* @__PURE__ */ React.createElement(BoxHistoryView, { data, setData, initialQuery: lookUp || initialQuery }), tab === "boxes" && /* @__PURE__ */ React.createElement(LiveBoxStockView, { data }), tab === "reels" && /* @__PURE__ */ React.createElement(LiveReelStockView, { data }), tab === "wrongcase" && /* @__PURE__ */ React.createElement(WrongStockInCaseView, { data, setData }), tab === "discrepancies" && /* @__PURE__ */ React.createElement(DiscrepanciesView, { data, setData, jumpToOrder, onLookUp: (ref) => {
       setLookUp(ref);
       setTab("history");
     } }), tab === "stocktaker" && stockAdmin && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "mb-4 p-3", style: { background: "#F7F8FC", border: `1px solid ${NAVY}`, borderLeft: `4px solid ${NAVY}`, borderRadius: 4, fontSize: 13.5, color: INK_MUTED, lineHeight: 1.5 } }, "For a full count only. To add one batch that has turned up, type its code into History and movement \u2014 it will offer to add it as a box or a reel."), /* @__PURE__ */ React.createElement(StockTakerView, { data, setData })));
@@ -24256,8 +24007,7 @@ Plan it?`
       const allocs = (f.allocations || []).filter((a) => a.orderId && Number(a.qty) > 0);
       const now = allocs.length ? allocs.reduce((t, a) => t + Number(a.qty), 0) : Number(f.onOrderQty) || 0;
       const ledgerMade = (data.movements || []).filter((m) => !m.deleted && m.kind === "made" && String(m.boxNumber || "").trim().toUpperCase() === code && !(excludeId && m.sourceId === excludeId)).reduce((t, m) => t + (Number(m.qty) || 0), 0);
-      const alreadyPromised = promiseRows(data, { boxNumber: code }).filter((r) => !(excludeId && r.sourceId === excludeId)).reduce((t, r) => t + (Number(r.qty) || 0), 0);
-      const promised = now + alreadyPromised;
+      const promised = now;
       const total = made + ledgerMade;
       if (promised > total) {
         return "Can't accept this entry as allocations to customers exceed the batch amount made. " + code + " would be promised " + promised + " against " + total + " made. To clear it: reduce an allocation by " + (promised - total) + ", or correct how many were made.";
