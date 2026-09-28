@@ -4107,6 +4107,7 @@
     const bondingItems = [];
     const glueItems = [];
     const shelfItems = [];
+    const tomorrowItems = [];
     for (const li of items) {
       let inCases = 0;
       const wantReel = isReelSpec(li.description);
@@ -4149,10 +4150,26 @@
         bondingItems.push({ lineId: li.id, spec: li.description, needed: beforeReels - stillNeeded, reels: reelsToUse, extraReelsAvailable: matchingReels.length - reelsToUse.length });
       }
       if (stillNeeded > 0.01) {
-        glueItems.push({ lineId: li.id, spec: li.description, boxesNeeded: Math.round(stillNeeded * 10) / 10, metersNeeded: Math.ceil(stillNeeded * METERS_PER_BOX_DEFAULT) });
+        const fresh = availableBatches.filter((b) => b.gluedToday && !b.deleted && b.cleared !== "Yes" && Number(b.remaining) > 0 && runMatchesLine(b, li, { formCheck: false })).sort((a, b) => String(a.batchNumber || "").localeCompare(String(b.batchNumber || "")));
+        const freshUse = [];
+        const beforeFresh = stillNeeded;
+        for (const reel of fresh) {
+          if (stillNeeded <= 0) break;
+          const take = Math.min(Number(reel.boxesInBatch) || 0, stillNeeded);
+          if (take > 0) {
+            freshUse.push({ batchNumber: reel.batchNumber, take });
+            stillNeeded -= take;
+          }
+        }
+        if (freshUse.length) tomorrowItems.push({ lineId: li.id, spec: li.description, needed: Math.round((beforeFresh - stillNeeded) * 10) / 10, reels: freshUse });
+      }
+      if (stillNeeded > 0.01) {
+        const fm = li.formId ? formById(CATALOGUE, li.formId) : null;
+        const perUnit = fm && Number(fm.metres) > 0 ? Number(fm.metres) : METERS_PER_BOX_DEFAULT;
+        glueItems.push({ lineId: li.id, spec: li.description, boxesNeeded: Math.round(stillNeeded * 10) / 10, metersNeeded: Math.ceil(stillNeeded * perUnit), reel: !!(fm && fm.reel) });
       }
     }
-    return { bondingItems, glueItems, shelfItems };
+    return { bondingItems, glueItems, shelfItems, tomorrowItems };
   }
   function isStrongTapeOrder(order) {
     return !!(order && order.strongTape === true);
@@ -5045,8 +5062,13 @@
   function buildPackingPlan(items, opts = {}) {
     const perCase = Number(opts.perCase) || CASE_MAX_SIZE_DEFAULT;
     const startAt = Math.max(1, Number(opts.startAt) || 1);
-    const lines = (items || []).filter((li) => li && !isDelivery(li.description) && (Number(li.qty) || 0) > 0).map((li) => ({ spec: String(li.description).trim(), qty: Number(li.qty) || 0 }));
+    const lines = (items || []).filter((li) => li && !isDelivery(li.description) && (Number(li.qty) || 0) > 0).map((li) => ({ spec: String(li.description).trim(), qty: Number(li.qty) || 0, formId: li.formId || null }));
     if (!lines.length) return [];
+    const reelSpecs = new Set(lines.filter((l) => {
+      const f = l.formId ? formById(CATALOGUE, l.formId) : null;
+      return f && f.reel;
+    }).map((l) => l.spec));
+    const isReel = (spec) => reelSpecs.has(spec) || isReelSpec(spec);
     const merged = /* @__PURE__ */ new Map();
     for (const l of lines) merged.set(l.spec, (merged.get(l.spec) || 0) + l.qty);
     const products = [...merged.entries()].map(([spec, qty]) => ({ spec, qty, band: planBandFor(spec) }));
@@ -5067,7 +5089,7 @@
     for (const f of factions) {
       const rest = [];
       for (const p of f.items) {
-        if (!isReelSpec(p.spec)) continue;
+        if (!isReel(p.spec)) continue;
         const cap = reelsPerCase(p.spec);
         let left = p.qty;
         while (left > 0) {
@@ -5077,7 +5099,7 @@
         }
       }
       for (const p of f.items) {
-        if (isReelSpec(p.spec)) continue;
+        if (isReel(p.spec)) continue;
         const over = p.qty % perCase;
         if (!over) continue;
         let left = over;
@@ -5090,7 +5112,7 @@
         if (left > 0) rest.push({ spec: p.spec, band: p.band, qty: left });
       }
       for (const p of f.items) {
-        if (isReelSpec(p.spec)) continue;
+        if (isReel(p.spec)) continue;
         const whole = Math.floor(p.qty / perCase);
         for (let i = 0; i < whole; i++) {
           plan.push({ caseNum: n++, spec: p.spec, qty: perCase, band: p.band, maxSize: perCase, kind: "box" });
@@ -5200,16 +5222,17 @@
     const perCase = Number(opts.perCase) || CASE_MAX_SIZE_DEFAULT;
     const promised = /* @__PURE__ */ new Map();
     for (const p of existingPlan || []) promised.set(p.spec, (promised.get(p.spec) || 0) + (Number(p.qty) || 0));
-    const wanted = /* @__PURE__ */ new Map();
+    const wanted = /* @__PURE__ */ new Map(), formOf = /* @__PURE__ */ new Map();
     for (const li of items || []) {
       if (!li || isDelivery(li.description)) continue;
       const spec = String(li.description).trim();
       wanted.set(spec, (wanted.get(spec) || 0) + (Number(li.qty) || 0));
+      if (li.formId && !formOf.has(spec)) formOf.set(spec, li.formId);
     }
     const extra = [];
     for (const [spec, want] of wanted) {
       const have = promised.get(spec) || 0;
-      if (want > have) extra.push({ description: spec, qty: want - have });
+      if (want > have) extra.push({ description: spec, qty: want - have, formId: formOf.get(spec) || null });
     }
     if (!extra.length) return [];
     const highest = (existingPlan || []).reduce((m, p) => Math.max(m, Number(p.caseNum) || 0), 0);
@@ -6363,6 +6386,13 @@
   function catalogueName(data, spec) {
     const res = typeof resolveProduct === "function" ? resolveProduct(data, spec) : null;
     return res && res.status === "exact" && res.product && res.product.displayName ? res.product.displayName : spec;
+  }
+  function orderLineName(data, text) {
+    const name = catalogueName(data, text);
+    const fid = formIdFor(data, text, { reel: isReelSpec(text) });
+    const f = fid ? formById(data, fid) : null;
+    if (f && f.reel && name !== text) return `${name} REEL${Number(f.metres) > 0 ? ` (${Number(f.metres)}m)` : ""}`;
+    return name;
   }
   function formIdForRun(data, r) {
     return formIdFor(data, r.productSize, {
@@ -10762,7 +10792,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-28.3";
+  var APP_VERSION = "2026-09-28.6";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -11439,10 +11469,10 @@ ${line}` : line;
     }, style: { ...btn, flex: 1, background: NAVY, color: "#fff", border: "none" } }, "Done") : /* @__PURE__ */ React.createElement("button", { onClick: close, style: { ...btn, flex: 1 } }, "Back to the walk")));
   }
   function MakeListsPanel({ order, data }) {
-    const { bondingItems, glueItems, shelfItems = [] } = useMemo(() => computeMakeLists(order, data), [order, data]);
+    const { bondingItems, glueItems, shelfItems = [], tomorrowItems = [] } = useMemo(() => computeMakeLists(order, data), [order, data]);
     const [open, setOpen] = useState(false);
-    if (bondingItems.length === 0 && glueItems.length === 0 && shelfItems.length === 0) return null;
-    const totalCount = bondingItems.length + glueItems.length;
+    if (bondingItems.length === 0 && glueItems.length === 0 && shelfItems.length === 0 && tomorrowItems.length === 0) return null;
+    const totalCount = bondingItems.length + glueItems.length + tomorrowItems.length;
     return /* @__PURE__ */ React.createElement("div", { className: "mt-4" }, /* @__PURE__ */ React.createElement(
       "button",
       {
@@ -11453,7 +11483,7 @@ ${line}` : line;
       /* @__PURE__ */ React.createElement(Chevron, { open }),
       /* @__PURE__ */ React.createElement("span", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "What's left to make"),
       /* @__PURE__ */ React.createElement(Badge, { color: ORANGE }, totalCount)
-    ), open && /* @__PURE__ */ React.createElement("div", { className: "no-print mt-2" }, /* @__PURE__ */ React.createElement("div", { className: "mb-2" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => window.print() }, "\u{1F5A8} Print")), shelfItems.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-3", style: { borderLeft: `4px solid ${GREEN}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-2", style: { color: GREEN } }, "Already on the shelf \u2014 pick, don't make"), shelfItems.map((it, i) => /* @__PURE__ */ React.createElement("div", { key: it.lineId, className: "text-sm py-1.5", style: { borderTop: i ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("b", null, it.covered), " of ", /* @__PURE__ */ React.createElement("b", null, it.spec)), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-0.5", style: { color: INK_MUTED } }, it.boxes.map((b) => `${b.take} \xD7 ${b.boxNumber}${b.location ? ` at ${b.location}` : " \u2014 no bay recorded"}`).join(", "))))), bondingItems.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-3", style: { borderLeft: `4px solid ${ORANGE}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-2", style: { color: ORANGE } }, "Bonding \u2014 reels already ready"), bondingItems.map((it, i) => /* @__PURE__ */ React.createElement("div", { key: it.lineId, className: "text-sm py-1.5", style: { borderTop: i ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("b", null, it.needed), " of ", /* @__PURE__ */ React.createElement("b", null, it.spec)), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-0.5", style: { color: INK_MUTED } }, "Suggested: ", it.reels.map((r) => `${r.take} from ${r.batchNumber}`).join(", "), it.extraReelsAvailable > 0 && ` \u2014 ${it.extraReelsAvailable} other matching reel${it.extraReelsAvailable === 1 ? "" : "s"} also available if you'd rather use different ones`)))), glueItems.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-3", style: { borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-2", style: { color: AMBER } }, "Glue Line \u2014 nothing ready yet, needs running"), glueItems.map((it, i) => /* @__PURE__ */ React.createElement("div", { key: it.lineId, className: "text-sm py-1.5", style: { borderTop: i ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("b", null, it.spec), " \u2014 approx ", it.metersNeeded, "m (~", it.boxesNeeded, " boxes worth)")))), ReactDOM.createPortal(
+    ), open && /* @__PURE__ */ React.createElement("div", { className: "no-print mt-2" }, /* @__PURE__ */ React.createElement("div", { className: "mb-2" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => window.print() }, "\u{1F5A8} Print")), shelfItems.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-3", style: { borderLeft: `4px solid ${GREEN}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-2", style: { color: GREEN } }, "Already on the shelf \u2014 pick, don't make"), shelfItems.map((it, i) => /* @__PURE__ */ React.createElement("div", { key: it.lineId, className: "text-sm py-1.5", style: { borderTop: i ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("b", null, it.covered), " of ", /* @__PURE__ */ React.createElement("b", null, it.spec)), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-0.5", style: { color: INK_MUTED } }, it.boxes.map((b) => `${b.take} \xD7 ${b.boxNumber}${b.location ? ` at ${b.location}` : " \u2014 no bay recorded"}`).join(", "))))), bondingItems.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-3", style: { borderLeft: `4px solid ${ORANGE}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-2", style: { color: ORANGE } }, "Bonding \u2014 reels already ready"), bondingItems.map((it, i) => /* @__PURE__ */ React.createElement("div", { key: it.lineId, className: "text-sm py-1.5", style: { borderTop: i ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("b", null, it.needed), " of ", /* @__PURE__ */ React.createElement("b", null, it.spec)), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-0.5", style: { color: INK_MUTED } }, "Suggested: ", it.reels.map((r) => `${r.take} from ${r.batchNumber}`).join(", "), it.extraReelsAvailable > 0 && ` \u2014 ${it.extraReelsAvailable} other matching reel${it.extraReelsAvailable === 1 ? "" : "s"} also available if you'd rather use different ones`)))), tomorrowItems.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-3", style: { borderLeft: `4px solid ${NAVY}` }, "data-make-tomorrow": true }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-2", style: { color: NAVY } }, "Glued today \u2014 bonds tomorrow"), tomorrowItems.map((it, i) => /* @__PURE__ */ React.createElement("div", { key: it.lineId, className: "text-sm py-1.5", style: { borderTop: i ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("b", null, it.needed), " of ", /* @__PURE__ */ React.createElement("b", null, it.spec)), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-0.5", style: { color: INK_MUTED } }, "From ", it.reels.map((r) => `${r.batchNumber} (${r.take})`).join(", "), " \u2014 glued today, so Bonding offers it from tomorrow")))), glueItems.length > 0 && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-3", style: { borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-2", style: { color: AMBER } }, "Glue Line \u2014 nothing ready yet, needs running"), glueItems.map((it, i) => /* @__PURE__ */ React.createElement("div", { key: it.lineId, className: "text-sm py-1.5", style: { borderTop: i ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("b", null, it.spec), " \u2014 approx ", it.metersNeeded, "m (~", it.boxesNeeded, " ", it.reel ? "reels" : "boxes", " worth)")))), ReactDOM.createPortal(
       /* @__PURE__ */ React.createElement("div", { className: "print-only" }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Georgia, serif", fontWeight: 700, fontSize: 22, color: NAVY } }, "What's Left to Make \u2014 ", order.customer), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 2 } }, "Order ", order.id, " \xB7 ", (/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", year: "numeric", month: "long", day: "numeric" })), bondingItems.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, marginTop: 16, marginBottom: 6 } }, "Bonding \u2014 reels already ready"), /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product"), /* @__PURE__ */ React.createElement(ThR, { w: 80 }, "Qty"), /* @__PURE__ */ React.createElement(Th, null, "Suggested reel(s)"))), /* @__PURE__ */ React.createElement("tbody", null, bondingItems.map((it) => /* @__PURE__ */ React.createElement("tr", { key: it.lineId, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, it.spec), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, it.needed), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, it.reels.map((r) => `${r.take} from ${r.batchNumber}`).join(", "))))))), glueItems.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, marginTop: 16, marginBottom: 6 } }, "Glue Line \u2014 needs running"), /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, null, "Product"), /* @__PURE__ */ React.createElement(ThR, { w: 100 }, "Meters"), /* @__PURE__ */ React.createElement(ThR, { w: 100 }, "Boxes worth"))), /* @__PURE__ */ React.createElement("tbody", null, glueItems.map((it) => /* @__PURE__ */ React.createElement("tr", { key: it.lineId, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, it.spec), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, it.metersNeeded, "m"), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, "~", it.boxesNeeded))))))),
       document.getElementById("print-portal-root") || document.body
     ));
@@ -13406,8 +13436,9 @@ Here's the order:`;
     const res = resolveProduct(data, value);
     if (!String(value || "").trim()) return null;
     if (res.status === "exact") {
-      const differs = res.product.displayName !== String(value).trim();
-      return /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: differs ? NAVY : "#2E8B57", marginTop: 2 } }, differs ? `\u2192 ${res.product.displayName}` : "\u2713 known product");
+      const saved = orderLineName(data, value);
+      const differs = saved !== String(value).trim();
+      return /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: differs ? NAVY : "#2E8B57", marginTop: 2 } }, differs ? `\u2192 ${saved}` : "\u2713 known product");
     }
     if (res.status === "candidates") {
       return /* @__PURE__ */ React.createElement("div", { style: { marginTop: 3, padding: "6px 8px", borderRadius: 5, background: "#FFF6E5", border: "1px solid #E8C77A" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: "#8A6100" } }, "Which product is this? Pick one \u2014 the order stores the catalogue name."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 5, marginTop: 5 } }, res.candidates.slice(0, 6).map((p) => /* @__PURE__ */ React.createElement(
@@ -13494,7 +13525,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
         const kPins = isKPinCustomer(prevData, custName);
         const kNotes = [];
         const newLineItems = parsed.lineItems.map((li, i) => {
-          let description = catalogueName(prevData, li.description || ""), formId = formIdForLine(prevData, { description: li.description || "" });
+          let description = orderLineName(prevData, li.description || ""), formId = formIdForLine(prevData, { description: li.description || "" });
           if (kPins) {
             const k = kPinEquivalent(prevData, description);
             if (k && k.description) {
@@ -13645,7 +13676,7 @@ ${kNotes.join("\n")}`), 0);
         order: { id: "PASTE-PREVIEW", customer: parsed.customer, dueDate: parsed.dueDate || null, priority: priority ?? null },
         lines: parsed.lineItems.map((li, i) => ({
           id: `paste-${i}`,
-          description: catalogueName(data, li.description || ""),
+          description: orderLineName(data, li.description || ""),
           formId: formIdForLine(data, { description: li.description || "" }),
           qty: Number(li.qty) || 0
         }))
@@ -14614,7 +14645,7 @@ ${kNotes.join("\n")}`), 0);
       if (newLine.amount && !description.includes(`(${newLine.amount}m)`)) description += ` (${newLine.amount}m)`;
       const res = resolveProduct(data, description);
       if (res.status === "exact") {
-        description = res.product.displayName;
+        description = orderLineName(data, description);
       } else if (res.status === "candidates") {
         const list = res.candidates.slice(0, 6).map((p, i) => `  ${i + 1}. ${p.displayName}`).join("\n");
         const pick = window.prompt(
@@ -21606,6 +21637,195 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       setMsg(null);
     }, placeholder: "Reel code, e.g. PBLI52402", style: adminInput(P, { fontFamily: "monospace", width: 200 }) }), c && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, marginTop: 10 } }, existing ? /* @__PURE__ */ React.createElement("div", { "data-reel-onfile": true, style: { color: P.dim } }, "On the system: ", existing.productSize || "no size", " \xB7 ", existing.meterage || 0, " m \xB7 ", used, " m bonded off it \xB7 Checked: ", existing.checked === "Yes" ? "yes" : "no", existing.cleared === "Yes" ? " \xB7 cleared" : "") : codeOk ? /* @__PURE__ */ React.createElement("div", { style: { color: P.dim } }, "Not on the system \u2014 it will be added", fromCode ? `, dated ${fromCode} from its code` : "", ".", twins.length > 0 && /* @__PURE__ */ React.createElement("span", { style: { color: P.warn } }, " Similar codes on the system: ", twins.map((t) => /* @__PURE__ */ React.createElement("button", { key: t, onClick: () => setCode(t), style: { ...btn, marginLeft: 6, padding: "2px 8px" } }, t)), " \u2014 check the label.")) : /* @__PURE__ */ React.createElement("div", { style: { color: P.warn } }, "A reel code is PBL, a month letter and five digits."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("select", { "data-reel-size": true, value: size, onChange: (e) => setSize(e.target.value), style: adminInput(P, { maxWidth: 280 }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Size\u2026"), (size && !sizes.includes(size) ? [size, ...sizes] : sizes).map((x) => /* @__PURE__ */ React.createElement("option", { key: x, value: x }, x))), /* @__PURE__ */ React.createElement("input", { "data-reel-metres": true, type: "number", value: metres, onChange: (e) => setMetres(e.target.value), placeholder: "Metres", style: adminInput(P, { width: 110 }) }), /* @__PURE__ */ React.createElement("input", { "data-reel-date": true, type: "date", value: date || fromCode || "", onChange: (e) => setDate(e.target.value), style: adminInput(P, { width: 160 }) }), /* @__PURE__ */ React.createElement("input", { value: note, onChange: (e) => setNote(e.target.value), placeholder: "Note (optional)", style: adminInput(P, { minWidth: 180, flex: 1 }) }), /* @__PURE__ */ React.createElement("button", { "data-reel-save": true, onClick: save, style: { ...btn, fontWeight: 600 } }, existing ? "Save \u2014 Checked, on the rack" : "Add the reel"))), msg && /* @__PURE__ */ React.createElement("div", { "data-fix-msg": true, style: { marginTop: 10, fontSize: 13.5, fontWeight: 600, color: msg.bad ? P.bad : P.ok } }, msg.t), last && /* @__PURE__ */ React.createElement("button", { "data-reel-undo": true, onClick: undo, style: { ...btn, marginTop: 8 } }, "Undo"));
   }
+  async function callAdminUsers(body) {
+    if (window.__MX_TEST_MIRROR__ && typeof window.__adminUsersFn === "function") return window.__adminUsersFn(body);
+    const client = makeSyncClient();
+    if (!client || !client.functions || !client.functions.invoke) return { error: "Needs the internet \u2014 try again when this device is online." };
+    try {
+      const timeout = new Promise((res) => setTimeout(() => res({ error: { message: "The server didn't answer \u2014 check the internet and try again." } }), 2e4));
+      const { data, error } = await Promise.race([client.functions.invoke("admin-users", { body }), timeout]);
+      if (error) {
+        let m = error.message || "It didn't work.";
+        try {
+          const j = error.context && typeof error.context.json === "function" ? await error.context.json() : null;
+          if (j && j.error) m = j.error;
+        } catch (e) {
+        }
+        return { error: /Failed to fetch|NetworkError|FunctionsFetchError/i.test(m) ? "Can't reach the server \u2014 check the internet and try again." : m };
+      }
+      return data || {};
+    } catch (e) {
+      return { error: String(e && e.message || e) };
+    }
+  }
+  function FixPasswords({ data, setData, P, card, btn }) {
+    const [users, setUsers] = useState(null);
+    const [pick, setPick] = useState("");
+    const [pw1, setPw1] = useState("");
+    const [pw2, setPw2] = useState("");
+    const [busy, setBusy] = useState(false);
+    const [msg, setMsg] = useState(null);
+    const load = async () => {
+      setBusy(true);
+      setMsg(null);
+      const r = await callAdminUsers({ action: "list" });
+      setBusy(false);
+      if (r.error) setMsg({ bad: true, t: r.error });
+      else setUsers(r.users || []);
+    };
+    useEffect(() => {
+      load();
+    }, []);
+    const set = async () => {
+      if (!pick) {
+        setMsg({ bad: true, t: "Pick whose password to set." });
+        return;
+      }
+      if (pw1.length < 8) {
+        setMsg({ bad: true, t: "A password needs at least 8 characters." });
+        return;
+      }
+      if (pw1 !== pw2) {
+        setMsg({ bad: true, t: "The two passwords don't match." });
+        return;
+      }
+      setBusy(true);
+      const r = await callAdminUsers({ action: "set", email: pick, password: pw1 });
+      setBusy(false);
+      if (r.error) {
+        setMsg({ bad: true, t: r.error });
+        return;
+      }
+      setPw1("");
+      setPw2("");
+      setData((prev) => ({ ...prev, ...appendLog(prev, { action: "update", entity: "login", entityId: pick, summary: `Password set for ${pick} (Admin \u2192 Set a password)` }) }));
+      setMsg({ bad: false, t: `Password set for ${pick}. Devices already signed in stay signed in; the new password is for the next sign-in.` });
+    };
+    const when = (t) => t ? new Date(t).toLocaleDateString(void 0, { day: "numeric", month: "short" }) : "never";
+    return /* @__PURE__ */ React.createElement("div", { style: card, "data-fix-pw": true }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: P.head, marginBottom: 8 } }, "Set a password"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: P.dim, marginBottom: 8 } }, "For when someone can't sign in. Needs the internet."), users === null ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14 } }, busy ? "Loading logins\u2026" : "") : /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 4, marginBottom: 8 } }, users.map((u) => /* @__PURE__ */ React.createElement("label", { key: u.email, "data-pw-user": true, style: { display: "flex", gap: 8, alignItems: "center", fontSize: 14 } }, /* @__PURE__ */ React.createElement("input", { type: "radio", name: "pw-user", checked: pick === u.email, onChange: () => {
+      setPick(u.email);
+      setMsg(null);
+    } }), /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "monospace" } }, u.email), /* @__PURE__ */ React.createElement("span", { style: { color: P.dim, fontSize: 12.5 } }, "last signed in ", when(u.lastSignIn))))), users !== null && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("input", { "data-pw-1": true, type: "password", autoComplete: "new-password", value: pw1, onChange: (e) => setPw1(e.target.value), placeholder: "New password", style: adminInput(P, { width: 180 }) }), /* @__PURE__ */ React.createElement("input", { "data-pw-2": true, type: "password", autoComplete: "new-password", value: pw2, onChange: (e) => setPw2(e.target.value), placeholder: "Again", style: adminInput(P, { width: 180 }) }), /* @__PURE__ */ React.createElement("button", { "data-pw-set": true, disabled: busy, onClick: set, style: { ...btn, fontWeight: 600 } }, busy ? "Setting\u2026" : "Set password")), msg && /* @__PURE__ */ React.createElement("div", { "data-fix-msg": true, style: { marginTop: 10, fontSize: 13.5, fontWeight: 600, color: msg.bad ? P.bad : P.ok } }, msg.t), users === null && !busy && /* @__PURE__ */ React.createElement("button", { onClick: load, style: { ...btn, marginTop: 8 } }, "Try again"));
+  }
+  function FixAddForm({ data, setData, P, card, btn }) {
+    const [name, setName] = useState("");
+    const [form, setForm] = useState("Reel");
+    const [metres, setMetres] = useState("");
+    const [msg, setMsg] = useState(null);
+    const [last, setLast] = useState(null);
+    const products = useMemo(() => (data.products || []).filter((p) => p && !p.deleted && p.active !== false).sort((a, b) => String(a.displayName).localeCompare(String(b.displayName), void 0, { numeric: true })), [data.products]);
+    const product = products.find((p) => p.displayName === name.trim()) || null;
+    const forms = product ? (data.productForms || []).filter((f) => f && !f.deleted && f.productId === product.id) : [];
+    const at = () => (/* @__PURE__ */ new Date()).toISOString();
+    const add = () => {
+      if (!product) {
+        setMsg({ bad: true, t: "Pick the product from the list first." });
+        return;
+      }
+      const m = Number(metres);
+      if (!(m > 0)) {
+        setMsg({ bad: true, t: `Say how many metres ${form === "Reel" ? "a reel holds" : "a box holds"}.` });
+        return;
+      }
+      const all = data.productForms || [];
+      const same = all.find((f) => f && f.productId === product.id && f.form === form && Number(f.metres) === m);
+      if (same && !same.deleted) {
+        setMsg({ bad: true, t: `${product.displayName} is already sold as a ${m} m ${form.toLowerCase()}.` });
+        return;
+      }
+      const row = same ? { ...same, deleted: false, active: true, updatedAt: at() } : { id: `${product.id}-${form.toLowerCase()}-${String(m).replace(".", "-")}`, productId: product.id, form, metres: m, active: true, createdAt: at(), updatedAt: at(), deleted: false };
+      if (!same && all.some((f) => f && f.id === row.id)) {
+        setMsg({ bad: true, t: `A form called ${row.id} already exists with other settings \u2014 tell Claude.` });
+        return;
+      }
+      setData((prev) => {
+        const d = { ...prev, productForms: same ? prev.productForms.map((f) => f.id === same.id ? row : f) : [...prev.productForms || [], row] };
+        return { ...d, ...appendLog(d, {
+          action: same ? "update" : "add",
+          entity: "productForm",
+          entityId: row.id,
+          summary: `${product.displayName} can now be ordered as a ${m} m ${form.toLowerCase()} (Admin \u2192 Sell a size another way)`
+        }) };
+      });
+      setLast({ id: row.id, revived: !!same, label: `${product.displayName} ${m} m ${form.toLowerCase()}` });
+      setMsg({ bad: false, t: `${product.displayName} can now be ordered as a ${m} m ${form.toLowerCase()}. New order lines for it match straight away.` });
+    };
+    const undo = () => {
+      const l = last;
+      if (!l) return;
+      const inUse = (data.lineItems || []).some((li) => li && !li.deleted && li.formId === l.id);
+      if (inUse) {
+        setMsg({ bad: true, t: `An order line already uses ${l.label} \u2014 it can't be taken away now.` });
+        return;
+      }
+      setData((prev) => {
+        const d = { ...prev, productForms: prev.productForms.map((f) => f.id === l.id ? { ...f, deleted: true, deletedAt: at(), updatedAt: at() } : f) };
+        return { ...d, ...appendLog(d, { action: "update", entity: "productForm", entityId: l.id, summary: `Undone: ${l.label} taken off again (Admin \u2192 Sell a size another way)` }) };
+      });
+      setMsg({ bad: false, t: `Undone \u2014 ${l.label} is off again.` });
+      setLast(null);
+    };
+    return /* @__PURE__ */ React.createElement("div", { style: card, "data-fix-form": true }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: P.head, marginBottom: 8 } }, "Sell a size another way"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: P.dim, marginBottom: 8 } }, "A size already in the catalogue, sold as a reel (or a box of another length) as well \u2014 so an order for it matches and is planned."), /* @__PURE__ */ React.createElement("datalist", { id: "fix-form-products" }, products.map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.displayName }))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("input", { "data-form-product": true, list: "fix-form-products", value: name, onChange: (e) => {
+      setName(e.target.value);
+      setMsg(null);
+    }, placeholder: "Product, e.g. PX Plus 0.50 x 1.50mm 2-3pt", style: adminInput(P, { minWidth: 280, flex: 1 }) }), /* @__PURE__ */ React.createElement("select", { "data-form-kind": true, value: form, onChange: (e) => setForm(e.target.value), style: adminInput(P, { width: 100 }) }, /* @__PURE__ */ React.createElement("option", null, "Reel"), /* @__PURE__ */ React.createElement("option", null, "Box")), /* @__PURE__ */ React.createElement("input", { "data-form-metres": true, type: "number", step: "0.25", value: metres, onChange: (e) => setMetres(e.target.value), placeholder: "Metres", style: adminInput(P, { width: 100 }) }), /* @__PURE__ */ React.createElement("button", { "data-form-add": true, onClick: add, style: { ...btn, fontWeight: 600 } }, "Add")), product && /* @__PURE__ */ React.createElement("div", { "data-form-now": true, style: { fontSize: 13, color: P.dim, marginTop: 8 } }, "Sold now as: ", forms.length ? forms.map((f) => `${f.form.toLowerCase()} ${Number(f.metres) || "?"} m`).join(" \xB7 ") : "nothing yet"), msg && /* @__PURE__ */ React.createElement("div", { "data-fix-msg": true, style: { marginTop: 10, fontSize: 13.5, fontWeight: 600, color: msg.bad ? P.bad : P.ok } }, msg.t), last && /* @__PURE__ */ React.createElement("button", { "data-form-undo": true, onClick: undo, style: { ...btn, marginTop: 8 } }, "Undo"));
+  }
+  var AUTO_SOURCES = /* @__PURE__ */ new Set(["reconcile", "backfill", "ship-backfill"]);
+  function FixAutoEntries({ data, setData, P, card, btn }) {
+    const [msg, setMsg] = useState(null);
+    const [last, setLast] = useState(null);
+    const who = String(currentActor() || "").split("@")[0] || "admin";
+    const since = new Date(Date.now() - 30 * 864e5).toISOString();
+    const bursts = useMemo(() => {
+      const g = /* @__PURE__ */ new Map();
+      for (const m of data.movements || []) {
+        if (!m || m.deleted || !AUTO_SOURCES.has(m.source) || String(m.at || "") < since) continue;
+        const k = `${m.source}|${m.actor || ""}|${m.device || ""}|${String(m.at).slice(0, 16)}`;
+        if (!g.has(k)) g.set(k, { key: k, source: m.source, actor: m.actor || "?", device: m.device || "?", at: String(m.at).slice(0, 16).replace("T", " "), rows: [] });
+        g.get(k).rows.push(m);
+      }
+      return [...g.values()].map((b) => {
+        const kinds = {};
+        const stock = /* @__PURE__ */ new Map();
+        for (const m of b.rows) {
+          kinds[m.kind] = (kinds[m.kind] || 0) + 1;
+          if (["made", "adjusted", "scrapped"].includes(m.kind)) stock.set(m.boxNumber, (stock.get(m.boxNumber) || 0) + (m.kind === "scrapped" ? -1 : 1) * (Number(m.qty) || 0));
+        }
+        return { ...b, kinds, stock: [...stock].filter(([, q]) => q) };
+      }).sort((a, b) => b.at.localeCompare(a.at)).slice(0, 12);
+    }, [data.movements]);
+    const at = () => (/* @__PURE__ */ new Date()).toISOString();
+    const reverse = (b) => {
+      if (!window.confirm(`Take off ${b.rows.length} automatic ${b.source} entr${b.rows.length === 1 ? "y" : "ies"} written ${b.at} by ${b.actor} on ${b.device}?${b.stock.length ? `
+
+Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${Math.abs(q)}`).join(", ")}` : ""}`)) return;
+      const ids = new Set(b.rows.map((m) => m.id));
+      const tag = ` [Reversed ${todayISO()} by ${who}: automatic ${b.source} entry, not a real change (Admin \u2192 Reverse automatic entries)]`;
+      setData((prev) => {
+        const d = { ...prev, movements: prev.movements.map((m) => ids.has(m.id) ? { ...m, deleted: true, deletedAt: at(), updatedAt: at(), updatedBy: currentActor(), note: `${m.note || ""}${tag}` } : m) };
+        return { ...d, ...appendLog(d, {
+          action: "delete",
+          entity: "movement",
+          entityId: b.rows[0].id,
+          summary: `Reversed ${b.rows.length} automatic ${b.source} entries from ${b.at} (${b.actor}, ${b.device}) (Admin \u2192 Reverse automatic entries)`
+        }) };
+      });
+      setLast({ b, before: b.rows.map((m) => ({ ...m })) });
+      setMsg({ bad: false, t: `${b.rows.length} entries taken off. Logged in Activity.` });
+    };
+    const undo = () => {
+      const l = last;
+      if (!l) return;
+      const byId = new Map(l.before.map((m) => [m.id, m]));
+      setData((prev) => {
+        const d = { ...prev, movements: prev.movements.map((m) => byId.has(m.id) ? { ...byId.get(m.id), updatedAt: at() } : m) };
+        return { ...d, ...appendLog(d, { action: "update", entity: "movement", entityId: l.b.rows[0].id, summary: `Undone: ${l.b.rows.length} automatic ${l.b.source} entries from ${l.b.at} put back (Admin \u2192 Reverse automatic entries)` }) };
+      });
+      setMsg({ bad: false, t: "Undone \u2014 the entries are back." });
+      setLast(null);
+    };
+    return /* @__PURE__ */ React.createElement("div", { style: card, "data-fix-auto": true }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: P.head, marginBottom: 8 } }, "Reverse automatic entries"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: P.dim, marginBottom: 8 } }, "Entries the app wrote by itself in the last 30 days \u2014 for when an old copy of the app writes a batch of wrong ones. People's own entries are never listed."), bursts.length === 0 ? /* @__PURE__ */ React.createElement("div", { "data-auto-none": true, style: { fontSize: 14 } }, "None in the last 30 days.") : bursts.map((b) => /* @__PURE__ */ React.createElement("div", { key: b.key, "data-auto-burst": true, style: { borderTop: `1px solid ${P.btnLine}`, padding: "8px 0", fontSize: 13.5 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("b", null, b.rows.length), " \xD7 ", b.source, " \xB7 ", b.at, " \xB7 ", b.actor, " on ", b.device), /* @__PURE__ */ React.createElement("div", { style: { color: P.dim } }, Object.entries(b.kinds).map(([k, n]) => `${n} ${k}`).join(", "), b.stock.length ? ` \xB7 stock: ${b.stock.slice(0, 6).map(([c, q]) => `${c} ${q > 0 ? "+" : ""}${q}`).join(", ")}${b.stock.length > 6 ? "\u2026" : ""}` : " \xB7 no stock change"), /* @__PURE__ */ React.createElement("button", { "data-auto-reverse": true, onClick: () => reverse(b), style: { ...btn, marginTop: 6 } }, "Reverse these ", b.rows.length))), msg && /* @__PURE__ */ React.createElement("div", { "data-fix-msg": true, style: { marginTop: 10, fontSize: 13.5, fontWeight: 600, color: msg.bad ? P.bad : P.ok } }, msg.t), last && /* @__PURE__ */ React.createElement("button", { "data-auto-undo": true, onClick: undo, style: { ...btn, marginTop: 8 } }, "Undo"));
+  }
   function FixCheckCase({ data, setData, P, card, btn }) {
     const [order, setOrder] = useState("");
     const [caseNum, setCaseNum] = useState("");
@@ -21727,6 +21947,9 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-09-28.6", "Admin \u2192 Fix tools \u2192 Set a password: see every login and set a new password for one, through a server function only the admin account can use."],
+    ["2026-09-28.5", "Glue line: Find a reel by code or size. Admin \u2192 Fix tools: Sell a size another way (add a reel or box length to an existing size), and Reverse automatic entries (take off a batch the app wrote by itself, with Undo)."],
+    ["2026-09-28.4", `A reel order line is saved as a reel ("\u20262-3pt REEL (45m)") and planned in reel cases by its form, whatever the wording. What's left to make says "Glued today \u2014 bonds tomorrow" for a size whose reel was glued today, not "needs running".`],
     ["2026-09-28.3", "An amendment's extras are counted properly: boxes packed for a product count once across the order's lines, so extras of a product the order already had reach the Production list and Dave's printed sheet, marked EXTRA with their amendment."],
     ["2026-09-28.2", "Admin \u2192 Fix tools \u2192 Add a found reel: put an old reel on the rack yourself \u2014 code, size, metres; dated from its code, Checked. A code already on the system is completed, not duplicated."],
     ["2026-09-28.1", "Bonding is the check: the Bonding Line offers unchecked reels, and logging a box off a reel ticks it Checked. A saved password filling in no longer trips the scanner listener."],
@@ -21968,9 +22191,12 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       ["rack", "\u{1F9F5} Rack check", true],
       ["case", "\u{1F5C3} Check a case", true],
       ["catalogue", "\u{1F4D8} Catalogue sizes", true],
-      ["names", "\u{1F3F7} Other names for a product", true]
+      ["names", "\u{1F3F7} Other names for a product", true],
+      ["form", "\u{1F4D0} Sell a size another way", true],
+      ["auto", "\u21A9 Reverse automatic entries", true],
+      ["pw", "\u{1F511} Set a password", true]
     ];
-    return /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } }, tools.map(([k, l, ready]) => /* @__PURE__ */ React.createElement("button", { key: k, "data-fix-tool": k, onClick: () => setTool(k), style: { ...btn, border: `${tool === k ? 2 : 1}px solid ${tool === k ? P.head : P.btnLine}`, opacity: ready ? 1 : 0.7 } }, l, !ready ? " \xB7 soon" : ""))), tool === "code" && /* @__PURE__ */ React.createElement(FixCorrectCode, { data, setData, P, card, btn }), tool === "catalogue" && /* @__PURE__ */ React.createElement(CustomSizesPanel, { data, setData }), tool === "found" && /* @__PURE__ */ React.createElement(FixFoundIt, { data, setData, P, card, btn }), tool === "reel" && /* @__PURE__ */ React.createElement(FixFoundReel, { data, setData, P, card, btn }), tool === "rack" && /* @__PURE__ */ React.createElement(FixRackCheck, { data, setData, P, card, btn }), tool === "case" && /* @__PURE__ */ React.createElement(FixCheckCase, { data, setData, P, card, btn }), tool === "names" && /* @__PURE__ */ React.createElement(FixProductNames, { data, setData, P, card, btn }), false);
+    return /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } }, tools.map(([k, l, ready]) => /* @__PURE__ */ React.createElement("button", { key: k, "data-fix-tool": k, onClick: () => setTool(k), style: { ...btn, border: `${tool === k ? 2 : 1}px solid ${tool === k ? P.head : P.btnLine}`, opacity: ready ? 1 : 0.7 } }, l, !ready ? " \xB7 soon" : ""))), tool === "code" && /* @__PURE__ */ React.createElement(FixCorrectCode, { data, setData, P, card, btn }), tool === "catalogue" && /* @__PURE__ */ React.createElement(CustomSizesPanel, { data, setData }), tool === "found" && /* @__PURE__ */ React.createElement(FixFoundIt, { data, setData, P, card, btn }), tool === "reel" && /* @__PURE__ */ React.createElement(FixFoundReel, { data, setData, P, card, btn }), tool === "rack" && /* @__PURE__ */ React.createElement(FixRackCheck, { data, setData, P, card, btn }), tool === "case" && /* @__PURE__ */ React.createElement(FixCheckCase, { data, setData, P, card, btn }), tool === "names" && /* @__PURE__ */ React.createElement(FixProductNames, { data, setData, P, card, btn }), tool === "form" && /* @__PURE__ */ React.createElement(FixAddForm, { data, setData, P, card, btn }), tool === "auto" && /* @__PURE__ */ React.createElement(FixAutoEntries, { data, setData, P, card, btn }), tool === "pw" && /* @__PURE__ */ React.createElement(FixPasswords, { data, setData, P, card, btn }), false);
   }
   function FixCorrectCode({ data, setData, P, card, btn }) {
     const [from, setFrom] = useState("");
@@ -27249,7 +27475,11 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
     const [showTodayOnly, setShowTodayOnly] = useState(false);
     const isToday = (r) => r.date === todayStr || dateFromReelCode(r.batchNumber) === todayStr;
     const todayCount = rows.filter(isToday).length;
-    const visibleGlueRows = showTodayOnly ? rows.filter(isToday) : rows;
+    const [reelQuery, setReelQuery] = useState("");
+    const rq = reelQuery.trim().toUpperCase();
+    const searching = rq.length >= 3;
+    const matchesQuery = (r) => String(r.batchNumber || "").toUpperCase().includes(rq) || String(r.productSize || "").toUpperCase().includes(rq);
+    const visibleGlueRows = searching ? rows.filter(matchesQuery) : showTodayOnly ? rows.filter(isToday) : rows;
     const visibleRuns = derivedGlueRuns(visibleGlueRows);
     const [runsShown, setRunsShown] = useState(10);
     const listId = "size-catalog-glueline";
@@ -27769,7 +27999,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       setEditingId(null);
       setEditForm(null);
     };
-    const shownRuns = visibleRuns.filter((run, i) => i < runsShown || editingId && run.reels.some((x) => x.id === editingId));
+    const shownRuns = visibleRuns.filter((run, i) => searching || i < runsShown || editingId && run.reels.some((x) => x.id === editingId));
     return /* @__PURE__ */ React.createElement("div", null, justAdded && /* @__PURE__ */ React.createElement("div", { className: "no-print fixed bottom-5 right-5 z-50 flex items-center gap-3 px-4 py-2.5 rounded shadow-lg text-sm text-white", style: { background: NAVY } }, /* @__PURE__ */ React.createElement("span", null, "Added ", justAdded.label), /* @__PURE__ */ React.createElement("button", { onClick: undoJustAdded, className: "font-semibold underline", style: { color: "#fff" } }, "Undo"), /* @__PURE__ */ React.createElement("button", { onClick: () => {
       clearTimeout(justAdded.timerId);
       setJustAdded(null);
@@ -27791,7 +28021,19 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       },
       "Today ",
       /* @__PURE__ */ React.createElement("span", { style: { opacity: 0.7 } }, "(", todayCount, ")")
-    )), /* @__PURE__ */ React.createElement("div", { className: "no-print" }, /* @__PURE__ */ React.createElement("datalist", { id: listId }, (PRODUCT_RANGES[form.range] || []).map((s) => /* @__PURE__ */ React.createElement("option", { key: s, value: s }))), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5" }, /* @__PURE__ */ React.createElement(
+    ), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        "data-reel-search": true,
+        value: reelQuery,
+        onChange: (e) => setReelQuery(e.target.value),
+        placeholder: "Find a reel \u2014 code or size",
+        autoCapitalize: "characters",
+        autoCorrect: "off",
+        spellCheck: "false",
+        style: { flex: "1 1 200px", maxWidth: 320, minWidth: 0, height: 34, fontSize: 14, border: `1px solid ${BORDER}`, borderRadius: 999, padding: "0 14px", background: "#fff" }
+      }
+    ), searching && /* @__PURE__ */ React.createElement("span", { style: { alignSelf: "center", fontSize: 13, color: INK_MUTED } }, rows.filter(matchesQuery).length, " reel", rows.filter(matchesQuery).length === 1 ? "" : "s", " match")), /* @__PURE__ */ React.createElement("div", { className: "no-print" }, /* @__PURE__ */ React.createElement("datalist", { id: listId }, (PRODUCT_RANGES[form.range] || []).map((s) => /* @__PURE__ */ React.createElement("option", { key: s, value: s }))), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5" }, /* @__PURE__ */ React.createElement(
       "button",
       {
         className: "phone-collapsible-toggle w-full text-left mb-1",
@@ -27833,7 +28075,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           action: "Discard edit"
         }
       )
-    )))), visibleGlueRows.length === 0 ? /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5 no-print" }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED } }, showTodayOnly ? "No reels logged today." : "No reels yet.")) : /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5 no-print mx-glue-runs" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline justify-between gap-4", style: { paddingBottom: 8, borderBottom: `2px solid ${NAVY_DEEP}` } }, /* @__PURE__ */ React.createElement("h2", { style: { margin: 0, fontSize: 19, fontWeight: 600, color: NAVY_DEEP } }, showTodayOnly ? "Today's reels" : "Reels", ", by run"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 14, color: INK_MUTED } }, visibleGlueRows.length, " reel", visibleGlueRows.length === 1 ? "" : "s", ",", " ", visibleGlueRows.reduce((t, r) => t + (Number(r.meterage) || 0), 0).toLocaleString("en-GB"), " m")), shownRuns.map((run, ri) => /* @__PURE__ */ React.createElement("div", { key: run.id, "data-run": run.id, style: { padding: "12px 0", borderTop: ri ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 600 } }, /* @__PURE__ */ React.createElement(Spec, { s: run.productSize, size: 14 })), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 4, lineHeight: 1.5 } }, run.date, " \xB7 ", isDirectRow(run.settings) ? "Direct" : `from reel ${plCodeOf(run.settings) || "\u2014"}`, run.from ? ` \xB7 ${run.from}\u2013${run.to}` : "", formatRuntime(run.runningHrs) ? ` \xB7 ran ${formatRuntime(run.runningHrs)}` : "", run.settings.extScrewSpeed ? ` \xB7 screw ${run.settings.extScrewSpeed}` : "", run.settings.extLineSpeed ? ` \xB7 ${run.settings.extLineSpeed} m/min` : "", run.settings.extPvcCode ? ` \xB7 PVC ${run.settings.extPvcCode}` : "", run.settings.glueBatch ? ` \xB7 glue ${run.settings.glueBatch}` : "", run.settings.glueDie ? ` \xB7 die ${run.settings.glueDie}` : "", run.settings.petType ? ` \xB7 PET ${run.settings.petType}` : "")), /* @__PURE__ */ React.createElement("div", { style: { textAlign: "right", flexShrink: 0 } }, /* @__PURE__ */ React.createElement("div", { className: "font-mono", style: { fontSize: 20, fontWeight: 700 } }, run.metres.toLocaleString("en-GB")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, "m in ", run.reels.length, " reel", run.reels.length === 1 ? "" : "s"))), /* @__PURE__ */ React.createElement("div", { style: { marginLeft: 12, marginTop: 8, borderLeft: `2px solid #EDEDE8`, paddingLeft: 12 } }, run.reels.map((x) => {
+    )))), visibleGlueRows.length === 0 ? /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5 no-print" }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED } }, searching ? `No reel matches "${reelQuery.trim()}".` : showTodayOnly ? "No reels logged today." : "No reels yet.")) : /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5 no-print mx-glue-runs" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline justify-between gap-4", style: { paddingBottom: 8, borderBottom: `2px solid ${NAVY_DEEP}` } }, /* @__PURE__ */ React.createElement("h2", { style: { margin: 0, fontSize: 19, fontWeight: 600, color: NAVY_DEEP } }, showTodayOnly ? "Today's reels" : "Reels", ", by run"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 14, color: INK_MUTED } }, visibleGlueRows.length, " reel", visibleGlueRows.length === 1 ? "" : "s", ",", " ", visibleGlueRows.reduce((t, r) => t + (Number(r.meterage) || 0), 0).toLocaleString("en-GB"), " m")), shownRuns.map((run, ri) => /* @__PURE__ */ React.createElement("div", { key: run.id, "data-run": run.id, style: { padding: "12px 0", borderTop: ri ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 600 } }, /* @__PURE__ */ React.createElement(Spec, { s: run.productSize, size: 14 })), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 4, lineHeight: 1.5 } }, run.date, " \xB7 ", isDirectRow(run.settings) ? "Direct" : `from reel ${plCodeOf(run.settings) || "\u2014"}`, run.from ? ` \xB7 ${run.from}\u2013${run.to}` : "", formatRuntime(run.runningHrs) ? ` \xB7 ran ${formatRuntime(run.runningHrs)}` : "", run.settings.extScrewSpeed ? ` \xB7 screw ${run.settings.extScrewSpeed}` : "", run.settings.extLineSpeed ? ` \xB7 ${run.settings.extLineSpeed} m/min` : "", run.settings.extPvcCode ? ` \xB7 PVC ${run.settings.extPvcCode}` : "", run.settings.glueBatch ? ` \xB7 glue ${run.settings.glueBatch}` : "", run.settings.glueDie ? ` \xB7 die ${run.settings.glueDie}` : "", run.settings.petType ? ` \xB7 PET ${run.settings.petType}` : "")), /* @__PURE__ */ React.createElement("div", { style: { textAlign: "right", flexShrink: 0 } }, /* @__PURE__ */ React.createElement("div", { className: "font-mono", style: { fontSize: 20, fontWeight: 700 } }, run.metres.toLocaleString("en-GB")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED } }, "m in ", run.reels.length, " reel", run.reels.length === 1 ? "" : "s"))), /* @__PURE__ */ React.createElement("div", { style: { marginLeft: 12, marginTop: 8, borderLeft: `2px solid #EDEDE8`, paddingLeft: 12 } }, run.reels.map((x) => {
       const isEditing = editingId === x.id;
       const checked = String(x.checked) === "Yes";
       const col = productColourFor(x.productSize);
