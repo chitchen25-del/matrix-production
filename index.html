@@ -4671,6 +4671,59 @@
     const displacedRuns = [...displacedByBox.keys()].map((box) => bondingRuns.find((r) => !r.deleted && r.workNumber === orderId && r.boxNumber === box)).filter(Boolean).filter((r) => !removedRuns.some((x) => x.id === r.id) && !orphaned.some((x) => x.id === r.id)).map((r) => ({ ...r, unplacedQty: displacedByBox.get(r.boxNumber) }));
     return { caseRows, otherAssigned: [...orphaned.filter((run) => !(run.boxNumber && caseOverrides[run.boxNumber] != null && !removedFrom(run.boxNumber, caseOverrides[run.boxNumber]))), ...removedRuns, ...displacedRuns] };
   }
+  function discrepancyTriage(data, items, opts = {}) {
+    const days = opts.days == null ? 14 : Number(opts.days);
+    const today = opts.today || todayISO();
+    const horizon = new Date(Date.parse(today + "T00:00:00Z") + days * 864e5).toISOString().slice(0, 10);
+    const orders = (data.orders || []).filter((o) => o && !o.deleted);
+    const live = new Map(orders.filter((o) => o.stage !== "Shipped").map((o) => [o.id, o]));
+    const soon = (o) => !!o && (o.dueDate && String(o.dueDate).slice(0, 10) <= horizon || o.priority != null && o.priority !== "" && Number(o.priority) === 1);
+    const blocking = /* @__PURE__ */ new Set(["Duplicate box code", "Ledger spec differs", "Ledger below zero", "No location", "Not checked"]);
+    const mv = LEDGER_MOVEMENTS || [];
+    const runs = (data.bondingRuns || []).filter((r) => r && !r.deleted);
+    const reels = new Map((data.glueLineBatches || []).filter((g) => g && !g.deleted).map((g) => [String(g.batchNumber || "").toUpperCase(), g]));
+    const soonLines = [];
+    for (const o of live.values()) if (soon(o)) {
+      for (const li of orderLineItems(data.lineItems || [], o.id)) if (!isDelivery(li.description)) soonLines.push({ o, li });
+    }
+    const out = { history: [], live: [], needsYou: [] };
+    for (const it of items || []) {
+      const ref = String(it.ref || "").trim().toUpperCase();
+      let isLive = true, hits = [];
+      if (/^P[BP]L[A-L]\d{5}$/.test(ref)) {
+        const g = reels.get(ref);
+        if (g) {
+          const used = runs.filter((r) => String(r.baselineBatchCode || "").toUpperCase() === ref).reduce((t, r) => t + (Number(r.amountMade) || 0) * (Number(r.metersPerBox) || METERS_PER_BOX_DEFAULT), 0);
+          isLive = g.cleared !== "Yes" && (Number(g.meterage) || 0) - used > 0;
+          if (isLive) hits = soonLines.filter(({ li }) => runMatchesLine({ productSize: g.productSize, sizeKey: g.sizeKey }, li, { formCheck: false })).map((x) => x.o);
+        }
+      } else if (ref) {
+        const p = projectBox(mv, ref) || {};
+        const known = (Number(p.made) || 0) !== 0 || (Number(p.allocated) || 0) !== 0 || runs.some((r) => String(r.boxNumber || "").toUpperCase() === ref);
+        const shelf = Math.max(0, (Number(p.made) || 0) - (Number(p.scrapped) || 0) - (Number(p.allocated) || 0));
+        const inLive = Object.keys(p.byOrder || {}).filter((id) => live.has(id) && Number(p.byOrder[id]) > 0);
+        isLive = !known || shelf > 0 || inLive.length > 0;
+        if (isLive) {
+          hits = inLive.map((id) => live.get(id)).filter(soon);
+          if (shelf > 0) {
+            const run = runs.find((r) => String(r.boxNumber || "").toUpperCase() === ref);
+            if (run) {
+              for (const { o, li } of soonLines) if (runMatchesLine(run, li, { formCheck: false })) hits.push(o);
+            }
+          }
+        }
+      }
+      const uniq = [...new Map(hits.map((o) => [o.id, o])).values()].sort((a, b) => String(a.dueDate || "9999").localeCompare(String(b.dueDate || "9999")));
+      if (!isLive) out.history.push(it);
+      else {
+        out.live.push(it);
+        if (uniq.length && blocking.has(it.kind)) out.needsYou.push({ ...it, orders: uniq.map((o) => ({ id: o.id, customer: o.customer, dueDate: o.dueDate || null })) });
+      }
+    }
+    const sev = { high: 0, medium: 1, low: 2 };
+    out.needsYou.sort((a, b) => (sev[a.severity] ?? 3) - (sev[b.severity] ?? 3) || String(a.orders[0].dueDate || "9999").localeCompare(String(b.orders[0].dueDate || "9999")));
+    return out;
+  }
   function findDiscrepanciesFresh(data) {
     const runs = ledgerCorrectedRuns(data.bondingRuns || [], data.movements || []).filter((r) => !r._synth).filter((r) => !r.deleted);
     const orders = new Map((data.orders || []).filter((o) => !o.deleted).map((o) => [o.id, o]));
@@ -10792,7 +10845,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-28.6";
+  var APP_VERSION = "2026-09-28.7";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -12894,6 +12947,33 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     };
     return /* @__PURE__ */ React.createElement("section", { "data-notthere-list": true, style: { margin: "14px 0", border: `1.5px solid ${AMBER}`, borderRadius: 10, padding: "12px 14px", background: "#FFF8F0" } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, fontSize: 16, marginBottom: 6 } }, "Not there \u2014 still missing (", open.length, ")"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: INK_MUTED, marginBottom: 8 } }, "Marked not there while picking. If you find them, put them back here \u2014 don't add them as new."), open.map((m) => /* @__PURE__ */ React.createElement("div", { key: m.id, style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "6px 0", borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14.5 } }, /* @__PURE__ */ React.createElement("b", { className: "font-mono" }, m.boxNumber), " \xD7 ", m.missing, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " \xB7 ", String(m.note || "").replace(/^Not there — /, ""), " \xB7 ", String(m.at || "").slice(0, 10))), /* @__PURE__ */ React.createElement("button", { onClick: () => putBack(m), style: { height: 40, padding: "0 12px", borderRadius: 6, border: `1px solid ${NAVY}`, background: "#fff", color: NAVY, fontWeight: 600, cursor: "pointer" } }, "Found \u2014 put back"))));
   }
+  function NeedsYouToday({ data, jumpToDiscrepancies }) {
+    const admin = isAdminDevice();
+    const groups = useMemo(() => {
+      if (!admin) return [];
+      const dis = readDiscrepancyDismissals() || {};
+      const items = findDiscrepancies(data).filter((f) => !dis[f.id]);
+      const t = discrepancyTriage(data, items);
+      const byRef = /* @__PURE__ */ new Map();
+      for (const it of t.needsYou) {
+        const k = String(it.ref || it.id);
+        if (!byRef.has(k)) byRef.set(k, { ref: k, items: [], orders: /* @__PURE__ */ new Map() });
+        const g = byRef.get(k);
+        g.items.push(it);
+        for (const o of it.orders) g.orders.set(o.id, o);
+      }
+      const sev = { high: 0, medium: 1, low: 2 };
+      return [...byRef.values()].map((g) => ({
+        ...g,
+        orders: [...g.orders.values()].sort((a, b) => String(a.dueDate || "9999").localeCompare(String(b.dueDate || "9999"))),
+        top: g.items.slice().sort((a, b) => (sev[a.severity] ?? 3) - (sev[b.severity] ?? 3))[0]
+      })).sort((a, b) => (sev[a.top.severity] ?? 3) - (sev[b.top.severity] ?? 3) || String(a.orders[0]?.dueDate || "9999").localeCompare(String(b.orders[0]?.dueDate || "9999")));
+    }, [data, admin]);
+    if (!admin || groups.length === 0) return null;
+    const shown = groups.slice(0, 5), more = groups.length - shown.length;
+    const due = (d) => d ? (/* @__PURE__ */ new Date(d + "T12:00:00")).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }) : "priority 1";
+    return /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mt-4 no-print", style: { borderLeft: `4px solid ${RED}` }, "data-needs-you": true }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 600, color: NAVY_DEEP } }, "Needs you today"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 2 } }, "Only what could hold up an order due in the next fortnight."), shown.map((g, i) => /* @__PURE__ */ React.createElement("div", { key: g.ref, "data-needs-item": true, style: { borderTop: `1px solid ${BORDER}`, marginTop: 10, paddingTop: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14.5, fontWeight: 600, color: INK } }, i + 1, ". ", g.top.what), g.items.length > 1 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED } }, "and ", g.items.length - 1, " more about ", g.ref), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 2 } }, "Holds up ", g.orders.slice(0, 2).map((o) => `${o.customer || o.id} ${o.id} (due ${due(o.dueDate)})`).join(", "), g.orders.length > 2 ? ` and ${g.orders.length - 2} more` : ""), g.top.todo && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: INK, marginTop: 4 } }, g.top.todo))), more > 0 && /* @__PURE__ */ React.createElement("button", { onClick: () => jumpToDiscrepancies && jumpToDiscrepancies(), style: { font: "inherit", background: "none", border: 0, color: NAVY, cursor: "pointer", padding: "10px 0 0", fontSize: 14 } }, more, " more for later orders or with less at stake \u2014 on the full list"));
+  }
   function TodayView({ data, setData, jumpToProduction, jumpToOrder, jumpToDiscrepancies }) {
     const [showAllExtrude, setShowAllExtrude] = useState(false);
     const [showAllWaiting, setShowAllWaiting] = useState(false);
@@ -12981,7 +13061,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       const dateLine = d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" });
       const fri = d.getDay() === 5;
       return /* @__PURE__ */ React.createElement("header", { style: { marginBottom: 4 } }, /* @__PURE__ */ React.createElement("h1", { style: { fontSize: "clamp(25px, 6.4vw, 34px)", lineHeight: 1.1, letterSpacing: "-0.022em", fontWeight: 600, margin: 0, color: NAVY_DEEP } }, dateLine), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6, fontSize: 15, color: INK_MUTED } }, "Bonding runs what was glued ", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, "yesterday"), ". Reels on the rack, matched against what's still outstanding, urgent first."), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 2, fontSize: 14, color: INK_MUTED } }, fri ? "Line stops 14:00 today." : "Line stops 17:00 today."));
-    })(), /* @__PURE__ */ React.createElement(NotThereList, { data, setData }), planMoves && planMoves.later.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-3" }, /* @__PURE__ */ React.createElement(PlanSlipsLine, { slips: planMoves, compact: true })), (() => {
+    })(), /* @__PURE__ */ React.createElement(NeedsYouToday, { data, jumpToDiscrepancies }), /* @__PURE__ */ React.createElement(NotThereList, { data, setData }), planMoves && planMoves.later.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-3" }, /* @__PURE__ */ React.createElement(PlanSlipsLine, { slips: planMoves, compact: true })), (() => {
       const today = todayISO();
       const runs = (data.bondingRuns || []).filter((r) => !r.deleted && !r.packingOnly && r.date === today);
       const boxes = runs.reduce((s, r) => s + (Number(r.amountMade) || 0), 0);
@@ -21637,6 +21717,45 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       setMsg(null);
     }, placeholder: "Reel code, e.g. PBLI52402", style: adminInput(P, { fontFamily: "monospace", width: 200 }) }), c && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, marginTop: 10 } }, existing ? /* @__PURE__ */ React.createElement("div", { "data-reel-onfile": true, style: { color: P.dim } }, "On the system: ", existing.productSize || "no size", " \xB7 ", existing.meterage || 0, " m \xB7 ", used, " m bonded off it \xB7 Checked: ", existing.checked === "Yes" ? "yes" : "no", existing.cleared === "Yes" ? " \xB7 cleared" : "") : codeOk ? /* @__PURE__ */ React.createElement("div", { style: { color: P.dim } }, "Not on the system \u2014 it will be added", fromCode ? `, dated ${fromCode} from its code` : "", ".", twins.length > 0 && /* @__PURE__ */ React.createElement("span", { style: { color: P.warn } }, " Similar codes on the system: ", twins.map((t) => /* @__PURE__ */ React.createElement("button", { key: t, onClick: () => setCode(t), style: { ...btn, marginLeft: 6, padding: "2px 8px" } }, t)), " \u2014 check the label.")) : /* @__PURE__ */ React.createElement("div", { style: { color: P.warn } }, "A reel code is PBL, a month letter and five digits."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("select", { "data-reel-size": true, value: size, onChange: (e) => setSize(e.target.value), style: adminInput(P, { maxWidth: 280 }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Size\u2026"), (size && !sizes.includes(size) ? [size, ...sizes] : sizes).map((x) => /* @__PURE__ */ React.createElement("option", { key: x, value: x }, x))), /* @__PURE__ */ React.createElement("input", { "data-reel-metres": true, type: "number", value: metres, onChange: (e) => setMetres(e.target.value), placeholder: "Metres", style: adminInput(P, { width: 110 }) }), /* @__PURE__ */ React.createElement("input", { "data-reel-date": true, type: "date", value: date || fromCode || "", onChange: (e) => setDate(e.target.value), style: adminInput(P, { width: 160 }) }), /* @__PURE__ */ React.createElement("input", { value: note, onChange: (e) => setNote(e.target.value), placeholder: "Note (optional)", style: adminInput(P, { minWidth: 180, flex: 1 }) }), /* @__PURE__ */ React.createElement("button", { "data-reel-save": true, onClick: save, style: { ...btn, fontWeight: 600 } }, existing ? "Save \u2014 Checked, on the rack" : "Add the reel"))), msg && /* @__PURE__ */ React.createElement("div", { "data-fix-msg": true, style: { marginTop: 10, fontSize: 13.5, fontWeight: 600, color: msg.bad ? P.bad : P.ok } }, msg.t), last && /* @__PURE__ */ React.createElement("button", { "data-reel-undo": true, onClick: undo, style: { ...btn, marginTop: 8 } }, "Undo"));
   }
+  function FixDrawLine({ data, setData, P, card, btn }) {
+    const [msg, setMsg] = useState(null);
+    const [last, setLast] = useState(null);
+    const [show, setShow] = useState(false);
+    const who = String(currentActor() || "").split("@")[0] || "admin";
+    const dis = readDiscrepancyDismissals() || {};
+    const items = findDiscrepancies(data).filter((f) => !dis[f.id]);
+    const t = discrepancyTriage(data, items);
+    const kinds = (a) => Object.entries(a.reduce((m, x) => (m[x.kind] = (m[x.kind] || 0) + 1, m), {})).map(([k, n]) => `${n} ${k.toLowerCase()}`).join(", ");
+    const accept = () => {
+      const ids = t.history.map((x) => x.id);
+      if (!ids.length) return;
+      const at = (/* @__PURE__ */ new Date()).toISOString(), by = currentActor(), reason = `History \u2014 accepted as it is by ${who} ${todayISO()} (Admin \u2192 Draw a line under the past)`;
+      setDismissals({ ...DISMISSALS, ...Object.fromEntries(ids.map((id) => [id, { at, by, reason }])) });
+      setData((prev) => {
+        const rows = prev.discrepancyDismissals || [];
+        const have = new Set(rows.map((r) => r.id));
+        const next = rows.map((r) => ids.includes(r.id) ? { ...r, reason, dismissedBy: by, dismissedAt: at, deleted: false, deletedAt: null } : r).concat(ids.filter((id) => !have.has(id)).map((id) => ({ id, reason, dismissedBy: by, dismissedAt: at, deleted: false, deletedAt: null })));
+        const d = { ...prev, discrepancyDismissals: next };
+        return { ...d, ...appendLog(d, { action: "update", entity: "discrepancies", entityId: "history", summary: `${ids.length} discrepancies on finished stock accepted as history (Admin \u2192 Draw a line under the past)` }) };
+      });
+      setLast(ids);
+      setMsg({ bad: false, t: `${ids.length} accepted as history. ${t.live.length} still in play stay on the list.` });
+    };
+    const undo = () => {
+      const ids = last;
+      if (!ids) return;
+      const next = { ...DISMISSALS };
+      for (const id of ids) delete next[id];
+      setDismissals(next);
+      setData((prev) => {
+        const d = { ...prev, discrepancyDismissals: (prev.discrepancyDismissals || []).map((r) => ids.includes(r.id) ? { ...r, deleted: true, deletedAt: (/* @__PURE__ */ new Date()).toISOString() } : r) };
+        return { ...d, ...appendLog(d, { action: "update", entity: "discrepancies", entityId: "history", summary: `Undone: ${ids.length} history discrepancies back on the list (Admin \u2192 Draw a line under the past)` }) };
+      });
+      setMsg({ bad: false, t: "Undone \u2014 they're back on the list." });
+      setLast(null);
+    };
+    return /* @__PURE__ */ React.createElement("div", { style: card, "data-fix-line": true }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: P.head, marginBottom: 8 } }, "Draw a line under the past"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: P.dim, marginBottom: 8 } }, "Accepts every discrepancy about stock that's finished with. Anything still on the shelf or in a live order stays. Run it again after the stock check."), /* @__PURE__ */ React.createElement("div", { "data-line-counts": true, style: { fontSize: 14 } }, /* @__PURE__ */ React.createElement("b", null, t.history.length), " about finished stock", t.history.length ? ` (${kinds(t.history)})` : "", " \xB7 ", /* @__PURE__ */ React.createElement("b", null, t.live.length), " still in play \xB7 ", /* @__PURE__ */ React.createElement("b", null, t.needsYou.length), " could hold up an order in the next fortnight"), t.history.length > 0 && /* @__PURE__ */ React.createElement("button", { onClick: () => setShow(!show), style: { ...btn, marginTop: 8 } }, show ? "Hide" : "Show", " the ", t.history.length), show && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: P.dim, marginTop: 6, maxHeight: 220, overflowY: "auto" } }, t.history.map((x) => /* @__PURE__ */ React.createElement("div", { key: x.id }, x.what))), t.history.length > 0 && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("button", { "data-line-accept": true, onClick: accept, style: { ...btn, fontWeight: 600, marginTop: 8 } }, "Accept the ", t.history.length, " as history")), msg && /* @__PURE__ */ React.createElement("div", { "data-fix-msg": true, style: { marginTop: 10, fontSize: 13.5, fontWeight: 600, color: msg.bad ? P.bad : P.ok } }, msg.t), last && /* @__PURE__ */ React.createElement("button", { "data-line-undo": true, onClick: undo, style: { ...btn, marginTop: 8 } }, "Undo"));
+  }
   async function callAdminUsers(body) {
     if (window.__MX_TEST_MIRROR__ && typeof window.__adminUsersFn === "function") return window.__adminUsersFn(body);
     const client = makeSyncClient();
@@ -21947,6 +22066,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-09-28.7", "Needs you today: the admin's Daily plan shows at most five things that could hold up an order due in the next fortnight. Admin \u2192 Draw a line under the past accepts every discrepancy about finished stock in one go."],
     ["2026-09-28.6", "Admin \u2192 Fix tools \u2192 Set a password: see every login and set a new password for one, through a server function only the admin account can use."],
     ["2026-09-28.5", "Glue line: Find a reel by code or size. Admin \u2192 Fix tools: Sell a size another way (add a reel or box length to an existing size), and Reverse automatic entries (take off a batch the app wrote by itself, with Undo)."],
     ["2026-09-28.4", `A reel order line is saved as a reel ("\u20262-3pt REEL (45m)") and planned in reel cases by its form, whatever the wording. What's left to make says "Glued today \u2014 bonds tomorrow" for a size whose reel was glued today, not "needs running".`],
@@ -22194,9 +22314,10 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
       ["names", "\u{1F3F7} Other names for a product", true],
       ["form", "\u{1F4D0} Sell a size another way", true],
       ["auto", "\u21A9 Reverse automatic entries", true],
-      ["pw", "\u{1F511} Set a password", true]
+      ["pw", "\u{1F511} Set a password", true],
+      ["line", "\u{1F9F9} Draw a line under the past", true]
     ];
-    return /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } }, tools.map(([k, l, ready]) => /* @__PURE__ */ React.createElement("button", { key: k, "data-fix-tool": k, onClick: () => setTool(k), style: { ...btn, border: `${tool === k ? 2 : 1}px solid ${tool === k ? P.head : P.btnLine}`, opacity: ready ? 1 : 0.7 } }, l, !ready ? " \xB7 soon" : ""))), tool === "code" && /* @__PURE__ */ React.createElement(FixCorrectCode, { data, setData, P, card, btn }), tool === "catalogue" && /* @__PURE__ */ React.createElement(CustomSizesPanel, { data, setData }), tool === "found" && /* @__PURE__ */ React.createElement(FixFoundIt, { data, setData, P, card, btn }), tool === "reel" && /* @__PURE__ */ React.createElement(FixFoundReel, { data, setData, P, card, btn }), tool === "rack" && /* @__PURE__ */ React.createElement(FixRackCheck, { data, setData, P, card, btn }), tool === "case" && /* @__PURE__ */ React.createElement(FixCheckCase, { data, setData, P, card, btn }), tool === "names" && /* @__PURE__ */ React.createElement(FixProductNames, { data, setData, P, card, btn }), tool === "form" && /* @__PURE__ */ React.createElement(FixAddForm, { data, setData, P, card, btn }), tool === "auto" && /* @__PURE__ */ React.createElement(FixAutoEntries, { data, setData, P, card, btn }), tool === "pw" && /* @__PURE__ */ React.createElement(FixPasswords, { data, setData, P, card, btn }), false);
+    return /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } }, tools.map(([k, l, ready]) => /* @__PURE__ */ React.createElement("button", { key: k, "data-fix-tool": k, onClick: () => setTool(k), style: { ...btn, border: `${tool === k ? 2 : 1}px solid ${tool === k ? P.head : P.btnLine}`, opacity: ready ? 1 : 0.7 } }, l, !ready ? " \xB7 soon" : ""))), tool === "code" && /* @__PURE__ */ React.createElement(FixCorrectCode, { data, setData, P, card, btn }), tool === "catalogue" && /* @__PURE__ */ React.createElement(CustomSizesPanel, { data, setData }), tool === "found" && /* @__PURE__ */ React.createElement(FixFoundIt, { data, setData, P, card, btn }), tool === "reel" && /* @__PURE__ */ React.createElement(FixFoundReel, { data, setData, P, card, btn }), tool === "rack" && /* @__PURE__ */ React.createElement(FixRackCheck, { data, setData, P, card, btn }), tool === "case" && /* @__PURE__ */ React.createElement(FixCheckCase, { data, setData, P, card, btn }), tool === "names" && /* @__PURE__ */ React.createElement(FixProductNames, { data, setData, P, card, btn }), tool === "form" && /* @__PURE__ */ React.createElement(FixAddForm, { data, setData, P, card, btn }), tool === "auto" && /* @__PURE__ */ React.createElement(FixAutoEntries, { data, setData, P, card, btn }), tool === "pw" && /* @__PURE__ */ React.createElement(FixPasswords, { data, setData, P, card, btn }), tool === "line" && /* @__PURE__ */ React.createElement(FixDrawLine, { data, setData, P, card, btn }), false);
   }
   function FixCorrectCode({ data, setData, P, card, btn }) {
     const [from, setFrom] = useState("");
