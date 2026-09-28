@@ -6403,7 +6403,10 @@
       if (f) return f;
     }
     const set = formsByCode.get(String(m.boxNumber || "").trim().toUpperCase());
-    return set && set.size === 1 ? [...set][0] : null;
+    if (set && set.size === 1) return [...set][0];
+    const code = String(m.boxNumber || "").trim().toUpperCase();
+    const all = new Set((data.bondingRuns || []).filter((r) => r && r.formId && String(r.boxNumber || "").trim().toUpperCase() === code).map((r) => r.formId));
+    return all.size === 1 ? [...all][0] : null;
   }
   function nameForForm(data, formId) {
     const f = formId ? formById(data, formId) : null;
@@ -10723,7 +10726,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-24.21";
+  var APP_VERSION = "2026-09-24.22";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -21552,6 +21555,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-09-24.22", "Admin \u2192 Health: Stuck on this device \u2014 give an entry its product or discard it. The red sync message points to Admin, not Claude."],
     ["2026-09-24.21", "Admin control room, complete: sections, light/dark, Correct a box code, Found it, Rack check, Check a case, product names, time machine, truth checks, live floor, releases, alerts, refusals \u2014 admin only."],
     ["2026-09-24.19", "A PC prints labels by default; old printed jobs cleared."],
     ["2026-09-24.18", "Extruded reel labels print by themselves; print from any device on Dave's PC."],
@@ -21660,6 +21664,40 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     if (!items.length) return null;
     return /* @__PURE__ */ React.createElement("div", { "data-admin-alert-banner": true, onClick: onOpen, className: "no-print", style: { background: "#FFF3E6", borderBottom: `1px solid ${AMBER}`, color: "#8A4B00", padding: "8px 14px", fontSize: 13.5, fontWeight: 600, cursor: "pointer" } }, "\u26A0 ", items[0], items.length > 1 ? ` \xB7 +${items.length - 1} more` : "", " \u2014 open Admin");
   }
+  function AdminStuckPanel({ data, setData, P, card, btn }) {
+    const [pick, setPick] = useState({});
+    const [msg, setMsg] = useState(null);
+    const failures = typeof window !== "undefined" && window.__mxSyncFailures || [];
+    const forms = (data.productForms || []).filter((x) => x && !x.deleted && x.active !== false);
+    const prodOf = (fid) => {
+      const f = forms.find((x) => x.id === fid);
+      const p = f && (data.products || []).find((q) => q.id === f.productId);
+      return p ? `${p.displayName} \xB7 ${f.form}` : fid;
+    };
+    const stuck = [
+      ...(data.movements || []).filter((m) => m && !m.deleted && !m.formId).map((m) => ({ table: "movements", row: m, label: `${m.kind} ${m.qty} \xD7 ${m.boxNumber}${m.orderId ? ` \xB7 ${m.orderId}${m.caseNum != null ? ` case ${m.caseNum}` : ""}` : ""}`, when: m.at, why: m.note || m.source })),
+      ...(data.bondingRuns || []).filter((r) => r && !r.deleted && !r.formId && !/profile tape|shim/i.test(String(r.productSize || ""))).map((r) => ({ table: "bondingRuns", row: r, label: `Run ${r.boxNumber} \xB7 ${r.amountMade} \xD7 ${r.productSize || "?"}`, when: r.date, why: r.comments }))
+    ];
+    const fix = (s, how) => {
+      const at = (/* @__PURE__ */ new Date()).toISOString();
+      if (how === "product" && !pick[s.row.id]) {
+        setMsg({ bad: true, t: "Choose its product first." });
+        return;
+      }
+      if (how === "discard" && !window.confirm(`Discard "${s.label}"? It goes up as a deleted record (kept as history) and stops being stuck.`)) return;
+      setData((prev) => {
+        const d = { ...prev, [s.table]: (prev[s.table] || []).map((x) => x.id !== s.row.id ? x : how === "discard" ? { ...x, deleted: true, deletedAt: at, updatedAt: at } : { ...x, formId: pick[s.row.id], updatedAt: at }) };
+        return { ...d, ...appendLog(d, {
+          action: how === "discard" ? "delete" : "edit",
+          entity: s.table === "movements" ? "movement" : "bondingRun",
+          entityId: s.row.id,
+          summary: how === "discard" ? `Discarded a stuck entry: ${s.label} (Admin \u2192 Health)` : `Gave a stuck entry its product: ${s.label} \u2192 ${prodOf(pick[s.row.id])} (Admin \u2192 Health)`
+        }) };
+      });
+      setMsg({ bad: false, t: how === "discard" ? "Discarded \u2014 it goes up as a deleted record on the next save." : "Product given \u2014 it goes up on the next save." });
+    };
+    return /* @__PURE__ */ React.createElement("div", { style: card, "data-admin-stuck": true }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: P.head, marginBottom: 6 } }, "Stuck on this device"), failures.map((f, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { fontSize: 13, color: P.bad, padding: "2px 0" } }, f.table, ": ", String(f.message || "").slice(0, 160))), !stuck.length && /* @__PURE__ */ React.createElement("div", { style: { color: P.ok, fontSize: 13.5 } }, "Nothing on this device is waiting for a product. \u2713"), stuck.map((s) => /* @__PURE__ */ React.createElement("div", { key: s.row.id, "data-stuck-row": s.row.id, style: { padding: "8px 0", borderBottom: `1px solid ${P.line}`, fontSize: 13.5 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("b", { style: { fontFamily: "monospace" } }, s.label), " ", /* @__PURE__ */ React.createElement("span", { style: { color: P.dim } }, String(s.when || "").slice(0, 16).replace("T", " "))), s.why && /* @__PURE__ */ React.createElement("div", { style: { color: P.dim, fontSize: 12.5 } }, String(s.why).slice(0, 160)), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("select", { "data-stuck-product": true, value: pick[s.row.id] || "", onChange: (e) => setPick((p) => ({ ...p, [s.row.id]: e.target.value })), style: { height: 34, borderRadius: 6, border: `1px solid ${P.line}`, background: P.card, color: P.ink, maxWidth: 280 } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Its product\u2026"), forms.map((f) => /* @__PURE__ */ React.createElement("option", { key: f.id, value: f.id }, prodOf(f.id)))), /* @__PURE__ */ React.createElement("button", { "data-stuck-give": true, onClick: () => fix(s, "product"), style: btn }, "Give it its product"), /* @__PURE__ */ React.createElement("button", { "data-stuck-discard": true, onClick: () => fix(s, "discard"), style: btn }, "Discard it")))), msg && /* @__PURE__ */ React.createElement("div", { "data-fix-msg": true, style: { marginTop: 8, fontSize: 13.5, fontWeight: 600, color: msg.bad ? P.bad : P.ok } }, msg.t));
+  }
   var ADMIN_THEME_KEY = "mxAdminTheme";
   var ADMIN_PALETTES = {
     light: { bg: "#F4F6FA", card: "#FFFFFF", line: "#E3E7F0", ink: "#1B2340", head: "#1F2E6E", dim: "#6B7490", ok: "#1E7A55", warn: "#B45F06", bad: "#B3261E", newBg: "#E6F5EE", newInk: "#1E7A55", btn: "#FFFFFF", btnLine: "#C9D1E6" },
@@ -21713,14 +21751,15 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     const waitingLabels = (data.printJobs || []).filter((j) => j && !j.deleted && j.status === "waiting" && Date.now() - Date.parse(j.requestedAt || 0) > 10 * 6e4);
     const refused = Object.entries(typeof window !== "undefined" && window.__mxRefusedReasons || {});
     const openIssues2 = (data.issues || []).filter((i) => i && !i.deleted && !i.resolvedAt);
-    const toLook = waitingLabels.length + refused.length + openIssues2.length;
+    const stuckHere = (data.movements || []).filter((m) => m && !m.deleted && !m.formId).length;
+    const toLook = waitingLabels.length + refused.length + openIssues2.length + stuckHere;
     const card = { background: P.card, border: `1px solid ${P.line}`, borderRadius: 12, padding: "12px 14px", boxShadow: theme === "light" ? "0 1px 2px rgba(20,30,60,.05)" : "none" };
     const btn = { background: P.btn, color: P.head, border: `1px solid ${P.btnLine}`, borderRadius: 6, padding: "6px 12px", fontSize: 13, cursor: "pointer" };
     const subOf = (s) => s.key === "health" ? `${toLook} to look at` : s.key === "refusals" ? `${refused.length} this session` : s.key === "printing" ? `${(data.printJobs || []).filter((j) => j && !j.deleted && j.status === "waiting").length} waiting to print` : s.sub;
     const head = /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, letterSpacing: 2, color: P.dim } }, "MATRIX SYNC \xB7 CONTROL ROOM"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 600, color: P.head, marginTop: 2 } }, section ? (ADMIN_SECTIONS.find((s) => s.key === section) || {}).title : "Admin")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, color: P.dim } }, String(currentActor() || "")), /* @__PURE__ */ React.createElement("button", { onClick: flip, style: btn, "aria-label": "Light or dark" }, theme === "light" ? "\u263E Dark" : "\u2600 Light"), section && /* @__PURE__ */ React.createElement("button", { "data-admin-home": true, onClick: () => setSection(null), style: btn }, "\u2190 Admin")));
     const sectionBody = () => {
       if (section === "fix") return /* @__PURE__ */ React.createElement(AdminFixTools, { data, setData, P, card, btn });
-      if (section === "health") return /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: card }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: P.head, marginBottom: 6 } }, "To look at"), toLook === 0 && /* @__PURE__ */ React.createElement("div", { style: { color: P.ok } }, "Nothing waiting. \u2713"), refused.map(([id, why]) => /* @__PURE__ */ React.createElement("div", { key: id, style: { color: P.bad, fontSize: 13.5, padding: "4px 0" } }, "Refused by the cloud: ", why, " ", /* @__PURE__ */ React.createElement("span", { style: { color: P.dim } }, "(", id, ")"))), waitingLabels.map((j) => /* @__PURE__ */ React.createElement("div", { key: j.id, style: { color: P.warn, fontSize: 13.5, padding: "4px 0" } }, "Label for ", j.ref, " waiting since ", String(j.requestedAt || "").slice(11, 16), " \u2014 is the print station on?")), openIssues2.slice(0, 20).map((i) => /* @__PURE__ */ React.createElement("div", { key: i.id, style: { fontSize: 13.5, padding: "4px 0" } }, i.summary))), /* @__PURE__ */ React.createElement(SyncHealthPanel, null), /* @__PURE__ */ React.createElement(DataHealthPanel, { data }), /* @__PURE__ */ React.createElement(BondingOutputPanel, { data }));
+      if (section === "health") return /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: card }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: P.head, marginBottom: 6 } }, "To look at"), toLook === 0 && /* @__PURE__ */ React.createElement("div", { style: { color: P.ok } }, "Nothing waiting. \u2713"), refused.map(([id, why]) => /* @__PURE__ */ React.createElement("div", { key: id, style: { color: P.bad, fontSize: 13.5, padding: "4px 0" } }, "Refused by the cloud: ", why, " ", /* @__PURE__ */ React.createElement("span", { style: { color: P.dim } }, "(", id, ")"))), waitingLabels.map((j) => /* @__PURE__ */ React.createElement("div", { key: j.id, style: { color: P.warn, fontSize: 13.5, padding: "4px 0" } }, "Label for ", j.ref, " waiting since ", String(j.requestedAt || "").slice(11, 16), " \u2014 is the print station on?")), openIssues2.slice(0, 20).map((i) => /* @__PURE__ */ React.createElement("div", { key: i.id, style: { fontSize: 13.5, padding: "4px 0" } }, i.summary))), /* @__PURE__ */ React.createElement(AdminStuckPanel, { data, setData, P, card, btn }), /* @__PURE__ */ React.createElement(SyncHealthPanel, null), /* @__PURE__ */ React.createElement(DataHealthPanel, { data }), /* @__PURE__ */ React.createElement(BondingOutputPanel, { data }));
       if (section === "refusals") return /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 10 } }, /* @__PURE__ */ React.createElement(AdminRefusals, { P, card }), /* @__PURE__ */ React.createElement("div", { style: card }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: P.head, marginBottom: 6 } }, "On this device, since it was opened"), !refused.length && /* @__PURE__ */ React.createElement("div", { style: { color: P.ok } }, "None on this device since it was opened. \u2713"), refused.map(([id, why]) => /* @__PURE__ */ React.createElement("div", { key: id, style: { fontSize: 13.5, padding: "6px 0", borderBottom: `1px solid ${P.line}` } }, /* @__PURE__ */ React.createElement("b", { style: { color: P.bad } }, "Refused"), " \u2014 ", why, /* @__PURE__ */ React.createElement("div", { style: { color: P.dim, fontSize: 12 } }, id))), /* @__PURE__ */ React.createElement("div", { style: { color: P.dim, fontSize: 12, marginTop: 8 } }, "Above: this device's refusals since it was opened.")));
       if (section === "people") {
         const seen = /* @__PURE__ */ new Map();
@@ -28368,7 +28407,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         /* @__PURE__ */ React.createElement("br", null),
         /* @__PURE__ */ React.createElement("span", { className: "font-semibold" }, "Tap here to update."),
         " Nothing typed on this device is lost \u2014 it goes up once the new build loads."
-      ), rejected && !updateRequired && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2 p-2", style: { background: "rgba(243,166,166,0.12)", border: "1px solid rgba(243,166,166,0.4)", borderRadius: 5, color: "#FBD9D9" } }, /* @__PURE__ */ React.createElement("div", { className: "font-semibold mb-1" }, syncStatus === "offline" ? "The connection dropped while saving:" : "This isn't a dropped connection \u2014 Supabase is rejecting specific data:"), syncFailureDetail.map((f, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "mb-1" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, f.table), ": ", f.message)), /* @__PURE__ */ React.createElement("div", { style: { color: "#D9C7C7" } }, "Everything else is still syncing normally \u2014 only the item(s) above are stuck. Send this to Claude to fix.")), syncWarnings && syncWarnings.some((w) => w.dropped && w.dropped.length) && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2 p-2", style: { background: "rgba(245,212,138,0.10)", border: "1px solid rgba(245,212,138,0.4)", borderRadius: 5, color: "#F7E3B4" } }, /* @__PURE__ */ React.createElement("div", { className: "font-semibold mb-1" }, "Saved, but the database is missing a column:"), syncWarnings.filter((w) => w.dropped && w.dropped.length).map((w, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "mb-1" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, w.table), ": ", w.message)), /* @__PURE__ */ React.createElement("div", { style: { color: "#D9CBA8" } }, "Send this to Claude \u2014 it's a one-line migration.")), syncWarnings && syncWarnings.some((w) => w.stale && w.stale.length) && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2 p-2", style: { background: "rgba(245,212,138,0.10)", border: "1px solid rgba(245,212,138,0.4)", borderRadius: 5, color: "#F7E3B4" } }, /* @__PURE__ */ React.createElement("div", { className: "font-semibold mb-1" }, "Not saved \u2014 the cloud was newer:"), syncWarnings.filter((w) => w.stale && w.stale.length).map((w, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "mb-1" }, w.message)), /* @__PURE__ */ React.createElement("div", { style: { color: "#D9CBA8" } }, "Check the screen you were last working on before entering it again.")), syncWarnings && syncWarnings.some((w) => w.retired && w.retired.length) && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2 p-2", style: { background: "rgba(143,217,168,0.10)", border: "1px solid rgba(143,217,168,0.4)", borderRadius: 5, color: "#CFEFD9" } }, /* @__PURE__ */ React.createElement("div", { className: "font-semibold mb-1" }, "Tidied up on the way to the cloud:"), syncWarnings.filter((w) => w.retired && w.retired.length).map((w, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "mb-1" }, w.message, ". Nothing to do."))), /* @__PURE__ */ React.createElement(
+      ), rejected && !updateRequired && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2 p-2", style: { background: "rgba(243,166,166,0.12)", border: "1px solid rgba(243,166,166,0.4)", borderRadius: 5, color: "#FBD9D9" } }, /* @__PURE__ */ React.createElement("div", { className: "font-semibold mb-1" }, syncStatus === "offline" ? "The connection dropped while saving:" : "This isn't a dropped connection \u2014 Supabase is rejecting specific data:"), syncFailureDetail.map((f, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "mb-1" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, f.table), ": ", f.message)), /* @__PURE__ */ React.createElement("div", { style: { color: "#D9C7C7" } }, "Everything else is still syncing normally \u2014 only the item(s) above are stuck. Open Admin \u2192 Health to fix it, or tell an admin.")), syncWarnings && syncWarnings.some((w) => w.dropped && w.dropped.length) && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2 p-2", style: { background: "rgba(245,212,138,0.10)", border: "1px solid rgba(245,212,138,0.4)", borderRadius: 5, color: "#F7E3B4" } }, /* @__PURE__ */ React.createElement("div", { className: "font-semibold mb-1" }, "Saved, but the database is missing a column:"), syncWarnings.filter((w) => w.dropped && w.dropped.length).map((w, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "mb-1" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, w.table), ": ", w.message)), /* @__PURE__ */ React.createElement("div", { style: { color: "#D9CBA8" } }, "Send this to Claude \u2014 it's a one-line migration.")), syncWarnings && syncWarnings.some((w) => w.stale && w.stale.length) && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2 p-2", style: { background: "rgba(245,212,138,0.10)", border: "1px solid rgba(245,212,138,0.4)", borderRadius: 5, color: "#F7E3B4" } }, /* @__PURE__ */ React.createElement("div", { className: "font-semibold mb-1" }, "Not saved \u2014 the cloud was newer:"), syncWarnings.filter((w) => w.stale && w.stale.length).map((w, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "mb-1" }, w.message)), /* @__PURE__ */ React.createElement("div", { style: { color: "#D9CBA8" } }, "Check the screen you were last working on before entering it again.")), syncWarnings && syncWarnings.some((w) => w.retired && w.retired.length) && /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2 p-2", style: { background: "rgba(143,217,168,0.10)", border: "1px solid rgba(143,217,168,0.4)", borderRadius: 5, color: "#CFEFD9" } }, /* @__PURE__ */ React.createElement("div", { className: "font-semibold mb-1" }, "Tidied up on the way to the cloud:"), syncWarnings.filter((w) => w.retired && w.retired.length).map((w, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "mb-1" }, w.message, ". Nothing to do."))), /* @__PURE__ */ React.createElement(
         "button",
         {
           onClick: refreshFromCloud,
@@ -29022,6 +29061,10 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         }
         setSyncStatus(offline ? "offline" : "connected");
         setSyncFailureDetail(failures.length ? failures : null);
+        try {
+          window.__mxSyncFailures = failures.length ? failures : null;
+        } catch (e) {
+        }
       });
     }, [storedData]);
     const isAuthError = (e) => {
