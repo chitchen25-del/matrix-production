@@ -1090,7 +1090,8 @@
           boxType: orderBoxTypeFor(order, item.spec),
           dueDate: order.dueDate || null,
           priority: order.priority ?? null,
-          strongTape: isStrongTapeOrder(order)
+          strongTape: isStrongTapeOrder(order),
+          amendmentLabel: item.amendmentLabel || null
         });
         map.set(key, row);
       }
@@ -1170,13 +1171,46 @@
   function whatsLeftRows(lineItems, bondingRuns, orderId) {
     const held = orderBoxes(LEDGER_MOVEMENTS, bondingRuns, orderId);
     const items = orderLineItems(lineItems, orderId).filter((li) => !isDelivery(li.description));
+    const pool = held.map((r) => ({ r, left: Number(r.onOrderQty || 0) }));
+    const idx = new Map(items.map((li, i) => [li.id, i]));
+    const fillOrder = items.slice().sort((a, b) => (a.amendmentLabel ? 1 : 0) - (b.amendmentLabel ? 1 : 0) || idx.get(a.id) - idx.get(b.id));
+    const madeBy = /* @__PURE__ */ new Map();
+    for (const li of fillOrder) {
+      let want = Math.max(0, Number(li.qty) || 0), got = 0;
+      for (const p of pool) {
+        if (want <= 0) break;
+        if (p.left <= 0 || !runMatchesLine(p.r, li)) continue;
+        const take = Math.min(p.left, want);
+        p.left -= take;
+        want -= take;
+        got += take;
+      }
+      madeBy.set(li.id, got);
+    }
+    for (const p of pool) {
+      if (p.left <= 0) continue;
+      const home = [...fillOrder].reverse().find((li) => runMatchesLine(p.r, li));
+      if (home) {
+        madeBy.set(home.id, (madeBy.get(home.id) || 0) + p.left);
+        p.left = 0;
+      }
+    }
     return items.map((li) => {
-      const made = held.filter((r) => runMatchesLine(r, li)).reduce((s, r) => s + Number(r.onOrderQty || 0), 0);
+      const made = madeBy.get(li.id) || 0;
       const remaining = Math.max(Number(li.qty) - made, 0);
       let status = "Not started";
       if (made >= Number(li.qty)) status = "Complete";
       else if (made > 0) status = "In progress";
-      return { id: li.id, spec: li.description, ordered: Number(li.qty), made, remaining, status, formId: li.formId || null };
+      return {
+        id: li.id,
+        spec: li.description,
+        ordered: Number(li.qty),
+        made,
+        remaining,
+        status,
+        formId: li.formId || null,
+        amendmentLabel: li.amendmentLabel || null
+      };
     });
   }
   function isReelSpec(spec) {
@@ -8152,7 +8186,7 @@ ${line}` : line;
       return { id: r.spec, pool: k.pool, boxes: Number(r.toMake), mpb: k.mpb };
     })) : null;
     const body = list.map((r) => {
-      const who = (r.breakdown || []).filter((b) => Number(b.toMake) > 0).map((b) => `${esc2(b.customer)} <span class="g">${esc2(b.orderId)}</span> <b>${Number(b.toMake)}</b>${b.boxType && !/^PX Plus$/i.test(b.boxType) ? ` <span class="g">(${esc2(b.boxType)} box)</span>` : ""}${b.strongTape ? ' <b class="s">S</b>' : ""}`).join("<br>");
+      const who = (r.breakdown || []).filter((b) => Number(b.toMake) > 0).map((b) => `${esc2(b.customer)} <span class="g">${esc2(b.orderId)}</span> <b>${Number(b.toMake)}</b>${b.boxType && !/^PX Plus$/i.test(b.boxType) ? ` <span class="g">(${esc2(b.boxType)} box)</span>` : ""}${b.strongTape ? ' <b class="s">S</b>' : ""}${b.amendmentLabel ? ` <b class="x">EXTRA</b> <span class="g">${esc2(b.amendmentLabel)}</span>` : ""}`).join("<br>");
       return `<tr><td class="p">${esc2(String(r.spec).replace(/\s*\((\d+(\.\d+)?)m\)$/, ""))}${Number(r.strongTapeToMake) > 0 ? ` <b class="s">STRONG TAPE ${Number(r.strongTapeToMake)}</b>` : ""}</td><td class="n">${Number(r.toMake)}</td><td>${who}</td>${plan ? `<td>${reelCell(esc2, plan.get(r.spec))}</td><td class="m">${reelMark(plan.get(r.spec))}</td>` : ""}</tr>`;
     }).join("");
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc2(title)} ${esc2(group)}</title><style>
@@ -8169,7 +8203,7 @@ ${line}` : line;
     th, td { border-bottom: 1px solid #999; padding: 3px 5px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
     th { border-bottom: 2px solid #000; font-size: 9pt; } tr { page-break-inside: avoid; break-inside: avoid; }
     .n { text-align: right; font-weight: 700; font-size: 11.5pt; }
-    .g { color: #555; font-size: 9pt; } .s { font-size: 9pt; }
+    .g { color: #555; font-size: 9pt; } .s { font-size: 9pt; } .x { font-size: 8.5pt; border: 1px solid #000; padding: 0 3px; }
   </style></head><body>
     <h1>${esc2(title)}${group ? ` \u2014 ${esc2(group)}` : ""} \u2014 still to make</h1>
     <div class="sub">${esc2(day)} ${esc2(time)} \xB7 ${list.length} product${list.length === 1 ? "" : "s"} \xB7 ${total} boxes \xB7 after what's already made and on the shelf</div>
@@ -10728,7 +10762,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-28.2";
+  var APP_VERSION = "2026-09-28.3";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -16328,11 +16362,11 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
           },
           /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 500, minWidth: 0 } }, /* @__PURE__ */ React.createElement(Spec, { s: r.spec, size: 14 }), /* @__PURE__ */ React.createElement(StrongTapeBadge, { row: r }), /* @__PURE__ */ React.createElement(PipelineLine, { p: pipes.get(r.spec) }), expandedSpec === r.spec && /* @__PURE__ */ React.createElement(ProductPanel, { p: pipes.get(r.spec) })),
           /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: INK_MUTED, lineHeight: 1.5, minWidth: 0 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block" } }, r.orderIds.size, " order", r.orderIds.size === 1 ? "" : "s", r.priority != null && /* @__PURE__ */ React.createElement("span", { style: { color: urgent ? RED : INK_MUTED, fontWeight: urgent ? 600 : 400 } }, " \xB7 priority ", r.priority)), expandedSpec === r.spec && /* @__PURE__ */ React.createElement("span", { style: { display: "block", marginTop: 7, color: INK } }, Object.values((r.breakdown || []).reduce((acc, b) => {
-            const k = `${b.orderId || ""}|${b.customer || "(no customer name)"}`;
-            if (!acc[k]) acc[k] = { orderId: b.orderId || "", customer: b.customer || "(no customer name)", qty: 0, due: b.dueDate || b.due || null, priority: b.priority ?? null, strongTape: !!b.strongTape };
+            const k = `${b.orderId || ""}|${b.customer || "(no customer name)"}|${b.amendmentLabel || ""}`;
+            if (!acc[k]) acc[k] = { orderId: b.orderId || "", customer: b.customer || "(no customer name)", qty: 0, due: b.dueDate || b.due || null, priority: b.priority ?? null, strongTape: !!b.strongTape, amendmentLabel: b.amendmentLabel || null };
             acc[k].qty += Number(b.qty || 0);
             return acc;
-          }, {})).sort((a, b) => b.qty - a.qty).map((c) => /* @__PURE__ */ React.createElement("span", { key: c.orderId + c.customer, style: { display: "flex", justifyContent: "space-between", gap: 12, padding: "3px 0", borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("span", { style: { minWidth: 0 } }, c.orderId && /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { fontSize: 12.5, fontWeight: 500, color: NAVY, background: "rgba(42,55,123,.07)", borderRadius: 3, padding: "1px 5px", marginRight: 7 } }, c.orderId), c.customer, c.due && /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " \xB7 due ", c.due), c.priority != null && /* @__PURE__ */ React.createElement("span", { style: { color: c.priority <= 2 ? RED : INK_MUTED } }, " \xB7 priority ", c.priority), c.strongTape && /* @__PURE__ */ React.createElement("span", { style: { color: RED, fontWeight: 700 } }, " \xB7 STRONG TAPE")), /* @__PURE__ */ React.createElement("b", { className: "font-mono", style: { fontWeight: 600, whiteSpace: "nowrap" } }, c.qty))))),
+          }, {})).sort((a, b) => b.qty - a.qty).map((c) => /* @__PURE__ */ React.createElement("span", { key: c.orderId + c.customer + (c.amendmentLabel || ""), style: { display: "flex", justifyContent: "space-between", gap: 12, padding: "3px 0", borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("span", { style: { minWidth: 0 } }, c.orderId && /* @__PURE__ */ React.createElement("span", { className: "font-mono", style: { fontSize: 12.5, fontWeight: 500, color: NAVY, background: "rgba(42,55,123,.07)", borderRadius: 3, padding: "1px 5px", marginRight: 7 } }, c.orderId), c.customer, c.due && /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " \xB7 due ", c.due), c.priority != null && /* @__PURE__ */ React.createElement("span", { style: { color: c.priority <= 2 ? RED : INK_MUTED } }, " \xB7 priority ", c.priority), c.strongTape && /* @__PURE__ */ React.createElement("span", { style: { color: RED, fontWeight: 700 } }, " \xB7 STRONG TAPE"), c.amendmentLabel && /* @__PURE__ */ React.createElement("span", { style: { color: ORANGE, fontWeight: 700 } }, " \xB7 EXTRA ", /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 400, color: INK_MUTED } }, "(", c.amendmentLabel, ")"))), /* @__PURE__ */ React.createElement("b", { className: "font-mono", style: { fontWeight: 600, whiteSpace: "nowrap" } }, c.qty))))),
           /* @__PURE__ */ React.createElement("div", { style: { textAlign: "right", whiteSpace: "nowrap" } }, /* @__PURE__ */ React.createElement("div", { className: "font-mono", style: { fontSize: 24, fontWeight: 600, lineHeight: 1 } }, Number(r.toMake ?? r.qty)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: INK_MUTED, marginTop: 4 } }, "to make"), Number(r.covered || 0) > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: GREEN, marginTop: 2 } }, r.covered, " on the shelf"))
         );
       }), rows2.length > prodListShown && /* @__PURE__ */ React.createElement(
@@ -21693,6 +21727,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-09-28.3", "An amendment's extras are counted properly: boxes packed for a product count once across the order's lines, so extras of a product the order already had reach the Production list and Dave's printed sheet, marked EXTRA with their amendment."],
     ["2026-09-28.2", "Admin \u2192 Fix tools \u2192 Add a found reel: put an old reel on the rack yourself \u2014 code, size, metres; dated from its code, Checked. A code already on the system is completed, not duplicated."],
     ["2026-09-28.1", "Bonding is the check: the Bonding Line offers unchecked reels, and logging a box off a reel ticks it Checked. A saved password filling in no longer trips the scanner listener."],
     ["2026-09-24.22", "Admin \u2192 Health: Stuck on this device \u2014 give an entry its product or discard it. The red sync message points to Admin, not Claude."],
