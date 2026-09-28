@@ -10728,7 +10728,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-28.1";
+  var APP_VERSION = "2026-09-28.2";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -21436,6 +21436,142 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       setMsg(null);
     }, style: adminInput(P, { maxWidth: 320 }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose a size\u2026"), sizes.map((s) => /* @__PURE__ */ React.createElement("option", { key: s, value: s }, s, " (", open.filter((b) => b.productSize === s).length, ")"))), size && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: P.dim, marginBottom: 6 } }, "Tick every reel you can see on the rack."), reels.map((r) => /* @__PURE__ */ React.createElement("label", { key: r.id, style: { display: "flex", gap: 10, alignItems: "center", padding: "6px 0", borderBottom: `1px solid ${P.line}`, fontSize: 14 } }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", "data-rack-reel": r.batchNumber, checked: !!seen[r.id], onChange: (e) => setSeen((s) => ({ ...s, [r.id]: e.target.checked })) }), /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "monospace" } }, r.batchNumber), /* @__PURE__ */ React.createElement("span", { style: { color: P.dim } }, r.meterage, " m \xB7 ", r.date))), /* @__PURE__ */ React.createElement("button", { "data-rack-clear": true, onClick: clear, style: { ...btn, marginTop: 10, width: "100%", height: 42, fontWeight: 600 } }, "Clear the ", notSeen.length, " not ticked")), msg && /* @__PURE__ */ React.createElement("div", { "data-fix-msg": true, style: { marginTop: 10, fontSize: 13.5, fontWeight: 600, color: msg.bad ? P.bad : P.ok } }, msg.t), last && /* @__PURE__ */ React.createElement("button", { "data-rack-undo": true, onClick: undo, style: { ...btn, marginTop: 8 } }, "Undo this rack check"));
   }
+  function FixFoundReel({ data, setData, P, card, btn }) {
+    const [code, setCode] = useState("");
+    const [size, setSize] = useState("");
+    const [metres, setMetres] = useState("");
+    const [date, setDate] = useState("");
+    const [note, setNote] = useState("");
+    const [msg, setMsg] = useState(null);
+    const [last, setLast] = useState(null);
+    const who = String(currentActor() || "").split("@")[0] || "admin";
+    const c = code.trim().toUpperCase();
+    const reels = (data.glueLineBatches || []).filter((b) => b && !b.deleted);
+    const existing = c ? reels.find((b) => String(b.batchNumber || "").trim().toUpperCase() === c) : null;
+    const used = existing ? Math.round(batchMeterageUsed(data.bondingRuns || [], existing.batchNumber) || 0) : 0;
+    const sizes = useMemo(() => [...new Set((data.products || []).filter((x) => x && !x.deleted && x.active !== false).map((x) => String(x.displayName || "").replace(/\s+(2-3pt|3-4pt|6pt)$/i, "").trim()).filter(Boolean))].filter((n) => glueSizeKey(data, n)).sort(), [data.products, data.productForms, data.productAliases]);
+    const codeOk = /^P[BP]L[A-L]\d{5}$/.test(c);
+    const fromCode = codeOk ? dateFromReelCode(c) : null;
+    const twins = c && codeOk && !existing ? boxCodeNearMisses(c, reels.map((b) => String(b.batchNumber || "").toUpperCase())).map((x) => x.code) : [];
+    useEffect(() => {
+      if (existing) {
+        setSize(String(existing.productSize || "").trim());
+        setMetres(existing.meterage ? String(existing.meterage) : "");
+        setDate(existing.date || "");
+      } else {
+        setSize("");
+        setMetres("");
+        setDate("");
+      }
+      setNote("");
+    }, [existing && existing.id]);
+    const at = () => (/* @__PURE__ */ new Date()).toISOString();
+    const save = () => {
+      if (!codeOk) {
+        setMsg({ bad: true, t: "Type the reel code as it is on the label \u2014 PBL, a month letter and five digits, e.g. PBLI52402." });
+        return;
+      }
+      const m = Math.round(Number(metres) || 0);
+      if (!(m > 0)) {
+        setMsg({ bad: true, t: "Say how many metres are on the reel." });
+        return;
+      }
+      const sz = size.trim();
+      const sizeChanging = !existing || String(existing.productSize || "").trim() !== sz;
+      if (sizeChanging && !sizes.includes(sz)) {
+        setMsg({ bad: true, t: `${sz || "That"} isn't a size in the catalogue \u2014 pick one from the list, or add the size under Products first.` });
+        return;
+      }
+      if (existing && sizeChanging && String(existing.productSize || "").trim() && used > 0) {
+        setMsg({ bad: true, t: `${c} already has ${used} m bonded off it as ${existing.productSize} \u2014 its size can't change now.` });
+        return;
+      }
+      if (existing && m < used) {
+        setMsg({ bad: true, t: `${used} m has already been bonded off ${c} \u2014 the reel can't be shorter than that.` });
+        return;
+      }
+      const d0 = date || fromCode || todayISO();
+      const tail = `${existing ? "Checked" : "Found on the rack and added"} by ${who} ${todayISO()}${note.trim() ? ` \u2014 ${note.trim()}` : ""} (Admin \u2192 Found reel).`;
+      if (existing) {
+        const before = { ...existing };
+        const after = {
+          ...existing,
+          productSize: sz,
+          meterage: m,
+          checked: "Yes",
+          cleared: "No",
+          date: existing.date || d0,
+          ...sizeChanging ? { sizeKey: glueSizeKey(data, sz) } : {},
+          comments: [existing.comments, tail].filter(Boolean).join(" | "),
+          updatedAt: at()
+        };
+        setData((prev) => {
+          const d = { ...prev, glueLineBatches: prev.glueLineBatches.map((r) => r.id === existing.id ? after : r) };
+          return { ...d, ...appendLog(d, {
+            action: "edit",
+            entity: "glueLineBatch",
+            entityId: existing.id,
+            summary: `Reel ${c}: ${sz}, ${m} m, Checked${before.cleared === "Yes" ? ", back on the rack" : ""} (Admin \u2192 Found reel)`,
+            before: { productSize: before.productSize, meterage: before.meterage, checked: before.checked, cleared: before.cleared },
+            after: { productSize: sz, meterage: m, checked: "Yes", cleared: "No" }
+          }) };
+        });
+        setLast({ id: existing.id, before, code: c });
+      } else {
+        const row = {
+          id: uid("gb"),
+          batchNumber: c,
+          direct: false,
+          plCode: "",
+          productSize: sz,
+          sizeKey: glueSizeKey(data, sz),
+          gapWidth: "",
+          internalHeight: "",
+          overallHeight: "",
+          glueDie: "",
+          petType: "",
+          glueBatch: "",
+          weightPer5m: "",
+          meterage: m,
+          checked: "Yes",
+          cleared: "No",
+          runtimeHrs: null,
+          comments: tail,
+          date: d0,
+          assignedOrderId: null,
+          extPinSize: "",
+          extWidthCategory: "",
+          extScrewSpeed: "",
+          extLineSpeed: "",
+          extHeight: "",
+          extWidth: "",
+          extPvcCode: "",
+          deleted: false,
+          updatedAt: at()
+        };
+        setData((prev) => {
+          const d = { ...prev, glueLineBatches: [...prev.glueLineBatches || [], row] };
+          return { ...d, ...appendLog(d, { action: "add", entity: "glueLineBatch", entityId: row.id, summary: `Found reel added: ${c} \u2014 ${sz}, ${m} m, Checked (Admin \u2192 Found reel)` }) };
+        });
+        setLast({ id: row.id, before: null, code: c });
+      }
+      setMsg({ bad: false, t: `${c} is on the rack: ${sz}, ${m} m, Checked.${d0 === todayISO() ? " Glued today, so Bonding offers it from tomorrow." : " Bonding Line offers it now."} Logged in Activity.` });
+    };
+    const undo = () => {
+      const l = last;
+      if (!l) return;
+      setData((prev) => {
+        const d = { ...prev, glueLineBatches: prev.glueLineBatches.map((r) => r.id !== l.id ? r : l.before ? { ...l.before, updatedAt: at() } : { ...r, deleted: true, deletedAt: at(), updatedAt: at() }) };
+        return { ...d, ...appendLog(d, { action: "edit", entity: "glueLineBatch", entityId: l.id, summary: `Found reel undone: ${l.code} ${l.before ? "put back as it was" : "taken off again"} (Admin \u2192 Found reel)` }) };
+      });
+      setMsg({ bad: false, t: `Undone \u2014 ${l.code} ${l.before ? "is back as it was" : "is off the system again"}.` });
+      setLast(null);
+    };
+    return /* @__PURE__ */ React.createElement("div", { style: card, "data-fix-reel": true }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: P.head, marginBottom: 8 } }, "Add a found reel"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: P.dim, marginBottom: 8 } }, "For a reel on the rack that isn't on the system, or is but can't be bonded (no size, not checked, cleared). Bonding Line offers it once it's saved."), /* @__PURE__ */ React.createElement("input", { "data-reel-code": true, value: code, onChange: (e) => {
+      setCode(e.target.value.toUpperCase());
+      setMsg(null);
+    }, placeholder: "Reel code, e.g. PBLI52402", style: adminInput(P, { fontFamily: "monospace", width: 200 }) }), c && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, marginTop: 10 } }, existing ? /* @__PURE__ */ React.createElement("div", { "data-reel-onfile": true, style: { color: P.dim } }, "On the system: ", existing.productSize || "no size", " \xB7 ", existing.meterage || 0, " m \xB7 ", used, " m bonded off it \xB7 Checked: ", existing.checked === "Yes" ? "yes" : "no", existing.cleared === "Yes" ? " \xB7 cleared" : "") : codeOk ? /* @__PURE__ */ React.createElement("div", { style: { color: P.dim } }, "Not on the system \u2014 it will be added", fromCode ? `, dated ${fromCode} from its code` : "", ".", twins.length > 0 && /* @__PURE__ */ React.createElement("span", { style: { color: P.warn } }, " Similar codes on the system: ", twins.map((t) => /* @__PURE__ */ React.createElement("button", { key: t, onClick: () => setCode(t), style: { ...btn, marginLeft: 6, padding: "2px 8px" } }, t)), " \u2014 check the label.")) : /* @__PURE__ */ React.createElement("div", { style: { color: P.warn } }, "A reel code is PBL, a month letter and five digits."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("select", { "data-reel-size": true, value: size, onChange: (e) => setSize(e.target.value), style: adminInput(P, { maxWidth: 280 }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Size\u2026"), (size && !sizes.includes(size) ? [size, ...sizes] : sizes).map((x) => /* @__PURE__ */ React.createElement("option", { key: x, value: x }, x))), /* @__PURE__ */ React.createElement("input", { "data-reel-metres": true, type: "number", value: metres, onChange: (e) => setMetres(e.target.value), placeholder: "Metres", style: adminInput(P, { width: 110 }) }), /* @__PURE__ */ React.createElement("input", { "data-reel-date": true, type: "date", value: date || fromCode || "", onChange: (e) => setDate(e.target.value), style: adminInput(P, { width: 160 }) }), /* @__PURE__ */ React.createElement("input", { value: note, onChange: (e) => setNote(e.target.value), placeholder: "Note (optional)", style: adminInput(P, { minWidth: 180, flex: 1 }) }), /* @__PURE__ */ React.createElement("button", { "data-reel-save": true, onClick: save, style: { ...btn, fontWeight: 600 } }, existing ? "Save \u2014 Checked, on the rack" : "Add the reel"))), msg && /* @__PURE__ */ React.createElement("div", { "data-fix-msg": true, style: { marginTop: 10, fontSize: 13.5, fontWeight: 600, color: msg.bad ? P.bad : P.ok } }, msg.t), last && /* @__PURE__ */ React.createElement("button", { "data-reel-undo": true, onClick: undo, style: { ...btn, marginTop: 8 } }, "Undo"));
+  }
   function FixCheckCase({ data, setData, P, card, btn }) {
     const [order, setOrder] = useState("");
     const [caseNum, setCaseNum] = useState("");
@@ -21557,6 +21693,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-09-28.2", "Admin \u2192 Fix tools \u2192 Add a found reel: put an old reel on the rack yourself \u2014 code, size, metres; dated from its code, Checked. A code already on the system is completed, not duplicated."],
     ["2026-09-28.1", "Bonding is the check: the Bonding Line offers unchecked reels, and logging a box off a reel ticks it Checked. A saved password filling in no longer trips the scanner listener."],
     ["2026-09-24.22", "Admin \u2192 Health: Stuck on this device \u2014 give an entry its product or discard it. The red sync message points to Admin, not Claude."],
     ["2026-09-24.21", "Admin control room, complete: sections, light/dark, Correct a box code, Found it, Rack check, Check a case, product names, time machine, truth checks, live floor, releases, alerts, refusals \u2014 admin only."],
@@ -21792,12 +21929,13 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     const tools = [
       ["code", "\u270E Correct a box code", true],
       ["found", "\u{1F4E6} Found it \u2014 put stock back", true],
+      ["reel", "\u2795 Add a found reel", true],
       ["rack", "\u{1F9F5} Rack check", true],
       ["case", "\u{1F5C3} Check a case", true],
       ["catalogue", "\u{1F4D8} Catalogue sizes", true],
       ["names", "\u{1F3F7} Other names for a product", true]
     ];
-    return /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } }, tools.map(([k, l, ready]) => /* @__PURE__ */ React.createElement("button", { key: k, "data-fix-tool": k, onClick: () => setTool(k), style: { ...btn, border: `${tool === k ? 2 : 1}px solid ${tool === k ? P.head : P.btnLine}`, opacity: ready ? 1 : 0.7 } }, l, !ready ? " \xB7 soon" : ""))), tool === "code" && /* @__PURE__ */ React.createElement(FixCorrectCode, { data, setData, P, card, btn }), tool === "catalogue" && /* @__PURE__ */ React.createElement(CustomSizesPanel, { data, setData }), tool === "found" && /* @__PURE__ */ React.createElement(FixFoundIt, { data, setData, P, card, btn }), tool === "rack" && /* @__PURE__ */ React.createElement(FixRackCheck, { data, setData, P, card, btn }), tool === "case" && /* @__PURE__ */ React.createElement(FixCheckCase, { data, setData, P, card, btn }), tool === "names" && /* @__PURE__ */ React.createElement(FixProductNames, { data, setData, P, card, btn }), false);
+    return /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } }, tools.map(([k, l, ready]) => /* @__PURE__ */ React.createElement("button", { key: k, "data-fix-tool": k, onClick: () => setTool(k), style: { ...btn, border: `${tool === k ? 2 : 1}px solid ${tool === k ? P.head : P.btnLine}`, opacity: ready ? 1 : 0.7 } }, l, !ready ? " \xB7 soon" : ""))), tool === "code" && /* @__PURE__ */ React.createElement(FixCorrectCode, { data, setData, P, card, btn }), tool === "catalogue" && /* @__PURE__ */ React.createElement(CustomSizesPanel, { data, setData }), tool === "found" && /* @__PURE__ */ React.createElement(FixFoundIt, { data, setData, P, card, btn }), tool === "reel" && /* @__PURE__ */ React.createElement(FixFoundReel, { data, setData, P, card, btn }), tool === "rack" && /* @__PURE__ */ React.createElement(FixRackCheck, { data, setData, P, card, btn }), tool === "case" && /* @__PURE__ */ React.createElement(FixCheckCase, { data, setData, P, card, btn }), tool === "names" && /* @__PURE__ */ React.createElement(FixProductNames, { data, setData, P, card, btn }), false);
   }
   function FixCorrectCode({ data, setData, P, card, btn }) {
     const [from, setFrom] = useState("");
