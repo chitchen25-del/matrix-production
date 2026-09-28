@@ -823,8 +823,11 @@
     return /^\s*(ken|speedy\s*crease)\b/i.test(spec || "");
   }
   var PRODUCT_KEY_CACHE = /* @__PURE__ */ new Map();
+  function normaliseProductText(text) {
+    return String(text || "").replace(/[×✕✖]/g, " x ").replace(/(\d),(\d)/g, "$1.$2").replace(/\bstrong[\s-]*tape\b/gi, " ").replace(/(\d+(?:\.\d+)?)\s*[xX]\s*(\d+(?:\.\d+)?)(?!\s*mm)(?=\s|$|[^\d.])/g, "$1 x $2mm").replace(/\bO\s*\/?\s*S\b/g, "O/S").replace(/\s+/g, " ").trim();
+  }
   function productKey(text) {
-    const t = String(text || "");
+    const t = normaliseProductText(text);
     const had = PRODUCT_KEY_CACHE.get(t);
     if (had !== void 0) return had;
     const key = t.toUpperCase().replace(/\((\d+(\.\d+)?)M\)/g, "").replace(/\bREELS?\b/g, "").replace(/MM\b/g, "").replace(/[^A-Z0-9.]/g, "");
@@ -833,7 +836,7 @@
     return key;
   }
   function productParts(text) {
-    const t = String(text || "");
+    const t = normaliseProductText(text);
     const dims = t.match(/(\d+(?:\.\d+)?)\s*[xX]\s*(\d+(?:\.\d+)?)\s*mm/);
     const single = t.match(/(\d+(?:\.\d+)?)\s*mm/);
     return {
@@ -864,8 +867,8 @@
   function resolveProductFresh(data, text) {
     const products = (data && data.products || []).filter((p) => !p.deleted);
     const aliases = (data && data.productAliases || []).filter((a) => !a.deleted);
-    const raw = String(text || "").trim();
-    if (!raw) return { status: "none", candidates: [] };
+    const typedRaw = String(text || "").trim();
+    const raw = normaliseProductText(typedRaw);
     const byId = new Map(products.map((p) => [p.id, p]));
     const hit = aliases.find((a) => a.alias === raw) || aliases.find((a) => productKey(a.alias) === productKey(raw));
     if (hit && byId.get(hit.productId)) return { status: "exact", product: byId.get(hit.productId), candidates: [] };
@@ -880,10 +883,35 @@
       if (famWords && p.family && !p.family.toUpperCase().startsWith(famWords.split(" ")[0])) return false;
       return true;
     }).sort((a, b) => String(a.displayName).localeCompare(String(b.displayName)));
-    return { status: candidates.length ? "candidates" : "none", candidates, typed: raw };
+    return { status: candidates.length ? "candidates" : "none", candidates, typed: typedRaw };
   }
-  function formIdFor(data, text, { reel = null, metres = null } = {}) {
-    const res = typeof resolveProduct === "function" ? resolveProduct(data, text) : null;
+  function resolveOrderLine(data, text) {
+    const first = resolveProduct(data, text);
+    if (first && first.status === "exact") return first;
+    const products = (data && data.products || []).filter((p) => !p.deleted);
+    let raw = normaliseProductText(String(text || "").trim());
+    if (/^[A-Za-z]+\s+\d/.test(raw)) {
+      const word = raw.split(" ")[0].toLowerCase();
+      const usrColours = new Set(products.filter((p) => /^ultra sr$/i.test(String(p.family || "")) && p.colour).map((p) => String(p.colour).toLowerCase()));
+      if (usrColours.has(word)) {
+        raw = `Ultra SR ${raw}`;
+        const again = resolveProduct(data, raw);
+        if (again && again.status === "exact") return again;
+      }
+    }
+    const res = resolveProduct(data, raw);
+    const candidates = res && res.candidates || [];
+    const q = productParts(raw);
+    const famWords = raw.replace(/[\d].*$/, "").trim().toUpperCase();
+    if (q.variant == null && candidates.length) {
+      const typedFam = famWords.replace(/\s+/g, " ").trim();
+      const plain = candidates.filter((p) => !p.variant && (q.pt == null || p.pt === q.pt) && typedFam && String(p.family || "").toUpperCase() === typedFam.split(" ").slice(0, String(p.family || "").split(" ").length).join(" ") && (!p.colour || typedFam.includes(String(p.colour).toUpperCase()) || candidates.filter((c) => !c.variant && c.family === p.family).length === 1));
+      if (plain.length === 1) return { status: "exact", product: plain[0], candidates: [], inferred: "plain", typed: text };
+    }
+    return res;
+  }
+  function formIdFor(data, text, { reel = null, metres = null, order = false } = {}) {
+    const res = order ? resolveOrderLine(data, text) : typeof resolveProduct === "function" ? resolveProduct(data, text) : null;
     if (!res || res.status !== "exact" || !res.product) return null;
     const kind = (reel == null ? isReelSpec(text) : !!reel) ? "Reel" : "Box";
     const m = metres != null && Number(metres) > 0 ? Number(metres) : (() => {
@@ -6457,10 +6485,12 @@
     return res && res.status === "exact" && res.product && res.product.displayName ? res.product.displayName : spec;
   }
   function orderLineName(data, text) {
-    const name = catalogueName(data, text);
-    const fid = formIdFor(data, text, { reel: isReelSpec(text) });
+    const r = resolveOrderLine(data, text);
+    const name = r && r.status === "exact" && r.product ? r.product.displayName : String(text || "").trim();
+    const fid = formIdFor(data, text, { reel: isReelSpec(text), order: true });
     const f = fid ? formById(data, fid) : null;
     if (f && f.reel && name !== text) return `${name} REEL${Number(f.metres) > 0 ? ` (${Number(f.metres)}m)` : ""}`;
+    if (!f && isReelSpec(text) && name !== text) return `${name} REEL`;
     return name;
   }
   function formIdForRun(data, r) {
@@ -6470,7 +6500,7 @@
     });
   }
   function formIdForLine(data, li) {
-    return formIdFor(data, li.description, { reel: isReelSpec(li.description) });
+    return formIdFor(data, li.description, { reel: isReelSpec(li.description), order: true });
   }
   var custNorm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
   function findCustomer(data, name) {
@@ -9893,10 +9923,14 @@ ${line}` : line;
   function bondingOfferFromWalk(data, needing, orders, lineItems, pt) {
     const d = { ...data, orders: orders || data.orders || [], lineItems: lineItems || data.lineItems || [] };
     const withPt = (ls) => pt && !/\d\s*-?\s*\d?\s*pt\b/i.test(String(ls)) ? `${ls} ${pt}` : ls;
-    return (needing || []).map((n) => {
+    const rank = (o) => [o && o.priority != null && o.priority !== "" ? Number(o.priority) : 999, o && o.dueDate || "9999-12-31", String(o && o.id || "")];
+    const cmp = (a, b) => {
+      const x = rank(a.order), y = rank(b.order);
+      return x[0] - y[0] || (x[1] < y[1] ? -1 : x[1] > y[1] ? 1 : 0) || (x[2] < y[2] ? -1 : x[2] > y[2] ? 1 : 0);
+    };
+    const found = (needing || []).map((n, i) => {
       const order = d.orders.find((o) => o.id === n.orderId) || null;
-      const room = Number(n.needs) || 0;
-      if (!order) return { ...n, outstanding: 0, toMake: 0, covered: 0, shelf: [], noLine: true, planShort: 0, planOver: 0 };
+      if (!order) return { i, n, order: null, g: null };
       const want = withPt(n.lineSpec);
       const matches = (spec) => (li) => sameProductParts(li.description, spec);
       let g = walkProducts(d, order, matches(want))[0] || walkProducts(d, order, matches(n.lineSpec))[0];
@@ -9904,12 +9938,33 @@ ${line}` : line;
         const tw = twinCartonSpec(n.lineSpec);
         if (tw) g = walkProducts(d, order, matches(withPt(tw)))[0] || walkProducts(d, order, matches(tw))[0];
       }
-      if (!g) return { ...n, outstanding: 0, toMake: 0, covered: 0, shelf: [], noLine: true, planShort: 0, planOver: 0 };
+      return { i, n, order, g };
+    });
+    const pool = /* @__PURE__ */ new Map();
+    const out = new Array(found.length);
+    for (const f of [...found].sort(cmp)) {
+      const { n, order, g } = f;
+      const room = Number(n.needs) || 0;
+      if (!order || !g) {
+        out[f.i] = { ...n, outstanding: 0, toMake: 0, covered: 0, shelf: [], noLine: true, planShort: 0, planOver: 0 };
+        continue;
+      }
       const outstanding = g.stillToPick;
-      const covered = Math.min(outstanding, g.shelf);
+      let left = outstanding, covered = 0;
+      for (const s of g.supply) {
+        if (left <= 0) break;
+        if (!pool.has(s.boxNumber)) pool.set(s.boxNumber, Number(s.onShelf) || 0);
+        const take = Math.min(pool.get(s.boxNumber), left);
+        if (take > 0) {
+          pool.set(s.boxNumber, pool.get(s.boxNumber) - take);
+          left -= take;
+          covered += take;
+        }
+      }
+      covered = Math.min(covered, g.shelf, outstanding);
       const stillToMake = Math.max(0, outstanding - covered);
       const shelf = g.supply.map((s) => ({ boxNumber: s.boxNumber, bay: (s.bays || []).join("/"), qty: s.onShelf, checked: !s.unchecked, boxTypeId: s.carton }));
-      return {
+      out[f.i] = {
         ...n,
         outstanding,
         toMake: Math.min(stillToMake, room),
@@ -9919,7 +9974,8 @@ ${line}` : line;
         planShort: stillToMake > room ? stillToMake - room : 0,
         planOver: outstanding === 0 && room > 0 ? room : 0
       };
-    });
+    }
+    return out;
   }
 
   // mx_writes.js
@@ -10861,7 +10917,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-28.8";
+  var APP_VERSION = "2026-09-28.10";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -13529,11 +13585,14 @@ Here's the order:`;
     return /* @__PURE__ */ React.createElement("span", { className, style }, /* @__PURE__ */ React.createElement(Spec, { s: spec }), customerRef && /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: "0.8em", color: INK_MUTED, fontWeight: 400 } }, "their ref: ", customerRef));
   }
   function ProductGateLine({ data, value, onResolved }) {
-    const res = resolveProduct(data, value);
+    const res = resolveOrderLine(data, value);
     if (!String(value || "").trim()) return null;
     if (res.status === "exact") {
       const saved = orderLineName(data, value);
       const differs = saved !== String(value).trim();
+      if (isReelSpec(value) && !formIdForLine(data, { description: value })) {
+        return /* @__PURE__ */ React.createElement("div", { "data-gate-noreel": true, style: { fontSize: 11.5, color: RED, marginTop: 2, fontWeight: 600 } }, res.product.displayName, " isn't sold as a reel in the catalogue yet \u2014 add it in Admin \u2192 Fix tools \u2192 Sell a size another way, or these won't be counted.");
+      }
       return /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: differs ? NAVY : "#2E8B57", marginTop: 2 } }, differs ? `\u2192 ${saved}` : "\u2713 known product");
     }
     if (res.status === "candidates") {
@@ -14739,7 +14798,7 @@ ${kNotes.join("\n")}`), 0);
       let description = newLine.range === "Custom" ? newLine.size.trim() : `${newLine.range} ${newLine.size.trim()}`;
       if (newLine.pt && !description.includes(newLine.pt)) description += ` ${newLine.pt}`;
       if (newLine.amount && !description.includes(`(${newLine.amount}m)`)) description += ` (${newLine.amount}m)`;
-      const res = resolveProduct(data, description);
+      const res = resolveOrderLine(data, description);
       if (res.status === "exact") {
         description = orderLineName(data, description);
       } else if (res.status === "candidates") {
@@ -22082,6 +22141,8 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-09-28.10", `Bonding: typing a reel that is on the system but can't be offered says why \u2014 cleared (bring it back if it's still on the rack), glued today (bonds tomorrow), or all its metres bonded (give its real metres). No more "not in the system" loop.`],
+    ["2026-09-28.9", "Order entry reads real-world wording: the \xD7 sign, decimal commas, sizes without mm, Strong Tape after the size, OS for O/S, a colour with no range (Ultra SR), and a size with no pt or variant (the plain product). A reel with no reel form in the catalogue keeps REEL, is planned in reel cases, and the order screen says the form is missing."],
     ["2026-09-28.8", "Discrepancies no longer flag one box code packed in PX Plus and Smart Formes boxes (the same matrix, by design), or a product written without its point. 56 \u2192 36 on today's data."],
     ["2026-09-28.7", "Needs you today: the admin's Daily plan shows at most five things that could hold up an order due in the next fortnight. Admin \u2192 Draw a line under the past accepts every discrepancy about finished stock in one go."],
     ["2026-09-28.6", "Admin \u2192 Fix tools \u2192 Set a password: see every login and set a new password for one, through a server function only the admin account can use."],
@@ -24576,7 +24637,15 @@ Plan it?`
       style: { width, minHeight: 40, fontSize: 16, fontWeight: 600, textAlign: "center", border: `1px solid #CFCFCA`, borderRadius: 4, background: "#fff", color: INK }
     }
   );
-  function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRuns = [], existingBoxCodes = [], orders = [], lineItems = [], data, materials = [], onUnknownBatch, onSubmit, submitLabel, error, warnings = [], children, renderFullForm }) {
+  function ReelMetresFix({ code, min, onSave }) {
+    const [m, setM] = useState("");
+    const ok = Number(m) > Number(min);
+    return /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 8, alignItems: "center" } }, /* @__PURE__ */ React.createElement("input", { "data-reel-metres-fix": true, type: "number", value: m, onChange: (e) => setM(e.target.value), placeholder: "Metres", style: { width: 110, minHeight: 40, fontSize: 16, padding: "0 10px", border: "1px solid #CFCFCA", borderRadius: 4 } }), /* @__PURE__ */ React.createElement(Button, { variant: "accent", disabled: !ok, onClick: () => {
+      onSave(Number(m));
+      setM("");
+    } }, "Save its metres"), m && !ok && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: RED } }, "More than ", min, " m, please"));
+  }
+  function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRuns = [], existingBoxCodes = [], orders = [], lineItems = [], data, materials = [], onUnknownBatch, onReelFix, onSubmit, submitLabel, error, warnings = [], children, renderFullForm }) {
     const [reelQuery, setReelQuery] = useState("");
     const [escapeOpen, setEscapeOpen] = useState(false);
     const [everyField, setEveryField] = useState(false);
@@ -24723,8 +24792,19 @@ Plan it?`
       ))), reelQuery.trim().length >= 4 && !availableBatches.some((b) => String(b.batchNumber).toUpperCase() === reelQuery.trim().toUpperCase()) && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10, padding: "10px 12px", border: `1px dashed #CFCFCA`, borderRadius: 4 } }, (() => {
         const code = reelQuery.trim().toUpperCase();
         const onFile = (data && data.glueLineBatches || []).find((g) => g && !g.deleted && String(g.batchNumber || "").trim().toUpperCase() === code);
+        const sized = onFile && String(onFile.productSize || "").trim();
+        const used = onFile ? Math.round(batchMeterageUsed(allBondingRuns, onFile.batchNumber) || 0) : 0;
+        if (sized && onFile.cleared === "Yes") return /* @__PURE__ */ React.createElement("div", { "data-reel-why": "cleared", style: { fontSize: 14, fontWeight: 500 } }, code, " (", onFile.productSize, ") is marked ", /* @__PURE__ */ React.createElement("b", null, "cleared"), " \u2014 finished. If it's still on the rack:", /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => {
+          onReelFix && onReelFix(code, "unclear");
+        } }, "It's still on the rack \u2014 bring it back")));
+        if (sized && String(onFile.date || "") === todayISO()) return /* @__PURE__ */ React.createElement("div", { "data-reel-why": "today", style: { fontSize: 14, fontWeight: 500 } }, code, " was glued today \u2014 it bonds from tomorrow.");
+        if (sized && used >= (Number(onFile.meterage) || 0)) return /* @__PURE__ */ React.createElement("div", { "data-reel-why": "used", style: { fontSize: 14, fontWeight: 500 } }, code, " (", onFile.productSize, ") has ", Number(onFile.meterage) || 0, " m on record and ", used, " m already bonded off it \u2014 nothing left, as far as the system knows. If it's longer than that, give its real metres:", /* @__PURE__ */ React.createElement(ReelMetresFix, { code, min: used, onSave: (m) => onReelFix && onReelFix(code, "metres", m) }));
         return onFile ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 500 } }, code, " is on the system but has no size recorded, so it can't be offered. Give it its size here and carry on \u2014 the existing record is completed, not duplicated.") : /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 500 } }, "Reel not in the system yet? Enter it here and carry on.");
-      })(), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement(BondingSpecFields, { values: form, setValues: setForm, listId: "size-catalog-bonding" }), /* @__PURE__ */ React.createElement(
+      })(), !(() => {
+        const code = reelQuery.trim().toUpperCase();
+        const g = (data && data.glueLineBatches || []).find((x) => x && !x.deleted && String(x.batchNumber || "").trim().toUpperCase() === code);
+        return g && String(g.productSize || "").trim();
+      })() && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement(BondingSpecFields, { values: form, setValues: setForm, listId: "size-catalog-bonding" }), /* @__PURE__ */ React.createElement(
         Button,
         {
           variant: "ghost",
@@ -24739,7 +24819,7 @@ Plan it?`
         "Use ",
         reelQuery.trim().toUpperCase(),
         " with this size"
-      )), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 6 } }, "Same escape as before: the reel is created with its code and its metres, so it's traceable from here on.")))
+      ))))
     ), /* @__PURE__ */ React.createElement(
       BondStep,
       {
@@ -25179,7 +25259,7 @@ Plan it?`
           d.notice = {
             ok: false,
             title: `Reel ${reel.batchNumber} can't be bonded`,
-            body: reel.cleared === "Yes" ? "It's marked cleared." : String(reel.date || "") === todayISO() ? "It was glued today \u2014 it bonds tomorrow." : "Nothing left on it \u2014 every metre is bonded."
+            body: reel.cleared === "Yes" ? "It's marked cleared. If it's still on the rack, type its code in Log a new box \u2014 you can bring it back there." : String(reel.date || "") === todayISO() ? "It was glued today \u2014 it bonds tomorrow." : "Nothing left on it \u2014 every metre is bonded. If it's longer than its record, type its code in Log a new box to give its real metres."
           };
           return;
         }
@@ -25198,6 +25278,24 @@ Plan it?`
     const handleUnknownBatch = (code, spec) => {
       setUnknownMeterage("");
       setUnknownReelPrompt({ code, spec });
+    };
+    const fixReelFromBonding = (code, what, value) => {
+      const up3 = String(code || "").trim().toUpperCase();
+      const stamp = (/* @__PURE__ */ new Date()).toISOString();
+      setData((prev) => {
+        const g = (prev.glueLineBatches || []).find((x) => x && !x.deleted && String(x.batchNumber || "").trim().toUpperCase() === up3);
+        if (!g) return prev;
+        const after = what === "unclear" ? { ...g, cleared: "No", updatedAt: stamp, comments: [g.comments, `Back on the rack \u2014 found still in use on Bonding Line ${todayISO()}`].filter(Boolean).join(" | ") } : { ...g, meterage: Number(value), updatedAt: stamp, comments: [g.comments, `Metres ${g.meterage || 0} \u2192 ${Number(value)} from Bonding Line ${todayISO()}`].filter(Boolean).join(" | ") };
+        const d = { ...prev, glueLineBatches: prev.glueLineBatches.map((x) => x.id === g.id ? after : x) };
+        return { ...d, ...appendLog(d, {
+          action: "edit",
+          entity: "glueLineBatch",
+          entityId: g.id,
+          summary: what === "unclear" ? `Reel ${up3} back on the rack (was cleared) \u2014 from Bonding Line` : `Reel ${up3} metres ${g.meterage || 0} \u2192 ${Number(value)} \u2014 from Bonding Line`,
+          before: what === "unclear" ? { cleared: g.cleared } : { meterage: g.meterage },
+          after: what === "unclear" ? { cleared: "No" } : { meterage: Number(value) }
+        }) };
+      });
     };
     const confirmUnknownBatch = () => {
       if (!unknownReelPrompt || !unknownMeterage || Number(unknownMeterage) <= 0) return;
@@ -26291,6 +26389,7 @@ Go ahead?`)) return;
         data,
         materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS,
         onUnknownBatch: handleUnknownBatch,
+        onReelFix: fixReelFromBonding,
         onSubmit: addRow,
         error: addError,
         warnings: entryWarnings,
