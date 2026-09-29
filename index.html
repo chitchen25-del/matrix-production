@@ -5630,6 +5630,15 @@
     if (!c.pallet) return { key: "noPallet", label: "Weighed, no pallet yet" };
     return { key: "done", label: "Ready" };
   }
+  function caseWorkState(c) {
+    if (!c) return "topack";
+    if (c.packedOutside) return "done";
+    const rows = c.contributions || [];
+    const inCase = rows.reduce((t, r) => t + (r.boxNumber ? Number(r.qty) || 0 : 0), 0);
+    if (!inCase) return "topack";
+    if (rows.some((r) => !r.boxNumber && (Number(r.qty) || 0) > 0)) return "part";
+    return "done";
+  }
   function caseFill(c) {
     const contributions = c.contributions || [];
     const planned = contributions.reduce((t, r) => t + (Number(r.qty) || 0), 0);
@@ -17615,12 +17624,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
   function CaseFilterChips({ cases, value, onChange }) {
     const counts = React.useMemo(() => {
       const c = { all: cases.length, topack: 0, part: 0, done: 0 };
-      for (const x of cases) {
-        const inCase = (x.contributions || []).reduce((t, r) => t + (Number(r.qty) || 0), 0);
-        const cap = Number(x.maxSize) || CASE_MAX_SIZE_DEFAULT;
-        const k = x.packedOutside ? "done" : !inCase ? "topack" : inCase < cap ? "part" : x.confirmed ? "done" : "part";
-        c[k]++;
-      }
+      for (const x of cases) c[caseWorkState(x)]++;
       return c;
     }, [cases]);
     const chips = [["topack", "To pack"], ["part", "Part packed"], ["done", "Done"], ["all", "All"]];
@@ -18441,14 +18445,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       const t = setTimeout(() => setPulse(false), 6e3);
       return () => clearTimeout(t);
     }, [highlightKey, litCases.join(",")]);
-    const caseWork = React.useCallback((c) => {
-      if (c.packedOutside) return "done";
-      const inCase = (c.contributions || []).reduce((t, r) => t + (Number(r.qty) || 0), 0);
-      const cap = Number(c.maxSize) || CASE_MAX_SIZE_DEFAULT;
-      if (!inCase) return "topack";
-      if (inCase < cap) return "part";
-      return c.confirmed ? "done" : "part";
-    }, []);
+    const caseWork = React.useCallback((c) => caseWorkState(c), []);
     const [caseFilter, setCaseFilter] = React.useState("topack");
     const visibleCases = React.useMemo(() => {
       if (caseFilter === "all") return cases;
@@ -20080,7 +20077,9 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     const [done, setDone] = useState(false);
     const spec = catalogueName(data, size ? `${range === "Ken" ? "Ken PX" : range} ${size}${pt ? " " + pt : ""}${metres ? ` (${metres}m)` : ""}`.trim() : "");
     const n = Number(qty) || 0;
-    const canSave = size && n > 0;
+    const formId = size ? formIdForRun(data, { productSize: spec, packageType: "Box", metersPerBox: Number(metres) || null }) || formIdForRun(data, { productSize: spec, packageType: "Box" }) : null;
+    const form = formId ? (data.productForms || []).find((f) => f.id === formId) : null;
+    const canSave = size && n > 0 && !!formId;
     if (done) return /* @__PURE__ */ React.createElement("div", { className: "text-center text-sm", style: { color: GREEN } }, "\u2713 ", boxNumber, " added \u2014 ", n, " \xD7 ", spec, location2 ? ` on ${location2}` : "", ". It's on the shelf now.");
     if (!open) return /* @__PURE__ */ React.createElement("div", { className: "text-center" }, /* @__PURE__ */ React.createElement(Button, { onClick: () => setOpen(true) }, "Add box ", boxNumber), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: INK_MUTED } }, "Physically here but never logged? Add it and it exists \u2014 made, on the shelf, in the trail."));
     return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "font-semibold mb-3" }, "Add box ", /* @__PURE__ */ React.createElement(Mono, null, boxNumber)), /* @__PURE__ */ React.createElement("div", { className: "flex gap-3 flex-wrap items-end" }, /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Range"), /* @__PURE__ */ React.createElement(Select, { value: range, onChange: (e) => {
@@ -20093,6 +20092,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
           id: uid("br"),
           boxNumber,
           productSize: spec,
+          formId,
           baselineBatchCode: reel || "",
           evaCode: "",
           tapeCode: "",
@@ -20101,7 +20101,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
           toStock: n,
           workNumber: null,
           customerName: "",
-          metersPerBox: Number(metres) || METERS_PER_BOX_DEFAULT,
+          metersPerBox: form && Number(form.metres) || Number(metres) || METERS_PER_BOX_DEFAULT,
           date: todayISO(),
           checked: "Yes",
           packageType: "Box",
@@ -20116,8 +20116,8 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         };
         let next = { ...prev, bondingRuns: [...prev.bondingRuns || [], row] };
         next = recordMovements(next, [
-          moveMade({ boxNumber, spec, qty: n, reelCode: reel || null, source: "boxhistory", sourceId: row.id, note: "Added from Box History \u2014 not previously logged" }),
-          moveCounted({ boxNumber, spec, qty: n, source: "boxhistory", sourceId: row.id })
+          { ...moveMade({ boxNumber, spec, qty: n, reelCode: reel || null, source: "boxhistory", sourceId: row.id, note: "Added from Box History \u2014 not previously logged" }), formId },
+          { ...moveCounted({ boxNumber, spec, qty: n, source: "boxhistory", sourceId: row.id }), formId }
         ]);
         next = raiseIssue(next, {
           kind: "unrecorded_box",
@@ -20129,7 +20129,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       });
       setDone(true);
       onAdded && onAdded(boxNumber);
-    } }, "Add it")));
+    } }, "Add it")), size && !formId && /* @__PURE__ */ React.createElement("div", { "data-addbox-nocat": true, className: "text-sm mt-2", style: { color: RED } }, spec, " isn't in the catalogue \u2014 check the size and pt, or add the size under Products first."), form && Number(metres) && Number(form.metres) !== Number(metres) ? /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: INK_MUTED } }, "This size comes in ", form.metres, " m boxes \u2014 it'll be added as ", form.metres, " m.") : null);
   }
   function AddReelInline({ data, setData, batchNumber, onAdded }) {
     const [open, setOpen] = useState(false);
@@ -20140,7 +20140,8 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     const [done, setDone] = useState(false);
     const spec = catalogueName(data, size ? `${range} ${size}`.trim() : "");
     const m = Number(meterage) || 0;
-    const canSave = size && m > 0;
+    const sizeKey = size ? glueSizeKey(data, spec) : null;
+    const canSave = size && m > 0 && !!sizeKey;
     const glue = materialBatchCode(data.materials, "glue", null) || "";
     const pvc = size ? pvcCodeForSpec(spec, data.materials) || "" : "";
     if (done) return /* @__PURE__ */ React.createElement("div", { className: "text-center text-sm", style: { color: GREEN } }, "\u2713 Reel ", batchNumber, " added \u2014 ", m, "m of ", spec, ". It's available to bond.");
@@ -20157,6 +20158,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
           direct,
           plCode: "",
           productSize: spec,
+          sizeKey,
           gapWidth: "",
           internalHeight: "",
           overallHeight: "",
@@ -20186,7 +20188,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       });
       setDone(true);
       onAdded && onAdded(batchNumber);
-    } }, "Add it")));
+    } }, "Add it")), size && !sizeKey && /* @__PURE__ */ React.createElement("div", { "data-addreel-nocat": true, className: "text-sm mt-2", style: { color: RED } }, spec, " isn't in the catalogue \u2014 check the size, or add it under Products first."));
   }
   function MoveOtherStockPanel({ data, setData, boxNumber, spec, available }) {
     const [dest, setDest] = useState("");
@@ -22338,7 +22340,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
-    ["2026-09-29.8", "The new phone layout \u2014 for Chris's login on a phone only: Matrix header with back and search, Today home (log tiles, jump back in, needs you, due this week), a new Orders list with a NEXT step on every order, a readout over each order, a bottom bar (Today \xB7 Orders \xB7 Scan \xB7 Stock \xB7 Everything), Everything listing every screen, and the new look over every screen. PCs and every other login are unchanged. Switch back to the original under Everything \u2192 This phone. Lettering: Jost."],
+    ["2026-09-29.8", "The new phone layout \u2014 for Chris's login on a phone only: Matrix header with back and search, Today home (log tiles, jump back in, needs you, due this week), a new Orders list with a NEXT step on every order, a readout over each order, a bottom bar (Today \xB7 Orders \xB7 Scan \xB7 Stock \xB7 Everything), Everything listing every screen, and the new look over every screen. PCs and every other login are unchanged. Switch back to the original under Everything \u2192 This phone. Lettering: Jost. Packing: a case is Done when everything planned for it is in \u2014 the last short case of a line (19 of 19) and a filled case nobody ticked no longer show as Part packed."],
     ["2026-09-29.7", "A phone or tablet is never the label print station: a Baseline extrusion label logged on the iPhone always goes to Dave's PC, never the phone's print sheet."],
     ["2026-09-29.6", "Bonding step 3 never goes quietly empty: if Made as (Box/Reel) carried over from the last run doesn't match, it names the orders that need this size the other way, with one tap to switch."],
     ["2026-09-29.5", 'Ken on the glue line, extrusion and bonding: "Ken 0.50 x 1.70mm" is read as the Ken PX product, so a Ken reel is no longer refused as "not in the catalogue". Every PX Plus size now exists as Ken PX in the catalogue.'],
