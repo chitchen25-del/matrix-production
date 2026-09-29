@@ -10919,7 +10919,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-29.5";
+  var APP_VERSION = "2026-09-29.6";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -22316,6 +22316,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-09-29.6", "Bonding step 3 never goes quietly empty: if Made as (Box/Reel) carried over from the last run doesn't match, it names the orders that need this size the other way, with one tap to switch."],
     ["2026-09-29.5", 'Ken on the glue line, extrusion and bonding: "Ken 0.50 x 1.70mm" is read as the Ken PX product, so a Ken reel is no longer refused as "not in the catalogue". Every PX Plus size now exists as Ken PX in the catalogue.'],
     ["2026-09-29.4", "All Ken 10mm is Green: with Ken selected, the PVC code fills in as Green's batch code. Every other range, and Ken O/S or 12mm, keep the colour by height."],
     ["2026-09-29.3", "Admin looks tidier: the fix tools are a grouped list with one line on what each is for, one tool open at a time; a cleaner header with the way back above the title."],
@@ -24924,6 +24925,36 @@ Plan it?`
       const other = twin ? ordersNeedingSpec(data, twin).needing.filter((n) => !own.some((o) => o.orderId === n.orderId)).map((n) => ({ ...n, lineSpec: twin })) : [];
       return bondingOfferFromWalk(data, [...own, ...other], orders, lineItems, form.pt);
     }, [offerSpec, data, lineItems, form.pt]);
+    const offerFor = (sp, pt) => {
+      const own = ordersNeedingSpec(data, sp).needing.map((n) => ({ ...n, lineSpec: sp }));
+      const tw = twinCartonSpec(sp);
+      const oth = tw ? ordersNeedingSpec(data, tw).needing.filter((n) => !own.some((o) => o.orderId === n.orderId)).map((n) => ({ ...n, lineSpec: tw })) : [];
+      return bondingOfferFromWalk(data, [...own, ...oth], orders, lineItems, pt).filter((n) => !n.noLine && (Number(n.toMake) || 0) + (Number(n.planShort) || 0) > 0);
+    };
+    const offerAlternatives = useMemo(() => {
+      if (!spec || !data) return [];
+      if (needing.some((n) => !n.noLine && (Number(n.toMake) || 0) + (Number(n.planShort) || 0) > 0)) return [];
+      const curForm = form.packageType || "Box", curPt = form.pt || "";
+      const out = [];
+      for (const fm of ["Box", "Reel"]) {
+        const pt = curPt;
+        if (fm === curForm) continue;
+        const sp = fm === "Reel" && !isReelSpec(spec) ? `${spec} REEL` : spec;
+        let hits = [];
+        try {
+          hits = offerFor(sp, pt);
+        } catch (e) {
+          hits = [];
+        }
+        if (hits.length) out.push({ form: fm, pt, orders: hits.map((h) => ({ id: h.orderId, customer: (orders.find((o) => o.id === h.orderId) || {}).customer || h.orderId, n: (Number(h.toMake) || 0) + (Number(h.planShort) || 0) })) });
+      }
+      return out;
+    }, [spec, data, needing, form.packageType, form.pt, lineItems]);
+    const switchTo = (alt) => setForm((f) => ({
+      ...f,
+      packageType: alt.form,
+      metersPerBox: alt.form === "Reel" ? String(f.metersPerBox) === String(METRES_PER_BOX_DEFAULT(spec)) ? "" : f.metersPerBox : f.metersPerBox === "" ? METRES_PER_BOX_DEFAULT(spec) : f.metersPerBox
+    }));
     const allocs = form.allocations || [];
     const allocFor = (id) => allocs.find((a) => a.orderId === id);
     const allocated = allocs.reduce((s, a) => s + (Number(a.qty) || 0), 0);
@@ -25119,7 +25150,7 @@ Plan it?`
         hint: /* @__PURE__ */ React.createElement(React.Fragment, null, "Every order needing this size, most urgent first, filled in already. ", /* @__PURE__ */ React.createElement("span", { style: { color: INK, fontWeight: 500 } }, "Type over a number to change where they go"), " \u2014 the shelf takes what's left. The box comes from the order.")
       },
       !spec && (String(form.baselineBatchCode || "").trim() ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: RED, fontWeight: 600 } }, String(form.baselineBatchCode).trim().toUpperCase(), " is on the system but has no product size recorded, so nothing can be worked out from it. To clear it: set the size in the panel above, or give the reel its size on the Glue Line.") : /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED } }, "Pick the reel first.")),
-      spec && rowsShown.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED } }, "No open order needs this size. Everything goes to the shelf."),
+      spec && rowsShown.length === 0 && (offerAlternatives.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED } }, "No open order needs this size. Everything goes to the shelf.") : /* @__PURE__ */ React.createElement("div", { "data-offer-alt": true, style: { fontSize: 14, border: `1.5px solid ${AMBER}`, borderRadius: 8, padding: "10px 12px", background: "#FFF8F0" } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600 } }, "No order needs ", spec, " as ", (form.packageType || "Box") === "Reel" ? "reels" : "boxes", " \u2014 but some need it as ", (form.packageType || "Box") === "Reel" ? "boxes" : "reels", ":"), offerAlternatives.map((a) => /* @__PURE__ */ React.createElement("div", { key: a.form + a.pt, style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 8, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", null, a.orders.map((o) => `${o.customer} ${o.id} (${o.n})`).join(", "), " need ", /* @__PURE__ */ React.createElement("b", null, a.form === "Reel" ? "reels" : "boxes")), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => switchTo(a) }, "Switch to ", a.form === "Reel" ? "reels" : "boxes"))))),
       rowsShown.map((r, i) => {
         const late = r.dueDate && planDaysUntil && planDaysUntil(r.dueDate, todayISO()) < 0;
         const bt = boxTypeFor(r.orderId);
