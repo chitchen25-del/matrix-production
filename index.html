@@ -905,13 +905,18 @@
     const famWords = raw.replace(/[\d].*$/, "").trim().toUpperCase();
     if (q.variant == null && candidates.length) {
       const typedFam = famWords.replace(/\s+/g, " ").trim();
-      const plain = candidates.filter((p) => !p.variant && (q.pt == null || p.pt === q.pt) && typedFam && String(p.family || "").toUpperCase() === typedFam.split(" ").slice(0, String(p.family || "").split(" ").length).join(" ") && (!p.colour || typedFam.includes(String(p.colour).toUpperCase()) || candidates.filter((c) => !c.variant && c.family === p.family).length === 1));
+      const noPtRange = (fam) => !(data && data.products || []).some((x) => x && !x.deleted && x.family === fam && x.pt);
+      const plain = candidates.filter((p) => !p.variant && (q.pt == null || p.pt === q.pt || p.pt == null && noPtRange(p.family)) && typedFam && String(p.family || "").toUpperCase() === typedFam.split(" ").slice(0, String(p.family || "").split(" ").length).join(" ") && (!p.colour || typedFam.includes(String(p.colour).toUpperCase()) || candidates.filter((c) => !c.variant && c.family === p.family).length === 1));
       if (plain.length === 1) return { status: "exact", product: plain[0], candidates: [], inferred: "plain", typed: text };
     }
     return res;
   }
   function formIdFor(data, text, { reel = null, metres = null, order = false } = {}) {
-    const res = order ? resolveOrderLine(data, text) : typeof resolveProduct === "function" ? resolveProduct(data, text) : null;
+    let res = order ? resolveOrderLine(data, text) : typeof resolveProduct === "function" ? resolveProduct(data, text) : null;
+    if ((!res || res.status !== "exact") && /\s(2-3pt|3-4pt|6pt)\b/i.test(String(text || "")) && typeof resolveProduct === "function") {
+      const bare = resolveProduct(data, String(text).replace(/\s(2-3pt|3-4pt|6pt)\b/i, ""));
+      if (bare && bare.status === "exact" && bare.product && bare.product.pt == null && !(data.products || []).some((x) => x && !x.deleted && x.family === bare.product.family && x.pt)) res = bare;
+    }
     if (!res || res.status !== "exact" || !res.product) return null;
     const kind = (reel == null ? isReelSpec(text) : !!reel) ? "Reel" : "Box";
     const m = metres != null && Number(metres) > 0 ? Number(metres) : (() => {
@@ -10928,7 +10933,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-29.22";
+  var APP_VERSION = "2026-09-29.23";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -13926,7 +13931,18 @@ ${kNotes.join("\n")}`), 0);
   }
   function setEventClient(client) {
     EVENT_CLIENT = client || null;
-    if (client) flushAppEvents();
+    if (client) {
+      flushAppEvents();
+      reportDeviceOpenOnce();
+    }
+  }
+  function reportDeviceOpenOnce() {
+    try {
+      if (typeof window === "undefined" || window.__mxDeviceOpenReported) return;
+      window.__mxDeviceOpenReported = true;
+      reportDeviceStatus({});
+    } catch (e) {
+    }
   }
   function SomethingWrongButton({ screen, raised = false }) {
     const [open, setOpen] = useState(false);
@@ -20114,7 +20130,8 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     const [location2, setLocation] = useState("");
     const [reel, setReel] = useState("");
     const [done, setDone] = useState(false);
-    const spec = catalogueName(data, size ? `${range === "Ken" ? "Speedy Crease" : range} ${size}${pt ? " " + pt : ""}${metres ? ` (${metres}m)` : ""}`.trim() : "");
+    const baseName = size ? reelNameFor(data, `${range === "Ken" ? "Speedy Crease" : range} ${size}`) || `${range === "Ken" ? "Speedy Crease" : range} ${size}` : "";
+    const spec = catalogueName(data, size ? `${baseName}${pt && !/(2-3pt|3-4pt|6pt)$/i.test(baseName) ? " " + pt : ""}${metres ? ` (${metres}m)` : ""}`.trim() : "");
     const n = Number(qty) || 0;
     const formId = size ? formIdForRun(data, { productSize: spec, packageType: "Box", metersPerBox: Number(metres) || null }) || formIdForRun(data, { productSize: spec, packageType: "Box" }) : null;
     const form = formId ? (data.productForms || []).find((f) => f.id === formId) : null;
@@ -22389,6 +22406,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-09-29.23", "Audit fixes: Add box takes Speedy Crease Metal (#50 White) and every range list wording; a pt typed on Phoenix XL / Exceed resolves on orders and bonding; every device reports its build when it opens."],
     ["2026-09-29.22", "New phone layout: the old side drawer can no longer slide out \u2014 a swipe in from the left edge goes back, like every other iPhone app."],
     ["2026-09-29.21", "Phone Today is the nerve centre: the glue line and bonding today (metres, boxes, the latest and what's on now), extrusion batches, what to bond and glue next (soonest due first), orders due in the next 3 days that aren't ready, and one line of things to look at. The log tiles and Jump back in are gone."],
     ["2026-09-29.20", 'Phone: order rows carry the desktop dial (in cases navy, ready to pick green, READY %); Today shows one quiet "things to look at" line (only what could hold up an order due within a fortnight) that opens a list with a button to each fix; a box counted in the stock take closes anything about it; the top bar stays clear of the clock.'],
