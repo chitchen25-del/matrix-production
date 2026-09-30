@@ -11091,7 +11091,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-30.22";
+  var APP_VERSION = "2026-09-30.23";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -12626,11 +12626,156 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     const t = (iso) => iso ? new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : "";
     return j.status === "printed" ? /* @__PURE__ */ React.createElement("div", { "data-print-status": "printed", style: { fontSize: 13.5, fontWeight: 600, color: GREEN, marginTop: 6 } }, "\u{1F5A8} Label for ", j.ref, " printed", j.printedBy ? ` on ${j.printedBy}` : "", " ", t(j.printedAt), " \u2713") : /* @__PURE__ */ React.createElement("div", { "data-print-status": "waiting", style: { fontSize: 13.5, fontWeight: 600, color: "#8A4B00", marginTop: 6 } }, "\u{1F5A8} Label for ", j.ref, " sent to the print station ", t(j.requestedAt), " \u2014 waiting to print");
   }
+  function usePhotoReader() {
+    const nl = useNewLayout();
+    return nl && isAdminLogin();
+  }
+  async function readLabelsFromFile(file) {
+    if (window.__MX_TEST_MIRROR__ && typeof window.__readLabelsFn === "function") return window.__readLabelsFn(file);
+    let image = "";
+    try {
+      const url = URL.createObjectURL(file);
+      const img = await new Promise((res, rej) => {
+        const i = new Image();
+        i.onload = () => res(i);
+        i.onerror = rej;
+        i.src = url;
+      });
+      const k = Math.min(1, 1568 / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.naturalWidth * k);
+      c.height = Math.round(img.naturalHeight * k);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      image = c.toDataURL("image/jpeg", 0.85).split(",")[1] || "";
+    } catch (e) {
+      return { error: "That photo couldn't be opened \u2014 try again." };
+    }
+    const client = makeSyncClient();
+    if (!client || !client.functions || !client.functions.invoke) return { error: "Reading a photo needs the internet \u2014 try again when this phone is online." };
+    try {
+      const timeout = new Promise((res) => setTimeout(() => res({ error: { message: "The reader didn't answer in time \u2014 try again." } }), 6e4));
+      const { data, error } = await Promise.race([client.functions.invoke("read-labels", { body: { image, mediaType: "image/jpeg" } }), timeout]);
+      if (error) {
+        let m = error.message || "It didn't work.";
+        try {
+          const j = error.context && typeof error.context.json === "function" ? await error.context.json() : null;
+          if (j && j.error) m = j.error;
+        } catch (e) {
+        }
+        return { error: /Failed to fetch|NetworkError|FunctionsFetchError/i.test(m) ? "Can't reach the server \u2014 check the internet and try again." : m };
+      }
+      return data || { error: "No answer came back \u2014 try again." };
+    } catch (e) {
+      return { error: String(e && e.message || e) };
+    }
+  }
+  function nearBoxCodes(code, known) {
+    const c = String(code || "").toUpperCase();
+    const out = [];
+    const suf = (x) => x.slice(6).split("").sort().join("");
+    for (const k of known) {
+      if (k === c) continue;
+      if (k.length === c.length) {
+        let d = 0;
+        for (let i = 0; i < c.length && d < 2; i++) if (k[i] !== c[i]) d++;
+        if (d === 1) {
+          out.push(k);
+          continue;
+        }
+        if (k.slice(0, 6) === c.slice(0, 6) && suf(k) === suf(c)) {
+          out.push(k);
+          continue;
+        }
+      }
+    }
+    return out;
+  }
+  function groupLabelReads(result, known) {
+    const set = known instanceof Set ? known : new Set(known || []);
+    const by = /* @__PURE__ */ new Map();
+    for (const l of result && result.labels || []) {
+      const code = String(l.code || "").toUpperCase();
+      if (!code) continue;
+      const g = by.get(code) || { code, n: 0, product: l.product || "", unsure: 0 };
+      g.n++;
+      if (l.sure === false) g.unsure++;
+      by.set(code, g);
+    }
+    return [...by.values()].map((g) => {
+      const onSystem = set.has(g.code);
+      const near = onSystem ? [] : nearBoxCodes(g.code, set);
+      return { ...g, status: onSystem ? g.unsure ? "check" : "known" : near.length === 1 ? "near" : "unknown", suggest: near.length === 1 ? near[0] : null };
+    }).sort((a, b) => b.n - a.n || a.code.localeCompare(b.code));
+  }
+  function LabelPhotoButton({ onDone, label = "\u{1F4F7} Photo", style = {}, name = "photo" }) {
+    const ref = useRef(null);
+    const [busy, setBusy] = useState(false);
+    return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        ref,
+        type: "file",
+        accept: "image/*",
+        capture: "environment",
+        style: { display: "none" },
+        "data-label-photo-input": name,
+        onChange: async (e) => {
+          const f = e.target.files && e.target.files[0];
+          e.target.value = "";
+          if (!f) return;
+          setBusy(true);
+          const r = await readLabelsFromFile(f);
+          setBusy(false);
+          onDone(r);
+        }
+      }
+    ), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        type: "button",
+        "data-label-photo": name,
+        disabled: busy,
+        onClick: () => ref.current && ref.current.click(),
+        style: { minHeight: 44, padding: "0 14px", borderRadius: 22, border: 0, background: NAVY, color: "#fff", fontSize: 15, fontWeight: 700, opacity: busy ? 0.7 : 1, ...style }
+      },
+      busy ? "Reading the photo\u2026" : label
+    ));
+  }
+  var READ_STATUS = { known: ["\u2713 on the system", "#1E7F3C"], check: ["check this one \u2014 not sure of every letter", "#B45309"], near: ["not on the system", "#B45309"], unknown: ["not on the system", RED] };
+  function LabelReadList({ groups, unreadable = 0, onPick = null }) {
+    return /* @__PURE__ */ React.createElement("div", { "data-label-reads": true, style: { display: "grid", gap: 6 } }, groups.map((g) => /* @__PURE__ */ React.createElement("div", { key: g.code, "data-label-read": g.code, style: { display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, background: "#F4F6FA", color: INK } }, /* @__PURE__ */ React.createElement(BoxCount, { n: g.n, size: "l" }), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontFamily: "ui-monospace, Menlo, monospace", fontSize: 16, fontWeight: 700 } }, g.code), /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 12.5, color: INK_MUTED } }, g.product), /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 12.5, fontWeight: 600, color: READ_STATUS[g.status][1] } }, READ_STATUS[g.status][0]), g.suggest && /* @__PURE__ */ React.createElement("button", { type: "button", "data-label-suggest": g.suggest, onClick: () => onPick && onPick(g.suggest, g), style: { marginTop: 4, minHeight: 34, padding: "0 10px", borderRadius: 8, border: `1px solid ${NAVY}`, background: "#fff", color: NAVY, fontSize: 13.5, fontWeight: 600 } }, "Did you mean ", g.suggest, "?")), onPick && g.status !== "unknown" && g.status !== "near" && /* @__PURE__ */ React.createElement("button", { type: "button", "data-label-use": g.code, onClick: () => onPick(g.code, g), style: { minHeight: 40, padding: "0 12px", borderRadius: 20, border: 0, background: NAVY, color: "#fff", fontSize: 14, fontWeight: 600 } }, "Use"))), !groups.length && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED } }, "No box codes could be read in that photo."), unreadable > 0 && /* @__PURE__ */ React.createElement("div", { "data-label-unreadable": true, style: { fontSize: 13, color: "#B45309", fontWeight: 600 } }, unreadable, " label", unreadable === 1 ? "" : "s", " couldn't be read (cut off, blurred or hidden) \u2014 not counted."));
+  }
+  function CaseCheckResult({ result, contributions, known, onClose }) {
+    const recorded = /* @__PURE__ */ new Map();
+    for (const r of contributions || []) {
+      if (!r.boxNumber) continue;
+      const k = String(r.boxNumber).toUpperCase();
+      recorded.set(k, (recorded.get(k) || 0) + (Number(r.qty) || 0));
+    }
+    const caseSet = new Set(recorded.keys());
+    const seen = /* @__PURE__ */ new Map();
+    const extra = [];
+    for (const g of groupLabelReads(result, known)) {
+      let code = g.code;
+      if (!caseSet.has(code) && !(known instanceof Set ? known : new Set(known || [])).has(code)) {
+        const near = nearBoxCodes(code, caseSet);
+        if (near.length === 1) code = near[0];
+      }
+      if (caseSet.has(code)) seen.set(code, { n: (seen.get(code) ? seen.get(code).n : 0) + g.n, read: g.code !== code ? g.code : null, unsure: g.unsure });
+      else extra.push(g);
+    }
+    const rows = [...caseSet].sort().map((code) => ({ code, rec: recorded.get(code), got: seen.get(code) ? seen.get(code).n : 0, read: seen.get(code) ? seen.get(code).read : null }));
+    const diffs = rows.filter((r) => r.rec !== r.got).length + extra.length;
+    return /* @__PURE__ */ React.createElement("div", { "data-case-check": true, style: { margin: "10px 16px", padding: 12, borderRadius: 12, border: `1px solid ${diffs ? AMBER : "#1E7F3C"}`, background: diffs ? "#FFF8EC" : "#EEF7F1" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 } }, /* @__PURE__ */ React.createElement("b", { "data-case-check-verdict": true, style: { fontSize: 16, color: diffs ? "#8A4B00" : "#1E7F3C" } }, result.error ? "Couldn't read the photo" : diffs ? `${diffs} difference${diffs === 1 ? "" : "s"} from what's recorded` : "\u2713 The photo matches this case"), /* @__PURE__ */ React.createElement("button", { type: "button", onClick: onClose, "aria-label": "Close", style: { border: 0, background: "none", fontSize: 18, color: INK } }, "\u2715")), result.error ? /* @__PURE__ */ React.createElement("div", { style: { color: RED, fontWeight: 600, marginTop: 6 } }, result.error) : /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 4, marginTop: 8 } }, rows.map((r) => /* @__PURE__ */ React.createElement("div", { key: r.code, "data-case-check-row": r.code, style: { display: "flex", alignItems: "center", gap: 8, fontSize: 14 } }, /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 700, minWidth: 104 } }, r.code), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, color: r.rec === r.got ? "#1E7F3C" : "#8A4B00", fontWeight: 600 } }, r.rec === r.got ? `\u2713 ${r.got}` : r.got === 0 ? `recorded ${r.rec} \u2014 not seen in the photo` : `recorded ${r.rec} \u2014 photo shows ${r.got}`, r.read && /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontWeight: 400 } }, " (read as ", r.read, ")")))), extra.map((g) => /* @__PURE__ */ React.createElement("div", { key: g.code, "data-case-check-extra": g.code, style: { display: "flex", alignItems: "center", gap: 8, fontSize: 14 } }, /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 700, minWidth: 104 } }, g.code), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, color: RED, fontWeight: 600 } }, g.n, " in the photo \u2014 not recorded in this case", g.status === "unknown" ? " (not on the system)" : ""))), Number(result.unreadable) > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: "#8A4B00" } }, result.unreadable, " label", result.unreadable === 1 ? "" : "s", " couldn't be read \u2014 a box not seen may just be hidden."), diffs > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 4 } }, "Nothing has been changed. If the case is wrong, put it right with Swap, Move or Count below.")));
+  }
   function ScanOverlay({ onResult, onClose, knownCodes = null }) {
     const videoRef = useRef(null), canvasRef = useRef(null), streamRef = useRef(null), lastRef = useRef({ text: "", n: 0 });
     const [err, setErr] = useState("");
     const [typed, setTyped] = useState("");
     const [torch, setTorch] = useState(null);
+    const photoOn = usePhotoReader() && knownCodes instanceof Set;
+    const [reads, setReads] = useState(null);
     useEffect(() => {
       let stop = false, timer = null, detector = null;
       try {
@@ -12755,7 +12900,10 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
         autoCorrect: "off",
         spellCheck: "false"
       }
-    ), /* @__PURE__ */ React.createElement("button", { style: { ...btn, background: ORANGE, color: "#fff" }, onClick: () => typed.trim() && onResult(typed.trim()), "data-scan-go": true }, "Go")), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 justify-center" }, torch !== null && /* @__PURE__ */ React.createElement("button", { style: btn, onClick: toggleTorch }, "\u{1F526} ", torch ? "Light off" : "Light"), /* @__PURE__ */ React.createElement("button", { style: btn, onClick: onClose }, "\u2715 Close"))));
+    ), /* @__PURE__ */ React.createElement("button", { style: { ...btn, background: ORANGE, color: "#fff" }, onClick: () => typed.trim() && onResult(typed.trim()), "data-scan-go": true }, "Go")), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 justify-center" }, photoOn && /* @__PURE__ */ React.createElement(LabelPhotoButton, { name: "scan", label: "\u{1F4F8} Snap the labels", onDone: setReads, style: { background: ORANGE, borderRadius: 6 } }), torch !== null && /* @__PURE__ */ React.createElement("button", { style: btn, onClick: toggleTorch }, "\u{1F526} ", torch ? "Light off" : "Light"), /* @__PURE__ */ React.createElement("button", { style: btn, onClick: onClose }, "\u2715 Close"))), reads && /* @__PURE__ */ React.createElement("div", { "data-scan-reads": true, style: { position: "absolute", left: 10, right: 10, top: "calc(env(safe-area-inset-top, 0px) + 64px)", bottom: "calc(env(safe-area-inset-bottom, 0px) + 120px)", overflowY: "auto", background: "#fff", color: INK, borderRadius: 14, padding: 14, zIndex: 3 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } }, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 17 } }, reads.error ? "Couldn't read the photo" : "In the photo \u2014 tap one to use it"), /* @__PURE__ */ React.createElement("button", { type: "button", "data-scan-reads-close": true, onClick: () => setReads(null), "aria-label": "Back to the camera", style: { border: 0, background: "none", fontSize: 20, color: INK } }, "\u2715")), reads.error ? /* @__PURE__ */ React.createElement("div", { style: { color: RED, fontWeight: 600 } }, reads.error) : /* @__PURE__ */ React.createElement(LabelReadList, { groups: groupLabelReads(reads, knownCodes), unreadable: reads.unreadable, onPick: (code) => {
+      setReads(null);
+      onResult(code);
+    } })));
   }
   function ScanNotice({ notice, onScanAgain, onClose }) {
     if (!notice) return null;
@@ -18863,6 +19011,9 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       setSel(n);
       if (phoneWeigh) setWeigh({ at: n, walk: false });
     };
+    const photoOn = usePhotoReader();
+    const [caseCheck, setCaseCheck] = useState(null);
+    const runCodes = useMemo(() => new Set((editData && editData.bondingRuns || []).filter((r) => r && !r.deleted && r.boxNumber).map((r) => String(r.boxNumber).toUpperCase())), [editData && editData.bondingRuns]);
     const stillToWeigh = [...cases].sort((a, b) => a.caseNum - b.caseNum).filter((c) => (c.packedOutside || (c.contributions || []).some((r) => Number(r.qty) > 0)) && (!(Number(caseWeights[c.caseNum]) > 0) || weightQueryFor && weightQueryFor(c.caseNum)));
     const [walking, setWalking] = useState(false);
     const orderedCases = [...cases].sort((a, b) => a.caseNum - b.caseNum);
@@ -19024,7 +19175,15 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
         }
       },
       k
-    ))), caseAct && onCaseAction && editingCase !== chosen.caseNum && /* @__PURE__ */ React.createElement(
+    ))), photoOn && !chosen.packedOutside && editingCase !== chosen.caseNum && /* @__PURE__ */ React.createElement("div", { className: "no-print", style: { padding: "0 16px 12px" } }, /* @__PURE__ */ React.createElement(
+      LabelPhotoButton,
+      {
+        name: "case",
+        label: "\u{1F4F7} Check this case from a photo",
+        style: { width: "100%" },
+        onDone: (r) => setCaseCheck({ caseNum: chosen.caseNum, result: r })
+      }
+    )), caseCheck && caseCheck.caseNum === chosen.caseNum && /* @__PURE__ */ React.createElement(CaseCheckResult, { result: caseCheck.result, contributions: chosen.contributions, known: runCodes, onClose: () => setCaseCheck(null) }), caseAct && onCaseAction && editingCase !== chosen.caseNum && /* @__PURE__ */ React.createElement(
       CaseActionPanel,
       {
         kind: caseAct,
@@ -22882,6 +23041,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-09-30.23", "Admin's phone only: read box codes from a photo \u2014 Snap the labels in the scanner, Check this case from a photo on any order's case, Photo of a bay in the stock take. Shows what it read; records nothing by itself."],
     ["2026-09-30.22", `Who sees what reads the logins properly \u2014 it said "Couldn't read the logins" with a signal.`],
     ["2026-09-30.21", "Admin \u2192 Who sees what: Add a login \u2014 name, email and password \u2014 then tick their screens."],
     ["2026-09-30.20", "Admin \u2192 Who sees what: tick the screens each login sees; the rest come off their menu, search and Floor Mode. Admin always sees everything."],
@@ -28523,6 +28683,8 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
     const [scanning, setScanning] = useState(false);
     const [missing, setMissing] = useState(/* @__PURE__ */ new Set());
     const [justFound, setJustFound] = useState(null);
+    const photoOn = usePhotoReader();
+    const [bayPhoto, setBayPhoto] = useState(null);
     const [emptyDone, setEmptyDone] = useDraftState("stockTakeEmptyBays", {}, {});
     const today = todayISO(), tag = `st-${today}`;
     const who = String(currentActor() || "").split("@")[0] || "someone";
@@ -28802,7 +28964,54 @@ It comes off the shelf and out of every list. Only do this if the code shouldn't
         setMissing(/* @__PURE__ */ new Set());
         window.scrollTo(0, 0);
       }, style: { minHeight: 64, borderRadius: 12, border: 0, background: d != null ? "#E8F3EC" : "#F2F2F2", color: d != null ? GREEN : INK, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 18, fontWeight: 800 } }, b), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11.5 } }, d != null ? `\u2713 ${d || "done"}` : `${n} code${n === 1 ? "" : "s"}`));
-    })), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 10 } }, "A bay with nothing on the system isn't listed \u2014 anything found on it goes in with Found a box from any bay.")), tab === "boxes" && bay && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between gap-3 mb-3" }, /* @__PURE__ */ React.createElement("button", { onClick: () => setBay(null), style: { border: 0, background: "none", color: NAVY, fontWeight: 600, fontSize: 16 } }, "\u2039 All bays"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 26, fontWeight: 800 } }, bay), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: INK_MUTED } }, answered.length, "/", rows.length, " answered")), doneBays.has(bay) && /* @__PURE__ */ React.createElement("div", { "data-st-already": true, style: { marginBottom: 10, padding: "8px 12px", borderRadius: 8, background: "#FFF4E5", color: "#8A4B00", fontSize: 14 } }, "Already counted today", doneBays.get(bay) ? ` by ${doneBays.get(bay)}` : "", ". The list now shows what that count left \u2014 counting again corrects it from here."), rows.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { color: INK_MUTED, marginBottom: 12 } }, "Nothing is on the system at ", bay, "."), rows.map((r) => {
+    })), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 10 } }, "A bay with nothing on the system isn't listed \u2014 anything found on it goes in with Found a box from any bay.")), tab === "boxes" && bay && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between gap-3 mb-3" }, /* @__PURE__ */ React.createElement("button", { onClick: () => setBay(null), style: { border: 0, background: "none", color: NAVY, fontWeight: 600, fontSize: 16 } }, "\u2039 All bays"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 26, fontWeight: 800 } }, bay), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: INK_MUTED } }, answered.length, "/", rows.length, " answered")), photoOn && /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 10 } }, /* @__PURE__ */ React.createElement(LabelPhotoButton, { name: "bay", label: `\u{1F4F7} Photo of ${bay}`, style: { width: "100%" }, onDone: (r) => {
+      if (r.error) {
+        setBayPhoto({ bay, error: r.error });
+        return;
+      }
+      const byCode = new Map(rows.map((x) => [x.code, x]));
+      const bayCodes = new Set(byCode.keys());
+      const filled = [], unsure = [], extra = [];
+      const got = /* @__PURE__ */ new Set();
+      const next = {};
+      for (const g of groupLabelReads(r, knownCodes)) {
+        let code = g.code;
+        if (!bayCodes.has(code) && !knownCodes.has(code)) {
+          const near = nearBoxCodes(code, bayCodes);
+          if (near.length === 1) code = near[0];
+        }
+        const row = byCode.get(code);
+        if (!row) {
+          extra.push(g);
+          continue;
+        }
+        got.add(code);
+        if (g.unsure) {
+          unsure.push({ code, n: g.n, read: g.code });
+          continue;
+        }
+        next[code] = g.n === Number(row.qty) ? "ok" : String(g.n);
+        filled.push({ code, n: g.n, sys: row.qty, read: g.code !== code ? g.code : null });
+      }
+      setAnswers((a) => ({ ...a, ...next }));
+      setBayPhoto({ bay, filled, unsure, extra, notSeen: rows.filter((x) => !got.has(x.code)).map((x) => x.code), unreadable: Number(r.unreadable) || 0 });
+    } }), bayPhoto && bayPhoto.bay === bay && /* @__PURE__ */ React.createElement("div", { "data-st-photo": true, style: { marginTop: 8, padding: 12, borderRadius: 12, background: "#F4F6FA", fontSize: 14.5 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } }, /* @__PURE__ */ React.createElement("b", null, "From the photo"), /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => setBayPhoto(null), "aria-label": "Close", style: { border: 0, background: "none", fontSize: 18 } }, "\u2715")), bayPhoto.error ? /* @__PURE__ */ React.createElement("div", { style: { color: RED, fontWeight: 600 } }, bayPhoto.error) : /* @__PURE__ */ React.createElement(React.Fragment, null, bayPhoto.filled.map((f) => /* @__PURE__ */ React.createElement("div", { key: f.code, "data-st-photo-filled": f.code, style: { color: f.n === Number(f.sys) ? GREEN : "#8A4B00", fontWeight: 600 } }, f.code, ": ", f.n === Number(f.sys) ? `\u2713 ${f.n} \u2014 ticked` : `${f.n} counted (system had ${f.sys})`, f.read ? /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontWeight: 400 } }, " \u2014 read as ", f.read) : null)), bayPhoto.unsure.map((u) => /* @__PURE__ */ React.createElement("div", { key: u.code, "data-st-photo-unsure": u.code, style: { color: "#8A4B00" } }, u.code, ": ", u.n, " seen but not every letter was sure \u2014 count it by hand.")), bayPhoto.extra.map((g) => /* @__PURE__ */ React.createElement("div", { key: g.code, "data-st-photo-extra": g.code, style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 4 } }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("b", { style: { fontFamily: "ui-monospace, Menlo, monospace" } }, g.code), " \xD7 ", g.n, " \u2014 not listed at ", bay, g.status === "unknown" || g.status === "near" ? " and not on the system" : ""), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        type: "button",
+        "data-st-photo-add": g.code,
+        onClick: () => {
+          setFound({ code: g.suggest || g.code, qty: String(g.n) });
+          setAddCode(null);
+          setTimeout(() => {
+            const el = document.querySelector("[data-st-found-code]");
+            el && el.scrollIntoView({ behavior: "smooth", block: "center" });
+          }, 50);
+        },
+        style: { minHeight: 36, padding: "0 12px", borderRadius: 18, border: `1px solid ${NAVY}`, background: "#fff", color: NAVY, fontWeight: 600 }
+      },
+      "Put in Found a box"
+    ))), bayPhoto.notSeen.length > 0 && /* @__PURE__ */ React.createElement("div", { "data-st-photo-notseen": true, style: { color: INK_MUTED, marginTop: 4 } }, "Not seen in the photo: ", bayPhoto.notSeen.join(", "), " \u2014 answer these by hand."), bayPhoto.unreadable > 0 && /* @__PURE__ */ React.createElement("div", { style: { color: "#8A4B00" } }, bayPhoto.unreadable, " label", bayPhoto.unreadable === 1 ? "" : "s", " couldn't be read."), /* @__PURE__ */ React.createElement("div", { style: { color: INK_MUTED, fontSize: 13, marginTop: 6 } }, "Only labels in the photo are counted. Check the numbers below, then Bay done records them.")))), doneBays.has(bay) && /* @__PURE__ */ React.createElement("div", { "data-st-already": true, style: { marginBottom: 10, padding: "8px 12px", borderRadius: 8, background: "#FFF4E5", color: "#8A4B00", fontSize: 14 } }, "Already counted today", doneBays.get(bay) ? ` by ${doneBays.get(bay)}` : "", ". The list now shows what that count left \u2014 counting again corrects it from here."), rows.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { color: INK_MUTED, marginBottom: 12 } }, "Nothing is on the system at ", bay, "."), rows.map((r) => {
       const a = answers[r.code];
       const set = (v) => setAnswers((s) => ({ ...s, [r.code]: v }));
       const unanswered = missing.has(r.code) && (a == null || a === "");
