@@ -10934,7 +10934,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-30.9";
+  var APP_VERSION = "2026-09-30.10";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -22441,6 +22441,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-09-30.10", "Stock take \u2014 Found a box: a known code found in the wrong bay is MOVED to this bay with the count typed (it was being added on top, and stayed listed in the old bay)."],
     ["2026-09-30.9", `Add box (and the stock take's Found a box): a size not in the catalogue has "Add it to the catalogue" \u2014 the same what's-being-made dialog as the glue line \u2014 then Add it saves.`],
     ["2026-09-30.8", "Stock take \u2014 Found a box: as soon as a code is typed or scanned it says what it is (size, and where the system has it) or, for a new code, opens the details form with the count and bay filled in."],
     ["2026-09-30.7", "Bonding Line: changing a row's box code moves its ledger with it (made and case placings reversed under the old code and written under the new one), so both codes read true."],
@@ -28091,14 +28092,24 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
         return;
       }
       const run = (data.bondingRuns || []).find((r) => r && !r.deleted && String(r.boxNumber || "").toUpperCase() === code);
-      const m = { ...moveCounted({ boxNumber: code, spec: run.productSize, qty: shelfNow(code) + n, source: "stocktake", sourceId: `${tag}:${bay}`, note: `Stock take ${today}, ${bay}: ${n} found, not listed here (${who})` }), ...run.formId ? { formId: run.formId } : {} };
+      const elsewhere = (data.movements || []).filter((m2) => m2 && !m2.deleted && m2.source === "stocktake" && m2.kind === "counted" && String(m2.boxNumber || "").toUpperCase() === code && String(m2.sourceId || "").startsWith(tag + ":") && String(m2.sourceId) !== `${tag}:${bay}`).length > 0;
+      const before = shelfNow(code), total = elsewhere ? before + n : n;
+      const m = { ...moveCounted({
+        boxNumber: code,
+        spec: run.productSize,
+        qty: total,
+        source: "stocktake",
+        sourceId: `${tag}:${bay}`,
+        note: elsewhere ? `Stock take ${today}, ${bay}: ${n} found, not listed here (${who})` : `Stock take ${today}, ${bay}: ${before} \u2192 ${n} \u2014 found here, moved from ${run.location || "no bay"} (${who})`
+      }), ...run.formId ? { formId: run.formId } : {} };
       setData((prev) => {
         let d = recordMovements(prev, [m]);
-        if (!String(run.location || "").trim()) d = { ...d, bondingRuns: d.bondingRuns.map((r) => r.id === run.id ? { ...r, location: bay, updatedAt: (/* @__PURE__ */ new Date()).toISOString() } : r) };
-        return { ...d, ...appendLog(d, { action: "stock_adjustment", entity: "stocktake", entityId: `${tag}:${bay}`, summary: `Stock take ${bay}: ${n} \xD7 ${code} found (${who})` }) };
+        if (!elsewhere) d = { ...d, bondingRuns: d.bondingRuns.map((r) => r && !r.deleted && String(r.boxNumber || "").toUpperCase() === code ? { ...r, location: bay, checked: "Yes", updatedAt: (/* @__PURE__ */ new Date()).toISOString() } : r) };
+        else if (!String(run.location || "").trim()) d = { ...d, bondingRuns: d.bondingRuns.map((r) => r.id === run.id ? { ...r, location: bay, updatedAt: (/* @__PURE__ */ new Date()).toISOString() } : r) };
+        return { ...d, ...appendLog(d, { action: "stock_adjustment", entity: "stocktake", entityId: `${tag}:${bay}`, summary: `Stock take ${bay}: ${n} \xD7 ${code} ${elsewhere ? "found (extra)" : `found \u2014 moved here from ${run.location || "no bay"}`} (${who})` }) };
       });
       setFound({ code: "", qty: "" });
-      setMsg({ bad: false, t: `${n} \xD7 ${code} added to the shelf at ${bay}.` });
+      setMsg({ bad: false, t: elsewhere ? `${n} \xD7 ${code} added to the shelf at ${bay} (it was already counted in another bay today).` : `${code}: ${n} here \u2014 moved to ${bay} and counted.` });
     };
     const reels = (data.glueLineBatches || []).filter((g) => g && !g.deleted && g.cleared !== "Yes" && g.cleared !== true).map((g) => ({ g, left: Math.max(0, (Number(g.meterage) || 0) - batchMeterageUsed((data.bondingRuns || []).filter((r) => r && !r.deleted), g.batchNumber)) })).filter((x) => x.left > 0).sort((a, b) => String(a.g.productSize).localeCompare(String(b.g.productSize)));
     const [reelsSeen, setReelsSeen] = useDraftState("stockTakeReelsSeen", {}, {});
@@ -28188,7 +28199,7 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
       if (runs.length) {
         const onShelf = shelfNow(code);
         const bays2 = [...new Set(runs.map((r) => String(r.location || "").trim().toUpperCase()).filter(Boolean))];
-        return /* @__PURE__ */ React.createElement("div", { "data-st-found-known": true, style: { marginTop: 8, padding: "8px 10px", borderRadius: 8, background: "#E8F3EC", color: "#1E4D2B", fontSize: 14 } }, /* @__PURE__ */ React.createElement("b", null, "\u2713 ", code), " is ", runs[0].productSize, ". The system has ", /* @__PURE__ */ React.createElement("b", null, onShelf), " on the shelf", bays2.length ? ` at ${bays2.join(", ")}` : " (no bay)", ". Type how many are here and press Add \u2014 they're added to ", bay, ".");
+        return /* @__PURE__ */ React.createElement("div", { "data-st-found-known": true, style: { marginTop: 8, padding: "8px 10px", borderRadius: 8, background: "#E8F3EC", color: "#1E4D2B", fontSize: 14 } }, /* @__PURE__ */ React.createElement("b", null, "\u2713 ", code), " is ", runs[0].productSize, ". The system has ", /* @__PURE__ */ React.createElement("b", null, onShelf), " on the shelf", bays2.length ? ` at ${bays2.join(", ")}` : " (no bay)", ". Type how many are here and press Add once \u2014 the code moves to ", bay, " with that count.");
       }
       return /* @__PURE__ */ React.createElement("div", { "data-st-found-new": true, style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: "#8A4B00", fontWeight: 600, marginBottom: 6 } }, code, " isn't on the system \u2014 fill in what it is:"), /* @__PURE__ */ React.createElement(
         AddBoxInline,
