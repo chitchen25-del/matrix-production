@@ -5745,6 +5745,158 @@
     if (rec && rec.weight !== void 0 && rec.weight !== null && rec.weight !== "") return rec.weight;
     return (order?.caseWeights || {})[caseNum];
   }
+  var CASE_WEIGHT_TOLERANCE = 0.15;
+  function caseWeightKey(spec) {
+    const u = String(spec || "").toUpperCase();
+    if (!u.trim()) return null;
+    const reel = /\bREEL\b/.test(u);
+    let variant = "";
+    if (/EXCEED/.test(u)) variant = "EX";
+    else if (/O\/S/.test(u)) variant = "OS";
+    else {
+      const d = u.match(/\bD(\d+(?:\.\d+)?)\b/);
+      if (d) variant = "D" + d[1];
+    }
+    const two = u.match(/(\d+(?:\.\d+)?)\s*X\s*(\d+(?:\.\d+)?)/);
+    if (two) return { reel, variant, h: Number(two[1]), g: Number(two[2]) };
+    const one2 = u.match(/(\d+(?:\.\d+)?)\s*MM/);
+    if (one2) return { reel, variant: variant || "SR", h: 0, g: Number(one2[1]) };
+    return null;
+  }
+  var keyText = (k) => `${k.reel ? "R" : "B"}|${k.variant}|${k.h}|${k.g}`;
+  function specOfBoxCode(bondingRuns) {
+    const by = /* @__PURE__ */ new Map();
+    for (const r of bondingRuns || []) {
+      if (!r || r.deleted || !r.boxNumber) continue;
+      const code = String(r.boxNumber).trim().toUpperCase();
+      const k = caseWeightKey(`${r.productSize || ""}${r.packageType === "Reel" ? " REEL" : ""}`);
+      const t = k ? keyText(k) : "?";
+      const prev = by.get(code);
+      if (prev === void 0) by.set(code, { t, k });
+      else if (prev && prev.t !== t) by.set(code, null);
+    }
+    return by;
+  }
+  function caseWeightLines(caseRecord, bondingRuns, specs = null) {
+    const by = specs || specOfBoxCode(bondingRuns);
+    const lines = {};
+    let total = 0;
+    for (const [box, q] of Object.entries(caseRecord && caseRecord.contents || {})) {
+      const n = Number(q) || 0;
+      if (n <= 0) continue;
+      const s = by.get(String(box).trim().toUpperCase());
+      if (!s || !s.k) return null;
+      const t = keyText(s.k);
+      lines[t] = (lines[t] || 0) + n;
+      total += n;
+    }
+    return total > 0 ? lines : null;
+  }
+  var _weightTables = /* @__PURE__ */ new WeakMap();
+  function caseWeightTable(cases, bondingRuns) {
+    const hit = cases && _weightTables.get(cases);
+    if (hit && hit.runs === bondingRuns) return hit.table;
+    const specs = specOfBoxCode(bondingRuns);
+    const table = /* @__PURE__ */ new Map();
+    for (const c of cases || []) {
+      if (!c || c.deleted) continue;
+      const w = Number(c.weight);
+      if (!(w > 0)) continue;
+      const lines = caseWeightLines(c, bondingRuns, specs);
+      if (!lines) continue;
+      const keys = Object.keys(lines);
+      if (keys.length !== 1) continue;
+      const list = table.get(keys[0]) || [];
+      list.push({ id: c.id, per: w / lines[keys[0]] });
+      table.set(keys[0], list);
+    }
+    const out = { table, specs };
+    if (cases) _weightTables.set(cases, { runs: bondingRuns, table: out });
+    return out;
+  }
+  function median(xs) {
+    const s = [...xs].sort((a, b) => a - b);
+    const m = Math.floor(s.length / 2);
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  }
+  function expectedCaseWeight(lines, weightTable, excludeId = null) {
+    if (!lines || !weightTable) return null;
+    const perOf = (t) => {
+      const xs = (weightTable.table.get(t) || []).filter((e) => e.id !== excludeId).map((e) => e.per);
+      return xs.length ? median(xs) : null;
+    };
+    let total = 0;
+    for (const [t, n] of Object.entries(lines)) {
+      let per = perOf(t);
+      if (per == null) {
+        const [r, v, h, g] = t.split("|");
+        let best = null;
+        for (const other of weightTable.table.keys()) {
+          const [r2, v2, h2, g2] = other.split("|");
+          if (r2 !== r || v2 !== v) continue;
+          const dist = Math.abs(Number(h2) - Number(h)) * 3 + Math.abs(Number(g2) - Number(g));
+          if (dist > 1) continue;
+          const p = perOf(other);
+          if (p == null) continue;
+          if (!best || dist < best.dist) best = { dist, p };
+        }
+        if (!best) return null;
+        per = best.p;
+      }
+      total += per * n;
+    }
+    return total > 0 ? total : null;
+  }
+  var sameLines = (a, b) => {
+    const ka = Object.keys(a || {}), kb = Object.keys(b || {});
+    return ka.length === kb.length && ka.every((k) => Number(a[k]) === Number((b || {})[k]));
+  };
+  function caseWeightQuery(cases, bondingRuns, orderId, caseNum) {
+    const rec = caseRecordFor(cases, orderId, caseNum);
+    if (!rec) return null;
+    const typed = String(rec.weight ?? "").trim();
+    const w = Number(typed);
+    if (!(w > 0)) return null;
+    if (rec.weightOk != null && String(rec.weightOk).trim() === typed) return null;
+    const wt = caseWeightTable(cases, bondingRuns);
+    const lines = caseWeightLines(rec, bondingRuns, wt.specs);
+    const n = Number(caseNum);
+    const expected = lines ? expectedCaseWeight(lines, wt, rec.id) : null;
+    if (expected != null && Math.abs(w / expected - 1) > CASE_WEIGHT_TOLERANCE) {
+      const e = Math.round(expected * 10) / 10;
+      return {
+        kind: "far",
+        expected: e,
+        weight: typed,
+        text: `Case ${n} should be about ${e} kg \u2014 you typed ${typed}. Weigh it again?`
+      };
+    }
+    const prev = caseRecordFor(cases, orderId, n - 1);
+    if (prev && Number(prev.weight) === w && lines) {
+      const prevLines = caseWeightLines(prev, bondingRuns, wt.specs);
+      const count = (l) => Object.values(l || {}).reduce((s, x) => s + Number(x || 0), 0);
+      const prevExpected = prevLines ? expectedCaseWeight(prevLines, wt, prev.id) : null;
+      const differ = expected != null && prevExpected != null ? Math.abs(expected / prevExpected - 1) > 0.05 : count(lines) !== count(prevLines);
+      if (prevLines && !sameLines(lines, prevLines) && differ) {
+        return {
+          kind: "same",
+          expected: expected != null ? Math.round(expected * 10) / 10 : null,
+          weight: typed,
+          text: `Case ${n} is ${typed} kg \u2014 exactly the same as case ${n - 1}, but they hold different boxes. Weigh it again?`
+        };
+      }
+    }
+    return null;
+  }
+  function oddCaseWeights(cases, bondingRuns, orderId) {
+    const out = [];
+    for (const c of cases || []) {
+      if (!c || c.deleted || c.orderId !== orderId) continue;
+      const q = caseWeightQuery(cases, bondingRuns, orderId, c.caseNum);
+      if (q) out.push({ caseNum: Number(c.caseNum), ...q });
+    }
+    return out.sort((a, b) => a.caseNum - b.caseNum);
+  }
   function casePalletOf(cases, order, caseNum) {
     const rec = caseRecordFor(cases, order?.id, caseNum);
     if (rec && rec.pallet !== void 0 && rec.pallet !== null && rec.pallet !== "") return rec.pallet;
@@ -7849,7 +8001,7 @@ ${line}` : line;
     ${paperFoot(order)}
   </body></html>`;
   }
-  function manifestReadiness(order, caseRows) {
+  function manifestReadiness(order, caseRows, oddWeights = []) {
     const caseWeights = liveMapEntries(order?.caseWeights || {});
     const palletAssignments = liveMapEntries(order?.palletAssignments || {});
     const palletWeights = order?.palletWeights || {};
@@ -7867,6 +8019,8 @@ ${line}` : line;
     if (unweighed.length) blockers.push(`${unweighed.length} case${unweighed.length === 1 ? " has" : "s have"} no weight: ${unweighed.join(", ")}.`);
     if (partPalletised) blockers.push(`${offPallet.length} case${offPallet.length === 1 ? " is" : "s are"} not on a pallet: ${offPallet.join(", ")}.`);
     if (palletsUnweighed.length) blockers.push(`Pallet${palletsUnweighed.length === 1 ? "" : "s"} ${palletsUnweighed.join(", ")} \u2014 no pallet weight entered.`);
+    const questioned = (oddWeights || []).filter((q) => nums.includes(q.caseNum) && !unweighed.includes(q.caseNum));
+    for (const q of questioned) blockers.push(q.expected != null && q.kind === "far" ? `Case ${q.caseNum}'s weight looks wrong \u2014 ${q.weight} kg typed, it should be about ${q.expected} kg. Weigh it again, or press "It's right" beside it.` : `Case ${q.caseNum} is ${q.weight} kg, the same as case ${q.caseNum - 1} though they hold different boxes. Weigh it again, or press "It's right" beside it.`);
     return {
       ready: blockers.length === 0,
       blockers,
@@ -7875,7 +8029,8 @@ ${line}` : line;
       unweighed,
       palletsInUse,
       palletsUnweighed,
-      palletised: onPallet.length > 0 && offPallet.length === 0
+      palletised: onPallet.length > 0 && offPallet.length === 0,
+      questioned: questioned.map((q) => q.caseNum)
     };
   }
   function orderShipmentWeight(order, lineItems, bondingRuns) {
@@ -8677,7 +8832,9 @@ ${line}` : line;
       planned: "planned",
       /* Capacity belongs to the case: 20 boxes, 10 reels, 9 reels if 12mm.
          Held only in memory until 8 Sep, so a reel case reloaded as a box case. */
-      maxSize: "max_size"
+      maxSize: "max_size",
+      /* The weight a person stood behind when the app questioned it (30 Sep 2026). */
+      weightOk: "weight_ok"
     } },
     /* A printed pick sheet, so paper picking has a front door. A sheet used to
        leave the building with no identity: nothing knew it was out, when it came
@@ -10934,7 +11091,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-30.17";
+  var APP_VERSION = "2026-09-30.18";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -14876,7 +15033,7 @@ ${recent}` : null });
         return;
       }
       const manifest = buildShippingManifest(order);
-      const readiness = manifestReadiness(order, manifest.caseRows);
+      const readiness = manifestReadiness(order, manifest.caseRows, oddCaseWeights(data.cases, data.bondingRuns, order.id));
       if (manifest.caseRows.length > 0 && !readiness.ready) {
         setShipError({ ...shipError, [order.id]: `Can't ship yet \u2014 ${readiness.blockers.join(" ")} Weigh them on the Packing List before shipping.` });
         return;
@@ -17393,45 +17550,91 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
   </body></html>`;
     printInFrame("weights-print-frame", html);
   }
-  function WeightInput({ value, onCommit, big = false }) {
+  function WeightInput({ value, onCommit, big = false, query = null, onAccept = null }) {
     const [justSaved, setJustSaved] = useState(false);
+    const [settled, setSettled] = useState(true);
     const debounceRef = useRef(null);
     const fadeRef = useRef(null);
+    const settleRef = useRef(null);
+    const inputRef = useRef(null);
     useEffect(() => () => {
       clearTimeout(debounceRef.current);
       clearTimeout(fadeRef.current);
+      clearTimeout(settleRef.current);
     }, []);
     const handleChange = (e) => {
       onCommit(e.target.value);
       setJustSaved(false);
+      setSettled(false);
       clearTimeout(debounceRef.current);
       clearTimeout(fadeRef.current);
+      clearTimeout(settleRef.current);
       debounceRef.current = setTimeout(() => {
         setJustSaved(true);
         fadeRef.current = setTimeout(() => setJustSaved(false), 1200);
       }, 400);
+      settleRef.current = setTimeout(() => setSettled(true), 1500);
     };
-    const saved = Number(value) > 0;
-    return /* @__PURE__ */ React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: 5 } }, /* @__PURE__ */ React.createElement(
+    const asking = !!query && settled;
+    const saved = Number(value) > 0 && !asking;
+    return /* @__PURE__ */ React.createElement("span", { style: { display: "inline-flex", flexDirection: "column", alignItems: "flex-end", gap: 4 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: 5 } }, /* @__PURE__ */ React.createElement(
       "input",
       {
+        ref: inputRef,
         type: "number",
         step: "0.01",
         value: value || "",
         placeholder: "\u2014",
         onChange: handleChange,
+        onBlur: () => {
+          clearTimeout(settleRef.current);
+          setSettled(true);
+        },
+        "data-weight-input": "1",
         className: "text-right rounded",
         style: {
           width: big ? 96 : 80,
           height: big ? 44 : 30,
           fontSize: big ? 17 : 14,
           padding: big ? "0 10px" : "0 6px",
-          border: `1px solid ${justSaved || saved ? GREEN : BORDER}`,
-          background: justSaved ? "#EAF7EE" : "#fff",
+          border: `1px solid ${asking ? AMBER : justSaved || saved ? GREEN : BORDER}`,
+          background: asking ? "#FFF7E8" : justSaved ? "#EAF7EE" : "#fff",
           transition: "background 0.3s, border-color 0.3s"
         }
       }
-    ), /* @__PURE__ */ React.createElement("span", { style: { width: 14, fontSize: big ? 17 : 14, fontWeight: 700, color: GREEN, lineHeight: 1 } }, saved ? "\u2713" : ""));
+    ), /* @__PURE__ */ React.createElement("span", { style: { width: 14, fontSize: big ? 17 : 14, fontWeight: 700, color: asking ? AMBER : GREEN, lineHeight: 1 } }, asking ? "?" : saved ? "\u2713" : "")), asking && /* @__PURE__ */ React.createElement(
+      "span",
+      {
+        "data-weight-query": "1",
+        role: "alert",
+        className: "text-xs text-left",
+        style: { display: "block", maxWidth: 260, padding: "8px 10px", borderRadius: 8, background: "#FFF7E8", border: `1px solid ${AMBER}`, color: INK, whiteSpace: "normal" }
+      },
+      /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontWeight: 600, marginBottom: 6 } }, query.text),
+      /* @__PURE__ */ React.createElement("span", { style: { display: "flex", gap: 6 } }, /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          type: "button",
+          "data-weight-again": "1",
+          onClick: () => {
+            onCommit("");
+            setSettled(false);
+            setTimeout(() => inputRef.current && inputRef.current.focus(), 0);
+          },
+          style: { minHeight: 36, padding: "0 12px", borderRadius: 6, border: `1px solid ${NAVY}`, background: NAVY, color: "#fff", fontWeight: 600 }
+        },
+        "Weigh again"
+      ), onAccept && /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          type: "button",
+          "data-weight-ok": "1",
+          onClick: () => onAccept(String(value ?? "").trim()),
+          style: { minHeight: 36, padding: "0 12px", borderRadius: 6, border: `1px solid ${NAVY}`, background: "#fff", color: NAVY, fontWeight: 600 }
+        },
+        "It's right"
+      ))
+    ));
   }
   function PackingOrderPicker({ data, onPick }) {
     const rows = (data.orders || []).filter((o) => !o.deleted && !["Shipped", "Cancelled", "Completed"].includes(o.stage)).map((o) => ({
@@ -18484,7 +18687,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       }
     )));
   }
-  function CaseGrid({ cases, caseWeights, setCaseWeights, palletAssignments, setPalletAssignments, highlightBoxes = null, highlightKey = null, litCases = [], caseOverrides = {}, setCaseOverrides = null, onEditCase = null, editOrder = null, editData = null, onCaseAction = null }) {
+  function CaseGrid({ cases, caseWeights, setCaseWeights, weightQueryFor = null, acceptCaseWeight = null, palletAssignments, setPalletAssignments, highlightBoxes = null, highlightKey = null, litCases = [], caseOverrides = {}, setCaseOverrides = null, onEditCase = null, editOrder = null, editData = null, onCaseAction = null }) {
     const [editingCase, setEditingCase] = useState(null);
     const [caseAct, setCaseAct] = useState(null);
     const [sel, setSel] = useState(cases.length ? cases[0].caseNum : null);
@@ -18639,7 +18842,15 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
         style: { background: "#FAFAF8", borderTop: `1px solid ${BORDER}` }
       },
       /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, "Weight kg"),
-      /* @__PURE__ */ React.createElement(WeightInput, { value: caseWeights[chosen.caseNum], onCommit: (v) => setCaseWeights({ ...caseWeights, [chosen.caseNum]: v }) }),
+      /* @__PURE__ */ React.createElement(
+        WeightInput,
+        {
+          value: caseWeights[chosen.caseNum],
+          onCommit: (v) => setCaseWeights({ ...caseWeights, [chosen.caseNum]: v }),
+          query: weightQueryFor ? weightQueryFor(chosen.caseNum) : null,
+          onAccept: acceptCaseWeight ? ((v) => acceptCaseWeight(chosen.caseNum, v)) : null
+        }
+      ),
       /* @__PURE__ */ React.createElement("span", { className: "text-xs ml-2", style: { color: INK_MUTED } }, "Pallet"),
       /* @__PURE__ */ React.createElement(
         "input",
@@ -19098,6 +19309,8 @@ This changes the order quantities. It is recorded in the change log and can be r
       for (const [n, v] of Object.entries(next)) if (String(v ?? "") !== String(before[n] ?? "")) out = writeCaseField(out, n, { weight: String(v ?? "") });
       return out;
     });
+    const acceptCaseWeight = (caseNum, value) => setData((prevData) => writeCaseField(prevData, caseNum, { weightOk: String(value ?? "").trim() }));
+    const weightQueryFor = (caseNum) => caseWeightQuery(caseRecords, data.bondingRuns, orderId, caseNum);
     const setSmallCaseSizes = (next) => setData((prevData) => ({ ...prevData, orders: prevData.orders.map((o) => o.id === orderId ? { ...o, smallCaseSizes: next } : o) }));
     const setCaseOverrides = (next) => setData((prevData) => applyPatchMapsToCases(prevData, orderId, { caseOverrides: next }));
     const setPalletAssignments = (next) => setData((prevData) => {
@@ -19268,6 +19481,8 @@ This changes the order quantities. It is recorded in the change log and can be r
         cases: allCases,
         caseWeights,
         setCaseWeights,
+        weightQueryFor,
+        acceptCaseWeight,
         palletAssignments,
         setPalletAssignments,
         highlightBoxes,
@@ -19320,7 +19535,15 @@ This changes the order quantities. It is recorded in the change log and can be r
             style: { background: "#FAFAF8", borderTop: `1px solid ${BORDER}` }
           },
           /* @__PURE__ */ React.createElement("label", { className: "text-xs", style: { color: INK_MUTED } }, "Weight kg"),
-          /* @__PURE__ */ React.createElement(WeightInput, { value: caseWeights[c.caseNum], onCommit: (v) => setCaseWeights({ ...caseWeights, [c.caseNum]: v }) }),
+          /* @__PURE__ */ React.createElement(
+            WeightInput,
+            {
+              value: caseWeights[c.caseNum],
+              onCommit: (v) => setCaseWeights({ ...caseWeights, [c.caseNum]: v }),
+              query: weightQueryFor(c.caseNum),
+              onAccept: (v) => acceptCaseWeight(c.caseNum, v)
+            }
+          ),
           /* @__PURE__ */ React.createElement("label", { className: "text-xs ml-2", style: { color: INK_MUTED } }, "Pallet"),
           /* @__PURE__ */ React.createElement(
             "input",
@@ -19355,7 +19578,15 @@ This changes the order quantities. It is recorded in the change log and can be r
           /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs", style: { color: row.boxNumber ? INK : INK_MUTED } }, row.boxNumber || "not run yet")),
           /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs", style: { color: row.batchCode ? INK : INK_MUTED } }, row.batchCode || "\u2014")),
           /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, row.qty),
-          /* @__PURE__ */ React.createElement("td", { className: "px-3 text-right" }, ri === 0 && /* @__PURE__ */ React.createElement(WeightInput, { value: caseWeights[c.caseNum], onCommit: (v) => setCaseWeights({ ...caseWeights, [c.caseNum]: v }) })),
+          /* @__PURE__ */ React.createElement("td", { className: "px-3 text-right" }, ri === 0 && /* @__PURE__ */ React.createElement(
+            WeightInput,
+            {
+              value: caseWeights[c.caseNum],
+              onCommit: (v) => setCaseWeights({ ...caseWeights, [c.caseNum]: v }),
+              query: weightQueryFor(c.caseNum),
+              onAccept: (v) => acceptCaseWeight(c.caseNum, v)
+            }
+          )),
           /* @__PURE__ */ React.createElement("td", { className: "px-3" }, ri === 0 && /* @__PURE__ */ React.createElement(
             "input",
             {
@@ -19496,7 +19727,7 @@ The manifest will list them as cases with no pallet, and the gross weight will b
         /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 12 } }, otherOpen ? "hide" : "show")
       ), otherOpen && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2 mt-2", style: { color: INK_MUTED } }, "Assigned to this order, but the spec doesn't match any line item at all \u2014 check these are meant for this order before packing."), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(Th, { w: 140 }, "Box / reel number"), /* @__PURE__ */ React.createElement(Th, null, "Product size"), /* @__PURE__ */ React.createElement(Th, { w: 140 }, "Batch code"), /* @__PURE__ */ React.createElement(ThR, { w: 80 }, "Qty"), /* @__PURE__ */ React.createElement(Th, { w: 120 }, "Date"))), /* @__PURE__ */ React.createElement("tbody", null, otherAssigned.map((r, i) => /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.boxNumber || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Spec, { s: r.productSize })), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.baselineBatchCode || "\u2014")), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, r.onOrderQty), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, manufactureDateLabel(r.boxNumber, "") || r.date || "\u2014")))))))))
     ), onShip && order.stage !== "Shipped" && (() => {
-      const ready = manifestReadiness(order, caseRows);
+      const ready = manifestReadiness(order, caseRows, oddCaseWeights(data.cases, data.bondingRuns, order.id));
       const pct = orderPctComplete(data.lineItems, data.bondingRuns, order.id);
       const blockers = [...pct < 100 ? [`Only ${pct}% made or assigned.`] : [], ...ready.ready ? [] : ready.blockers];
       return /* @__PURE__ */ React.createElement(Panel, { className: "no-print p-4 mt-5", "data-ship-panel": "1" }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Ship"), blockers.length ? /* @__PURE__ */ React.createElement("div", { className: "text-sm mt-1", style: { color: AMBER } }, blockers.map((b, i) => /* @__PURE__ */ React.createElement("div", { key: i }, "\u26A0 ", b))) : /* @__PURE__ */ React.createElement("div", { className: "text-sm mt-1", style: { color: GREEN } }, "Every case weighed", ready.palletised ? " and on a pallet" : "", " \u2014 ready to go."), /* @__PURE__ */ React.createElement("div", { className: "mt-3" }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", disabled: blockers.length > 0, onClick: () => onShip(order.id) }, "Ship ", order.id)));
