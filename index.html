@@ -10934,7 +10934,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-30.6";
+  var APP_VERSION = "2026-09-30.8";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -20139,14 +20139,14 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     if (kind === "reel") return /* @__PURE__ */ React.createElement(AddReelInline, { data, setData, batchNumber: reelCode, onAdded });
     return /* @__PURE__ */ React.createElement("div", { className: "text-center" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm mb-2", style: { color: INK_MUTED } }, "Is this a box or a reel?"), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 justify-center flex-wrap" }, /* @__PURE__ */ React.createElement(Button, { onClick: () => setKind("box") }, "\u{1F4E6} Box"), /* @__PURE__ */ React.createElement(Button, { onClick: () => setKind("reel") }, "\u{1F9F5} Reel")), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2", style: { color: INK_MUTED } }, "Found on the shelf or the rack but never logged \u2014 either way, it exists once you add it here."));
   }
-  function AddBoxInline({ data, setData, boxNumber, onAdded }) {
-    const [open, setOpen] = useState(false);
+  function AddBoxInline({ data, setData, boxNumber, onAdded, startOpen = false, initialQty = "", initialLocation = "" }) {
+    const [open, setOpen] = useState(!!startOpen);
     const [range, setRange] = useState("PX Plus");
     const [size, setSize] = useState("");
     const [pt, setPt] = useState("2-3pt");
     const [metres, setMetres] = useState("24");
-    const [qty, setQty] = useState("");
-    const [location2, setLocation] = useState("");
+    const [qty, setQty] = useState(String(initialQty || ""));
+    const [location2, setLocation] = useState(String(initialLocation || "") === "NO BAY" ? "" : String(initialLocation || ""));
     const [reel, setReel] = useState("");
     const [done, setDone] = useState(false);
     const baseName = size ? reelNameFor(data, `${range === "Ken" ? "Speedy Crease" : range} ${size}`) || `${range === "Ken" ? "Speedy Crease" : range} ${size}` : "";
@@ -22425,6 +22425,8 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-09-30.8", "Stock take \u2014 Found a box: as soon as a code is typed or scanned it says what it is (size, and where the system has it) or, for a new code, opens the details form with the count and bay filled in."],
+    ["2026-09-30.7", "Bonding Line: changing a row's box code moves its ledger with it (made and case placings reversed under the old code and written under the new one), so both codes read true."],
     ["2026-09-30.6", `An order's "On the shelf but not checked" boxes have a "They're here \u2014 mark checked" button: one tap and they become a pick.`],
     ["2026-09-30.5", "Stock take: a Live print-out tab \u2014 the print-out drawn on screen as the count goes in, with every count made today and whether the database holds it (asked of the database every 15 seconds and after each count)."],
     ["2026-09-30.4", "Stock take: boxes logged without their Checked tick are listed in their bay (counting checks them); NO BAY codes can be given the bay they were found in; a bay counted again says so; scanning a box label's product barcode says to scan the printed code instead."],
@@ -26757,6 +26759,20 @@ Go ahead?`)) return;
           "bondingRun",
           (r) => `box ${r.boxNumber || r.id}`
         );
+        if (before && after && String(before.boxNumber || "").toUpperCase() !== String(after.boxNumber || "").toUpperCase() && before.boxNumber && after.boxNumber) {
+          const oldC = before.boxNumber, newC = after.boxNumber, why = `Box code changed ${oldC} \u2192 ${newC} on the Bonding Line`;
+          const mine = (next.movements || []).filter((m) => m && !m.deleted && m.sourceId === editingId && String(m.boxNumber || "").toUpperCase() === String(oldC).toUpperCase());
+          const moves = [];
+          for (const m of mine) {
+            const base = { spec: m.spec || after.productSize, qty: Number(m.qty) || 0, source: "relabel", sourceId: editingId, note: why, boxTypeId: m.boxTypeId || null };
+            if (!base.qty) continue;
+            if (m.kind === "made") moves.push(moveAdjusted({ ...base, boxNumber: oldC, qty: -base.qty }), moveMade({ ...base, boxNumber: newC }));
+            else if (m.kind === "adjusted") moves.push(moveAdjusted({ ...base, boxNumber: oldC, qty: -base.qty }), moveAdjusted({ ...base, boxNumber: newC }));
+            else if (m.kind === "placed" && m.orderId) moves.push(moveUnplaced({ ...base, boxNumber: oldC, orderId: m.orderId, caseNum: m.caseNum }), movePlaced({ ...base, boxNumber: newC, orderId: m.orderId, caseNum: m.caseNum }));
+            else if (m.kind === "unplaced" && m.orderId) moves.push(movePlaced({ ...base, boxNumber: oldC, orderId: m.orderId, caseNum: m.caseNum }), moveUnplaced({ ...base, boxNumber: newC, orderId: m.orderId, caseNum: m.caseNum }));
+          }
+          if (moves.length) next = recordMovements(next, moves.map((x) => after.formId ? { ...x, formId: after.formId } : x));
+        }
         if (before && after) {
           const heldByOrder = projectBox(next.movements, after.boxNumber, next.reservations).byOrder || {};
           const beforeOnOrder = before.workNumber ? Number(heldByOrder[before.workNumber] || 0) : Number(before.onOrderQty || 0);
@@ -28054,7 +28070,7 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
       }
       const known = (data.bondingRuns || []).some((r) => r && !r.deleted && String(r.boxNumber || "").toUpperCase() === code);
       if (!known) {
-        setAddCode(code);
+        setMsg({ bad: true, t: `${code} isn't on the system \u2014 fill in what it is in the form below, then press Add it.` });
         return;
       }
       const run = (data.bondingRuns || []).find((r) => r && !r.deleted && String(r.boxNumber || "").toUpperCase() === code);
@@ -28148,11 +28164,32 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
           style: { width: 90, minHeight: 44, borderRadius: 10, border: `1.5px solid ${a !== "ok" && a !== "gone" && a ? NAVY : "#BDBDBD"}`, padding: "0 10px", fontSize: 17, fontWeight: 700, textAlign: "center" }
         }
       ), /* @__PURE__ */ React.createElement("button", { "data-st-gone": true, onClick: () => set("gone"), style: btn(a === "gone" ? RED : "#F2F2F2", a === "gone" ? "#fff" : INK) }, "Not here")));
-    }), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 16, padding: 12, background: "#F7F7F7", borderRadius: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, marginBottom: 6 } }, "+ Found a box not listed here"), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 flex-wrap" }, /* @__PURE__ */ React.createElement("input", { "data-st-found-code": true, value: found.code, onChange: (e) => setFound((f) => ({ ...f, code: e.target.value.toUpperCase() })), placeholder: "Box code", autoCapitalize: "characters", style: { flex: "1 1 140px", minHeight: 44, borderRadius: 10, border: "1px solid #BDBDBD", padding: "0 10px", fontSize: 16, fontFamily: "ui-monospace, Menlo, monospace" } }), /* @__PURE__ */ React.createElement("input", { "data-st-found-qty": true, value: found.qty, onChange: (e) => setFound((f) => ({ ...f, qty: e.target.value.replace(/[^0-9]/g, "") })), inputMode: "numeric", placeholder: "How many", style: { width: 100, minHeight: 44, borderRadius: 10, border: "1px solid #BDBDBD", padding: "0 10px", fontSize: 16 } }), /* @__PURE__ */ React.createElement("button", { "data-st-found-add": true, onClick: addFound, style: btn(NAVY) }, "Add"), /* @__PURE__ */ React.createElement("button", { "data-st-found-scan": true, onClick: () => setScanning(true), style: btn("#D9482F") }, "Scan")), addCode && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: INK_MUTED, marginBottom: 6 } }, addCode, " isn't on the system \u2014 say what it is (set the shelf to ", bay, "):"), /* @__PURE__ */ React.createElement(AddBoxInline, { data, setData, boxNumber: addCode, onAdded: () => {
-      setAddCode(null);
-      setFound({ code: "", qty: "" });
-      setMsg({ bad: false, t: `${addCode} added.` });
-    } }))), /* @__PURE__ */ React.createElement("button", { "data-st-baydone": true, onClick: bayDone, style: { ...btn(NAVY), width: "100%", marginTop: 16, minHeight: 52, fontSize: 17 } }, bay, " done")), tab === "reels" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED, marginBottom: 8 } }, "Every reel the system thinks is on the rack. Tick the ones you can see; Not here clears it."), reels.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { color: INK_MUTED } }, "No reels with metres left."), reels.map(({ g, left }) => {
+    }), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 16, padding: 12, background: "#F7F7F7", borderRadius: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, marginBottom: 6 } }, "+ Found a box not listed here"), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 flex-wrap" }, /* @__PURE__ */ React.createElement("input", { "data-st-found-code": true, value: found.code, onChange: (e) => setFound((f) => ({ ...f, code: e.target.value.toUpperCase() })), placeholder: "Box code", autoCapitalize: "characters", style: { flex: "1 1 140px", minHeight: 44, borderRadius: 10, border: "1px solid #BDBDBD", padding: "0 10px", fontSize: 16, fontFamily: "ui-monospace, Menlo, monospace" } }), /* @__PURE__ */ React.createElement("input", { "data-st-found-qty": true, value: found.qty, onChange: (e) => setFound((f) => ({ ...f, qty: e.target.value.replace(/[^0-9]/g, "") })), inputMode: "numeric", placeholder: "How many", style: { width: 100, minHeight: 44, borderRadius: 10, border: "1px solid #BDBDBD", padding: "0 10px", fontSize: 16 } }), /* @__PURE__ */ React.createElement("button", { "data-st-found-add": true, onClick: addFound, style: btn(NAVY) }, "Add"), /* @__PURE__ */ React.createElement("button", { "data-st-found-scan": true, onClick: () => setScanning(true), style: btn("#D9482F") }, "Scan")), (() => {
+      const code = found.code.trim().toUpperCase();
+      if (code.length < 5 || addCode === code) return null;
+      const runs = (data.bondingRuns || []).filter((r) => r && !r.deleted && String(r.boxNumber || "").toUpperCase() === code);
+      if (runs.length) {
+        const onShelf = shelfNow(code);
+        const bays2 = [...new Set(runs.map((r) => String(r.location || "").trim().toUpperCase()).filter(Boolean))];
+        return /* @__PURE__ */ React.createElement("div", { "data-st-found-known": true, style: { marginTop: 8, padding: "8px 10px", borderRadius: 8, background: "#E8F3EC", color: "#1E4D2B", fontSize: 14 } }, /* @__PURE__ */ React.createElement("b", null, "\u2713 ", code), " is ", runs[0].productSize, ". The system has ", /* @__PURE__ */ React.createElement("b", null, onShelf), " on the shelf", bays2.length ? ` at ${bays2.join(", ")}` : " (no bay)", ". Type how many are here and press Add \u2014 they're added to ", bay, ".");
+      }
+      return /* @__PURE__ */ React.createElement("div", { "data-st-found-new": true, style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: "#8A4B00", fontWeight: 600, marginBottom: 6 } }, code, " isn't on the system \u2014 fill in what it is:"), /* @__PURE__ */ React.createElement(
+        AddBoxInline,
+        {
+          key: code,
+          data,
+          setData,
+          boxNumber: code,
+          startOpen: true,
+          initialQty: found.qty,
+          initialLocation: bay,
+          onAdded: () => {
+            setFound({ code: "", qty: "" });
+            setMsg({ bad: false, t: `${code} added to ${bay}.` });
+          }
+        }
+      ));
+    })()), /* @__PURE__ */ React.createElement("button", { "data-st-baydone": true, onClick: bayDone, style: { ...btn(NAVY), width: "100%", marginTop: 16, minHeight: 52, fontSize: 17 } }, bay, " done")), tab === "reels" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED, marginBottom: 8 } }, "Every reel the system thinks is on the rack. Tick the ones you can see; Not here clears it."), reels.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { color: INK_MUTED } }, "No reels with metres left."), reels.map(({ g, left }) => {
       const seen = (reelsSeen || {})[g.batchNumber] === today;
       return /* @__PURE__ */ React.createElement("div", { key: g.id, "data-st-reel": g.batchNumber, className: "flex items-center justify-between gap-3 flex-wrap", style: { padding: "12px 0", borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: { ...big, fontFamily: "ui-monospace, Menlo, monospace" } }, g.batchNumber), /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13.5, color: INK_MUTED } }, g.productSize, " \xB7 ", left, " m left")), seen ? /* @__PURE__ */ React.createElement("span", { style: { color: GREEN, fontWeight: 700 } }, "\u2713 on the rack") : /* @__PURE__ */ React.createElement("span", { className: "flex gap-2" }, /* @__PURE__ */ React.createElement("button", { "data-st-reel-ok": true, onClick: () => reelSeen(g, true), style: btn("#F2F2F2", INK) }, "\u2713 On the rack"), /* @__PURE__ */ React.createElement("button", { "data-st-reel-gone": true, onClick: () => reelSeen(g, false), style: btn("#F2F2F2", RED) }, "Not here")));
     })), tab === "live" && /* @__PURE__ */ React.createElement(StockTakeLive, { data, tag }), tab === "materials" && /* @__PURE__ */ React.createElement(MaterialsStockTakeView, { data, setData, materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, isInitial: false, onDone: () => setMsg({ bad: false, t: "Materials counted and saved." }) }));
