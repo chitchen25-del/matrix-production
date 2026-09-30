@@ -11091,7 +11091,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-30.19";
+  var APP_VERSION = "2026-09-30.20";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -22882,6 +22882,9 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-09-30.20", "Admin \u2192 Who sees what: tick the screens each login sees; the rest come off their menu, search and Floor Mode. Admin always sees everything."],
+    ["2026-09-30.19", "Phone: a case tile opens a weighing panel over the tiles (number pad, pallet \u2212 / +, Same as case, Next case); Weigh cases goes through the ones left. Box counts in teal tags. Paste order reads a line the way it's saved."],
+    ["2026-09-30.18", "A case weight that looks wrong is questioned (Weigh again / It's right) and Ship waits until it's settled."],
     ["2026-09-30.17", "Admin \u2192 Catalogue sizes: adding a size now also adds the real catalogue product (the what's-being-made dialog), so orders and bonding can use it \u2014 it used to add a picker option only."],
     ["2026-09-30.16", "Bonding Line: + Log rubber (Exceed) \u2014 Exceed size, metres in a box, boxes made, box code; into an order that needs it (by its case plan) and/or the shelf. No reel, tape, EVA or pt."],
     ["2026-09-30.15", 'Stock take: a typed count goes green with "\u2713 counted N", like the tick.'],
@@ -23098,6 +23101,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     { key: "releases", title: "Releases", sub: "" },
     { key: "alerts", title: "Alerts", sub: "to your phone" },
     { key: "people", title: "People & devices", sub: "who's been in, on what" },
+    { key: "screens", title: "Who sees what", sub: "each login's screens" },
     { key: "printing", title: "Printing & labels", sub: "" },
     { key: "backups", title: "Backups", sub: "download \xB7 restore" }
   ];
@@ -23162,6 +23166,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
       if (section === "truth") return /* @__PURE__ */ React.createElement(AdminTruthChecks, { data, P, card });
       if (section === "live") return /* @__PURE__ */ React.createElement(AdminLiveFloor, { data, P, card });
       if (section === "releases") return /* @__PURE__ */ React.createElement(AdminReleases, { data, P, card, btn });
+      if (section === "screens") return /* @__PURE__ */ React.createElement(AdminScreenAccess, { P, card, btn });
       if (section === "alerts") return /* @__PURE__ */ React.createElement(AdminAlerts, { data, P, card, btn });
       if (SOON_TEXT[section]) return /* @__PURE__ */ React.createElement("div", { style: card }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: P.head } }, "Coming in the next builds"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, marginTop: 6 } }, SOON_TEXT[section]));
       return null;
@@ -31069,13 +31074,171 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     dashboard: ["orders", "order list", "new order", "completed orders", "customers", "shipped orders"],
     eva: ["eva made", "make eva", "eva production", "eva run", "log eva", "eva reels", "screw speed", "line speed", "eva rack"]
   };
+  var SCREEN_ACCESS_KEY = "mxScreenAccess";
+  var SCREEN_FOLLOWS = { neworders: "dashboard", completed: "dashboard", clientorders: "dashboard", schedule: "production" };
+  var SCREEN_ACCESS_GROUPS = [
+    { label: "The line", keys: ["dashboard", "extrusion", "eva", "glueline", "bonding", "packing", "pick"] },
+    { label: "Stock", keys: ["stock", "stocktake", "materials"] },
+    { label: "Planning", keys: ["daily", "finish", "production", "gluelineschedule", "batches"] },
+    { label: "Customers", keys: ["customers", "messages"] },
+    { label: "Quality and reports", keys: ["overview", "register", "ncr", "metrics"] },
+    { label: "Set-up", keys: ["products", "tooling", "labels"] }
+  ];
+  function isAdminLogin() {
+    return /^chris@creasingmatrix\.com$/i.test(nlEmail());
+  }
+  function screenAccessAll() {
+    try {
+      return JSON.parse(localStorage.getItem(SCREEN_ACCESS_KEY) || "{}") || {};
+    } catch (e) {
+      return {};
+    }
+  }
+  function screenAccessMine() {
+    const v = screenAccessAll()[nlEmail()];
+    return Array.isArray(v) && v.length ? v : null;
+  }
+  function screenAllowed(key) {
+    if (!key || isAdminLogin() || key === "home" || key === "everything") return true;
+    const mine = screenAccessMine();
+    if (!mine) return true;
+    const k = SCREEN_FOLLOWS[key] || key;
+    if (k === "admin") return false;
+    if (!NAV.some((n) => n.key === k)) return true;
+    return mine.includes(k);
+  }
+  function storeScreenAccess(rows) {
+    const map = {};
+    for (const r of rows || []) if (r && r.email) map[String(r.email).trim().toLowerCase()] = Array.isArray(r.screens) ? r.screens : null;
+    try {
+      localStorage.setItem(SCREEN_ACCESS_KEY, JSON.stringify(map));
+    } catch (e) {
+    }
+    try {
+      window.dispatchEvent(new Event("mx-screens"));
+    } catch (e) {
+    }
+    return map;
+  }
+  function refreshScreenAccess() {
+    const c = typeof window !== "undefined" && window.__mxCloudClient && window.__mxCloudClient();
+    if (!c) return Promise.resolve(null);
+    return c.from("staff_users").select("email,name,role,active,screens").then(({ data: rows, error }) => {
+      if (error || !Array.isArray(rows)) return null;
+      storeScreenAccess(rows);
+      return rows;
+    }).catch(() => null);
+  }
+  function useScreenAccess() {
+    const [tick, setTick] = useState(0);
+    useEffect(() => {
+      const bump = () => setTick((t) => t + 1);
+      const again = () => {
+        if (document.visibilityState === "visible") refreshScreenAccess();
+      };
+      window.addEventListener("mx-screens", bump);
+      document.addEventListener("visibilitychange", again);
+      const first = setTimeout(() => refreshScreenAccess(), 1500);
+      const every = setInterval(() => refreshScreenAccess(), 5 * 6e4);
+      return () => {
+        window.removeEventListener("mx-screens", bump);
+        document.removeEventListener("visibilitychange", again);
+        clearTimeout(first);
+        clearInterval(every);
+      };
+    }, []);
+    return tick;
+  }
+  function ScreenOff() {
+    return /* @__PURE__ */ React.createElement("div", { "data-screen-off": "1" }, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Not switched on for you", subtitle: "" }), /* @__PURE__ */ React.createElement(Panel, { className: "p-6 text-center" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: INK_MUTED } }, "This screen isn't switched on for your login. Ask admin if you need it.")));
+  }
+  function AdminScreenAccess({ P, card, btn }) {
+    const [rows, setRows] = useState(null);
+    const [draft, setDraft] = useState({});
+    const [msg, setMsg] = useState({});
+    const [busy, setBusy] = useState(null);
+    const allKeys = SCREEN_ACCESS_GROUPS.flatMap((g) => g.keys).filter((k) => NAV.some((n) => n.key === k));
+    const labelOf = (k) => (NAV.find((n) => n.key === k) || {}).label || k;
+    const load = () => refreshScreenAccess().then((r) => {
+      if (!r) {
+        setRows([]);
+        return;
+      }
+      const people = r.filter((x) => x && x.email && x.active !== false).sort((a, b) => String(a.email).localeCompare(String(b.email)));
+      setRows(people);
+      setDraft(Object.fromEntries(people.map((p) => [p.email, Array.isArray(p.screens) && p.screens.length ? p.screens.filter((k) => allKeys.includes(k)) : [...allKeys]])));
+    });
+    useEffect(() => {
+      load();
+    }, []);
+    const nameOf = (p) => p.name || String(p.email).split("@")[0].replace(/^./, (ch) => ch.toUpperCase());
+    const toggle = (email, k) => setDraft((d) => {
+      const cur = d[email] || [];
+      return { ...d, [email]: cur.includes(k) ? cur.filter((x) => x !== k) : [...cur, k] };
+    });
+    const setAll = (email, on) => setDraft((d) => ({ ...d, [email]: on ? [...allKeys] : [] }));
+    const save = (p) => {
+      const c = window.__mxCloudClient && window.__mxCloudClient();
+      const list = draft[p.email] || [];
+      if (!c) {
+        setMsg((m) => ({ ...m, [p.email]: { bad: true, t: "Not connected to the cloud \u2014 try again with a signal." } }));
+        return;
+      }
+      if (!list.length) {
+        setMsg((m) => ({ ...m, [p.email]: { bad: true, t: "Tick at least one screen." } }));
+        return;
+      }
+      const every = allKeys.every((k) => list.includes(k));
+      setBusy(p.email);
+      c.rpc("admin_set_screens", { target: p.email, list: every ? null : allKeys.filter((k) => list.includes(k)) }).then(({ error }) => {
+        if (error) {
+          setBusy(null);
+          setMsg((m) => ({ ...m, [p.email]: { bad: true, t: error.message } }));
+          return;
+        }
+        return refreshScreenAccess().then((r) => {
+          setBusy(null);
+          const back = (r || []).find((x) => String(x.email).toLowerCase() === String(p.email).toLowerCase());
+          const n = back ? Array.isArray(back.screens) && back.screens.length ? back.screens.length : allKeys.length : null;
+          setMsg((m) => ({ ...m, [p.email]: back ? { bad: false, t: Array.isArray(back.screens) && back.screens.length ? `Saved \u2014 ${nameOf(p)} sees ${n} of ${allKeys.length} screens. Their app updates next time it opens or within 5 minutes.` : `Saved \u2014 ${nameOf(p)} sees every screen.` } : { bad: true, t: "Saved, but couldn't read it back \u2014 check again shortly." } }));
+        });
+      }).catch((e) => {
+        setBusy(null);
+        setMsg((m) => ({ ...m, [p.email]: { bad: true, t: String(e && e.message || e) } }));
+      });
+    };
+    if (rows == null) return /* @__PURE__ */ React.createElement("div", { style: card }, /* @__PURE__ */ React.createElement("span", { style: { color: P.dim } }, "Loading\u2026"));
+    if (!rows.length) return /* @__PURE__ */ React.createElement("div", { style: card }, /* @__PURE__ */ React.createElement("span", { style: { color: P.dim } }, "Couldn't read the logins \u2014 this needs the cloud. Try again with a signal."));
+    return /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 10 }, "data-admin-screens": true }, /* @__PURE__ */ React.createElement("div", { style: { ...card, fontSize: 13.5, color: P.dim } }, "Tick the screens each person sees. Everything else is taken off their menu, search and Floor Mode. Admin always sees every screen. This tidies what people see \u2014 it isn't a lock on the data."), rows.map((p) => {
+      const isAdmin = String(p.email).toLowerCase() === "chris@creasingmatrix.com";
+      const list = draft[p.email] || [];
+      const every = allKeys.every((k) => list.includes(k));
+      return /* @__PURE__ */ React.createElement("div", { key: p.email, style: card, "data-screens-person": p.email }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("b", { style: { color: P.head, fontSize: 16 } }, nameOf(p)), " ", /* @__PURE__ */ React.createElement("span", { style: { color: P.dim, fontSize: 12.5 } }, p.email)), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: P.dim } }, isAdmin ? "Admin \u2014 every screen" : every ? "Every screen" : `${list.length} of ${allKeys.length} screens`)), !isAdmin && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 10, marginTop: 10 } }, SCREEN_ACCESS_GROUPS.map((g) => /* @__PURE__ */ React.createElement("div", { key: g.label }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, letterSpacing: 0.4, textTransform: "uppercase", color: P.dim, marginBottom: 4 } }, g.label), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } }, g.keys.filter((k) => allKeys.includes(k)).map((k) => {
+        const on = list.includes(k);
+        return /* @__PURE__ */ React.createElement("label", { key: k, "data-screen-toggle": `${p.email}|${k}`, style: {
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 6,
+          minHeight: 36,
+          padding: "0 12px",
+          borderRadius: 18,
+          cursor: "pointer",
+          border: `1px solid ${on ? P.head : P.btnLine}`,
+          background: on ? P.btn : "transparent",
+          color: on ? P.head : P.dim,
+          fontSize: 13.5,
+          fontWeight: on ? 600 : 400
+        } }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: on, onChange: () => toggle(p.email, k), style: { width: 16, height: 16 } }), labelOf(k));
+      }))))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12, alignItems: "center" } }, /* @__PURE__ */ React.createElement("button", { onClick: () => save(p), disabled: busy === p.email, "data-screens-save": p.email, style: { ...btn, fontWeight: 600 } }, busy === p.email ? "Saving\u2026" : `Save for ${nameOf(p)}`), /* @__PURE__ */ React.createElement("button", { onClick: () => setAll(p.email, true), style: btn }, "Tick all"), /* @__PURE__ */ React.createElement("button", { onClick: () => setAll(p.email, false), style: btn }, "Untick all")), msg[p.email] && /* @__PURE__ */ React.createElement("div", { "data-screens-msg": p.email, style: { marginTop: 8, fontSize: 13.5, fontWeight: 600, color: msg[p.email].bad ? P.bad : P.ok } }, msg[p.email].t)));
+    }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim } }, "Only the logins set up for the app are listed. A new login shows here once it's created (Admin \u2192 Set a password)."));
+  }
   function GlobalSearch({ data, onJump, look = "classic", onCancel = null }) {
     const [query, setQuery] = useState("");
     const [open, setOpen] = useState(false);
     const q = query.trim().toLowerCase();
     const results = useMemo(() => {
       if (q.length < 2) return [];
-      const screenResults = NAV.filter((n) => n.label.toLowerCase().includes(q) || (NAV_ALIASES[n.key] || []).some((a) => a.includes(q))).slice(0, 4).map((n) => ({ type: "screen", value: n.key, label: n.label, sublabel: "Go to screen" }));
+      const screenResults = NAV.filter((n) => screenAllowed(n.key)).filter((n) => n.label.toLowerCase().includes(q) || (NAV_ALIASES[n.key] || []).some((a) => a.includes(q))).slice(0, 4).map((n) => ({ type: "screen", value: n.key, label: n.label, sublabel: "Go to screen" }));
       const orderResults = data.orders.filter((o) => o.id.toLowerCase().includes(q) || (o.customer || "").toLowerCase().includes(q)).slice(0, 6).map((o) => ({ type: "order", id: o.id, value: o.id, label: o.id, sublabel: o.customer, stage: o.stage }));
       const boxCodes = [.../* @__PURE__ */ new Set([
         ...data.bondingRuns.map((r) => r.boxNumber).filter(Boolean),
@@ -31390,6 +31553,12 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       }
     }, [data.customSizes]);
     const [view, setView] = useState("dashboard");
+    const screenTick = useScreenAccess();
+    useEffect(() => {
+      if (screenAllowed(view)) return;
+      const first = SCREEN_ACCESS_GROUPS.flatMap((g) => g.keys).find((k) => screenAllowed(k));
+      if (first && first !== view) setView(first);
+    }, [view, screenTick]);
     const newLayout = useNewLayout();
     const [nlSearch, setNlSearch] = useState(false);
     useNewLayoutFonts(newLayout);
@@ -32765,7 +32934,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       color: LIGHTGREY,
       letterSpacing: ".04em",
       pointerEvents: "none"
-    } }, "S", screenNumber(view)), /* @__PURE__ */ React.createElement("div", { className: "flex" }, /* @__PURE__ */ React.createElement("aside", { className: "app-sidebar w-64 shrink-0 min-h-screen p-4 no-print" + (mobileMenuOpen ? " mobile-open" : ""), style: { background: NAVY_DEEP, color: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "mb-6 p-3", style: { background: "#fff", borderRadius: 3 } }, /* @__PURE__ */ React.createElement("img", { src: "data:image/png;base64," + LOGO_B64, alt: "Matrix Engineering", className: "mb-2", style: { height: 50, display: "block" } }), /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold font-display", style: { color: NAVY } }, "Matrix Engineering"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Production Control")), /* @__PURE__ */ React.createElement("div", { onClick: toggleFloorMode, className: "flex items-center gap-2 mb-4 px-1 cursor-pointer" }, /* @__PURE__ */ React.createElement(ToggleSwitch, { on: floorMode, onChange: toggleFloorMode, labelOn: "On", labelOff: "Off" }), /* @__PURE__ */ React.createElement("span", { className: "text-xs font-semibold", style: { color: "#C7CCE8" } }, "Floor Mode")), floorMode ? /* @__PURE__ */ React.createElement("nav", { className: "space-y-1.5 mb-6" }, ["dashboard", "extrusion", "glueline", "bonding"].map((k) => {
+    } }, "S", screenNumber(view)), /* @__PURE__ */ React.createElement("div", { className: "flex" }, /* @__PURE__ */ React.createElement("aside", { className: "app-sidebar w-64 shrink-0 min-h-screen p-4 no-print" + (mobileMenuOpen ? " mobile-open" : ""), style: { background: NAVY_DEEP, color: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "mb-6 p-3", style: { background: "#fff", borderRadius: 3 } }, /* @__PURE__ */ React.createElement("img", { src: "data:image/png;base64," + LOGO_B64, alt: "Matrix Engineering", className: "mb-2", style: { height: 50, display: "block" } }), /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold font-display", style: { color: NAVY } }, "Matrix Engineering"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Production Control")), /* @__PURE__ */ React.createElement("div", { onClick: toggleFloorMode, className: "flex items-center gap-2 mb-4 px-1 cursor-pointer" }, /* @__PURE__ */ React.createElement(ToggleSwitch, { on: floorMode, onChange: toggleFloorMode, labelOn: "On", labelOff: "Off" }), /* @__PURE__ */ React.createElement("span", { className: "text-xs font-semibold", style: { color: "#C7CCE8" } }, "Floor Mode")), floorMode ? /* @__PURE__ */ React.createElement("nav", { className: "space-y-1.5 mb-6" }, ["dashboard", "extrusion", "glueline", "bonding"].filter((k) => screenAllowed(k)).map((k) => {
       const n = NAV.find((x) => x.key === k);
       const Icon = n.icon;
       const active = view === n.key;
@@ -32792,7 +32961,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       const i = NAV_LINE_ORDER.indexOf(view);
       if (i < 0) return null;
       return null;
-    })(), NAV_GROUPS.filter((g) => !g.keys.includes("admin") || syncUserRole !== "standard").map((g) => syncUserRole === "sales" ? { ...g, keys: g.keys.filter((k) => SALES_VIEWS.includes(k)) } : g).filter((g) => g.keys.length).map((group, gi) => {
+    })(), NAV_GROUPS.filter((g) => !g.keys.includes("admin") || syncUserRole !== "standard").map((g) => syncUserRole === "sales" ? { ...g, keys: g.keys.filter((k) => SALES_VIEWS.includes(k)) } : g).map((g) => ({ ...g, keys: g.keys.filter((k) => screenAllowed(k)) })).filter((g) => g.keys.length).map((group, gi) => {
       const items = group.keys.map((k) => NAV.find((n) => n.key === k)).filter((n) => n && !n.hidden);
       if (!items.length) return null;
       const isOpen = group.label === null || group.section || openGroup === group.label;
@@ -32879,7 +33048,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       const syncLive = ["connected", "saving", "refreshing"].includes(syncStatus) && !testMode;
       const syncedAgo = lastSyncedAt ? formatAgo(lastSyncedAt) : null;
       return /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: syncLive ? ORANGE : RED, color: "#fff", borderRadius: 5, fontWeight: 700, fontSize: 13, letterSpacing: 0.3 } }, "\u26A0 THIS DEVICE CAN NO LONGER KEEP ITS OWN COPY \u2014 its storage is full.", syncLive ? /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 500, display: "block", marginTop: 4 } }, "Cloud Sync is live", syncedAgo ? ` (last saved ${syncedAgo})` : "", ", so what you enter is still being saved to the cloud. The risk is closing or reloading the app before a save goes out \u2014 there is no local copy to fall back on. Keep going, but don't close the app, and get the storage cleared when you can.") : /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 500, display: "block", marginTop: 4 } }, "Cloud Sync is NOT carrying this work either, so nothing you type here is being saved anywhere. Connect Cloud Sync before entering anything further."));
-    })(), testMode && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: ORANGE, color: "#fff", borderRadius: 5, fontWeight: 700, fontSize: 13, letterSpacing: 0.3 } }, "\u26A0 TEST MODE \u2014 this is practice data only. Nothing here is real, and none of it will sync to the live system."), staleOnServer && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: "#FFF4E0", border: `1px solid ${AMBER}`, borderRadius: 5, color: INK, fontSize: 13 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, marginBottom: 2 } }, "The update can't finish \u2014 index.html hasn't been published"), "This device asked the server for ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, staleWanted), " and got", " ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, APP_VERSION), " back. That isn't a cache on this device \u2014 it's a fresh address the server answered with the old file. ", /* @__PURE__ */ React.createElement("b", null, "version.txt was pushed to the site but index.html wasn't"), ", so every device keeps being told there's an update it can never get. Push index.html and this clears itself."), updateReady && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5 flex flex-wrap items-center gap-3", style: { background: "#EEF1FA", border: `1px solid ${NAVY}`, borderRadius: 5, color: NAVY, fontSize: 13 } }, /* @__PURE__ */ React.createElement("span", { style: { flex: "1 1 260px" } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 700 } }, "New version available"), " \u2014 this device is on ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, APP_VERSION), ", latest is ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, updateLatest), ". Updating reloads the page, so finish anything you're part-way through typing first. Saved work is safe."), /* @__PURE__ */ React.createElement("button", { onClick: applyUpdate, className: "shrink-0 px-3", style: { height: 34, background: NAVY, color: "#fff", border: "none", borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: "pointer" } }, "Update now"), /* @__PURE__ */ React.createElement("button", { onClick: snoozeUpdate, className: "shrink-0 px-3", style: { height: 34, background: "none", color: NAVY, border: `1px solid ${NAVY}`, borderRadius: 6, fontSize: 13, cursor: "pointer" } }, "Later")), /* @__PURE__ */ React.createElement(ScreenErrorBoundary, { viewKey: view, key: view }, views[view]), newLayout && /* @__PURE__ */ React.createElement("div", { style: { height: 96 }, "aria-hidden": "true" })), newLayout && !scanOpen && ReactDOM.createPortal(/* @__PURE__ */ React.createElement(NLTabBar, { view, go: navigateTo, onScan: () => {
+    })(), testMode && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: ORANGE, color: "#fff", borderRadius: 5, fontWeight: 700, fontSize: 13, letterSpacing: 0.3 } }, "\u26A0 TEST MODE \u2014 this is practice data only. Nothing here is real, and none of it will sync to the live system."), staleOnServer && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: "#FFF4E0", border: `1px solid ${AMBER}`, borderRadius: 5, color: INK, fontSize: 13 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, marginBottom: 2 } }, "The update can't finish \u2014 index.html hasn't been published"), "This device asked the server for ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, staleWanted), " and got", " ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, APP_VERSION), " back. That isn't a cache on this device \u2014 it's a fresh address the server answered with the old file. ", /* @__PURE__ */ React.createElement("b", null, "version.txt was pushed to the site but index.html wasn't"), ", so every device keeps being told there's an update it can never get. Push index.html and this clears itself."), updateReady && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5 flex flex-wrap items-center gap-3", style: { background: "#EEF1FA", border: `1px solid ${NAVY}`, borderRadius: 5, color: NAVY, fontSize: 13 } }, /* @__PURE__ */ React.createElement("span", { style: { flex: "1 1 260px" } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 700 } }, "New version available"), " \u2014 this device is on ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, APP_VERSION), ", latest is ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, updateLatest), ". Updating reloads the page, so finish anything you're part-way through typing first. Saved work is safe."), /* @__PURE__ */ React.createElement("button", { onClick: applyUpdate, className: "shrink-0 px-3", style: { height: 34, background: NAVY, color: "#fff", border: "none", borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: "pointer" } }, "Update now"), /* @__PURE__ */ React.createElement("button", { onClick: snoozeUpdate, className: "shrink-0 px-3", style: { height: 34, background: "none", color: NAVY, border: `1px solid ${NAVY}`, borderRadius: 6, fontSize: 13, cursor: "pointer" } }, "Later")), /* @__PURE__ */ React.createElement(ScreenErrorBoundary, { viewKey: view, key: view }, screenAllowed(view) ? views[view] : /* @__PURE__ */ React.createElement(ScreenOff, null)), newLayout && /* @__PURE__ */ React.createElement("div", { style: { height: 96 }, "aria-hidden": "true" })), newLayout && !scanOpen && ReactDOM.createPortal(/* @__PURE__ */ React.createElement(NLTabBar, { view, go: navigateTo, onScan: () => {
       setScanNotice(null);
       setScanOpen(true);
     } }), document.body)), toast && /* @__PURE__ */ React.createElement("div", { className: "fixed bottom-5 right-5 px-4 py-2 rounded text-sm text-white shadow-lg", style: { background: NAVY } }, toast));
