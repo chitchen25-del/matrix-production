@@ -10934,7 +10934,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-30.13";
+  var APP_VERSION = "2026-09-30.15";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -22441,6 +22441,8 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-09-30.15", 'Stock take: a typed count goes green with "\u2713 counted N", like the tick.'],
+    ["2026-09-30.14", "Stock take: Delete on each line \u2014 for a code that shouldn't exist: off the shelf (count 0, recorded) and its box records removed; refused for codes that went into a case or were shipped."],
     ["2026-09-30.13", 'Stock take: a box found and moved into the bay is highlighted in the list ("Just found here \u2014 tick it") and the page jumps to it.'],
     ["2026-09-30.12", "Stock take: a code marked Not here in one bay and found in another is moved to the bay it was found in."],
     ["2026-09-30.11", "Stock take: Bay done with codes unanswered names them, marks each in amber, shows the message by the button and jumps to the first one."],
@@ -28183,6 +28185,30 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
       setAddCode(null);
       setMsg({ bad: false, t: `${code} isn't listed ${bay ? `at ${bay}` : "in one bay"} \u2014 type how many are here and press Add${bay ? "" : " (open the bay first)"}.` });
     };
+    const deleteLine = (r) => {
+      const code = r.code;
+      const inCasesOrShipped = (data.movements || []).some((m) => m && !m.deleted && String(m.boxNumber || "").toUpperCase() === code && (m.kind === "placed" || m.kind === "shipped"));
+      if (inCasesOrShipped) {
+        setMsg({ bad: true, t: `${code} has boxes that went into a case or were shipped, so it's history and can't be deleted \u2014 use Not here to take it off the shelf.` });
+        return;
+      }
+      if (!window.confirm(`Delete ${code} (${r.spec}) completely?
+
+It comes off the shelf and out of every list. Only do this if the code shouldn't exist.`)) return;
+      const mv = { ...moveCounted({ boxNumber: code, spec: r.spec, qty: 0, source: "stocktake", sourceId: `${tag}:${bay}`, note: `Stock take ${today}, ${bay}: ${r.qty} \u2192 0 \u2014 deleted, the code shouldn't exist (${who})` }), ...r.formId ? { formId: r.formId } : {} };
+      setData((prev) => {
+        let d = recordMovements(prev, [mv]);
+        const at = (/* @__PURE__ */ new Date()).toISOString();
+        d = { ...d, bondingRuns: (d.bondingRuns || []).map((x) => x && !x.deleted && String(x.boxNumber || "").toUpperCase() === code ? { ...x, deleted: true, deletedAt: at, updatedAt: at } : x) };
+        return { ...d, ...appendLog(d, { action: "delete", entity: "bondingRun", entityId: code, summary: `Stock take ${bay}: ${code} (${r.spec}, ${r.qty} on the system) deleted \u2014 shouldn't exist (${who})` }) };
+      });
+      setAnswers((a) => {
+        const n = { ...a };
+        delete n[code];
+        return n;
+      });
+      setMsg({ bad: false, t: `${code} deleted \u2014 off the shelf and out of the lists.` });
+    };
     const big = { fontSize: 17, fontWeight: 700 }, pill = (on) => ({ height: 36, padding: "0 16px", borderRadius: 18, border: on ? `2px solid ${INK}` : "1px solid #8F8F8F", background: "#fff", fontSize: 15, fontWeight: on ? 700 : 500 });
     const btn = (bg, fg = "#fff") => ({ minHeight: 44, padding: "0 16px", borderRadius: 10, border: 0, background: bg, color: fg, fontSize: 15.5, fontWeight: 700 });
     return /* @__PURE__ */ React.createElement("div", { "data-stocktake": true }, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Stock take", subtitle: `Year end \xB7 ${(/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })} \xB7 shelves, reels and materials. Cases are not counted \u2014 packed cases are locked.` }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 flex-wrap mb-4 items-center" }, [["boxes", `Boxes \xB7 ${doneBays.size}/${withStock.length} bays`], ["reels", `Reels \xB7 ${reels.length}`], ["materials", "Materials"], ["live", "Live print-out"]].map(([k, l]) => /* @__PURE__ */ React.createElement("button", { key: k, "data-st-tab": k, onClick: () => {
@@ -28212,9 +28238,21 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
           placeholder: "Count",
           value: a !== "ok" && a !== "gone" && a != null ? a : "",
           onChange: (e) => set(e.target.value.replace(/[^0-9]/g, "")),
-          style: { width: 90, minHeight: 44, borderRadius: 10, border: `1.5px solid ${a !== "ok" && a !== "gone" && a ? NAVY : "#BDBDBD"}`, padding: "0 10px", fontSize: 17, fontWeight: 700, textAlign: "center" }
+          style: {
+            width: 90,
+            minHeight: 44,
+            borderRadius: 10,
+            border: `1.5px solid ${a !== "ok" && a !== "gone" && a ? GREEN : "#BDBDBD"}`,
+            padding: "0 10px",
+            fontSize: 17,
+            fontWeight: 700,
+            textAlign: "center",
+            /* A typed count is an answer, and shows as one (Chris, 30 Sep 2026: "when you put a count in it doesn't go green and accept it"). */
+            background: a !== "ok" && a !== "gone" && a ? GREEN : "#fff",
+            color: a !== "ok" && a !== "gone" && a ? "#fff" : INK
+          }
         }
-      ), /* @__PURE__ */ React.createElement("button", { "data-st-gone": true, onClick: () => set("gone"), style: btn(a === "gone" ? RED : "#F2F2F2", a === "gone" ? "#fff" : INK) }, "Not here")));
+      ), a !== "ok" && a !== "gone" && a && /* @__PURE__ */ React.createElement("span", { "data-st-counted": true, style: { color: GREEN, fontWeight: 700, fontSize: 14.5 } }, "\u2713 counted ", a), /* @__PURE__ */ React.createElement("button", { "data-st-gone": true, onClick: () => set("gone"), style: btn(a === "gone" ? RED : "#F2F2F2", a === "gone" ? "#fff" : INK) }, "Not here"), /* @__PURE__ */ React.createElement("button", { "data-st-delete": true, onClick: () => deleteLine(r), "aria-label": `Delete ${r.code} completely`, style: { minHeight: 44, padding: "0 12px", borderRadius: 10, border: `1px solid ${BORDER}`, background: "#fff", color: RED, fontSize: 14, fontWeight: 600 } }, "Delete")));
     }), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 16, padding: 12, background: "#F7F7F7", borderRadius: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, marginBottom: 6 } }, "+ Found a box not listed here"), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 flex-wrap" }, /* @__PURE__ */ React.createElement("input", { "data-st-found-code": true, value: found.code, onChange: (e) => setFound((f) => ({ ...f, code: e.target.value.toUpperCase() })), placeholder: "Box code", autoCapitalize: "characters", style: { flex: "1 1 140px", minHeight: 44, borderRadius: 10, border: "1px solid #BDBDBD", padding: "0 10px", fontSize: 16, fontFamily: "ui-monospace, Menlo, monospace" } }), /* @__PURE__ */ React.createElement("input", { "data-st-found-qty": true, value: found.qty, onChange: (e) => setFound((f) => ({ ...f, qty: e.target.value.replace(/[^0-9]/g, "") })), inputMode: "numeric", placeholder: "How many", style: { width: 100, minHeight: 44, borderRadius: 10, border: "1px solid #BDBDBD", padding: "0 10px", fontSize: 16 } }), /* @__PURE__ */ React.createElement("button", { "data-st-found-add": true, onClick: addFound, style: btn(NAVY) }, "Add"), /* @__PURE__ */ React.createElement("button", { "data-st-found-scan": true, onClick: () => setScanning(true), style: btn("#D9482F") }, "Scan")), (() => {
       const code = found.code.trim().toUpperCase();
       if (code.length < 5 || addCode === code) return null;
