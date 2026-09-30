@@ -10590,7 +10590,7 @@ ${line}` : line;
   }
 
   // app_source_v7.jsx
-  var { useState, useEffect, useMemo, useRef } = React;
+  var { useState, useEffect, useMemo, useRef, useCallback } = React;
   var INK = "#242529";
   var INK_MUTED = "#6B6D72";
   var PANEL_BG = "#FFFFFF";
@@ -10934,7 +10934,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-30.4";
+  var APP_VERSION = "2026-09-30.5";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -22420,6 +22420,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-09-30.5", "Stock take: a Live print-out tab \u2014 the print-out drawn on screen as the count goes in, with every count made today and whether the database holds it (asked of the database every 15 seconds and after each count)."],
     ["2026-09-30.4", "Stock take: boxes logged without their Checked tick are listed in their bay (counting checks them); NO BAY codes can be given the bay they were found in; a bay counted again says so; scanning a box label's product barcode says to scan the printed code instead."],
     ["2026-09-30.3", "Stock take: more than one batch per material \u2014 each batch line has its code (Scan) and count, the first is the batch in use; EVA gets a batch scan; mylar is counted as full reels of the item's full-reel length plus part reels by metres; the printed summary lists every batch. Found a box has Scan beside Add."],
     ["2026-09-30.2", "Stock take: tape and mylar get a batch field, and every code field on the materials count has Scan (a GS1 label's batch is picked out); Print summary \u2014 one A4 sheet: boxes by 12mm / 10mm / 7mm / rubber then size, reels by size with metres, materials by category with counts and codes, and what the count changed."],
@@ -27766,7 +27767,8 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
       /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: on ? GREEN : INK_MUTED, minWidth: 22 } }, on ? labelOn : labelOff)
     );
   }
-  function stockTakeReportHtml(data) {
+  function stockTakeReportHtml(data, opts = {}) {
+    const live = !!opts.live, cloud = opts.cloud || null;
     const esc2 = (x) => String(x == null ? "" : x).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
     const today = todayISO(), tag = `st-${today}`;
     const clean = (sp) => String(sp || "").replace(/\s*\(\d+(?:\.\d+)?m\)\s*$/, "").trim();
@@ -27830,11 +27832,64 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
         return `<tr>${td(esc2(m.name))}${td(qty, true)}${td(codeCell)}${td(esc2(m.lastStockTakeDate || ""))}</tr>`;
       }).join("") + `</table>`;
     }
+    if (live) {
+      const rows = [...counted].sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+      body += h("Counted today \u2014 newest first", `${rows.length}`);
+      body += rows.length ? `<table style="width:100%;border-collapse:collapse;font-size:11px;table-layout:fixed"><colgroup><col style="width:12%"/><col style="width:20%"/><col style="width:42%"/><col style="width:10%"/><col style="width:16%"/></colgroup><tr><th ${th}>Bay</th><th ${th}>Code</th><th ${th}>Count</th><th ${th}>Time</th><th ${th}>Database</th></tr>` + rows.map((m) => `<tr>${td(esc2(String(m.sourceId).slice(tag.length + 1)))}${td(esc2(m.boxNumber))}${td(esc2(String(m.note || "").replace(/^Stock take [^,]*, [^:]*:\s*/, "").replace(/\s*\([^)]*\)\s*$/, "")))}${td(esc2(String(m.at || "").slice(11, 16)))}${td(cloud == null ? '<span style="color:#5E6A82">checking\u2026</span>' : cloud.has(m.id) ? '<b style="color:#1E7F3C">\u2713 saved</b>' : '<b style="color:#B45309">not yet</b>')}</tr>`).join("") + `</table>` : `<div style="font-size:11.5px;color:#5E6A82">Nothing counted yet today.</div>`;
+    }
     if (changed.length) {
       body += h("What the count changed", `${changed.length}`);
       body += `<table style="width:100%;border-collapse:collapse;font-size:11px;table-layout:fixed"><colgroup><col style="width:20%"/><col style="width:50%"/><col style="width:30%"/></colgroup><tr><th ${th}>Code</th><th ${th}>Size</th><th ${th}>Change</th></tr>` + changed.map((m) => `<tr>${td(esc2(m.boxNumber))}${td(esc2(clean(m.spec)))}${td(esc2(String(m.note || "").replace(/^Stock take [^,]*, /, "").replace(/\s*\([^)]*\)\s*$/, "")))}</tr>`).join("") + `</table>`;
     }
     return `<!doctype html><html><head><meta charset="utf-8"><title>Stock take ${esc2(today)}</title><style>@page{size:A4 portrait;margin:12mm}body{font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:#1C2437;margin:0}table{page-break-inside:auto}tr{page-break-inside:avoid}</style></head><body>${body}</body></html>`;
+  }
+  function StockTakeLive({ data, tag }) {
+    const [cloud, setCloud] = useState(null);
+    const [checkedAt, setCheckedAt] = useState(null);
+    const [err, setErr] = useState("");
+    const mine = (data.movements || []).filter((m) => m && !m.deleted && m.source === "stocktake" && String(m.sourceId || "").startsWith(tag + ":"));
+    const ask = useCallback(() => {
+      const c = EVENT_CLIENT;
+      if (!c) {
+        setErr("Not connected to the cloud on this device \u2014 the page shows what this device holds.");
+        return;
+      }
+      c.from("movements").select("id").eq("source", "stocktake").like("source_id", tag + ":%").eq("deleted", false).then(({ data: rows, error }) => {
+        if (error) {
+          setErr(`The database didn't answer: ${error.message}`);
+          return;
+        }
+        setErr("");
+        setCloud(new Set((rows || []).map((r) => r.id)));
+        setCheckedAt(/* @__PURE__ */ new Date());
+      }, (e) => setErr(`The database didn't answer: ${e && e.message ? e.message : e}`));
+    }, [tag]);
+    useEffect(() => {
+      ask();
+      const t = setInterval(ask, 15e3);
+      return () => clearInterval(t);
+    }, [ask]);
+    useEffect(() => {
+      const t = setTimeout(ask, 2500);
+      return () => clearTimeout(t);
+    }, [mine.length, ask]);
+    const html = useMemo(() => stockTakeReportHtml(data, { live: true, cloud }), [data.movements, data.bondingRuns, data.materials, data.glueLineBatches, cloud]);
+    const saved = cloud ? mine.filter((m) => cloud.has(m.id)).length : null;
+    const allIn = saved != null && saved === mine.length;
+    return /* @__PURE__ */ React.createElement("div", { "data-st-live": true }, /* @__PURE__ */ React.createElement("div", { "data-st-live-strip": true, style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 10,
+      flexWrap: "wrap",
+      padding: "10px 12px",
+      borderRadius: 10,
+      marginBottom: 10,
+      background: err ? "#FDECEC" : allIn ? "#E8F3EC" : "#FFF4E5",
+      color: err ? RED : allIn ? GREEN : "#8A4B00",
+      fontWeight: 600,
+      fontSize: 14.5
+    } }, /* @__PURE__ */ React.createElement("span", null, err ? err : saved == null ? "Asking the database\u2026" : `In the database: ${saved} of ${mine.length} count${mine.length === 1 ? "" : "s"} made today${allIn ? " \u2713" : " \u2014 the rest are on their way"}`), /* @__PURE__ */ React.createElement("span", { style: { display: "flex", alignItems: "center", gap: 10, fontWeight: 500, fontSize: 13 } }, checkedAt && `checked ${checkedAt.toTimeString().slice(0, 8)}`, /* @__PURE__ */ React.createElement("button", { onClick: ask, style: { height: 32, padding: "0 12px", borderRadius: 16, border: "1px solid #C5CBD8", background: "#fff", fontSize: 13.5, fontWeight: 600 } }, "Check now"), /* @__PURE__ */ React.createElement("button", { onClick: () => printInFrame("stocktake-print-frame", stockTakeReportHtml(data)), style: { height: 32, padding: "0 12px", borderRadius: 16, border: 0, background: NAVY, color: "#fff", fontSize: 13.5, fontWeight: 600 } }, "Print"))), /* @__PURE__ */ React.createElement("iframe", { title: "Stock take print-out, live", "data-st-live-frame": true, srcDoc: html, style: { width: "100%", height: "75vh", border: `1px solid ${BORDER}`, borderRadius: 10, background: "#fff" } }));
   }
   function StockTakeView({ data, setData }) {
     const [tab, setTab] = useState("boxes");
@@ -28060,7 +28115,7 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
     };
     const big = { fontSize: 17, fontWeight: 700 }, pill = (on) => ({ height: 36, padding: "0 16px", borderRadius: 18, border: on ? `2px solid ${INK}` : "1px solid #8F8F8F", background: "#fff", fontSize: 15, fontWeight: on ? 700 : 500 });
     const btn = (bg, fg = "#fff") => ({ minHeight: 44, padding: "0 16px", borderRadius: 10, border: 0, background: bg, color: fg, fontSize: 15.5, fontWeight: 700 });
-    return /* @__PURE__ */ React.createElement("div", { "data-stocktake": true }, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Stock take", subtitle: `Year end \xB7 ${(/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })} \xB7 shelves, reels and materials. Cases are not counted \u2014 packed cases are locked.` }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 flex-wrap mb-4 items-center" }, [["boxes", `Boxes \xB7 ${doneBays.size}/${withStock.length} bays`], ["reels", `Reels \xB7 ${reels.length}`], ["materials", "Materials"]].map(([k, l]) => /* @__PURE__ */ React.createElement("button", { key: k, "data-st-tab": k, onClick: () => {
+    return /* @__PURE__ */ React.createElement("div", { "data-stocktake": true }, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Stock take", subtitle: `Year end \xB7 ${(/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })} \xB7 shelves, reels and materials. Cases are not counted \u2014 packed cases are locked.` }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 flex-wrap mb-4 items-center" }, [["boxes", `Boxes \xB7 ${doneBays.size}/${withStock.length} bays`], ["reels", `Reels \xB7 ${reels.length}`], ["materials", "Materials"], ["live", "Live print-out"]].map(([k, l]) => /* @__PURE__ */ React.createElement("button", { key: k, "data-st-tab": k, onClick: () => {
       setTab(k);
       setBay(null);
       setMsg(null);
@@ -28094,7 +28149,7 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
     } }))), /* @__PURE__ */ React.createElement("button", { "data-st-baydone": true, onClick: bayDone, style: { ...btn(NAVY), width: "100%", marginTop: 16, minHeight: 52, fontSize: 17 } }, bay, " done")), tab === "reels" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED, marginBottom: 8 } }, "Every reel the system thinks is on the rack. Tick the ones you can see; Not here clears it."), reels.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { color: INK_MUTED } }, "No reels with metres left."), reels.map(({ g, left }) => {
       const seen = (reelsSeen || {})[g.batchNumber] === today;
       return /* @__PURE__ */ React.createElement("div", { key: g.id, "data-st-reel": g.batchNumber, className: "flex items-center justify-between gap-3 flex-wrap", style: { padding: "12px 0", borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: { ...big, fontFamily: "ui-monospace, Menlo, monospace" } }, g.batchNumber), /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13.5, color: INK_MUTED } }, g.productSize, " \xB7 ", left, " m left")), seen ? /* @__PURE__ */ React.createElement("span", { style: { color: GREEN, fontWeight: 700 } }, "\u2713 on the rack") : /* @__PURE__ */ React.createElement("span", { className: "flex gap-2" }, /* @__PURE__ */ React.createElement("button", { "data-st-reel-ok": true, onClick: () => reelSeen(g, true), style: btn("#F2F2F2", INK) }, "\u2713 On the rack"), /* @__PURE__ */ React.createElement("button", { "data-st-reel-gone": true, onClick: () => reelSeen(g, false), style: btn("#F2F2F2", RED) }, "Not here")));
-    })), tab === "materials" && /* @__PURE__ */ React.createElement(MaterialsStockTakeView, { data, setData, materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, isInitial: false, onDone: () => setMsg({ bad: false, t: "Materials counted and saved." }) }));
+    })), tab === "live" && /* @__PURE__ */ React.createElement(StockTakeLive, { data, tag }), tab === "materials" && /* @__PURE__ */ React.createElement(MaterialsStockTakeView, { data, setData, materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, isInitial: false, onDone: () => setMsg({ bad: false, t: "Materials counted and saved." }) }));
   }
   function StockTakerView({ data, setData }) {
     const [mode, setMode] = useState("box");
