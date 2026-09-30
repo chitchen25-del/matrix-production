@@ -10934,7 +10934,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-09-30.15";
+  var APP_VERSION = "2026-09-30.16";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -22441,6 +22441,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-09-30.16", "Bonding Line: + Log rubber (Exceed) \u2014 Exceed size, metres in a box, boxes made, box code; into an order that needs it (by its case plan) and/or the shelf. No reel, tape, EVA or pt."],
     ["2026-09-30.15", 'Stock take: a typed count goes green with "\u2713 counted N", like the tick.'],
     ["2026-09-30.14", "Stock take: Delete on each line \u2014 for a code that shouldn't exist: off the shelf (count 0, recorded) and its box records removed; refused for codes that went into a case or were shipped."],
     ["2026-09-30.13", 'Stock take: a box found and moved into the bay is highlighted in the list ("Just found here \u2014 tick it") and the page jumps to it.'],
@@ -25771,6 +25772,133 @@ Plan it?`
       }
     );
   }
+  function RubberEntry({ data, setData }) {
+    const products = useMemo(() => (data.products || []).filter((p) => p && !p.deleted && p.active !== false && /^exceed/i.test(p.family || p.displayName || "")).sort((a, b) => String(a.displayName).localeCompare(String(b.displayName))), [data.products]);
+    const today = todayISO();
+    const suggestCode = () => {
+      const d = /* @__PURE__ */ new Date(today + "T12:00:00"), pre = `${MONTH_LETTERS[d.getMonth()]}${String(d.getFullYear()).slice(-1)}${String(d.getDate()).padStart(2, "0")}`;
+      let max = 0;
+      for (const r of data.bondingRuns || []) {
+        const m = String(r && r.boxNumber || "").toUpperCase().match(new RegExp("^" + pre + "(\\d{2})"));
+        if (m) max = Math.max(max, Number(m[1]));
+      }
+      return `${pre}${String(max + 1).padStart(2, "0")}EX`;
+    };
+    const [pid, setPid] = useState("");
+    const [metres, setMetres] = useState("");
+    const [qty, setQty] = useState("");
+    const [code, setCode] = useState("");
+    const [orderId, setOrderId] = useState("");
+    const [bay, setBay] = useState("");
+    const [msg, setMsg] = useState(null);
+    const product = products.find((p) => p.id === pid) || null;
+    const forms = product ? (data.productForms || []).filter((f) => f && !f.deleted && f.productId === product.id) : [];
+    const form = forms.find((f) => Number(f.metres) === Number(metres)) || forms[0] || null;
+    const name = product ? product.displayName : "";
+    const keyOf = (k) => String(k || "").replace(/\s*\(\d+(?:\.\d+)?m\)\s*$/i, "").trim().toLowerCase();
+    const needs = useMemo(() => {
+      if (!product) return [];
+      const out = [];
+      for (const o of (data.orders || []).filter((o2) => o2 && !o2.deleted && o2.stage !== "Shipped")) {
+        const cases = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === o.id).sort((a, b) => a.caseNum - b.caseNum);
+        const rooms = [];
+        for (const c of cases) {
+          const planned = Object.entries(c.planned || {}).filter(([k]) => keyOf(k) === keyOf(name)).reduce((t, [, v]) => t + (Number(v) || 0), 0);
+          if (!planned) continue;
+          const inIt = (data.movements || []).filter((m) => m && !m.deleted && m.orderId === o.id && m.caseNum === c.caseNum && keyOf(m.spec) === keyOf(name)).reduce((t, m) => t + (m.kind === "placed" ? 1 : m.kind === "unplaced" ? -1 : 0) * (Number(m.qty) || 0), 0);
+          if (planned - inIt > 0) rooms.push({ caseNum: c.caseNum, room: planned - inIt });
+        }
+        const room = rooms.reduce((t, r) => t + r.room, 0);
+        if (room > 0) out.push({ o, rooms, room });
+      }
+      return out;
+    }, [product, data.orders, data.cases, data.movements]);
+    const n = Math.round(Number(qty) || 0), need = needs.find((x) => x.o.id === orderId) || null;
+    const toOrder = need ? Math.min(n, need.room) : 0, toShelf = n - toOrder;
+    const pick = (id) => {
+      setPid(id);
+      const p = products.find((x) => x.id === id);
+      const f = p ? (data.productForms || []).find((f2) => f2 && !f2.deleted && f2.productId === p.id) : null;
+      setMetres(f ? String(f.metres) : "");
+      setOrderId("");
+      if (!code) setCode(suggestCode());
+      setMsg(null);
+    };
+    const save = () => {
+      const c = code.trim().toUpperCase();
+      if (!product) {
+        setMsg({ bad: true, t: "Pick the Exceed size." });
+        return;
+      }
+      if (!(n > 0)) {
+        setMsg({ bad: true, t: "How many boxes were made?" });
+        return;
+      }
+      if (!(Number(metres) > 0)) {
+        setMsg({ bad: true, t: "Metres in a box?" });
+        return;
+      }
+      if (!form) {
+        setMsg({ bad: true, t: `${name} has no box form in the catalogue.` });
+        return;
+      }
+      if (!c) {
+        setMsg({ bad: true, t: "Give the box code." });
+        return;
+      }
+      if ((data.bondingRuns || []).some((r) => r && !r.deleted && String(r.boxNumber || "").toUpperCase() === c)) {
+        setMsg({ bad: true, t: `${c} is already used \u2014 change the code.` });
+        return;
+      }
+      if (toShelf > 0 && !bay) {
+        setMsg({ bad: true, t: `${toShelf} go to the shelf \u2014 pick the bay.` });
+        return;
+      }
+      const runId = uid("br"), at = (/* @__PURE__ */ new Date()).toISOString(), who = currentActor();
+      const run = {
+        id: runId,
+        boxNumber: c,
+        productSize: name,
+        amountMade: n,
+        metersPerBox: Number(metres),
+        formId: form.id,
+        packageType: "Box",
+        date: today,
+        timeOfDay: nowHHMM(),
+        checked: "Yes",
+        location: toShelf > 0 ? bay : "",
+        workNumber: toOrder > 0 ? orderId : "",
+        baselineBatchCode: "",
+        evaCode: "",
+        tapeCode: "",
+        comments: "Rubber (Exceed) \u2014 no reel, tape or EVA",
+        deleted: false,
+        createdAt: at,
+        updatedAt: at,
+        updatedBy: who
+      };
+      const moves = [{ ...moveMade({ boxNumber: c, spec: name, qty: n, source: "bonding", sourceId: runId }), formId: form.id }];
+      let left = toOrder;
+      if (need) for (const r of need.rooms) {
+        if (left <= 0) break;
+        const q = Math.min(left, r.room);
+        left -= q;
+        moves.push({ ...movePlaced({ boxNumber: c, spec: name, qty: q, orderId, caseNum: r.caseNum, source: "bonding", sourceId: runId }), formId: form.id });
+      }
+      setData((prev) => {
+        let d = { ...prev, bondingRuns: [...prev.bondingRuns || [], run] };
+        d = recordMovements(d, moves);
+        return { ...d, ...appendLog(d, { action: "add", entity: "bondingRun", entityId: runId, summary: `Rubber: ${n} \xD7 ${name} (${metres} m) as ${c}${toOrder ? ` \u2014 ${toOrder} into ${orderId}` : ""}${toShelf ? ` \u2014 ${toShelf} to ${bay}` : ""}` }) };
+      });
+      setMsg({ bad: false, t: `Logged ${c}: ${n} \xD7 ${name}${toOrder ? ` \u2014 ${toOrder} into ${orderId}'s cases` : ""}${toShelf ? ` \u2014 ${toShelf} on the shelf at ${bay}` : ""}.` });
+      setQty("");
+      setCode("");
+      setOrderId("");
+      setBay("");
+    };
+    const inp = { minHeight: 42, borderRadius: 8, border: `1px solid ${BORDER}`, padding: "0 10px", fontSize: 15, background: "#fff" };
+    return /* @__PURE__ */ React.createElement("div", { "data-rubber": true, className: "mb-4", style: { border: `1px solid ${BORDER}`, borderRadius: 12, padding: 14, background: "#FAFAF8" } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, fontSize: 16, marginBottom: 10 } }, "Rubber (Exceed) \u2014 no reel, tape, EVA or pt"), /* @__PURE__ */ React.createElement("div", { className: "flex gap-3 flex-wrap items-end" }, /* @__PURE__ */ React.createElement("label", { style: { fontSize: 13, color: INK_MUTED } }, "Exceed size", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("select", { "data-rubber-size": true, value: pid, onChange: (e) => pick(e.target.value), style: { ...inp, minWidth: 240 } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014 pick \u2014"), products.map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.displayName)))), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 13, color: INK_MUTED } }, "Metres in a box", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("input", { "data-rubber-metres": true, value: metres, onChange: (e) => setMetres(e.target.value.replace(/[^0-9.]/g, "")), inputMode: "decimal", style: { ...inp, width: 110 } })), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 13, color: INK_MUTED } }, "Boxes made", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("input", { "data-rubber-qty": true, value: qty, onChange: (e) => setQty(e.target.value.replace(/[^0-9]/g, "")), inputMode: "numeric", style: { ...inp, width: 110 } })), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 13, color: INK_MUTED } }, "Box code", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("input", { "data-rubber-code": true, value: code, onChange: (e) => setCode(e.target.value.toUpperCase()), placeholder: "e.g. I63001EX", style: { ...inp, width: 150, fontFamily: "ui-monospace, Menlo, monospace" } }))), product && /* @__PURE__ */ React.createElement("div", { className: "flex gap-3 flex-wrap items-end mt-3" }, /* @__PURE__ */ React.createElement("label", { style: { fontSize: 13, color: INK_MUTED } }, "For an order", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("select", { "data-rubber-order": true, value: orderId, onChange: (e) => setOrderId(e.target.value), style: { ...inp, minWidth: 260 } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014 none, all to the shelf \u2014"), needs.map((x) => /* @__PURE__ */ React.createElement("option", { key: x.o.id, value: x.o.id }, x.o.id, " ", x.o.customer, " \u2014 needs ", x.room, " (case ", x.rooms.map((r) => r.caseNum).join(", "), ")")))), (toShelf > 0 || !orderId) && /* @__PURE__ */ React.createElement("label", { style: { fontSize: 13, color: INK_MUTED } }, "Shelf bay", toShelf > 0 && orderId ? ` (${toShelf} left over)` : "", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("select", { "data-rubber-bay": true, value: bay, onChange: (e) => setBay(e.target.value), style: { ...inp, width: 110 } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014"), BOX_LOCATIONS.map((b) => /* @__PURE__ */ React.createElement("option", { key: b, value: b }, b)))), /* @__PURE__ */ React.createElement("button", { "data-rubber-save": true, onClick: save, style: { minHeight: 44, padding: "0 18px", borderRadius: 10, border: 0, background: NAVY, color: "#fff", fontWeight: 700, fontSize: 15.5 } }, "Log ", n > 0 ? `${n} box${n === 1 ? "" : "es"}` : "rubber")), msg && /* @__PURE__ */ React.createElement("div", { "data-rubber-msg": true, style: { marginTop: 10, fontWeight: 600, color: msg.bad ? RED : GREEN } }, msg.t));
+  }
   function BondingLineView({ data, setData, jumpToPacking }) {
     const { bondingRuns, orders } = data;
     const orderOptions = orders.map((o) => ({ value: o.id, label: `${o.id} \u2014 ${o.customer}`, customer: o.customer, boxType: o.boxType || "" }));
@@ -26876,7 +27004,7 @@ Go ahead?`)) return;
       maxHeight: "85vh",
       overflowY: "auto",
       border: `1px solid ${BORDER}`
-    } }, /* @__PURE__ */ React.createElement("div", { className: "px-4 py-3", style: { borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Before this is saved"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 17, fontWeight: 600, marginTop: 2 } }, "Where these boxes are going"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, pendingAdd.newRuns[0]?.boxNumber || "no box code", " \xB7 ", pendingAdd.newRuns[0]?.productSize || "")), /* @__PURE__ */ React.createElement("div", { className: "px-4 py-3" }, pendingAdd.going.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: AMBER } }, "\u26A0 Nothing is going anywhere \u2014 no order quantity and nothing to stock."), pendingAdd.going.filter((g) => g.kind === "order").map((g, i) => /* @__PURE__ */ React.createElement("div", { key: "o" + i, className: "mb-3 px-3 py-2", style: { background: "#F4F6FB", borderRadius: 5, border: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, letterSpacing: ".06em", color: INK_MUTED } }, "ON ORDER"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 600, marginTop: 2 } }, g.qty, " \xD7 ", g.customer || g.orderId), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-0.5", style: { color: INK_MUTED } }, g.orderId), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, marginTop: 6 } }, g.cases.length ? /* @__PURE__ */ React.createElement(React.Fragment, null, g.cases.length === 1 ? "Expected case " : "Expected cases ", /* @__PURE__ */ React.createElement("b", null, caseRangeLabel(g.cases))) : /* @__PURE__ */ React.createElement("span", { style: { color: AMBER } }, "No case worked out yet \u2014 check the Packing List")), g.cases.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, "Expected, not fixed \u2014 a case moved by hand on the Packing List can differ."))), pendingAdd.going.filter((g) => g.kind === "stock").map((g, i) => /* @__PURE__ */ React.createElement("div", { key: "s" + i, className: "mb-3 px-3 py-2", style: { background: "#F5F5F2", borderRadius: 5, border: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, letterSpacing: ".06em", color: INK_MUTED } }, "TO STOCK"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 600, marginTop: 2 } }, g.qty, " box", g.qty === 1 ? "" : "es", " \u2192 ", g.location || "no location")))), /* @__PURE__ */ React.createElement("div", { className: "px-4 py-3 flex gap-2 justify-end", style: { borderTop: `1px solid ${BORDER}`, background: "#FAFAF8" } }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setPendingAdd(null) }, "Go back and change it"), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => performAdd(pendingAdd) }, "That's right \u2014 save it"))))), /* @__PURE__ */ React.createElement(SectionHeader, { title: "Bonding", subtitle: "One row per run, newest first." }), /* @__PURE__ */ React.createElement("details", { className: "no-print", style: { margin: "-6px 0 14px", fontSize: 14, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("summary", { style: { cursor: "pointer", color: NAVY, listStyle: "none" } }, "How a bonding row works"), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8, lineHeight: 1.6, maxWidth: "62ch" } }, "Work Number links straight to a real order, and Meterage Used is worked out for you. A box only counts toward live stock and picking once Checked is set to Yes.")), (() => {
+    } }, /* @__PURE__ */ React.createElement("div", { className: "px-4 py-3", style: { borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, "Before this is saved"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 17, fontWeight: 600, marginTop: 2 } }, "Where these boxes are going"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, pendingAdd.newRuns[0]?.boxNumber || "no box code", " \xB7 ", pendingAdd.newRuns[0]?.productSize || "")), /* @__PURE__ */ React.createElement("div", { className: "px-4 py-3" }, pendingAdd.going.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: AMBER } }, "\u26A0 Nothing is going anywhere \u2014 no order quantity and nothing to stock."), pendingAdd.going.filter((g) => g.kind === "order").map((g, i) => /* @__PURE__ */ React.createElement("div", { key: "o" + i, className: "mb-3 px-3 py-2", style: { background: "#F4F6FB", borderRadius: 5, border: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, letterSpacing: ".06em", color: INK_MUTED } }, "ON ORDER"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 600, marginTop: 2 } }, g.qty, " \xD7 ", g.customer || g.orderId), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-0.5", style: { color: INK_MUTED } }, g.orderId), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, marginTop: 6 } }, g.cases.length ? /* @__PURE__ */ React.createElement(React.Fragment, null, g.cases.length === 1 ? "Expected case " : "Expected cases ", /* @__PURE__ */ React.createElement("b", null, caseRangeLabel(g.cases))) : /* @__PURE__ */ React.createElement("span", { style: { color: AMBER } }, "No case worked out yet \u2014 check the Packing List")), g.cases.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, "Expected, not fixed \u2014 a case moved by hand on the Packing List can differ."))), pendingAdd.going.filter((g) => g.kind === "stock").map((g, i) => /* @__PURE__ */ React.createElement("div", { key: "s" + i, className: "mb-3 px-3 py-2", style: { background: "#F5F5F2", borderRadius: 5, border: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, letterSpacing: ".06em", color: INK_MUTED } }, "TO STOCK"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 600, marginTop: 2 } }, g.qty, " box", g.qty === 1 ? "" : "es", " \u2192 ", g.location || "no location")))), /* @__PURE__ */ React.createElement("div", { className: "px-4 py-3 flex gap-2 justify-end", style: { borderTop: `1px solid ${BORDER}`, background: "#FAFAF8" } }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setPendingAdd(null) }, "Go back and change it"), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => performAdd(pendingAdd) }, "That's right \u2014 save it"))))), /* @__PURE__ */ React.createElement(SectionHeader, { title: "Bonding", subtitle: "One row per run, newest first." }), /* @__PURE__ */ React.createElement("details", { "data-rubber-toggle": true, className: "mb-3" }, /* @__PURE__ */ React.createElement("summary", { style: { cursor: "pointer", fontWeight: 700, color: NAVY, fontSize: 15 } }, "+ Log rubber (Exceed)"), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement(RubberEntry, { data, setData }))), /* @__PURE__ */ React.createElement("details", { className: "no-print", style: { margin: "-6px 0 14px", fontSize: 14, color: INK_MUTED } }, /* @__PURE__ */ React.createElement("summary", { style: { cursor: "pointer", color: NAVY, listStyle: "none" } }, "How a bonding row works"), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8, lineHeight: 1.6, maxWidth: "62ch" } }, "Work Number links straight to a real order, and Meterage Used is worked out for you. A box only counts toward live stock and picking once Checked is set to Yes.")), (() => {
       const todaysBoxes = (data.bondingRuns || []).filter((r) => !r.deleted && !r.packingOnly && r.date === todayISO()).reduce((t, r) => t + Number(r.amountMade || 0), 0);
       if (todaysBoxes <= 0) return null;
       const strong = todaysBoxes >= BONDING_BOXES_PER_DAY_MAX;
