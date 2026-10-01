@@ -2399,11 +2399,6 @@
   function categoryTotal(materials, key) {
     return materials.filter((m) => m.category === key).reduce((s, m) => s + (Number(m.currentStock) || 0), 0);
   }
-  function categoryLowest(materials, key) {
-    const rows = materials.filter((m) => m.category === key);
-    if (rows.length === 0) return null;
-    return rows.reduce((min, m) => Number(m.currentStock) < Number(min.currentStock) ? m : min);
-  }
   function bondingOutputByDay(bondingRuns, days = 21) {
     const byDay = /* @__PURE__ */ new Map();
     for (const r of bondingRuns || []) {
@@ -11280,7 +11275,7 @@ ${line}` : line;
   var MATERIAL_CATEGORIES = [
     { key: "pvc", label: "PVC Granules", unit: "bags", actionType: "button", actionLabel: "Bag opened", icon: IconSack, color: "#8B5A2B" },
     { key: "mylar", label: "PET / Mylar", unit: "rolls", actionType: "checkbox", actionLabel: "Roll opened", icon: IconRoll, color: BLUE },
-    { key: "glue", label: "Glue", unit: "blocks", actionType: "checkbox", actionLabel: "Block opened", icon: IconDroplet, color: AMBER },
+    { key: "glue", label: "Glue", unit: "blocks", actionType: "button", actionLabel: "Block opened", batchCoded: true, icon: IconDroplet, color: AMBER },
     { key: "eva", label: "EVA", unit: "bags", actionType: "button", actionLabel: "Bag opened", icon: IconLayers, color: GREEN },
     // The EVA rack, held per die rather than per reel. The bonding line thinks
     // in dies ("we've a few reels of PX05 left"), not reel identities, and
@@ -11428,7 +11423,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-01.19";
+  var APP_VERSION = "2026-10-01.21";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -12747,7 +12742,8 @@ ${line}` : line;
       props.children
     );
   }
-  function Button({ children, onClick, variant = "primary", disabled, title }) {
+  function Button({ children, onClick, variant = "primary", disabled, title, ...rest }) {
+    const data = Object.fromEntries(Object.entries(rest).filter(([k]) => k.startsWith("data-")));
     const styles = {
       primary: { background: NAVY, color: "#fff", borderRadius: 4 },
       accent: { background: ORANGE, color: "#fff", borderRadius: 4, fontWeight: 600 },
@@ -12761,6 +12757,7 @@ ${line}` : line;
         title,
         onClick,
         disabled,
+        ...data,
         className: "mx-btn inline-flex items-center justify-center gap-1.5 px-3.5 text-sm font-semibold disabled:opacity-40",
         style: { minHeight: 34, ...styles[variant] }
       },
@@ -23960,6 +23957,8 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-10-01.21", "Materials: \uFF0B Goods in (which stock \u2192 which one \u2192 how many \u2192 the code); each kind of material opens in place to show its items; low-stock warnings on Materials and in the alerts \u2014 PVC and EVA below 20 bags, cartons below 1,000, glue below 25 blocks, each mylar and tape below 10,000 m."],
+    ["2026-10-01.20", "Materials: an Opened button on every PVC colour, EVA and glue \u2014 one tap takes a bag or block off. Glue remembers the batch code last opened; Other code picks another from the count or types a new one. Undo takes the last tap back. The glue line no longer asks about a new block of glue (it would be taken off twice). Fixed: the old Bag opened and the \u270E correction emptied the device's orders until the next sync."],
     ["2026-10-01.19", "Speed: carton stock, reel metres and size matching are worked out once and remembered instead of re-reading every box record and ledger entry each time \u2014 the figures behind every screen take about a third less time after each save."],
     ["2026-10-01.18", "New layout: Everything \u2192 Download backup \u2014 the same backup file as the original layout's More options, with how long since the last one."],
     ["2026-10-01.17", "Speed: the app no longer works everything out again every ten seconds when the cloud has nothing new \u2014 the phone stops freezing. The catalogue and bay look-ups are built once, so the Daily plan and Glue line open several times faster."],
@@ -24106,6 +24105,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     const tomorrow = new Date(Date.now() + 864e5).toISOString().slice(0, 10);
     const due = (data.orders || []).filter((o) => o && !o.deleted && o.stage !== "Shipped" && o.stage !== "Cancelled" && String(o.dueDate || "") <= tomorrow && o.stage !== "Packed");
     if (due.length) items.push(`${due.length} order${due.length === 1 ? "" : "s"} due by tomorrow not packed (${due.slice(0, 3).map((o) => o.id).join(", ")})`);
+    items.push(...lowStockAlerts(data));
     return items;
   }
   function AdminAlerts({ data, P, card, btn }) {
@@ -24624,12 +24624,142 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
       ), /* @__PURE__ */ React.createElement(TextInput, { type: "number", placeholder: m.category === "mylar" ? "full reels" : m.unit, value: l.count, onChange: (e) => setLine(m, i, { count: e.target.value }), style: { width: 90 } }), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, m.category === "mylar" ? "full" : m.unit), m.category === "mylar" && /* @__PURE__ */ React.createElement(TextInput, { placeholder: "part reels, m (e.g. 850, 400)", value: l.parts, onChange: (e) => setLine(m, i, { parts: e.target.value }), style: { flex: "1 1 170px" } }), linesOf(m).length > 1 && /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => dropLine(m, i), "aria-label": "Remove this batch", style: { border: 0, background: "none", color: INK_MUTED, fontSize: 18, padding: "0 6px" } }, "\xD7"))), /* @__PURE__ */ React.createElement("button", { type: "button", "data-mat-addbatch": m.id, onClick: () => addLine(m), style: { marginTop: 6, border: 0, background: "none", color: NAVY, fontWeight: 600, fontSize: 13.5, padding: 0 } }, "+ another batch")) : /* @__PURE__ */ React.createElement("div", { key: m.id }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, m.name), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-1.5" }, /* @__PURE__ */ React.createElement(TextInput, { type: "number", value: quantities[m.id] ?? "", onChange: (e) => setQuantities({ ...quantities, [m.id]: e.target.value }) }), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, minWidth: 40 } }, m.unit))))));
     }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 items-center" }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: save }, isInitial ? "Save & unlock Materials" : "Save stock take"), !isInitial && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: onDone }, "Cancel")));
   }
+  var LOW_STOCK_RULES = {
+    pvc: { below: 20, unit: "bags" },
+    eva: { below: 20, unit: "bags" },
+    boxes: { below: 1e3, unit: "boxes" },
+    glue: { below: 25, unit: "blocks" },
+    mylar: { below: 1e4, metres: true },
+    tape: { below: 1e4, metres: true }
+  };
+  function materialMetres(m) {
+    const full = Number(m.fullMetres) || 0;
+    const stock = Number(m.currentStock) || 0;
+    const parts = (Array.isArray(m.batches) ? m.batches : []).flatMap((b) => partMetres(b && b.parts));
+    if (!full) return null;
+    return Math.max(0, stock - parts.length) * full + parts.reduce((t, x) => t + x, 0);
+  }
+  function materialLow(m, movements) {
+    const rule = m && LOW_STOCK_RULES[m.category];
+    if (!rule) return null;
+    const known = !!m.lastStockTakeDate || (movements || []).some((x) => x && !x.deleted && x.materialId === m.id);
+    if (!known) return null;
+    if (rule.metres) {
+      const metres = materialMetres(m);
+      if (metres == null) return { low: false, noLength: true, below: rule.below };
+      return { low: metres < rule.below, figure: metres, unit: "m", below: rule.below };
+    }
+    const n = Number(m.currentStock) || 0;
+    return { low: n < rule.below, figure: n, unit: rule.unit, below: rule.below };
+  }
+  function lowStockAlerts(data) {
+    const mats = (data.materials || []).filter((m) => m && !m.deleted);
+    const cat = (k) => (MATERIAL_CATEGORIES.find((c) => c.key === k) || {}).label || k;
+    return mats.map((m) => ({ m, l: materialLow(m, data.materialMovements) })).filter((x) => x.l && x.l.low).map(({ m, l }) => `Low stock \u2014 ${cat(m.category)} ${m.name}: ${l.figure.toLocaleString("en-GB")} ${l.unit} (warns below ${l.below.toLocaleString("en-GB")})`);
+  }
+  var GOODS_IN_CATS = ["pvc", "mylar", "glue", "eva", "tape", "boxes", "cases"];
+  function GoodsIn({ data, setData }) {
+    const [open, setOpen] = useState(false);
+    const [cat, setCat] = useState("");
+    const [matId, setMatId] = useState("");
+    const [qty, setQty] = useState("");
+    const [code, setCode] = useState("");
+    const [done, setDone] = useState("");
+    const mats = (data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS).filter((m) => m && !m.deleted);
+    const inCat = mats.filter((m) => m.category === cat).sort((a, b) => String(a.name).localeCompare(String(b.name), void 0, { numeric: true }));
+    const mat = mats.find((m) => m.id === matId);
+    const reset = () => {
+      setCat("");
+      setMatId("");
+      setQty("");
+      setCode("");
+    };
+    const save = () => {
+      const n = Number(qty);
+      if (!mat) {
+        refuse("Pick which one came in \u2014 nothing was booked in.");
+        return;
+      }
+      if (!(n > 0)) {
+        refuse("How many came in? \u2014 nothing was booked in.");
+        return;
+      }
+      const c = String(code || "").trim();
+      let id = null;
+      setData((prevData) => {
+        const r = recordMaterialMovement(prevData, mat.id, n, "goods_in", null, c ? `Batch ${c}` : "Goods in");
+        const mm = r.materialMovements || [];
+        id = mm.length ? mm[mm.length - 1].id : null;
+        const materials = (r.materials || prevData.materials || []).map((m) => {
+          if (m.id !== mat.id || !c) return m;
+          const batches = Array.isArray(m.batches) ? [...m.batches] : [];
+          const i = batches.findIndex((b) => b && String(b.code || "").trim() === c);
+          if (i >= 0) batches[i] = { ...batches[i], count: (Number(batches[i].count) || 0) + n };
+          else batches.push({ code: c, count: n, parts: [] });
+          return { ...m, batches, batchCode: m.batchCode || c };
+        });
+        return { ...prevData, ...r, materials };
+      });
+      setDone(`${n.toLocaleString("en-GB")} ${mat.unit} of ${mat.name}${c ? ` (${c})` : ""} booked in.`);
+      reset();
+      setOpen(false);
+    };
+    const box = { width: "100%", minHeight: 44, borderRadius: 10, border: `1px solid ${BORDER}`, padding: "0 10px", fontSize: 16, background: "#fff", color: INK };
+    return /* @__PURE__ */ React.createElement("div", { className: "mb-4", "data-goods-in": true }, !open && /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", "data-goods-in-open": true, onClick: () => {
+      setOpen(true);
+      setDone("");
+    } }, "\uFF0B Goods in"), done && /* @__PURE__ */ React.createElement("span", { className: "text-sm", "data-goods-in-done": true, style: { color: GREEN } }, "\u2713 ", done)), open && /* @__PURE__ */ React.createElement(Panel, { className: "p-4" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold mb-3", style: { color: INK } }, "Goods in"), /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Which stock?"), /* @__PURE__ */ React.createElement("select", { "data-goods-in-cat": true, value: cat, onChange: (e) => {
+      setCat(e.target.value);
+      setMatId("");
+    }, style: box }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose\u2026"), GOODS_IN_CATS.map((k) => {
+      const c = MATERIAL_CATEGORIES.find((x) => x.key === k);
+      return c ? /* @__PURE__ */ React.createElement("option", { key: k, value: k }, k === "boxes" ? "Cartons (boxes)" : c.label) : null;
+    })), cat && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1 mt-3", style: { color: INK_MUTED } }, "Which one?"), /* @__PURE__ */ React.createElement("select", { "data-goods-in-mat": true, value: matId, onChange: (e) => setMatId(e.target.value), style: box }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose\u2026"), inCat.map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id }, m.name)))), mat && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1 mt-3", style: { color: INK_MUTED } }, "How many ", mat.unit, "?"), /* @__PURE__ */ React.createElement("input", { "data-goods-in-qty": true, type: "number", inputMode: "decimal", value: qty, onChange: (e) => setQty(e.target.value), style: box }), /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1 mt-3", style: { color: INK_MUTED } }, "Code on the delivery", cat === "pvc" ? " (Ducavin job code)" : ""), /* @__PURE__ */ React.createElement("input", { "data-goods-in-code": true, value: code, onChange: (e) => setCode(e.target.value), placeholder: mat.batchCode ? `e.g. ${mat.batchCode}` : "Batch / lot code", style: box })), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mt-4" }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", "data-goods-in-save": true, onClick: save, disabled: !mat }, "Book in"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => {
+      reset();
+      setOpen(false);
+    } }, "Cancel"))));
+  }
+  var OPENED_SOURCE = { pvc: "bag_opened", eva: "bag_opened", glue: "block_opened" };
   function MaterialVariantRow({ material, category, data, setData }) {
     const [adjusting, setAdjusting] = useState(false);
     const [adjustQty, setAdjustQty] = useState("");
+    const [picking, setPicking] = useState(false);
+    const [typed, setTyped] = useState("");
+    const [lastId, setLastId] = useState(null);
     const stock = Number(material.currentStock) || 0;
-    const low = stock <= 2;
-    const applyDelta = (delta, sourceType) => setData((prevData) => recordMaterialMovement(prevData, material.id, delta, sourceType, null, ""));
+    const lowInfo = materialLow(material, data && data.materialMovements);
+    const low = lowInfo ? lowInfo.low : stock <= 2;
+    const applyDelta = (delta, sourceType, note = "", extra = null) => {
+      let id = null;
+      setData((prevData) => {
+        const r = recordMaterialMovement(prevData, material.id, delta, sourceType, null, note);
+        const mm = r.materialMovements || [];
+        id = mm.length ? mm[mm.length - 1].id : null;
+        const materials = extra ? (r.materials || prevData.materials || []).map((m) => m.id === material.id ? { ...m, ...extra } : m) : r.materials;
+        return { ...prevData, ...r, ...materials ? { materials } : {} };
+      });
+      return id;
+    };
+    const codes = [...new Set([material.batchCode, ...(material.batches || []).map((b) => b && b.code)].map((c) => String(c || "").trim()).filter(Boolean))];
+    const coded = !!category.batchCoded;
+    const opened = (code) => {
+      const c = String(code || "").trim();
+      if (coded && !c) {
+        refuse("Which batch is this block from? Type its code \u2014 nothing was taken off.");
+        return;
+      }
+      if (stock <= 0 && !window.confirm(`The app thinks there are no ${material.unit} of ${material.name} left. Take one off anyway?`)) return;
+      const id = applyDelta(-1, OPENED_SOURCE[category.key] || "bag_opened", c ? `Batch ${c}` : "", coded ? { batchCode: c } : null);
+      setLastId(id);
+      setPicking(false);
+      setTyped("");
+    };
+    const undo = () => {
+      const id = lastId;
+      if (!id) return;
+      setData((prevData) => ({ ...prevData, materialMovements: (prevData.materialMovements || []).map((m) => m.id === id ? { ...m, deleted: true, note: `${m.note || ""} \u2014 undone`.trim() } : m) }));
+      setLastId(null);
+    };
     const saveAdjust = () => {
       const target = Number(adjustQty);
       if (Number.isNaN(target)) {
@@ -24641,10 +24771,16 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
       setAdjusting(false);
       setAdjustQty("");
     };
-    return /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between py-2.5", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "min-w-0" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-medium", style: { color: INK } }, material.name), material.batchCode && /* @__PURE__ */ React.createElement("div", { className: "text-xs font-mono", style: { color: INK_MUTED } }, "Code ", material.batchCode), material.lastStockTakeDate && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Last counted ", material.lastStockTakeDate)), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 shrink-0" }, adjusting ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(TextInput, { type: "number", value: adjustQty, onChange: (e) => setAdjustQty(e.target.value), style: { width: 70 }, autoFocus: true }), /* @__PURE__ */ React.createElement(Button, { variant: "primary", onClick: saveAdjust }, "Save"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setAdjusting(false) }, "Cancel")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "text-right" }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: low ? RED : INK, lineHeight: 1 } }, stock), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, material.unit)), category.actionType === "button" && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => applyDelta(-1, "bag_opened") }, category.actionLabel), category.actionType === "checkbox" && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, maxWidth: 90, textAlign: "right" } }, "Checked off on ", category.key === "glue" || category.key === "mylar" ? "Glue Line" : "Glue Line"), category.actionType === "auto" && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, maxWidth: 100, textAlign: "right" } }, category.actionLabel), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+    const canOpen = !!OPENED_SOURCE[category.key] && category.actionType === "button";
+    return /* @__PURE__ */ React.createElement("div", { className: "py-2.5", "data-material-row": material.id, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between" }, /* @__PURE__ */ React.createElement("div", { className: "min-w-0" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-medium", style: { color: INK } }, material.name), material.batchCode && /* @__PURE__ */ React.createElement("div", { className: "text-xs font-mono", style: { color: INK_MUTED }, "data-material-code": true }, coded ? "Opening " : "Code ", material.batchCode), material.lastStockTakeDate && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Last counted ", material.lastStockTakeDate), lowInfo && lowInfo.figure != null && LOW_STOCK_RULES[material.category].metres && /* @__PURE__ */ React.createElement("div", { className: "text-xs", "data-material-metres": true, style: { color: lowInfo.low ? RED : INK_MUTED } }, lowInfo.figure.toLocaleString("en-GB"), " m"), lowInfo && lowInfo.low && /* @__PURE__ */ React.createElement("div", { className: "text-xs font-semibold", "data-material-low": true, style: { color: RED } }, "\u26A0 Low \u2014 warns below ", lowInfo.below.toLocaleString("en-GB"), " ", lowInfo.unit), lowInfo && lowInfo.noLength && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Metres on a roll not set \u2014 no low warning yet")), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 shrink-0" }, adjusting ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(TextInput, { type: "number", value: adjustQty, onChange: (e) => setAdjustQty(e.target.value), style: { width: 70 }, autoFocus: true }), /* @__PURE__ */ React.createElement(Button, { variant: "primary", onClick: saveAdjust }, "Save"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setAdjusting(false) }, "Cancel")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "text-right" }, /* @__PURE__ */ React.createElement("div", { "data-material-stock": true, style: { fontSize: 22, fontWeight: 700, color: low ? RED : INK, lineHeight: 1 } }, stock), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, material.unit)), canOpen && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", "data-material-open": true, onClick: () => coded && !material.batchCode ? setPicking(true) : opened(material.batchCode) }, category.actionLabel), category.actionType === "checkbox" && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, maxWidth: 90, textAlign: "right" } }, "Checked off on Glue Line"), category.actionType === "auto" && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, maxWidth: 100, textAlign: "right" } }, category.actionLabel), /* @__PURE__ */ React.createElement("button", { onClick: () => {
       setAdjusting(true);
       setAdjustQty(String(stock));
-    }, className: "opacity-40 hover:opacity-100 px-1", title: "Manually correct this count" }, "\u270E"))));
+    }, className: "opacity-40 hover:opacity-100 px-1", title: "Manually correct this count" }, "\u270E")))), canOpen && (lastId || coded) && !adjusting && /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 mt-1.5 text-xs", style: { color: INK_MUTED } }, lastId && /* @__PURE__ */ React.createElement("span", { "data-material-opened": true }, "1 ", material.unit === "bags" ? "bag" : material.unit === "blocks" ? "block" : material.unit, " taken off", material.batchCode && coded ? ` (${material.batchCode})` : "", " \xB7 ", /* @__PURE__ */ React.createElement("button", { "data-material-undo": true, onClick: undo, style: { background: "none", border: 0, padding: 0, color: NAVY, textDecoration: "underline", cursor: "pointer" } }, "Undo")), coded && !picking && /* @__PURE__ */ React.createElement("button", { "data-material-othercode": true, onClick: () => setPicking(true), style: { background: "none", border: 0, padding: 0, color: NAVY, textDecoration: "underline", cursor: "pointer" } }, "Other code")), coded && picking && /* @__PURE__ */ React.createElement("div", { className: "mt-2 p-2 rounded", "data-material-picker": true, style: { background: "#F2F2F0" } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-1.5", style: { color: INK_MUTED } }, "Which batch is the block you're opening?"), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-1.5 mb-1.5" }, codes.map((c) => /* @__PURE__ */ React.createElement(Button, { key: c, variant: c === material.batchCode ? "primary" : "ghost", "data-material-code-pick": c, onClick: () => opened(c) }, c))), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-1.5" }, /* @__PURE__ */ React.createElement(TextInput, { value: typed, onChange: (e) => setTyped(e.target.value), placeholder: "Another code\u2026", "data-material-code-typed": true, onKeyDown: (e) => {
+      if (e.key === "Enter") opened(typed);
+    } }), /* @__PURE__ */ React.createElement(Button, { variant: "accent", "data-material-code-use": true, onClick: () => opened(typed) }, "Open 1"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => {
+      setPicking(false);
+      setTyped("");
+    } }, "Cancel"))));
   }
   function AddMaterialVariant({ category, setData }) {
     const [open, setOpen] = useState(false);
@@ -24674,53 +24810,45 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     const movements = data.materialMovements || [];
     const everStockTaken = materials.some((m) => m.lastStockTakeDate);
     const [redoStockTake, setRedoStockTake] = useState(false);
-    const [selected, setSelected] = useState(MATERIAL_CATEGORIES[0].key);
+    const [openCats, setOpenCats] = useState([]);
     if (!everStockTaken || redoStockTake) {
       return /* @__PURE__ */ React.createElement(MaterialsStockTakeView, { data, setData, materials, isInitial: !everStockTaken, onDone: () => setRedoStockTake(false) });
     }
     const byCat = materialsGroupedByCategory(materials);
-    const activeCat = MATERIAL_CATEGORIES.find((c) => c.key === selected);
-    const activeRows = byCat[selected] || [];
-    const recentMovements = [...movements].sort((a, b) => (b.date || "").localeCompare(a.date || "") || String(b.id).localeCompare(String(a.id))).slice(0, 12);
+    const recentMovements = movements.map((m, i) => [m, i]).filter(([m]) => m && !m.deleted).sort((a, b) => (b[0].date || "").localeCompare(a[0].date || "") || b[1] - a[1]).map(([m]) => m).slice(0, 12);
     const materialById = Object.fromEntries(materials.map((m) => [m.id, m]));
-    const sourceLabel = { stocktake: "Stock take", manual: "Manual correction", bag_opened: "Opened", block_opened: "Opened", auto_box: "Box made", auto_case: "Case shipped" };
+    const sourceLabel = { stocktake: "Stock take", manual: "Manual correction", bag_opened: "Opened", block_opened: "Opened", auto_box: "Box made", auto_case: "Case shipped", goods_in: "Goods in" };
     return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(
       SectionHeader,
       {
         title: "Materials",
-        subtitle: "Raw materials and consumables \u2014 separate from finished-product stock. Glue, Mylar and Tape are checked off on Glue Line as they're opened; PVC and EVA get their own button here; Boxes and Cases track themselves automatically.",
+        subtitle: "Raw materials and consumables \u2014 separate from finished-product stock. PVC, EVA and glue: tap Opened here when a bag or block is opened. Mylar is checked off on Glue Line; Boxes and Cases track themselves automatically.",
         right: /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setRedoStockTake(true) }, "Redo stock take")
       }
-    ), /* @__PURE__ */ React.createElement("div", { className: "grid gap-3 mb-6", style: { gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))" } }, MATERIAL_CATEGORIES.map((cat) => {
+    ), /* @__PURE__ */ React.createElement(GoodsIn, { data, setData }), /* @__PURE__ */ React.createElement("div", { className: "grid gap-2.5 mb-6", "data-material-cats": true }, MATERIAL_CATEGORIES.map((cat) => {
       const Icon = cat.icon;
+      const rows = byCat[cat.key] || [];
       const total = categoryTotal(materials, cat.key);
-      const lowest = categoryLowest(materials, cat.key);
-      const isLow = lowest && Number(lowest.currentStock) <= 2;
-      const active = selected === cat.key;
-      return /* @__PURE__ */ React.createElement(
+      const lows = rows.filter((m) => {
+        const l = materialLow(m, movements);
+        return l && l.low;
+      });
+      const isOpen = openCats.includes(cat.key);
+      return /* @__PURE__ */ React.createElement(Panel, { key: cat.key, className: "overflow-hidden", style: { borderLeft: `4px solid ${cat.color}` } }, /* @__PURE__ */ React.createElement(
         "button",
         {
-          key: cat.key,
-          onClick: () => setSelected(cat.key),
-          className: "text-left p-3.5 transition-transform hover:-translate-y-0.5",
-          style: {
-            background: PANEL_BG,
-            border: `1px solid ${active ? cat.color : BORDER}`,
-            borderLeft: `4px solid ${cat.color}`,
-            borderRadius: 8,
-            boxShadow: active ? `0 4px 14px ${cat.color}33` : "0 1px 2px rgba(20,25,40,0.04)",
-            cursor: "pointer"
-          }
+          "data-material-cat": cat.key,
+          "aria-expanded": isOpen,
+          onClick: () => setOpenCats((o) => o.includes(cat.key) ? o.filter((k) => k !== cat.key) : [...o, cat.key]),
+          className: "w-full flex items-center gap-3 text-left",
+          style: { padding: "12px 14px", background: "none", border: 0, cursor: "pointer", minHeight: 56 }
         },
-        /* @__PURE__ */ React.createElement("span", { className: "flex items-center justify-center rounded mb-2", style: { width: 30, height: 30, background: cat.color + "18", color: cat.color } }, /* @__PURE__ */ React.createElement(Icon, { size: 17 })),
-        /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow", style: { color: INK_MUTED } }, cat.label),
-        /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline gap-1 mt-0.5" }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 24, fontWeight: 700, color: isLow ? RED : INK, lineHeight: 1 } }, total), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, cat.unit)),
-        isLow && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1 font-semibold", style: { color: RED } }, "\u26A0 ", lowest.name, " low")
-      );
-    })), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-6" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-1" }, (() => {
-      const Icon = activeCat.icon;
-      return /* @__PURE__ */ React.createElement("span", { className: "flex items-center justify-center rounded", style: { width: 26, height: 26, background: activeCat.color + "18", color: activeCat.color } }, /* @__PURE__ */ React.createElement(Icon, { size: 15 }));
-    })(), /* @__PURE__ */ React.createElement("span", { className: "text-sm font-semibold font-display", style: { color: INK } }, activeCat.label)), /* @__PURE__ */ React.createElement("div", null, activeRows.map((m) => /* @__PURE__ */ React.createElement(MaterialVariantRow, { key: m.id, material: m, category: activeCat, data, setData })), activeRows.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-sm py-4", style: { color: INK_MUTED } }, "No variants yet.")), /* @__PURE__ */ React.createElement(AddMaterialVariant, { category: activeCat, setData })), /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Recent activity"), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden" }, recentMovements.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-sm p-4", style: { color: INK_MUTED } }, "Nothing logged yet."), recentMovements.map((mv, i) => {
+        /* @__PURE__ */ React.createElement("span", { className: "flex items-center justify-center rounded shrink-0", style: { width: 30, height: 30, background: cat.color + "18", color: cat.color } }, /* @__PURE__ */ React.createElement(Icon, { size: 17 })),
+        /* @__PURE__ */ React.createElement("span", { className: "flex-1 min-w-0" }, /* @__PURE__ */ React.createElement("span", { className: "block text-sm font-semibold", style: { color: INK } }, cat.label), lows.length > 0 ? /* @__PURE__ */ React.createElement("span", { className: "block text-xs font-semibold", style: { color: RED } }, "\u26A0 ", lows.map((m) => m.name).join(", "), " low") : /* @__PURE__ */ React.createElement("span", { className: "block text-xs", style: { color: INK_MUTED } }, rows.length, " ", rows.length === 1 ? "item" : "items")),
+        /* @__PURE__ */ React.createElement("span", { className: "text-right shrink-0" }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 20, fontWeight: 700, color: lows.length ? RED : INK } }, Number(total || 0).toLocaleString("en-GB")), " ", /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, cat.unit)),
+        /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 18, width: 16, textAlign: "center" } }, isOpen ? "\u2212" : "+")
+      ), isOpen && /* @__PURE__ */ React.createElement("div", { style: { padding: "0 14px 10px" }, "data-material-cat-open": cat.key }, rows.map((m) => /* @__PURE__ */ React.createElement(MaterialVariantRow, { key: m.id, material: m, category: cat, data, setData })), rows.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-sm py-3", style: { color: INK_MUTED } }, "No variants yet."), /* @__PURE__ */ React.createElement(AddMaterialVariant, { category: cat, setData })));
+    })), /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Recent activity"), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden" }, recentMovements.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-sm p-4", style: { color: INK_MUTED } }, "Nothing logged yet."), recentMovements.map((mv, i) => {
       const mat = materialById[mv.materialId];
       const cat = mat ? MATERIAL_CATEGORIES.find((c) => c.key === mat.category) : null;
       return /* @__PURE__ */ React.createElement("div", { key: mv.id, className: "flex items-center justify-between px-3 py-2", style: { borderTop: i ? `1px solid ${BORDER}` : "none" } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 min-w-0" }, cat && (() => {
@@ -29250,7 +29378,6 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
       },
       direct && /* @__PURE__ */ React.createElement(BondRow, { label: "PVC code", sub: pvcColourForSpec(spec) ? `${pvcColourForSpec(spec)}, for this height` : "from the register" }, /* @__PURE__ */ React.createElement(BondCodeInput, { value: form.extPvcCode, onChange: set("extPvcCode") })),
       /* @__PURE__ */ React.createElement(BondRow, { label: "Glue batch" }, /* @__PURE__ */ React.createElement(BondCodeInput, { value: form.glueBatch, onChange: set("glueBatch") })),
-      /* @__PURE__ */ React.createElement(BondRow, { label: "New block of glue opened" }, /* @__PURE__ */ React.createElement(BondToggle, { value: form.glueOpened ? "Yes" : "No", options: ["No", "Yes"], onChange: (v) => setForm((f) => ({ ...f, glueOpened: v === "Yes" })) })),
       /* @__PURE__ */ React.createElement(BondRow, { label: "New roll of mylar opened" }, /* @__PURE__ */ React.createElement(BondToggle, { value: form.mylarOpened ? "Yes" : "No", options: ["No", "Yes"], onChange: (v) => setForm((f) => ({ ...f, mylarOpened: v === "Yes" })) })),
       form.mylarOpened && /* @__PURE__ */ React.createElement(BondRow, { label: "Which mylar?" }, /* @__PURE__ */ React.createElement(Select, { value: form.mylarVariantId || "", onChange: (e) => setForm((f) => ({ ...f, mylarVariantId: e.target.value })), style: { width: 170 } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Which one?"), materials.filter((m) => m.category === "mylar").map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id }, m.name))))
     ), direct && /* @__PURE__ */ React.createElement(
@@ -29465,7 +29592,7 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
         className: "w-full px-2.5 py-1.5 text-sm outline-none bg-white",
         style: { border: `1px solid ${BORDER}`, borderRadius: 5 }
       }
-    )), /* @__PURE__ */ React.createElement("div", { style: { width: 140 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Date"), /* @__PURE__ */ React.createElement(TextInput, { type: "date", value: values.date, onChange: (e) => setValues({ ...values, date: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 160 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Assigned order"), /* @__PURE__ */ React.createElement(Select, { value: values.assignedOrderId || "", onChange: (e) => setValues({ ...values, assignedOrderId: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014 None \u2014"), orderOptions.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.value, value: o.value }, o.label))))), !hideMaterialsSection && /* @__PURE__ */ React.createElement(FieldGroup, { label: "MATERIALS USED \u2014 NEW BLOCK/ROLL OPENED?" }, /* @__PURE__ */ React.createElement("label", { className: "flex items-center gap-1.5 text-sm", style: { cursor: "pointer" } }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: !!values.glueOpened, onChange: (e) => setValues({ ...values, glueOpened: e.target.checked }) }), "New glue block"), /* @__PURE__ */ React.createElement("label", { className: "flex items-center gap-1.5 text-sm", style: { cursor: "pointer" } }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: !!values.mylarOpened, onChange: (e) => setValues({ ...values, mylarOpened: e.target.checked }) }), "New Mylar roll"), values.mylarOpened && /* @__PURE__ */ React.createElement(Select, { value: values.mylarVariantId || "", onChange: (e) => setValues({ ...values, mylarVariantId: e.target.value }), style: { width: 160 } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Which one?"), materials.filter((m) => m.category === "mylar").map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id }, m.name)))), /* @__PURE__ */ React.createElement(FieldGroup, { label: "OTHER" }, /* @__PURE__ */ React.createElement("div", { className: "flex-1 min-w-[200px]" }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Comments"), /* @__PURE__ */ React.createElement(TextInput, { value: values.comments, onChange: (e) => setValues({ ...values, comments: e.target.value }) }))));
+    )), /* @__PURE__ */ React.createElement("div", { style: { width: 140 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Date"), /* @__PURE__ */ React.createElement(TextInput, { type: "date", value: values.date, onChange: (e) => setValues({ ...values, date: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { style: { width: 160 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Assigned order"), /* @__PURE__ */ React.createElement(Select, { value: values.assignedOrderId || "", onChange: (e) => setValues({ ...values, assignedOrderId: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014 None \u2014"), orderOptions.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.value, value: o.value }, o.label))))), !hideMaterialsSection && /* @__PURE__ */ React.createElement(FieldGroup, { label: "MATERIALS USED \u2014 NEW BLOCK/ROLL OPENED?" }, /* @__PURE__ */ React.createElement("label", { className: "flex items-center gap-1.5 text-sm", style: { cursor: "pointer" } }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: !!values.mylarOpened, onChange: (e) => setValues({ ...values, mylarOpened: e.target.checked }) }), "New Mylar roll"), values.mylarOpened && /* @__PURE__ */ React.createElement(Select, { value: values.mylarVariantId || "", onChange: (e) => setValues({ ...values, mylarVariantId: e.target.value }), style: { width: 160 } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Which one?"), materials.filter((m) => m.category === "mylar").map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id }, m.name)))), /* @__PURE__ */ React.createElement(FieldGroup, { label: "OTHER" }, /* @__PURE__ */ React.createElement("div", { className: "flex-1 min-w-[200px]" }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Comments"), /* @__PURE__ */ React.createElement(TextInput, { value: values.comments, onChange: (e) => setValues({ ...values, comments: e.target.value }) }))));
   }
   function CommentCell({ text }) {
     const [expanded, setExpanded] = useState(false);
