@@ -11423,7 +11423,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-01.21";
+  var APP_VERSION = "2026-10-01.22";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -23957,6 +23957,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-10-01.22", "Materials: tape and mylar metres go by each batch's roll length (7mm Biesse 5,000 m, 7mm TP2462 bobbins 4,000 m, 12mm 4,000 m, 10mm 5,000 m); Goods in asks the metres on a roll for tape and mylar; a recount keeps each batch's length."],
     ["2026-10-01.21", "Materials: \uFF0B Goods in (which stock \u2192 which one \u2192 how many \u2192 the code); each kind of material opens in place to show its items; low-stock warnings on Materials and in the alerts \u2014 PVC and EVA below 20 bags, cartons below 1,000, glue below 25 blocks, each mylar and tape below 10,000 m."],
     ["2026-10-01.20", "Materials: an Opened button on every PVC colour, EVA and glue \u2014 one tap takes a bag or block off. Glue remembers the batch code last opened; Other code picks another from the count or types a new one. Undo takes the last tap back. The glue line no longer asks about a new block of glue (it would be taken off twice). Fixed: the old Bag opened and the \u270E correction emptied the device's orders until the next sync."],
     ["2026-10-01.19", "Speed: carton stock, reel metres and size matching are worked out once and remembered instead of re-reading every box record and ledger entry each time \u2014 the figures behind every screen take about a third less time after each save."],
@@ -24564,11 +24565,15 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
           const newQty = coded ? ls.reduce((t, l) => t + l.count + l.parts.length, 0) : Number(quantities[m.id] ?? m.currentStock ?? 0) || 0;
           const delta = newQty - Number(m.currentStock || 0);
           if (delta !== 0) newMovements.push({ id: uid("mm"), materialId: m.id, qty: delta, sourceType: "stocktake", sourceId: null, note: "Stock take", date: today });
+          const lenWas = (code) => {
+            const b = (Array.isArray(m.batches) ? m.batches : []).find((x) => x && String(x.code || "").trim() === code);
+            return b && Number(b.metres) ? { metres: Number(b.metres) } : {};
+          };
           if (coded) return {
             ...m,
             currentStock: newQty,
             lastStockTakeDate: today,
-            batches: ls,
+            batches: ls.map((l) => ({ ...l, ...lenWas(l.code) })),
             batchCode: ls[0] && ls[0].code || m.batchCode || "",
             ...m.category === "mylar" ? { fullMetres: Number(fullLen && fullLen[m.id]) || m.fullMetres || null } : {}
           };
@@ -24633,11 +24638,24 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     tape: { below: 1e4, metres: true }
   };
   function materialMetres(m) {
-    const full = Number(m.fullMetres) || 0;
     const stock = Number(m.currentStock) || 0;
-    const parts = (Array.isArray(m.batches) ? m.batches : []).flatMap((b) => partMetres(b && b.parts));
-    if (!full) return null;
-    return Math.max(0, stock - parts.length) * full + parts.reduce((t, x) => t + x, 0);
+    const batches = (Array.isArray(m.batches) ? m.batches : []).filter(Boolean);
+    const parts = batches.flatMap((b) => partMetres(b.parts));
+    const lenOf = (b) => Number(b && b.metres) || 0;
+    const fallback = Number(m.fullMetres) || lenOf(batches.find((b) => String(b.code || "") === String(m.batchCode || ""))) || lenOf(batches.find((b) => lenOf(b) > 0));
+    if (!fallback && !batches.some((b) => lenOf(b) > 0)) return null;
+    let metres = 0, rolls = 0;
+    for (const b of batches) {
+      const n = Number(b.count) || 0;
+      const len = lenOf(b) || fallback;
+      if (!len) return null;
+      metres += n * len;
+      rolls += n;
+    }
+    metres += parts.reduce((t, x) => t + x, 0);
+    rolls += parts.length;
+    metres += (stock - rolls) * fallback;
+    return Math.max(0, metres);
   }
   function materialLow(m, movements) {
     const rule = m && LOW_STOCK_RULES[m.category];
@@ -24665,6 +24683,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     const [qty, setQty] = useState("");
     const [code, setCode] = useState("");
     const [done, setDone] = useState("");
+    const [rollLen, setRollLen] = useState("");
     const mats = (data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS).filter((m) => m && !m.deleted);
     const inCat = mats.filter((m) => m.category === cat).sort((a, b) => String(a.name).localeCompare(String(b.name), void 0, { numeric: true }));
     const mat = mats.find((m) => m.id === matId);
@@ -24673,7 +24692,9 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
       setMatId("");
       setQty("");
       setCode("");
+      setRollLen("");
     };
+    const byLength = mat && (mat.category === "mylar" || mat.category === "tape");
     const save = () => {
       const n = Number(qty);
       if (!mat) {
@@ -24694,8 +24715,9 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
           if (m.id !== mat.id || !c) return m;
           const batches = Array.isArray(m.batches) ? [...m.batches] : [];
           const i = batches.findIndex((b) => b && String(b.code || "").trim() === c);
-          if (i >= 0) batches[i] = { ...batches[i], count: (Number(batches[i].count) || 0) + n };
-          else batches.push({ code: c, count: n, parts: [] });
+          const len = byLength ? Number(rollLen) || Number(m.fullMetres) || 0 : 0;
+          if (i >= 0) batches[i] = { ...batches[i], count: (Number(batches[i].count) || 0) + n, ...len ? { metres: len } : {} };
+          else batches.push({ code: c, count: n, parts: [], ...len ? { metres: len } : {} });
           return { ...m, batches, batchCode: m.batchCode || c };
         });
         return { ...prevData, ...r, materials };
@@ -24714,7 +24736,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }, style: box }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose\u2026"), GOODS_IN_CATS.map((k) => {
       const c = MATERIAL_CATEGORIES.find((x) => x.key === k);
       return c ? /* @__PURE__ */ React.createElement("option", { key: k, value: k }, k === "boxes" ? "Cartons (boxes)" : c.label) : null;
-    })), cat && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1 mt-3", style: { color: INK_MUTED } }, "Which one?"), /* @__PURE__ */ React.createElement("select", { "data-goods-in-mat": true, value: matId, onChange: (e) => setMatId(e.target.value), style: box }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose\u2026"), inCat.map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id }, m.name)))), mat && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1 mt-3", style: { color: INK_MUTED } }, "How many ", mat.unit, "?"), /* @__PURE__ */ React.createElement("input", { "data-goods-in-qty": true, type: "number", inputMode: "decimal", value: qty, onChange: (e) => setQty(e.target.value), style: box }), /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1 mt-3", style: { color: INK_MUTED } }, "Code on the delivery", cat === "pvc" ? " (Ducavin job code)" : ""), /* @__PURE__ */ React.createElement("input", { "data-goods-in-code": true, value: code, onChange: (e) => setCode(e.target.value), placeholder: mat.batchCode ? `e.g. ${mat.batchCode}` : "Batch / lot code", style: box })), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mt-4" }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", "data-goods-in-save": true, onClick: save, disabled: !mat }, "Book in"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => {
+    })), cat && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1 mt-3", style: { color: INK_MUTED } }, "Which one?"), /* @__PURE__ */ React.createElement("select", { "data-goods-in-mat": true, value: matId, onChange: (e) => setMatId(e.target.value), style: box }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose\u2026"), inCat.map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id }, m.name)))), mat && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1 mt-3", style: { color: INK_MUTED } }, "How many ", mat.unit, "?"), /* @__PURE__ */ React.createElement("input", { "data-goods-in-qty": true, type: "number", inputMode: "decimal", value: qty, onChange: (e) => setQty(e.target.value), style: box }), /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1 mt-3", style: { color: INK_MUTED } }, "Code on the delivery", cat === "pvc" ? " (Ducavin job code)" : ""), /* @__PURE__ */ React.createElement("input", { "data-goods-in-code": true, value: code, onChange: (e) => setCode(e.target.value), placeholder: mat.batchCode ? `e.g. ${mat.batchCode}` : "Batch / lot code", style: box }), byLength && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1 mt-3", style: { color: INK_MUTED } }, "Metres on a ", mat.unit === "pancakes" ? "pancake" : "roll", " (from the label)"), /* @__PURE__ */ React.createElement("input", { "data-goods-in-metres": true, type: "number", inputMode: "decimal", value: rollLen, onChange: (e) => setRollLen(e.target.value), placeholder: mat.fullMetres ? String(mat.fullMetres) : "e.g. 5000", style: box }))), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mt-4" }, /* @__PURE__ */ React.createElement(Button, { variant: "accent", "data-goods-in-save": true, onClick: save, disabled: !mat }, "Book in"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => {
       reset();
       setOpen(false);
     } }, "Cancel"))));
