@@ -864,15 +864,39 @@
     memo.set(memoKey, answer);
     return answer;
   }
+  var CATALOGUE_INDEX = { products: null, aliases: null, lengths: "", index: null };
+  function catalogueIndex(data) {
+    const pArr = data && data.products || null, aArr = data && data.productAliases || null;
+    const lens = `${(pArr || []).length}/${(aArr || []).length}`;
+    if (CATALOGUE_INDEX.index && CATALOGUE_INDEX.products === pArr && CATALOGUE_INDEX.aliases === aArr && CATALOGUE_INDEX.lengths === lens) return CATALOGUE_INDEX.index;
+    const products = (pArr || []).filter((p) => !p.deleted);
+    const aliases = (aArr || []).filter((a) => !a.deleted);
+    const byId = new Map(products.map((p) => [p.id, p]));
+    const aliasByText = /* @__PURE__ */ new Map(), aliasByKey = /* @__PURE__ */ new Map(), productByKey = /* @__PURE__ */ new Map();
+    for (const a of aliases) {
+      if (!aliasByText.has(a.alias)) aliasByText.set(a.alias, a);
+      const k = productKey(a.alias);
+      if (!aliasByKey.has(k)) aliasByKey.set(k, a);
+    }
+    for (const p of products) {
+      const k = productKey(p.displayName);
+      if (!productByKey.has(k)) productByKey.set(k, p);
+    }
+    const index = { products, aliases, byId, aliasByText, aliasByKey, productByKey };
+    CATALOGUE_INDEX.products = pArr;
+    CATALOGUE_INDEX.aliases = aArr;
+    CATALOGUE_INDEX.lengths = lens;
+    CATALOGUE_INDEX.index = index;
+    return index;
+  }
   function resolveProductFresh(data, text) {
-    const products = (data && data.products || []).filter((p) => !p.deleted);
-    const aliases = (data && data.productAliases || []).filter((a) => !a.deleted);
+    const { products, byId, aliasByText, aliasByKey, productByKey } = catalogueIndex(data);
     const typedRaw = String(text || "").trim();
     const raw = normaliseProductText(typedRaw);
-    const byId = new Map(products.map((p) => [p.id, p]));
-    const hit = aliases.find((a) => a.alias === raw) || aliases.find((a) => productKey(a.alias) === productKey(raw));
+    const rawKey = productKey(raw);
+    const hit = aliasByText.get(raw) || aliasByKey.get(rawKey);
     if (hit && byId.get(hit.productId)) return { status: "exact", product: byId.get(hit.productId), candidates: [] };
-    const self = products.find((p) => productKey(p.displayName) === productKey(raw));
+    const self = productByKey.get(rawKey);
     if (self) return { status: "exact", product: self, candidates: [] };
     const q = productParts(raw);
     const famWords = raw.replace(/[\d].*$/, "").trim().toUpperCase();
@@ -3608,6 +3632,22 @@
     CASE_BOX_INDEX.byBox = byBox;
     return byBox;
   }
+  var RUN_BOX_INDEX = { runs: null, length: -1, byBox: /* @__PURE__ */ new Map() };
+  function runsByBox(data) {
+    const rArr = data.bondingRuns || null, len = (rArr || []).length;
+    if (RUN_BOX_INDEX.runs === rArr && RUN_BOX_INDEX.length === len) return RUN_BOX_INDEX.byBox;
+    const byBox = /* @__PURE__ */ new Map();
+    for (const r of rArr || []) {
+      if (!r || r.deleted) continue;
+      const key = String(r.boxNumber || "").trim().toUpperCase();
+      if (!byBox.has(key)) byBox.set(key, []);
+      byBox.get(key).push(r);
+    }
+    RUN_BOX_INDEX.runs = rArr;
+    RUN_BOX_INDEX.length = len;
+    RUN_BOX_INDEX.byBox = byBox;
+    return byBox;
+  }
   function placeOf(data, boxNumber) {
     const want = String(boxNumber || "").trim().toUpperCase();
     const inCases = (caseHoldingsByBox(data).get(want) || []).map((x) => ({ ...x }));
@@ -3617,7 +3657,7 @@
     const onShelf = Math.max(0, onShelfRaw);
     const promised = 0;
     const available = onShelf;
-    const bays = [...new Set((data.bondingRuns || []).filter((r) => r && !r.deleted && String(r.boxNumber || "").trim().toUpperCase() === want).map((r) => String(r.location || "").trim()).filter((loc) => BOX_LOCATIONS.includes(loc)))].sort();
+    const bays = [...new Set((runsByBox(data).get(want) || []).map((r) => String(r.location || "").trim()).filter((loc) => BOX_LOCATIONS.includes(loc)))].sort();
     return { inCases, packed, onShelf, onShelfRaw, promised, available, bays, unplaced: bays.length ? 0 : onShelf };
   }
   function caseProducts(movements, runs, orderId, caseNum) {
@@ -8732,7 +8772,9 @@ ${line}` : line;
       liveByProductForm.set(k, String(f.updatedAt || "") > String(held.updatedAt || "") ? f : held);
     }
     const retired = kept.map((f) => f.deleted || liveByProductForm.get(`${f.productId}|${f.form}`) === f ? f : { ...f, deleted: true });
-    return [...rows.filter((f) => !f || !f.productId), ...retired];
+    const out = [...rows.filter((f) => !f || !f.productId), ...retired];
+    if (Array.isArray(forms) && out.length === forms.length && out.every((f, i) => f === forms[i])) return forms;
+    return out;
   }
   var IDB_STORE = "state";
   function idbGet(db, key) {
@@ -9473,7 +9515,22 @@ ${line}` : line;
     }
     return { refusedIds, landed };
   }
+  function stableJson(x) {
+    if (x === void 0) return "null";
+    if (x === null || typeof x !== "object") return JSON.stringify(x);
+    if (Array.isArray(x)) return "[" + x.map(stableJson).join(",") + "]";
+    return "{" + Object.keys(x).filter((k) => x[k] !== void 0).sort().map((k) => JSON.stringify(k) + ":" + stableJson(x[k])).join(",") + "}";
+  }
+  function sameRowValue(a, b) {
+    return a === b || !!a && !!b && stableJson(a) === stableJson(b);
+  }
   function mergeById(localRows, remoteRows, pendingDeletedIds, mapMergeFields, pendingFields, onClash) {
+    const out = mergeByIdFresh(localRows, remoteRows, pendingDeletedIds, mapMergeFields, pendingFields, onClash);
+    if (!Array.isArray(localRows) || out.length !== localRows.length) return out;
+    for (let i = 0; i < out.length; i++) if (out[i] !== localRows[i]) return out;
+    return localRows;
+  }
+  function mergeByIdFresh(localRows, remoteRows, pendingDeletedIds, mapMergeFields, pendingFields, onClash) {
     const map = /* @__PURE__ */ new Map();
     for (const r of localRows || []) {
       if (!pendingDeletedIds || !pendingDeletedIds.has(r.id)) map.set(r.id, r);
@@ -9516,9 +9573,9 @@ ${line}` : line;
           const hasNewKeys = Object.keys(loserMap).some((k) => !(winnerMap && Object.prototype.hasOwnProperty.call(winnerMap, k)));
           if (hasNewKeys) merged = { ...merged, [field]: { ...loserMap, ...winnerMap || {} } };
         }
-        map.set(r.id, merged);
+        map.set(r.id, sameRowValue(merged, existing) ? existing : merged);
       } else {
-        map.set(r.id, winner);
+        map.set(r.id, sameRowValue(winner, existing) ? existing : winner);
       }
     }
     return [...map.values()];
@@ -11295,7 +11352,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-01.16";
+  var APP_VERSION = "2026-10-01.17";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -14095,20 +14152,24 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
   function TodayView({ data, setData, jumpToProduction, jumpToOrder, jumpToDiscrepancies }) {
     const [showAllExtrude, setShowAllExtrude] = useState(false);
     const [showAllWaiting, setShowAllWaiting] = useState(false);
-    const allRows = productionOutstandingRows(data.orders, data.lineItems, data.bondingRuns, data.stockPicks);
-    const dueRows = dueDateRows(data.orders, data.lineItems, data.bondingRuns);
-    const byCategory = SIZE_CATEGORIES.map((c) => {
-      const rows = allRows.filter((r) => classifySize(r.spec) === c.key && (r.toMake ?? r.qty) > 0);
-      const totalQty = rows.reduce((s, r) => s + (r.toMake ?? r.qty), 0);
-      const urgent = [...rows].sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99) || (b.toMake ?? b.qty) - (a.toMake ?? a.qty)).slice(0, 3);
-      return { ...c, rows, totalQty, urgent };
-    }).filter((c) => c.rows.length > 0);
-    const glueLineNeeds = [...glueLineScheduleRows(data.orders, data.lineItems, data.glueLineBatches, data.bondingRuns, data.stockPicks, data.ncrs || [], data.glueRuns || [])].sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99) || b.stillToGlueLine - a.stillToGlueLine);
-    const bondingReady = batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || [], data.stockPicks || []).filter((r) => r.available && r.qtyNeeded > 0).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99) || b.qtyNeeded - a.qtyNeeded);
-    const extrusion = extrusionScheduleRows(data.extrusion1, data.extrusion2, data.glueLineBatches, glueLineNeeds);
-    const evaYield = evaYieldByDie(data.bondingRuns);
-    const evaRack = evaRackRows(data.materials, data.bondingRuns, data.materialMovements, evaYield, data.evaRuns);
-    const evaByKey = new Map(evaRack.map((e) => [e.key, e]));
+    const __today = useMemo(() => {
+      const allRows2 = productionOutstandingRows(data.orders, data.lineItems, data.bondingRuns, data.stockPicks);
+      const dueRows2 = dueDateRows(data.orders, data.lineItems, data.bondingRuns);
+      const byCategory2 = SIZE_CATEGORIES.map((c) => {
+        const rows = allRows2.filter((r) => classifySize(r.spec) === c.key && (r.toMake ?? r.qty) > 0);
+        const totalQty = rows.reduce((s, r) => s + (r.toMake ?? r.qty), 0);
+        const urgent = [...rows].sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99) || (b.toMake ?? b.qty) - (a.toMake ?? a.qty)).slice(0, 3);
+        return { ...c, rows, totalQty, urgent };
+      }).filter((c) => c.rows.length > 0);
+      const glueLineNeeds2 = [...glueLineScheduleRows(data.orders, data.lineItems, data.glueLineBatches, data.bondingRuns, data.stockPicks, data.ncrs || [], data.glueRuns || [])].sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99) || b.stillToGlueLine - a.stillToGlueLine);
+      const bondingReady2 = batchesAvailableRows(data.glueLineBatches, data.bondingRuns, data.orders, data.lineItems, data.ncrs || [], data.stockPicks || []).filter((r) => r.available && r.qtyNeeded > 0).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99) || b.qtyNeeded - a.qtyNeeded);
+      const extrusion2 = extrusionScheduleRows(data.extrusion1, data.extrusion2, data.glueLineBatches, glueLineNeeds2);
+      const evaYield2 = evaYieldByDie(data.bondingRuns);
+      const evaRack2 = evaRackRows(data.materials, data.bondingRuns, data.materialMovements, evaYield2, data.evaRuns);
+      const evaByKey2 = new Map(evaRack2.map((e) => [e.key, e]));
+      return { allRows: allRows2, dueRows: dueRows2, byCategory: byCategory2, glueLineNeeds: glueLineNeeds2, bondingReady: bondingReady2, extrusion: extrusion2, evaYield: evaYield2, evaRack: evaRack2, evaByKey: evaByKey2 };
+    }, [data]);
+    const { allRows, dueRows, byCategory, glueLineNeeds, bondingReady, extrusion, evaYield, evaRack, evaByKey } = __today;
     const evaLeft = new Map(evaRack.map((e) => [e.key, e.projectedBoxes ?? 0]));
     const bondingWithEva = bondingReady.map((r) => {
       const perBox = Number(r.metersPerBox) || METERS_PER_BOX_DEFAULT;
@@ -33564,6 +33625,9 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         ken: mergeById(currentData.tooling?.ken, remote.tooling?.ken, pending)
       };
       merged.productForms = dedupeProductForms(merged.productForms);
+      const T = currentData.tooling;
+      if (T && Object.keys(T).length === 5 && ["standard", "mini", "offcentre", "doubles", "ken"].every((k) => merged.tooling[k] === T[k])) merged.tooling = T;
+      if (Object.keys(merged).length === Object.keys(currentData).length && Object.keys(merged).every((k) => merged[k] === currentData[k])) return currentData;
       return merged;
     };
     const pullAndMergeAll = async (client, currentData) => {
