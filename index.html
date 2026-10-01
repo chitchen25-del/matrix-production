@@ -11283,7 +11283,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-01.14";
+  var APP_VERSION = "2026-10-01.15";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -23811,6 +23811,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-10-01.15", "Stock take: Print summary is now the one-page totals \u2014 creasing matrix (7mm / 10mm / 12mm), rubber, each material line by line, and the metres of reel on the racks. The detailed list is still on the Live print-out tab."],
     ["2026-10-01.14", "Stock take NO BAY: each code found is checked against the ledger \u2014 already counted in a bay, or packed in a case, isn't added unless you say they're extra boxes."],
     ["2026-10-01.13", "Stock take NO BAY (admin's phone): a clean screen \u2014 photograph a spot, Work it out, say where it is, Complete; it clears for the next spot."],
     ["2026-10-01.12", `Adding a box not on the system: only ranges the catalogue holds are offered (no more "PX"), and a size that's in the catalogue under another range says so with a Use button instead of Add to the catalogue.`],
@@ -29427,6 +29428,86 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
     }
     return `<!doctype html><html><head><meta charset="utf-8"><title>Stock take ${esc2(today)}</title><style>@page{size:A4 portrait;margin:12mm}body{font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:#1C2437;margin:0}table{page-break-inside:auto}tr{page-break-inside:avoid}</style></head><body>${body}</body></html>`;
   }
+  var ST_MATERIAL_SECTIONS = [
+    { key: "pvc", label: "PVC", weight: " (25 kg)", order: ["Natural", "Green", "Yellow", "Blue", "Red"] },
+    { key: "eva", label: "EVA", weight: " (25 kg)", batchWord: "Lot" },
+    { key: "boxes", label: "Empty cartons", unit: "cartons" },
+    { key: "mylar", label: "Mylar" },
+    { key: "tape", label: "Tape" },
+    { key: "glue", label: "Glue", weight: " (16 kg)", batchWord: "Batch" }
+  ];
+  function stockTakeSummaryFigures(data) {
+    const isReelBox = (b) => String(b.packageType || "") === "Reel" || /\breel\b/i.test(String(b.productSize || ""));
+    const grp = { "7mm": 0, "10mm": 0, "12mm": 0 };
+    let rubber = 0, other = 0;
+    for (const b of boxedStockAvailable(data.bondingRuns || [], data.stockPicks || [])) {
+      const q = Number(b.available || 0);
+      if (!(q > 0) || !b.boxNumber || isReelBox(b)) continue;
+      const g = classifySize(b.productSize);
+      if (g in grp) grp[g] += q;
+      else if (g === "rubber") rubber += q;
+      else other += q;
+    }
+    const mats = (data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS).filter((m) => m && !m.deleted);
+    const counted = (m) => !!m.lastStockTakeDate || Number(m.currentStock) !== 0;
+    const sections = ST_MATERIAL_SECTIONS.map((sec) => {
+      let items = mats.filter((m) => m.category === sec.key);
+      if (!items.length) return null;
+      let lines;
+      const one2 = items.length === 1 && Array.isArray(items[0].batches) && items[0].batches.length;
+      if (one2) {
+        lines = items[0].batches.map((b) => ({ label: `${sec.batchWord || "Batch"} ${b.code || "(no code)"}`, n: Number(b.count) || 0 }));
+        const gap = (Number(items[0].currentStock) || 0) - lines.reduce((t, l) => t + l.n, 0);
+        if (gap) lines.push({ label: gap < 0 ? "Used since the count" : "Added since the count", n: gap });
+      } else {
+        const rank = (m) => sec.order ? sec.order.indexOf(m.name) + 1 || 99 : 0;
+        items = [...items].sort((a, b) => counted(b) - counted(a) || rank(a) - rank(b) || (sec.key === "mylar" ? (a.unit === "rolls" ? 0 : 1) - (b.unit === "rolls" ? 0 : 1) || String(a.name).localeCompare(String(b.name)) : 0) || (sec.order || sec.key === "mylar" ? 0 : (Number(b.currentStock) || 0) - (Number(a.currentStock) || 0)));
+        lines = items.map((m) => ({ label: sec.key === "mylar" && m.unit === "rolls" ? `${m.name} spools` : m.name, n: counted(m) ? Number(m.currentStock) || 0 : null }));
+      }
+      const units = [...new Set(items.map((m) => m.unit).filter(Boolean))];
+      const unit = sec.unit || (units.length === 1 ? units[0] + (sec.weight || "") : "");
+      return { label: sec.label, total: lines.reduce((t, l) => t + (l.n || 0), 0), unit, lines };
+    }).filter(Boolean);
+    const runs = (data.bondingRuns || []).filter((r) => r && !r.deleted);
+    const reels = (data.glueLineBatches || []).filter((g) => g && !g.deleted && g.cleared !== "Yes" && g.cleared !== true).map((g) => Math.max(0, (Number(g.meterage) || 0) - batchMeterageUsed(runs, g.batchNumber))).filter((m) => m > 0);
+    return { grp, matrix: grp["7mm"] + grp["10mm"] + grp["12mm"], rubber, other, sections, reelCount: reels.length, reelMetres: Math.round(reels.reduce((t, m) => t + m, 0)) };
+  }
+  function stockTakeSpan(data) {
+    const sess = stockTakeSession(data);
+    const moves = (data.movements || []).filter((m) => m && !m.deleted && m.source === "stocktake");
+    if (moves.some((m) => String(m.sourceId || "").startsWith(sess.tag + ":"))) return { start: sess.start, end: todayISO(), open: true };
+    const fin = (data.changeLog || []).filter((e) => e && !e.deleted && e.action === "stocktake_finished" && /^st-\d{4}-\d\d-\d\d$/.test(e.entityId || "")).sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))[0];
+    if (fin) return { start: fin.entityId.slice(3), end: String(fin.at || "").slice(0, 10) || todayISO(), open: false };
+    return { start: todayISO(), end: todayISO(), open: true };
+  }
+  function stockTakeSummaryHtml(data) {
+    const esc2 = (x) => String(x == null ? "" : x).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+    const f = stockTakeSummaryFigures(data), span = stockTakeSpan(data);
+    const n = (x) => Number(x || 0).toLocaleString("en-GB");
+    const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const day = (iso, withYear) => {
+      const [y, m, dd] = String(iso).split("-").map(Number);
+      return `${dd} ${MON[m - 1]}${withYear ? " " + y : ""}`;
+    };
+    const when = span.start === span.end ? day(span.end, true) : `${day(span.start, span.start.slice(0, 4) !== span.end.slice(0, 4))} \u2013 ${day(span.end, true)}`;
+    const head = (label, total, unit, last) => `<div class="hd${last ? " last" : ""}"><span>${esc2(label)}</span><span class="big">${total}${unit ? ` <small>${esc2(unit)}</small>` : ""}</span></div>`;
+    const rows = (lines) => lines.length ? `<div class="rows">${lines.map((l) => `<div class="row"><span>${esc2(l.label)}</span><span${l.n == null ? ' class="nc"' : ""}>${l.n == null ? "not counted" : n(l.n)}</span></div>`).join("")}</div>` : "";
+    let body = `<div class="top"><div><div class="title">Stock take</div><div class="sub">${esc2(when)}${span.open ? " \xB7 still open" : ""} \xB7 printed ${esc2((/* @__PURE__ */ new Date()).toLocaleDateString("en-GB"))} ${esc2((/* @__PURE__ */ new Date()).toTimeString().slice(0, 5))}</div></div><img src="data:image/png;base64,${LOGO_B64}" /></div>`;
+    body += `<div class="sec first">${head("Creasing matrix", n(f.matrix), "boxes")}${rows([["7mm", f.grp["7mm"]], ["10mm", f.grp["10mm"]], ["12mm", f.grp["12mm"]]].map(([label, x]) => ({ label, n: x })))}</div>`;
+    body += `<div class="sec">${head("Rubber (Exceed)", n(f.rubber), "boxes")}</div>`;
+    if (f.other > 0) body += `<div class="sec">${head("Other boxes", n(f.other), "boxes")}</div>`;
+    for (const s of f.sections) body += `<div class="sec">${head(s.label, n(s.total), s.unit)}${rows(s.lines)}</div>`;
+    body += `<div class="sec reels">${head("Reels on the racks", n(f.reelMetres), "m", true)}<div class="note">${n(f.reelCount)} reel${f.reelCount === 1 ? "" : "s"}</div></div>`;
+    body += `<div class="sign">Counted by ____________________ &nbsp;&nbsp; Checked by ____________________</div>`;
+    const css = `@page{size:A4 portrait;margin:14mm}body{font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:#000;margin:0;font-variant-numeric:tabular-nums}
+.top{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #000;padding-bottom:8px}.top img{height:34px}
+.title{font-size:24px;font-weight:700}.sub{font-size:12px;color:#444;margin-top:2px}
+.sec{border-top:1px solid #999;margin-top:12px;padding-top:10px;page-break-inside:avoid}.sec.first{border-top:0;margin-top:14px}.sec.reels{border-top:2px solid #000}
+.hd{display:flex;justify-content:space-between;align-items:baseline;font-size:17px;font-weight:700}.hd .big{font-size:22px}.hd small{font-size:12px;font-weight:400;color:#444}
+.rows{border-left:2px solid #999;padding-left:12px;margin-top:4px;font-size:14px}.row{display:flex;justify-content:space-between;padding:2px 0}.nc{color:#555;font-size:12px;font-style:italic}
+.note{text-align:right;font-size:12px;color:#444}.sign{margin-top:26px;font-size:12px;color:#333}`;
+    return `<!doctype html><html><head><meta charset="utf-8"><title>Stock take ${esc2(span.end)}</title><style>${css}</style></head><body>${body}</body></html>`;
+  }
   function StockTakeLive({ data, tag }) {
     const [cloud, setCloud] = useState(null);
     const [checkedAt, setCheckedAt] = useState(null);
@@ -29788,7 +29869,7 @@ It comes off the shelf and out of every list. Only do this if the code shouldn't
       setTab(k);
       setBay(null);
       setMsg(null);
-    }, style: pill(tab === k) }, l)), /* @__PURE__ */ React.createElement("button", { "data-st-print": true, onClick: () => printInFrame("stocktake-print-frame", stockTakeReportHtml(data)), style: { height: 36, padding: "0 16px", borderRadius: 18, border: "1px solid #C5CBD8", background: "#fff", fontSize: 15, fontWeight: 600, marginLeft: "auto" } }, "Print summary"), isAdminLogin() && doneBays.size > 0 && /* @__PURE__ */ React.createElement(
+    }, style: pill(tab === k) }, l)), /* @__PURE__ */ React.createElement("button", { "data-st-print": true, onClick: () => printInFrame("stocktake-print-frame", stockTakeSummaryHtml(data)), style: { height: 36, padding: "0 16px", borderRadius: 18, border: "1px solid #C5CBD8", background: "#fff", fontSize: 15, fontWeight: 600, marginLeft: "auto" } }, "Print summary"), isAdminLogin() && doneBays.size > 0 && /* @__PURE__ */ React.createElement(
       "button",
       {
         type: "button",
