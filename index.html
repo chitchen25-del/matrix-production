@@ -11283,7 +11283,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-01.1";
+  var APP_VERSION = "2026-10-01.2";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -23721,6 +23721,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-10-01.2", "Stock take: one stock take now carries on over several days \u2014 bays counted yesterday stay done until Finish this stock take."],
     ["2026-10-01.1", "Admin's phone: New order via camera / New order via upload on Orders \u2014 Claude reads the paper order (or a PDF) and the order opens filled in, every line matched to the catalogue, for you to check and Add. Glue line: a code that isn't a reel code (PBL + month letter + five digits) is refused with the reason."],
     ["2026-09-30.25", "Deep test: shipping now records each box's product and the carton it went into the case as (a code split between Smart Formes and PX Plus cartons was shipping as the wrong one). Tests brought up to date."],
     ["2026-09-30.24", "Admin's phone: Check the whole order from photos (one per case; if the order is complete and only the case map is wrong, the app moves the boxes on the system itself and says so, with Undo); Check a case from Today with fix buttons; What I did for you on Today; a tick and chime when things finish; swipe between cases; pull down to refresh; the weighing pad no longer zooms on 11."],
@@ -29232,10 +29233,19 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
       /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: on ? GREEN : INK_MUTED, minWidth: 22 } }, on ? labelOn : labelOff)
     );
   }
+  function stockTakeSession(data) {
+    const today = todayISO();
+    const finished = new Set((data.changeLog || []).filter((e) => e && !e.deleted && e.action === "stocktake_finished").map((e) => e.entityId));
+    const days = /* @__PURE__ */ new Set();
+    for (const m of data.movements || []) if (m && !m.deleted && m.source === "stocktake" && /^st-\d{4}-\d\d-\d\d:/.test(m.sourceId || "")) days.add(String(m.sourceId).slice(3, 13));
+    const open = [...days].filter((d) => d <= today && !finished.has(`st-${d}`) && Date.parse(today) - Date.parse(d) <= 14 * 864e5).sort();
+    const start = open.length ? open[open.length - 1] : today;
+    return { start, tag: `st-${start}`, carriedOn: start !== today };
+  }
   function stockTakeReportHtml(data, opts = {}) {
     const live = !!opts.live, cloud = opts.cloud || null;
     const esc2 = (x) => String(x == null ? "" : x).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
-    const today = todayISO(), tag = `st-${today}`;
+    const today = todayISO(), sess = stockTakeSession(data), tag = sess.tag;
     const clean = (sp) => String(sp || "").replace(/\s*\(\d+(?:\.\d+)?m\)\s*$/, "").trim();
     const groupOf = (sp) => {
       const g = classifySize(sp);
@@ -29279,7 +29289,7 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
     let body = `<div style="display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #1B2B6B;padding-bottom:6px">
     <div><div style="font-size:19px;font-weight:700;color:#1C2437">Stock take</div><div style="font-size:11px;color:#5E6A82">${esc2((/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" }))} \xB7 printed ${esc2((/* @__PURE__ */ new Date()).toTimeString().slice(0, 5))} by ${esc2(String(currentActor() || "").split("@")[0])}</div></div>
     <img src="data:image/png;base64,${LOGO_B64}" style="height:30px" /></div>
-    <div style="font-size:11.5px;margin-top:8px;color:#1C2437">Counted today: <b>${bays.length}</b> bay${bays.length === 1 ? "" : "s"}${bays.length ? ` (${esc2(bays.join(", "))})` : ""} \xB7 <b>${counted.length}</b> codes checked \xB7 <b>${changed.length}</b> corrected \xB7 <b>${found.length}</b> found. Cases are not counted \u2014 packed cases are locked.</div>`;
+    <div style="font-size:11.5px;margin-top:8px;color:#1C2437">Counted ${sess.carriedOn ? "in this stock take (since " + esc2(sess.start) + ")" : "today"}: <b>${bays.length}</b> bay${bays.length === 1 ? "" : "s"}${bays.length ? ` (${esc2(bays.join(", "))})` : ""} \xB7 <b>${counted.length}</b> codes checked \xB7 <b>${changed.length}</b> corrected \xB7 <b>${found.length}</b> found. Cases are not counted \u2014 packed cases are locked.</div>`;
     body += h("Boxes on the shelf", `${totalBoxes.toLocaleString("en-GB")} boxes`);
     for (const { g, rows } of groups) {
       const sub = rows.reduce((t, e) => t + e.qty, 0);
@@ -29299,7 +29309,7 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
     }
     if (live) {
       const rows = [...counted].sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
-      body += h("Counted today \u2014 newest first", `${rows.length}`);
+      body += h(sess.carriedOn ? "Counted in this stock take \u2014 newest first" : "Counted today \u2014 newest first", `${rows.length}`);
       body += rows.length ? `<table style="width:100%;border-collapse:collapse;font-size:11px;table-layout:fixed"><colgroup><col style="width:12%"/><col style="width:20%"/><col style="width:42%"/><col style="width:10%"/><col style="width:16%"/></colgroup><tr><th ${th}>Bay</th><th ${th}>Code</th><th ${th}>Count</th><th ${th}>Time</th><th ${th}>Database</th></tr>` + rows.map((m) => `<tr>${td(esc2(String(m.sourceId).slice(tag.length + 1)))}${td(esc2(m.boxNumber))}${td(esc2(String(m.note || "").replace(/^Stock take [^,]*, [^:]*:\s*/, "").replace(/\s*\([^)]*\)\s*$/, "")))}${td(esc2(String(m.at || "").slice(11, 16)))}${td(cloud == null ? '<span style="color:#5E6A82">checking\u2026</span>' : cloud.has(m.id) ? '<b style="color:#1E7F3C">\u2713 saved</b>' : '<b style="color:#B45309">not yet</b>')}</tr>`).join("") + `</table>` : `<div style="font-size:11.5px;color:#5E6A82">Nothing counted yet today.</div>`;
     }
     if (changed.length) {
@@ -29369,7 +29379,7 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
     const photoOn = usePhotoReader();
     const [bayPhoto, setBayPhoto] = useState(null);
     const [emptyDone, setEmptyDone] = useDraftState("stockTakeEmptyBays", {}, {});
-    const today = todayISO(), tag = `st-${today}`;
+    const today = todayISO(), sess = stockTakeSession(data), tag = sess.tag;
     const who = String(currentActor() || "").split("@")[0] || "someone";
     const shelf = useMemo(() => {
       const byBay = /* @__PURE__ */ new Map();
@@ -29456,7 +29466,7 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
         const b = String(m.sourceId).slice(tag.length + 1);
         if (!out.has(b)) out.set(b, m.actor || "");
       }
-      for (const b of Object.keys(emptyDone || {})) if (emptyDone[b] === today && !out.has(b)) out.set(b, "you");
+      for (const b of Object.keys(emptyDone || {})) if (String(emptyDone[b] || "") >= sess.start && !out.has(b)) out.set(b, "you");
       return out;
     }, [data.movements, emptyDone]);
     const bays = [.../* @__PURE__ */ new Set([...BOX_LOCATIONS, ...shelf.keys()])].filter((b) => shelf.has(b) || doneBays.has(b));
@@ -29634,11 +29644,26 @@ It comes off the shelf and out of every list. Only do this if the code shouldn't
     };
     const big = { fontSize: 17, fontWeight: 700 }, pill = (on) => ({ height: 36, padding: "0 16px", borderRadius: 18, border: on ? `2px solid ${INK}` : "1px solid #8F8F8F", background: "#fff", fontSize: 15, fontWeight: on ? 700 : 500 });
     const btn = (bg, fg = "#fff") => ({ minHeight: 44, padding: "0 16px", borderRadius: 10, border: 0, background: bg, color: fg, fontSize: 15.5, fontWeight: 700 });
-    return /* @__PURE__ */ React.createElement("div", { "data-stocktake": true }, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Stock take", subtitle: `Year end \xB7 ${(/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })} \xB7 shelves, reels and materials. Cases are not counted \u2014 packed cases are locked.` }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 flex-wrap mb-4 items-center" }, [["boxes", `Boxes \xB7 ${doneBays.size}/${withStock.length} bays`], ["reels", `Reels \xB7 ${reels.length}`], ["materials", "Materials"], ["live", "Live print-out"]].map(([k, l]) => /* @__PURE__ */ React.createElement("button", { key: k, "data-st-tab": k, onClick: () => {
+    return /* @__PURE__ */ React.createElement("div", { "data-stocktake": true }, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Stock take", subtitle: `Year end \xB7 ${sess.carriedOn ? `started ${(/* @__PURE__ */ new Date(sess.start + "T12:00:00")).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}, carrying on today` : (/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })} \xB7 shelves, reels and materials. Cases are not counted \u2014 packed cases are locked.` }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 flex-wrap mb-4 items-center" }, [["boxes", `Boxes \xB7 ${doneBays.size}/${withStock.length} bays`], ["reels", `Reels \xB7 ${reels.length}`], ["materials", "Materials"], ["live", "Live print-out"]].map(([k, l]) => /* @__PURE__ */ React.createElement("button", { key: k, "data-st-tab": k, onClick: () => {
       setTab(k);
       setBay(null);
       setMsg(null);
-    }, style: pill(tab === k) }, l)), /* @__PURE__ */ React.createElement("button", { "data-st-print": true, onClick: () => printInFrame("stocktake-print-frame", stockTakeReportHtml(data)), style: { height: 36, padding: "0 16px", borderRadius: 18, border: "1px solid #C5CBD8", background: "#fff", fontSize: 15, fontWeight: 600, marginLeft: "auto" } }, "Print summary"), tab !== "materials" && /* @__PURE__ */ React.createElement("button", { "data-st-scan": true, onClick: () => setScanning(true), style: { height: 36, padding: "0 16px", borderRadius: 18, border: 0, background: "#D9482F", color: "#fff", fontSize: 15, fontWeight: 700 } }, "Scan")), scanning && /* @__PURE__ */ React.createElement(ScanOverlay, { knownCodes, onClose: () => setScanning(false), onResult: onScan }), msg && /* @__PURE__ */ React.createElement("div", { "data-st-msg": true, style: { marginBottom: 12, padding: "10px 12px", borderRadius: 8, background: msg.bad ? "#FDECEC" : "#E8F3EC", color: msg.bad ? RED : GREEN, fontWeight: 600 } }, msg.t), tab === "boxes" && !bay && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED, marginBottom: 8 } }, "Pick a bay. Grey = to count \xB7 green = done (and who by). Split the bays between you."), /* @__PURE__ */ React.createElement("div", { "data-st-bays": true, style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(76px, 1fr))", gap: 8 } }, bays.map((b) => {
+    }, style: pill(tab === k) }, l)), /* @__PURE__ */ React.createElement("button", { "data-st-print": true, onClick: () => printInFrame("stocktake-print-frame", stockTakeReportHtml(data)), style: { height: 36, padding: "0 16px", borderRadius: 18, border: "1px solid #C5CBD8", background: "#fff", fontSize: 15, fontWeight: 600, marginLeft: "auto" } }, "Print summary"), isAdminLogin() && doneBays.size > 0 && /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        type: "button",
+        "data-st-finish": true,
+        onClick: () => {
+          if (!window.confirm(`Finish this stock take?
+
+${doneBays.size} of ${withStock.length} bays are done. The next count starts a new stock take with every bay grey.`)) return;
+          setData((prev) => ({ ...prev, ...appendLog(prev, { action: "stocktake_finished", entity: "stocktake", entityId: tag, summary: `Stock take started ${sess.start} finished \u2014 ${doneBays.size} of ${withStock.length} bays counted` }) }));
+          setMsg({ bad: false, t: "Stock take finished. The next count starts a new one." });
+        },
+        style: { height: 36, padding: "0 14px", borderRadius: 18, border: "1px solid #C5CBD8", background: "#fff", fontSize: 15, fontWeight: 600 }
+      },
+      "Finish this stock take"
+    ), tab !== "materials" && /* @__PURE__ */ React.createElement("button", { "data-st-scan": true, onClick: () => setScanning(true), style: { height: 36, padding: "0 16px", borderRadius: 18, border: 0, background: "#D9482F", color: "#fff", fontSize: 15, fontWeight: 700 } }, "Scan")), scanning && /* @__PURE__ */ React.createElement(ScanOverlay, { knownCodes, onClose: () => setScanning(false), onResult: onScan }), msg && /* @__PURE__ */ React.createElement("div", { "data-st-msg": true, style: { marginBottom: 12, padding: "10px 12px", borderRadius: 8, background: msg.bad ? "#FDECEC" : "#E8F3EC", color: msg.bad ? RED : GREEN, fontWeight: 600 } }, msg.t), tab === "boxes" && !bay && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED, marginBottom: 8 } }, "Pick a bay. Grey = to count \xB7 green = done (and who by). Split the bays between you."), /* @__PURE__ */ React.createElement("div", { "data-st-bays": true, style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(76px, 1fr))", gap: 8 } }, bays.map((b) => {
       const d = doneBays.get(b);
       const n = [...(shelf.get(b) || /* @__PURE__ */ new Map()).values()].length;
       return /* @__PURE__ */ React.createElement("button", { key: b, "data-st-bay": b, onClick: () => {
@@ -29749,7 +29774,7 @@ It comes off the shelf and out of every list. Only do this if the code shouldn't
         }
       ));
     })()), msg && msg.bad && /* @__PURE__ */ React.createElement("div", { "data-st-msg-bottom": true, style: { marginTop: 14, padding: "10px 12px", borderRadius: 8, background: "#FDECEC", color: RED, fontWeight: 600 } }, msg.t), /* @__PURE__ */ React.createElement("button", { "data-st-baydone": true, onClick: bayDone, style: { ...btn(NAVY), width: "100%", marginTop: 16, minHeight: 52, fontSize: 17 } }, bay, " done")), tab === "reels" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED, marginBottom: 8 } }, "Every reel the system thinks is on the rack. Tick the ones you can see; Not here clears it."), reels.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { color: INK_MUTED } }, "No reels with metres left."), reels.map(({ g, left }) => {
-      const seen = (reelsSeen || {})[g.batchNumber] === today;
+      const seen = String((reelsSeen || {})[g.batchNumber] || "") >= sess.start;
       return /* @__PURE__ */ React.createElement("div", { key: g.id, "data-st-reel": g.batchNumber, className: "flex items-center justify-between gap-3 flex-wrap", style: { padding: "12px 0", borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: { ...big, fontFamily: "ui-monospace, Menlo, monospace" } }, g.batchNumber), /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13.5, color: INK_MUTED } }, g.productSize, " \xB7 ", left, " m left")), seen ? /* @__PURE__ */ React.createElement("span", { style: { color: GREEN, fontWeight: 700 } }, "\u2713 on the rack") : /* @__PURE__ */ React.createElement("span", { className: "flex gap-2" }, /* @__PURE__ */ React.createElement("button", { "data-st-reel-ok": true, onClick: () => reelSeen(g, true), style: btn("#F2F2F2", INK) }, "\u2713 On the rack"), /* @__PURE__ */ React.createElement("button", { "data-st-reel-gone": true, onClick: () => reelSeen(g, false), style: btn("#F2F2F2", RED) }, "Not here")));
     })), tab === "live" && /* @__PURE__ */ React.createElement(StockTakeLive, { data, tag }), tab === "materials" && /* @__PURE__ */ React.createElement(MaterialsStockTakeView, { data, setData, materials: data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, isInitial: false, onDone: () => setMsg({ bad: false, t: "Materials counted and saved." }) }));
   }
