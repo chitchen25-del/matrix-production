@@ -11423,7 +11423,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-01.22";
+  var APP_VERSION = "2026-10-01.23";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -23957,6 +23957,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-10-01.23", "Materials: tape and mylar come off by themselves \u2014 every box bonded since the last count, metre for metre, plus a waste allowance that starts at 5% and learns from each count. Tape by the roll batch on the run (or its width; Strong for SDBS), mylar by the PET on the glue reel; 10mm mylar comes off the spools before the pancakes. A \u270E on tape or mylar counts as a count."],
     ["2026-10-01.22", "Materials: tape and mylar metres go by each batch's roll length (7mm Biesse 5,000 m, 7mm TP2462 bobbins 4,000 m, 12mm 4,000 m, 10mm 5,000 m); Goods in asks the metres on a roll for tape and mylar; a recount keeps each batch's length."],
     ["2026-10-01.21", "Materials: \uFF0B Goods in (which stock \u2192 which one \u2192 how many \u2192 the code); each kind of material opens in place to show its items; low-stock warnings on Materials and in the alerts \u2014 PVC and EVA below 20 bags, cartons below 1,000, glue below 25 blocks, each mylar and tape below 10,000 m."],
     ["2026-10-01.20", "Materials: an Opened button on every PVC colour, EVA and glue \u2014 one tap takes a bag or block off. Glue remembers the batch code last opened; Other code picks another from the count or types a new one. Undo takes the last tap back. The glue line no longer asks about a new block of glue (it would be taken off twice). Fixed: the old Bag opened and the \u270E correction emptied the device's orders until the next sync."],
@@ -24657,23 +24658,148 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     metres += (stock - rolls) * fallback;
     return Math.max(0, metres);
   }
-  function materialLow(m, movements) {
+  function materialLow(m, movements, data = null) {
     const rule = m && LOW_STOCK_RULES[m.category];
     if (!rule) return null;
     const known = !!m.lastStockTakeDate || (movements || []).some((x) => x && !x.deleted && x.materialId === m.id);
     if (!known) return null;
     if (rule.metres) {
-      const metres = materialMetres(m);
+      const metres = data ? materialMetresLeft(m, data) : materialMetres(m);
       if (metres == null) return { low: false, noLength: true, below: rule.below };
       return { low: metres < rule.below, figure: metres, unit: "m", below: rule.below };
     }
     const n = Number(m.currentStock) || 0;
     return { low: n < rule.below, figure: n, unit: rule.unit, below: rule.below };
   }
+  var MYLAR_TARGETS = { "10-75": ["mat-mylar-10-75", "mat-mylar-10-75-pancake"], "12-75": ["mat-mylar-12-75"], "7-75": ["mat-mylar-7-75"], "7-100": ["mat-mylar-7-100"] };
+  var AUTO_WASTE_START = 0.05;
+  var AUTO_OPENING_COUNT_DAY = "2026-10-01";
+  function mylarKeyOfPet(pet) {
+    const t = String(pet || "").toLowerCase();
+    const w = (t.match(/^\s*(7|10|12)\b/) || t.match(/^\s*(7|10|12)mm/) || [])[1];
+    if (!w) return null;
+    if (/100/.test(t)) return `${w}-100`;
+    if (/75/.test(t)) return `${w}-75`;
+    return w === "7" ? null : `${w}-75`;
+  }
+  var AUTO_USE_MEMO = /* @__PURE__ */ new WeakMap();
+  function materialsAutoUse(data) {
+    const runs = data.bondingRuns || [], key = runs;
+    const hit = AUTO_USE_MEMO.get(key);
+    if (hit && hit.mats === data.materials && hit.moves === data.materialMovements && hit.reels === data.glueLineBatches) return hit.out;
+    const mats = (data.materials || []).filter((m) => m && !m.deleted);
+    const byId = new Map(mats.map((m) => [m.id, m]));
+    const moves = (data.materialMovements || []).filter((x) => x && !x.deleted);
+    const timeOf = (x) => Date.parse(x.updatedAt || x.createdAt || "") || timestampFromUid(x.id) || Date.parse(`${x.date || "1970-01-01"}T12:00:00`);
+    const countsOf = (id) => moves.filter((x) => x.materialId === id && x.sourceType === "stocktake").map((x) => ({ t: timeOf(x), qty: Number(x.qty) || 0 })).sort((a, b) => a.t - b.t);
+    const countAt = /* @__PURE__ */ new Map();
+    for (const m of mats) if (m.category === "tape" || m.category === "mylar") {
+      const cs = countsOf(m.id);
+      const last = cs.length ? cs[cs.length - 1].t : 0;
+      countAt.set(m.id, Math.max(last, m.lastStockTakeDate ? Date.parse(`${m.lastStockTakeDate}T00:00:00`) : 0));
+    }
+    const reels = /* @__PURE__ */ new Map();
+    for (const g of data.glueLineBatches || []) if (g && !g.deleted) {
+      for (const c of [g.batchNumber, g.plCode]) if (c) reels.set(String(c).trim().toUpperCase(), g);
+    }
+    const tapes = mats.filter((m) => m.category === "tape");
+    const runTime = (r) => Date.parse(r.createdAt || "") || Date.parse(`${r.date || "1970-01-01"}T${(r.timeOfDay || "12:00").slice(0, 5)}:00`);
+    const tapeOf = (r, width) => {
+      const code = String(r.tapeCode || "").trim().toUpperCase().replace(/[^0-9A-Z]/g, "");
+      if (code) for (const m of tapes) for (const b of m.batches || []) {
+        const bc = String(b && b.code || "").trim().toUpperCase();
+        if (bc && code.startsWith(bc)) return m.id;
+      }
+      const id = `mat-tape-${width.replace("mm", "")}${isStrongTapeBoxCode(r.boxNumber) ? "-strong" : ""}`;
+      return byId.has(id) ? id : null;
+    };
+    const made = [];
+    for (const r of runs) {
+      if (!r || r.deleted || r._synth) continue;
+      const metres = (Number(r.amountMade) || 0) * (Number(r.metersPerBox) || 0);
+      if (!(metres > 0)) continue;
+      const width = classifySize(r.productSize);
+      if (!["7mm", "10mm", "12mm"].includes(width)) continue;
+      const reel = r.baselineBatchCode ? reels.get(String(r.baselineBatchCode).trim().toUpperCase()) : null;
+      made.push({ t: runTime(r), metres, tape: tapeOf(r, width), mylar: reel ? mylarKeyOfPet(reel.petType) : null, width, reelCode: r.baselineBatchCode || "" });
+    }
+    const waste = /* @__PURE__ */ new Map();
+    for (const m of mats) if (m.category === "tape" || m.category === "mylar") {
+      let w = AUTO_WASTE_START;
+      const len = Number(m.fullMetres) || Number(((m.batches || []).find((b) => b && Number(b.metres)) || {}).metres) || 0;
+      const dayOf = (t) => new Date(t).toISOString().slice(0, 10);
+      const all = countsOf(m.id);
+      const opening = all.filter((c) => dayOf(c.t) <= AUTO_OPENING_COUNT_DAY);
+      const days = [];
+      for (const c of all.filter((c2) => dayOf(c2.t) > AUTO_OPENING_COUNT_DAY)) {
+        const d = days[days.length - 1];
+        if (d && d.day === dayOf(c.t)) {
+          d.qty += c.qty;
+          d.t = c.t;
+        } else days.push({ day: dayOf(c.t), t: c.t, qty: c.qty });
+      }
+      let from = opening.length ? opening[opening.length - 1].t : null;
+      for (const d of days) {
+        if (from != null) {
+          const M = made.filter((x) => x.t > from && x.t <= d.t && (m.category === "tape" ? x.tape === m.id : (MYLAR_TARGETS[x.mylar] || [])[0] === m.id)).reduce((t, x) => t + x.metres, 0);
+          const actual = -d.qty * len;
+          if (M > 0 && len > 0 && actual >= 0) w = Math.min(0.5, Math.max(0, 0.5 * w + 0.5 * (actual / M - 1)));
+        }
+        from = d.t;
+      }
+      waste.set(m.id, w);
+    }
+    const out = /* @__PURE__ */ new Map();
+    const get = (id) => out.get(id) || (out.set(id, { usedMetres: 0, made: 0 }), out.get(id));
+    let unknownMylar = 0;
+    for (const x of made) {
+      if (x.tape && x.t > (countAt.get(x.tape) || Infinity)) {
+        const e = get(x.tape);
+        e.made += x.metres;
+        e.usedMetres += x.metres * (1 + waste.get(x.tape));
+      }
+      if (!x.reelCode) continue;
+      const targets = MYLAR_TARGETS[x.mylar];
+      if (!targets) {
+        if (x.t > Math.min(...["mat-mylar-7-75", "mat-mylar-7-100"].map((id) => countAt.get(id) || Infinity))) unknownMylar += x.metres;
+        continue;
+      }
+      if (!(x.t > (countAt.get(targets[0]) || Infinity))) continue;
+      get(targets[0]).made += x.metres;
+      get(targets[0]).usedMetres += x.metres * (1 + waste.get(targets[0]));
+    }
+    for (const targets of Object.values(MYLAR_TARGETS)) {
+      if (targets.length < 2) continue;
+      const first = byId.get(targets[0]), e = out.get(targets[0]);
+      if (!first || !e) continue;
+      const have = materialMetres(first) || 0;
+      if (e.usedMetres > have) {
+        const over = e.usedMetres - have;
+        e.usedMetres = have;
+        const p = get(targets[1]);
+        p.usedMetres += over;
+        p.overflow = over;
+      }
+    }
+    for (const m of mats) if (waste.has(m.id)) {
+      const e = get(m.id);
+      e.waste = waste.get(m.id);
+      const full = materialMetres(m);
+      e.leftMetres = full == null ? null : Math.max(0, full - e.usedMetres);
+    }
+    const res = { byId: out, unknownMylar };
+    AUTO_USE_MEMO.set(key, { mats: data.materials, moves: data.materialMovements, reels: data.glueLineBatches, out: res });
+    return res;
+  }
+  function materialMetresLeft(m, data) {
+    const e = data ? materialsAutoUse(data).byId.get(m.id) : null;
+    if (e && e.leftMetres !== void 0) return e.leftMetres;
+    return materialMetres(m);
+  }
   function lowStockAlerts(data) {
     const mats = (data.materials || []).filter((m) => m && !m.deleted);
     const cat = (k) => (MATERIAL_CATEGORIES.find((c) => c.key === k) || {}).label || k;
-    return mats.map((m) => ({ m, l: materialLow(m, data.materialMovements) })).filter((x) => x.l && x.l.low).map(({ m, l }) => `Low stock \u2014 ${cat(m.category)} ${m.name}: ${l.figure.toLocaleString("en-GB")} ${l.unit} (warns below ${l.below.toLocaleString("en-GB")})`);
+    return mats.map((m) => ({ m, l: materialLow(m, data.materialMovements, data) })).filter((x) => x.l && x.l.low).map(({ m, l }) => `Low stock \u2014 ${cat(m.category)} ${m.name}: ${l.figure.toLocaleString("en-GB")} ${l.unit} (warns below ${l.below.toLocaleString("en-GB")})`);
   }
   var GOODS_IN_CATS = ["pvc", "mylar", "glue", "eva", "tape", "boxes", "cases"];
   function GoodsIn({ data, setData }) {
@@ -24749,7 +24875,9 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     const [typed, setTyped] = useState("");
     const [lastId, setLastId] = useState(null);
     const stock = Number(material.currentStock) || 0;
-    const lowInfo = materialLow(material, data && data.materialMovements);
+    const lowInfo = materialLow(material, data && data.materialMovements, data);
+    const auto = (material.category === "tape" || material.category === "mylar") && data ? materialsAutoUse(data).byId.get(material.id) : null;
+    const rollLenNow = Number(material.fullMetres) || Number(((material.batches || []).find((b) => b && String(b.code || "") === String(material.batchCode || "")) || (material.batches || []).find((b) => b && Number(b.metres)) || {}).metres) || 0;
     const low = lowInfo ? lowInfo.low : stock <= 2;
     const applyDelta = (delta, sourceType, note = "", extra = null) => {
       let id = null;
@@ -24788,15 +24916,17 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
         refuse("That isn't a number \u2014 nothing was changed.");
         return;
       }
+      const counts = material.category === "tape" || material.category === "mylar";
       const delta = target - stock;
-      if (delta !== 0) applyDelta(delta, "manual");
+      if (counts) applyDelta(delta, "stocktake", "Counted (\u270E)", { lastStockTakeDate: todayISO() });
+      else if (delta !== 0) applyDelta(delta, "manual");
       setAdjusting(false);
       setAdjustQty("");
     };
     const canOpen = !!OPENED_SOURCE[category.key] && category.actionType === "button";
-    return /* @__PURE__ */ React.createElement("div", { className: "py-2.5", "data-material-row": material.id, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between" }, /* @__PURE__ */ React.createElement("div", { className: "min-w-0" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-medium", style: { color: INK } }, material.name), material.batchCode && /* @__PURE__ */ React.createElement("div", { className: "text-xs font-mono", style: { color: INK_MUTED }, "data-material-code": true }, coded ? "Opening " : "Code ", material.batchCode), material.lastStockTakeDate && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Last counted ", material.lastStockTakeDate), lowInfo && lowInfo.figure != null && LOW_STOCK_RULES[material.category].metres && /* @__PURE__ */ React.createElement("div", { className: "text-xs", "data-material-metres": true, style: { color: lowInfo.low ? RED : INK_MUTED } }, lowInfo.figure.toLocaleString("en-GB"), " m"), lowInfo && lowInfo.low && /* @__PURE__ */ React.createElement("div", { className: "text-xs font-semibold", "data-material-low": true, style: { color: RED } }, "\u26A0 Low \u2014 warns below ", lowInfo.below.toLocaleString("en-GB"), " ", lowInfo.unit), lowInfo && lowInfo.noLength && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Metres on a roll not set \u2014 no low warning yet")), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 shrink-0" }, adjusting ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(TextInput, { type: "number", value: adjustQty, onChange: (e) => setAdjustQty(e.target.value), style: { width: 70 }, autoFocus: true }), /* @__PURE__ */ React.createElement(Button, { variant: "primary", onClick: saveAdjust }, "Save"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setAdjusting(false) }, "Cancel")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "text-right" }, /* @__PURE__ */ React.createElement("div", { "data-material-stock": true, style: { fontSize: 22, fontWeight: 700, color: low ? RED : INK, lineHeight: 1 } }, stock), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, material.unit)), canOpen && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", "data-material-open": true, onClick: () => coded && !material.batchCode ? setPicking(true) : opened(material.batchCode) }, category.actionLabel), category.actionType === "checkbox" && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, maxWidth: 90, textAlign: "right" } }, "Checked off on Glue Line"), category.actionType === "auto" && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, maxWidth: 100, textAlign: "right" } }, category.actionLabel), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+    return /* @__PURE__ */ React.createElement("div", { className: "py-2.5", "data-material-row": material.id, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between" }, /* @__PURE__ */ React.createElement("div", { className: "min-w-0" }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-medium", style: { color: INK } }, material.name), material.batchCode && /* @__PURE__ */ React.createElement("div", { className: "text-xs font-mono", style: { color: INK_MUTED }, "data-material-code": true }, coded ? "Opening " : "Code ", material.batchCode), material.lastStockTakeDate && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Last counted ", material.lastStockTakeDate), lowInfo && lowInfo.figure != null && LOW_STOCK_RULES[material.category].metres && /* @__PURE__ */ React.createElement("div", { className: "text-xs", "data-material-metres": true, style: { color: lowInfo.low ? RED : INK_MUTED } }, lowInfo.figure.toLocaleString("en-GB"), " m"), auto && auto.waste !== void 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs", "data-material-auto": true, style: { color: INK_MUTED } }, Math.round(auto.made).toLocaleString("en-GB"), " m bonded since the count \u2192 ", Math.round(auto.usedMetres).toLocaleString("en-GB"), " m off", auto.overflow ? " (spools ran out)" : "", " \xB7 waste ", Math.round(auto.waste * 1e3) / 10, "%"), lowInfo && lowInfo.low && /* @__PURE__ */ React.createElement("div", { className: "text-xs font-semibold", "data-material-low": true, style: { color: RED } }, "\u26A0 Low \u2014 warns below ", lowInfo.below.toLocaleString("en-GB"), " ", lowInfo.unit), lowInfo && lowInfo.noLength && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Metres on a roll not set \u2014 no low warning yet")), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 shrink-0" }, adjusting ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(TextInput, { type: "number", value: adjustQty, onChange: (e) => setAdjustQty(e.target.value), style: { width: 70 }, autoFocus: true }), /* @__PURE__ */ React.createElement(Button, { variant: "primary", onClick: saveAdjust }, "Save"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setAdjusting(false) }, "Cancel")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "text-right" }, /* @__PURE__ */ React.createElement("div", { "data-material-stock": true, style: { fontSize: 22, fontWeight: 700, color: low ? RED : INK, lineHeight: 1 } }, auto && auto.leftMetres != null && rollLenNow ? Math.round(auto.leftMetres / rollLenNow * 10) / 10 : stock), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, auto && auto.leftMetres != null && rollLenNow ? `${material.unit} left` : material.unit)), canOpen && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", "data-material-open": true, onClick: () => coded && !material.batchCode ? setPicking(true) : opened(material.batchCode) }, category.actionLabel), category.actionType === "checkbox" && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, maxWidth: 90, textAlign: "right" } }, "Checked off on Glue Line"), category.actionType === "auto" && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED, maxWidth: 100, textAlign: "right" } }, category.actionLabel), /* @__PURE__ */ React.createElement("button", { onClick: () => {
       setAdjusting(true);
-      setAdjustQty(String(stock));
+      setAdjustQty(String(auto && auto.leftMetres != null && rollLenNow ? Math.round(auto.leftMetres / rollLenNow) : stock));
     }, className: "opacity-40 hover:opacity-100 px-1", title: "Manually correct this count" }, "\u270E")))), canOpen && (lastId || coded) && !adjusting && /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 mt-1.5 text-xs", style: { color: INK_MUTED } }, lastId && /* @__PURE__ */ React.createElement("span", { "data-material-opened": true }, "1 ", material.unit === "bags" ? "bag" : material.unit === "blocks" ? "block" : material.unit, " taken off", material.batchCode && coded ? ` (${material.batchCode})` : "", " \xB7 ", /* @__PURE__ */ React.createElement("button", { "data-material-undo": true, onClick: undo, style: { background: "none", border: 0, padding: 0, color: NAVY, textDecoration: "underline", cursor: "pointer" } }, "Undo")), coded && !picking && /* @__PURE__ */ React.createElement("button", { "data-material-othercode": true, onClick: () => setPicking(true), style: { background: "none", border: 0, padding: 0, color: NAVY, textDecoration: "underline", cursor: "pointer" } }, "Other code")), coded && picking && /* @__PURE__ */ React.createElement("div", { className: "mt-2 p-2 rounded", "data-material-picker": true, style: { background: "#F2F2F0" } }, /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-1.5", style: { color: INK_MUTED } }, "Which batch is the block you're opening?"), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-1.5 mb-1.5" }, codes.map((c) => /* @__PURE__ */ React.createElement(Button, { key: c, variant: c === material.batchCode ? "primary" : "ghost", "data-material-code-pick": c, onClick: () => opened(c) }, c))), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-1.5" }, /* @__PURE__ */ React.createElement(TextInput, { value: typed, onChange: (e) => setTyped(e.target.value), placeholder: "Another code\u2026", "data-material-code-typed": true, onKeyDown: (e) => {
       if (e.key === "Enter") opened(typed);
     } }), /* @__PURE__ */ React.createElement(Button, { variant: "accent", "data-material-code-use": true, onClick: () => opened(typed) }, "Open 1"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => {
@@ -24852,9 +24982,11 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
       const rows = byCat[cat.key] || [];
       const total = categoryTotal(materials, cat.key);
       const lows = rows.filter((m) => {
-        const l = materialLow(m, movements);
+        const l = materialLow(m, movements, data);
         return l && l.low;
       });
+      const inMetres = cat.key === "tape" || cat.key === "mylar";
+      const metresTotal = inMetres ? rows.reduce((t, m) => t + (materialMetresLeft(m, data) || 0), 0) : 0;
       const isOpen = openCats.includes(cat.key);
       return /* @__PURE__ */ React.createElement(Panel, { key: cat.key, className: "overflow-hidden", style: { borderLeft: `4px solid ${cat.color}` } }, /* @__PURE__ */ React.createElement(
         "button",
@@ -24867,9 +24999,9 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
         },
         /* @__PURE__ */ React.createElement("span", { className: "flex items-center justify-center rounded shrink-0", style: { width: 30, height: 30, background: cat.color + "18", color: cat.color } }, /* @__PURE__ */ React.createElement(Icon, { size: 17 })),
         /* @__PURE__ */ React.createElement("span", { className: "flex-1 min-w-0" }, /* @__PURE__ */ React.createElement("span", { className: "block text-sm font-semibold", style: { color: INK } }, cat.label), lows.length > 0 ? /* @__PURE__ */ React.createElement("span", { className: "block text-xs font-semibold", style: { color: RED } }, "\u26A0 ", lows.map((m) => m.name).join(", "), " low") : /* @__PURE__ */ React.createElement("span", { className: "block text-xs", style: { color: INK_MUTED } }, rows.length, " ", rows.length === 1 ? "item" : "items")),
-        /* @__PURE__ */ React.createElement("span", { className: "text-right shrink-0" }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 20, fontWeight: 700, color: lows.length ? RED : INK } }, Number(total || 0).toLocaleString("en-GB")), " ", /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, cat.unit)),
+        /* @__PURE__ */ React.createElement("span", { className: "text-right shrink-0" }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 20, fontWeight: 700, color: lows.length ? RED : INK }, "data-material-cat-total": true }, Math.round(inMetres ? metresTotal : Number(total || 0)).toLocaleString("en-GB")), " ", /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, inMetres ? "m" : cat.unit)),
         /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 18, width: 16, textAlign: "center" } }, isOpen ? "\u2212" : "+")
-      ), isOpen && /* @__PURE__ */ React.createElement("div", { style: { padding: "0 14px 10px" }, "data-material-cat-open": cat.key }, rows.map((m) => /* @__PURE__ */ React.createElement(MaterialVariantRow, { key: m.id, material: m, category: cat, data, setData })), rows.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-sm py-3", style: { color: INK_MUTED } }, "No variants yet."), /* @__PURE__ */ React.createElement(AddMaterialVariant, { category: cat, setData })));
+      ), isOpen && /* @__PURE__ */ React.createElement("div", { style: { padding: "0 14px 10px" }, "data-material-cat-open": cat.key }, rows.map((m) => /* @__PURE__ */ React.createElement(MaterialVariantRow, { key: m.id, material: m, category: cat, data, setData })), rows.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-sm py-3", style: { color: INK_MUTED } }, "No variants yet."), inMetres && /* @__PURE__ */ React.createElement("div", { className: "text-xs pt-2", style: { color: INK_MUTED } }, "Taken off automatically: every box bonded since the last count, metre for metre, plus its waste allowance \u2014 learned from each count.", cat.key === "mylar" && materialsAutoUse(data).unknownMylar > 0 ? ` ${Math.round(materialsAutoUse(data).unknownMylar).toLocaleString("en-GB")} m of 7mm was bonded from reels with no PET recorded (75 or 100 micron?) \u2014 not taken off.` : ""), /* @__PURE__ */ React.createElement(AddMaterialVariant, { category: cat, setData })));
     })), /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Recent activity"), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden" }, recentMovements.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-sm p-4", style: { color: INK_MUTED } }, "Nothing logged yet."), recentMovements.map((mv, i) => {
       const mat = materialById[mv.materialId];
       const cat = mat ? MATERIAL_CATEGORIES.find((c) => c.key === mat.category) : null;
