@@ -11283,7 +11283,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-01.7";
+  var APP_VERSION = "2026-10-01.9";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -23785,6 +23785,8 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-10-01.9", "Stock take: Stock found elsewhere \u2014 pick Floor or the bay it's going to, photograph it and Work it out (or Found a box); each code is counted and moved there. Bay photo lines say Add N here."],
+    ["2026-10-01.8", "Stock take: a code made as two products (I62903SDB: Smart Formes and PX Plus) no longer stops Bay done \u2014 the count takes the product on the shelf."],
     ["2026-10-01.7", "Stock take bay photo: up to 15 photos of one bay."],
     ["2026-10-01.6", "Stock take bay photo: Put in Found a box adds a box that's on the system in one tap, and the line goes once it's added."],
     ["2026-10-01.5", "Stock take, admin's phone: a bay can be photographed in several photos (up to 8) \u2014 Work it out reads them together and counts a box that shows in two photos once."],
@@ -29454,6 +29456,7 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
     const [justFound, setJustFound] = useState(null);
     const photoOn = usePhotoReader();
     const [bayPhoto, setBayPhoto] = useState(null);
+    const [elsewhere, setElsewhere] = useState("FLOOR");
     const [emptyDone, setEmptyDone] = useDraftState("stockTakeEmptyBays", {}, {});
     const today = todayISO(), sess = stockTakeSession(data), tag = sess.tag;
     const who = String(currentActor() || "").split("@")[0] || "someone";
@@ -29545,11 +29548,19 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
       for (const b of Object.keys(emptyDone || {})) if (String(emptyDone[b] || "") >= sess.start && !out.has(b)) out.set(b, "you");
       return out;
     }, [data.movements, emptyDone]);
-    const bays = [.../* @__PURE__ */ new Set([...BOX_LOCATIONS, ...shelf.keys()])].filter((b) => shelf.has(b) || doneBays.has(b));
+    const bays = [.../* @__PURE__ */ new Set([...BOX_LOCATIONS, ...shelf.keys(), ...doneBays.keys()])].filter((b) => shelf.has(b) || doneBays.has(b));
     const withStock = bays.filter((b) => b !== "NO BAY");
     const rows = bay ? [...(shelf.get(bay) || /* @__PURE__ */ new Map()).values()].sort((a, b) => String(a.spec).localeCompare(String(b.spec)) || a.code.localeCompare(b.code)) : [];
     const shelfNow = (code) => Math.max(0, Number((placeOf(data, code) || {}).onShelf) || 0);
     const answered = rows.filter((r) => answers[r.code] != null && answers[r.code] !== "");
+    const formOfCount = (code, spec) => {
+      const runs = (data.bondingRuns || []).filter((x) => x && !x.deleted && x.formId && String(x.boxNumber || "").toUpperCase() === String(code).toUpperCase());
+      const bySpec = runs.filter((x) => normalizeSpec(x.productSize) === normalizeSpec(spec));
+      if (bySpec.length) return bySpec[bySpec.length - 1].formId;
+      const forms = [...new Set(runs.map((x) => x.formId))];
+      if (forms.length === 1) return forms[0];
+      return runs.length ? runs.sort((a, b) => String(a.date || "").localeCompare(String(b.date || ""))).pop().formId : null;
+    };
     const bayDone = () => {
       const left = rows.filter((r) => answers[r.code] == null || answers[r.code] === "");
       if (left.length) {
@@ -29572,7 +29583,7 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
           source: "stocktake",
           sourceId: `${tag}:${bay}`,
           note: counted === r.qty ? `Stock take ${today}, ${bay}: ${counted} \u2014 right (${who})` : `Stock take ${today}, ${bay}: ${r.qty} \u2192 ${counted} (${who})`
-        }), ...r.formId ? { formId: r.formId } : {} };
+        }), ...r.formId || formOfCount(r.code, r.spec) ? { formId: r.formId || formOfCount(r.code, r.spec) } : {} };
       });
       if (!moves.length) {
         setEmptyDone({ ...emptyDone || {}, [bay]: today });
@@ -29613,30 +29624,32 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
         setMsg({ bad: true, t: `${code} isn't on the system \u2014 fill in what it is in the form below, then press Add it.` });
         return;
       }
-      const run = (data.bondingRuns || []).find((r) => r && !r.deleted && String(r.boxNumber || "").toUpperCase() === code);
+      const runsOf = (data.bondingRuns || []).filter((r) => r && !r.deleted && String(r.boxNumber || "").toUpperCase() === code);
+      const shelfSpec = [...shelf.values()].map((m2) => m2.get(code)).find(Boolean);
+      const run = shelfSpec && runsOf.find((r) => normalizeSpec(r.productSize) === normalizeSpec(shelfSpec.spec)) || runsOf.slice().sort((a, b) => String(a.date || "").localeCompare(String(b.date || ""))).pop();
       const latestElsewhere = /* @__PURE__ */ new Map();
       for (const m2 of data.movements || []) if (m2 && !m2.deleted && m2.source === "stocktake" && m2.kind === "counted" && String(m2.boxNumber || "").toUpperCase() === code && String(m2.sourceId || "").startsWith(tag + ":") && String(m2.sourceId) !== `${tag}:${bay}`) {
         const b = String(m2.sourceId).slice(tag.length + 1), prevM = latestElsewhere.get(b);
         if (!prevM || String(m2.at || "") > String(prevM.at || "")) latestElsewhere.set(b, m2);
       }
-      const elsewhere = [...latestElsewhere.values()].some((m2) => Number(m2.qty) > 0);
-      const before = shelfNow(code), total = elsewhere ? before + n : n;
+      const elsewhere2 = [...latestElsewhere.values()].some((m2) => Number(m2.qty) > 0);
+      const before = shelfNow(code), total = elsewhere2 ? before + n : n;
       const m = { ...moveCounted({
         boxNumber: code,
         spec: run.productSize,
         qty: total,
         source: "stocktake",
         sourceId: `${tag}:${bay}`,
-        note: elsewhere ? `Stock take ${today}, ${bay}: ${n} found, not listed here (${who})` : `Stock take ${today}, ${bay}: ${before} \u2192 ${n} \u2014 found here, moved from ${run.location || "no bay"} (${who})`
+        note: elsewhere2 ? `Stock take ${today}, ${bay}: ${n} found, not listed here (${who})` : `Stock take ${today}, ${bay}: ${before} \u2192 ${n} \u2014 found here, moved from ${run.location || "no bay"} (${who})`
       }), ...run.formId ? { formId: run.formId } : {} };
       setData((prev) => {
         let d = recordMovements(prev, [m]);
-        if (!elsewhere) d = { ...d, bondingRuns: d.bondingRuns.map((r) => r && !r.deleted && String(r.boxNumber || "").toUpperCase() === code ? { ...r, location: bay, checked: "Yes", updatedAt: (/* @__PURE__ */ new Date()).toISOString() } : r) };
+        if (!elsewhere2) d = { ...d, bondingRuns: d.bondingRuns.map((r) => r && !r.deleted && String(r.boxNumber || "").toUpperCase() === code ? { ...r, location: bay, checked: "Yes", updatedAt: (/* @__PURE__ */ new Date()).toISOString() } : r) };
         else if (!String(run.location || "").trim()) d = { ...d, bondingRuns: d.bondingRuns.map((r) => r.id === run.id ? { ...r, location: bay, updatedAt: (/* @__PURE__ */ new Date()).toISOString() } : r) };
-        return { ...d, ...appendLog(d, { action: "stock_adjustment", entity: "stocktake", entityId: `${tag}:${bay}`, summary: `Stock take ${bay}: ${n} \xD7 ${code} ${elsewhere ? "found (extra)" : `found \u2014 moved here from ${run.location || "no bay"}`} (${who})` }) };
+        return { ...d, ...appendLog(d, { action: "stock_adjustment", entity: "stocktake", entityId: `${tag}:${bay}`, summary: `Stock take ${bay}: ${n} \xD7 ${code} ${elsewhere2 ? "found (extra)" : `found \u2014 moved here from ${run.location || "no bay"}`} (${who})` }) };
       });
       setFound({ code: "", qty: "" });
-      setMsg({ bad: false, t: elsewhere ? `${n} \xD7 ${code} added to the shelf at ${bay} (it was already counted in another bay today).` : `${code}: ${n} here \u2014 moved to ${bay} and counted. It's highlighted in the list \u2014 tick it.` });
+      setMsg({ bad: false, t: elsewhere2 ? `${n} \xD7 ${code} added to the shelf at ${bay} (it was already counted in another bay today).` : `${code}: ${n} here \u2014 moved to ${bay} and counted. It's highlighted in the list \u2014 tick it.` });
       setJustFound(code);
       setTimeout(() => {
         const el = document.querySelector(`[data-st-row="${code}"]`);
@@ -29750,7 +29763,22 @@ ${doneBays.size} of ${withStock.length} bays are done. The next count starts a n
         setMissing(/* @__PURE__ */ new Set());
         window.scrollTo(0, 0);
       }, style: { minHeight: 64, borderRadius: 12, border: 0, background: d != null ? "#E8F3EC" : "#F2F2F2", color: d != null ? GREEN : INK, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 18, fontWeight: 800 } }, b), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11.5 } }, d != null ? `\u2713 ${d || "done"}` : `${n} code${n === 1 ? "" : "s"}`));
-    })), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 10 } }, "A bay with nothing on the system isn't listed \u2014 anything found on it goes in with Found a box from any bay.")), tab === "boxes" && bay && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between gap-3 mb-3" }, /* @__PURE__ */ React.createElement("button", { onClick: () => setBay(null), style: { border: 0, background: "none", color: NAVY, fontWeight: 600, fontSize: 16 } }, "\u2039 All bays"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 26, fontWeight: 800 } }, bay), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: INK_MUTED } }, answered.length, "/", rows.length, " answered")), photoOn && /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 10 } }, /* @__PURE__ */ React.createElement(BayPhotos, { bay, onDone: (r, nPhotos) => {
+    })), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 10 } }, "A bay with nothing on the system isn't listed \u2014 anything found on it goes in with Found a box from any bay."), /* @__PURE__ */ React.createElement("div", { "data-st-elsewhere": true, style: { marginTop: 14, padding: 14, borderRadius: 14, background: "#F4F6FA" } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, fontSize: 16, marginBottom: 8 } }, "\u{1F4F7} Stock found elsewhere"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement("select", { "data-st-elsewhere-place": true, value: elsewhere, onChange: (e) => setElsewhere(e.target.value), style: { flex: 1, minHeight: 44, borderRadius: 10, border: "1px solid #C5CBD8", padding: "0 10px", fontSize: 16, background: "#fff" } }, /* @__PURE__ */ React.createElement("option", { value: "FLOOR" }, "Floor (no bay yet)"), BOX_LOCATIONS.map((b) => /* @__PURE__ */ React.createElement("option", { key: b, value: b }, "Going to ", b))), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        type: "button",
+        "data-st-elsewhere-open": true,
+        onClick: () => {
+          setBay(elsewhere);
+          setAnswers({});
+          setMissing(/* @__PURE__ */ new Set());
+          setBayPhoto(null);
+          window.scrollTo(0, 0);
+        },
+        style: { minHeight: 44, padding: "0 16px", borderRadius: 22, border: 0, background: NAVY, color: "#fff", fontSize: 15, fontWeight: 700 }
+      },
+      "Open"
+    )), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED, marginTop: 6 } }, "Photograph it there and Work it out, or use Found a box \u2014 each code is counted and moved to the place you picked."))), tab === "boxes" && bay && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between gap-3 mb-3" }, /* @__PURE__ */ React.createElement("button", { onClick: () => setBay(null), style: { border: 0, background: "none", color: NAVY, fontWeight: 600, fontSize: 16 } }, "\u2039 All bays"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 26, fontWeight: 800 } }, bay), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: INK_MUTED } }, answered.length, "/", rows.length, " answered")), photoOn && /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 10 } }, /* @__PURE__ */ React.createElement(BayPhotos, { bay, onDone: (r, nPhotos) => {
       if (r.error) {
         setBayPhoto({ bay, error: r.error });
         return;
@@ -29801,7 +29829,7 @@ ${doneBays.size} of ${withStock.length} bays are done. The next count starts a n
         },
         style: { minHeight: 36, padding: "0 12px", borderRadius: 18, border: `1px solid ${NAVY}`, background: "#fff", color: NAVY, fontWeight: 600 }
       },
-      "Put in Found a box"
+      g.status === "unknown" || g.status === "near" ? "Put in Found a box" : `Add ${g.n} here`
     ))), bayPhoto.notSeen.length > 0 && /* @__PURE__ */ React.createElement("div", { "data-st-photo-notseen": true, style: { color: INK_MUTED, marginTop: 4 } }, "Not seen in the photo: ", bayPhoto.notSeen.join(", "), " \u2014 answer these by hand."), bayPhoto.unreadable > 0 && /* @__PURE__ */ React.createElement("div", { style: { color: "#8A4B00" } }, bayPhoto.unreadable, " label", bayPhoto.unreadable === 1 ? "" : "s", " couldn't be read."), bayPhoto.overlap && /* @__PURE__ */ React.createElement("div", { "data-st-photo-overlap": true, style: { color: INK_MUTED, fontSize: 13 } }, "Overlap: ", bayPhoto.overlap), /* @__PURE__ */ React.createElement("div", { style: { color: INK_MUTED, fontSize: 13, marginTop: 6 } }, "Only labels in the photos are counted. Check the numbers below, then Bay done records them.")))), doneBays.has(bay) && /* @__PURE__ */ React.createElement("div", { "data-st-already": true, style: { marginBottom: 10, padding: "8px 12px", borderRadius: 8, background: "#FFF4E5", color: "#8A4B00", fontSize: 14 } }, "Already counted today", doneBays.get(bay) ? ` by ${doneBays.get(bay)}` : "", ". The list now shows what that count left \u2014 counting again corrects it from here."), rows.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { color: INK_MUTED, marginBottom: 12 } }, "Nothing is on the system at ", bay, "."), rows.map((r) => {
       const a = answers[r.code];
       const set = (v) => setAnswers((s) => ({ ...s, [r.code]: v }));
