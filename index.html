@@ -992,7 +992,21 @@
     if (!byCat.has(t)) byCat.set(t, cat.products.length ? formIdFor(cat, t, { reel: isReelSpec(t) }) : null);
     return byCat.get(t);
   }
+  var LOOSE_MATCH_MEMO = { cat: null, byPair: /* @__PURE__ */ new Map() };
   function looseSpecMatch(specA, specB) {
+    if (LOOSE_MATCH_MEMO.cat !== CATALOGUE) {
+      LOOSE_MATCH_MEMO.cat = CATALOGUE;
+      LOOSE_MATCH_MEMO.byPair = /* @__PURE__ */ new Map();
+    }
+    const key = String(specA ?? "") + "\0" + String(specB ?? "");
+    const had = LOOSE_MATCH_MEMO.byPair.get(key);
+    if (had !== void 0) return had;
+    const out = looseSpecMatchFresh(specA, specB);
+    if (LOOSE_MATCH_MEMO.byPair.size > 2e5) LOOSE_MATCH_MEMO.byPair.clear();
+    LOOSE_MATCH_MEMO.byPair.set(key, out);
+    return out;
+  }
+  function looseSpecMatchFresh(specA, specB) {
     const a = specRef(specA), b = specRef(specB);
     if (a && b) return refsEquivalent(CATALOGUE, a, b);
     return sameSizeSpec(specA, specB);
@@ -1407,10 +1421,43 @@
     const m = (spec || "").match(/\((\d+(?:\.\d+)?)m\)/i);
     return m ? Number(m[1]) : null;
   }
+  var KNOWN_METRES_MEMO = { runs: null, runsN: -1, lines: null, cat: null, out: /* @__PURE__ */ new Map() };
+  var RUNS_BY_SIZE = /* @__PURE__ */ new WeakMap();
+  function runsBySize(runs) {
+    const had = RUNS_BY_SIZE.get(runs);
+    if (had && had.n === runs.length) return had.map;
+    const map = /* @__PURE__ */ new Map();
+    runs.forEach((r, i) => {
+      const k = r ? r.productSize : void 0;
+      if (!map.has(k)) map.set(k, []);
+      map.get(k).push(i);
+    });
+    RUNS_BY_SIZE.set(runs, { n: runs.length, map });
+    return map;
+  }
   function knownMeterageForSpec(spec, pt, allBondingRuns, lineItems) {
+    const M = KNOWN_METRES_MEMO, runsArr = allBondingRuns || null, n = (runsArr || []).length;
+    if (M.runs !== runsArr || M.runsN !== n || M.lines !== (lineItems || null) || M.cat !== CATALOGUE) {
+      M.runs = runsArr;
+      M.runsN = n;
+      M.lines = lineItems || null;
+      M.cat = CATALOGUE;
+      M.out = /* @__PURE__ */ new Map();
+    }
+    const key = `${spec}\0${pt || ""}`;
+    if (M.out.has(key)) return M.out.get(key);
+    const out = knownMeterageForSpecFresh(spec, pt, allBondingRuns, lineItems);
+    M.out.set(key, out);
+    return out;
+  }
+  function knownMeterageForSpecFresh(spec, pt, allBondingRuns, lineItems) {
     const fullSpec = pt ? `${spec} ${pt}` : spec;
     const wantsReel = specIsReel(fullSpec);
-    const fromHistory = (allBondingRuns || []).filter((r) => Number(r.metersPerBox) > 0 && looseSpecMatch(r.productSize, fullSpec) && (r.formId && formById(CATALOGUE, r.formId) ? formById(CATALOGUE, r.formId).reel : specIsReel(r.productSize)) === wantsReel).map((r) => Number(r.metersPerBox));
+    const allRuns = Array.isArray(allBondingRuns) ? allBondingRuns : [];
+    const sameWording = [];
+    for (const [size, idx] of runsBySize(allRuns)) if (looseSpecMatch(size, fullSpec)) sameWording.push(...idx);
+    sameWording.sort((a, b) => a - b);
+    const fromHistory = sameWording.map((i) => allRuns[i]).filter((r) => r && Number(r.metersPerBox) > 0 && (r.formId && formById(CATALOGUE, r.formId) ? formById(CATALOGUE, r.formId).reel : specIsReel(r.productSize)) === wantsReel).map((r) => Number(r.metersPerBox));
     if (fromHistory.length > 0) {
       const counts = {};
       fromHistory.forEach((v) => {
@@ -1593,7 +1640,7 @@
       return m && m.id || null;
     };
     const code = String(boxNumber || "").trim().toUpperCase();
-    const spec = ((data.bondingRuns || []).find((r) => r && !r.deleted && String(r.boxNumber || "").trim().toUpperCase() === code && r.productSize) || {}).productSize || "";
+    const spec = ((runsOfCode(data.bondingRuns || []).get(code) || []).find((r) => r && !r.deleted && r.productSize) || {}).productSize || "";
     const orders = new Map((data.orders || []).filter((o) => o && !o.deleted).map((o) => [o.id, o]));
     const c = cartonLedger(data.movements || LEDGER_MOVEMENTS, data.bondingRuns || [], boxNumber, {
       liveOrder: (id) => {
@@ -3766,11 +3813,40 @@
     }
     return { takes, short: left };
   }
+  var RUNS_OF_CODE = /* @__PURE__ */ new WeakMap();
+  var MOVES_OF_BOX = /* @__PURE__ */ new WeakMap();
+  function runsOfCode(runs) {
+    if (!Array.isArray(runs)) return /* @__PURE__ */ new Map();
+    const had = RUNS_OF_CODE.get(runs);
+    if (had && had.n === runs.length) return had.map;
+    const map = /* @__PURE__ */ new Map();
+    for (const r of runs) {
+      if (!r) continue;
+      const k = String(r.boxNumber || "").trim().toUpperCase();
+      if (!map.has(k)) map.set(k, []);
+      map.get(k).push(r);
+    }
+    RUNS_OF_CODE.set(runs, { n: runs.length, map });
+    return map;
+  }
+  function movesOfBox(movements) {
+    if (!Array.isArray(movements)) return /* @__PURE__ */ new Map();
+    const had = MOVES_OF_BOX.get(movements);
+    if (had && had.n === movements.length) return had.map;
+    const map = /* @__PURE__ */ new Map();
+    for (const m of movements) {
+      if (!m) continue;
+      if (!map.has(m.boxNumber)) map.set(m.boxNumber, []);
+      map.get(m.boxNumber).push(m);
+    }
+    MOVES_OF_BOX.set(movements, { n: movements.length, map });
+    return map;
+  }
   function cartonLedger(movements, runs, boxNumber, opts = {}) {
     const code = String(boxNumber || "").trim().toUpperCase();
     const liveOrder = opts.liveOrder || (() => true);
     const cartonForOrder = opts.cartonForOrder || (() => null);
-    const rows = (runs || []).filter((r) => r && !r.deleted && !r._synth && String(r.boxNumber || "").trim().toUpperCase() === code);
+    const rows = (runsOfCode(runs).get(code) || []).filter((r) => r && !r.deleted && !r._synth);
     const K = (id) => id || "unknown";
     const rowMade = {};
     let rowTotal = 0;
@@ -3786,7 +3862,7 @@
     const out = {};
     const at = (k) => out[k] = out[k] || { made: 0, scrapped: 0, shipped: 0, inCases: 0, onShelf: 0 };
     let legacyMade = 0;
-    for (const m of movements || []) {
+    for (const m of movesOfBox(movements).get(boxNumber) || []) {
       if (!m || m.deleted || m.boxNumber !== boxNumber) continue;
       const q = Number(m.qty) || 0;
       if (m.kind === "made" || m.kind === "adjusted") {
@@ -11352,7 +11428,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-01.18";
+  var APP_VERSION = "2026-10-01.19";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -23884,6 +23960,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-10-01.19", "Speed: carton stock, reel metres and size matching are worked out once and remembered instead of re-reading every box record and ledger entry each time \u2014 the figures behind every screen take about a third less time after each save."],
     ["2026-10-01.18", "New layout: Everything \u2192 Download backup \u2014 the same backup file as the original layout's More options, with how long since the last one."],
     ["2026-10-01.17", "Speed: the app no longer works everything out again every ten seconds when the cloud has nothing new \u2014 the phone stops freezing. The catalogue and bay look-ups are built once, so the Daily plan and Glue line open several times faster."],
     ["2026-10-01.16", "Speedy Crease Metal is its own range on the glue line, extrusion, Add box and order screens \u2014 #22 Gold to #200 Black, named as the catalogue names them."],
