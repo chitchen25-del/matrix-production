@@ -11283,7 +11283,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-01.13";
+  var APP_VERSION = "2026-10-01.14";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -23811,6 +23811,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-10-01.14", "Stock take NO BAY: each code found is checked against the ledger \u2014 already counted in a bay, or packed in a case, isn't added unless you say they're extra boxes."],
     ["2026-10-01.13", "Stock take NO BAY (admin's phone): a clean screen \u2014 photograph a spot, Work it out, say where it is, Complete; it clears for the next spot."],
     ["2026-10-01.12", `Adding a box not on the system: only ranges the catalogue holds are offered (no more "PX"), and a size that's in the catalogue under another range says so with a Use button instead of Add to the catalogue.`],
     ["2026-10-01.11", "Stock take, NO BAY: photograph the stock, then pick where each code goes (or put them all in one place) \u2014 counted and moved there."],
@@ -29493,6 +29494,18 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
     const [spotPlace, setSpotPlace] = useState("");
     const [spotKey, setSpotKey] = useState(0);
     const [spotsDone, setSpotsDone] = useState([]);
+    const [spotInc, setSpotInc] = useState({});
+    const ledgerOf = (code) => {
+      const latest = /* @__PURE__ */ new Map();
+      for (const m of data.movements || []) if (m && !m.deleted && m.source === "stocktake" && m.kind === "counted" && String(m.boxNumber || "").toUpperCase() === code && String(m.sourceId || "").startsWith(tag + ":")) {
+        const b0 = String(m.sourceId).slice(tag.length + 1), pm = latest.get(b0);
+        if (!pm || String(m.at || "") > String(pm.at || "")) latest.set(b0, m);
+      }
+      const counted = [...latest.entries()].filter(([, m]) => Number(m.qty) > 0).map(([b0, m]) => ({ bay: b0, qty: Number(m.qty) }));
+      const pl = placeOf(data, code) || {};
+      const cases = (pl.inCases || []).filter((x) => Number(x.qty) > 0);
+      return { counted, cases, onShelf: Math.max(0, Number(pl.onShelf) || 0), bays: [...new Set((data.bondingRuns || []).filter((r) => r && !r.deleted && String(r.boxNumber || "").toUpperCase() === code).map((r) => String(r.location || "").trim().toUpperCase()).filter(Boolean))] };
+    };
     const [emptyDone, setEmptyDone] = useDraftState("stockTakeEmptyBays", {}, {});
     const today = todayISO(), sess = stockTakeSession(data), tag = sess.tag;
     const who = String(currentActor() || "").split("@")[0] || "someone";
@@ -29827,9 +29840,27 @@ ${doneBays.size} of ${withStock.length} bays are done. The next count starts a n
       setSpot({ groups, unreadable: Number(r.unreadable) || 0 });
       setSpotN(Object.fromEntries(groups.map((g) => [g.code, String(g.n)])));
       setSpotPlace("");
+      setSpotInc(Object.fromEntries(groups.map((g) => {
+        const L = ledgerOf(g.code);
+        return [g.code, !(L.counted.length || L.cases.length && L.onShelf === 0)];
+      })));
     } }), spot && spot.error && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8, color: RED, fontWeight: 600 } }, spot.error), spot && spot.groups && /* @__PURE__ */ React.createElement("div", { "data-st-spot-list": true, style: { marginTop: 10, padding: 12, borderRadius: 12, background: "#F4F6FA" } }, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 16 } }, "What's there"), spot.groups.map((g) => {
       const known = g.status !== "unknown" && g.status !== "near";
-      return /* @__PURE__ */ React.createElement("div", { key: g.code, "data-st-spot-row": g.code, style: { display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderTop: "1px solid #E2E6EE" } }, /* @__PURE__ */ React.createElement("span", { style: { flex: 1 } }, /* @__PURE__ */ React.createElement("b", { style: { fontFamily: "ui-monospace, Menlo, monospace" } }, g.code), /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: known ? INK_MUTED : "#8A4B00" } }, known ? g.product : "not on the system \u2014 added as a new box on Complete", g.unsure ? " \xB7 check the code" : "")), /* @__PURE__ */ React.createElement(
+      return /* @__PURE__ */ React.createElement("div", { key: g.code, "data-st-spot-row": g.code, style: { display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderTop: "1px solid #E2E6EE" } }, /* @__PURE__ */ React.createElement("span", { style: { flex: 1 } }, /* @__PURE__ */ React.createElement("b", { style: { fontFamily: "ui-monospace, Menlo, monospace", textDecoration: known && !spotInc[g.code] ? "line-through" : "none" } }, g.code), /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: known ? INK_MUTED : "#8A4B00" } }, known ? g.product : "not on the system \u2014 add it with Found a box", g.unsure ? " \xB7 check the code" : ""), known && (() => {
+        const L = ledgerOf(g.code);
+        const why = L.counted.length ? `Already counted: ${L.counted.map((c) => `${c.qty} at ${c.bay}`).join(", ")}` : L.cases.length && L.onShelf === 0 ? `Packed: ${L.cases.map((c) => `${c.qty} in ${c.orderId} case ${c.caseNum}`).join(", ")}` : `System: ${L.onShelf} on the shelf${L.bays.length ? ` at ${L.bays.join(", ")}` : ""} \u2014 moved here`;
+        const flag = L.counted.length || L.cases.length && L.onShelf === 0;
+        return /* @__PURE__ */ React.createElement("span", { "data-st-spot-ledger": g.code, style: { display: "block", fontSize: 12.5, fontWeight: 600, color: flag ? "#8A4B00" : "#1E7F3C" } }, why, flag ? /* @__PURE__ */ React.createElement(
+          "button",
+          {
+            type: "button",
+            "data-st-spot-inc": g.code,
+            onClick: () => setSpotInc((m) => ({ ...m, [g.code]: !m[g.code] })),
+            style: { marginLeft: 6, minHeight: 30, padding: "0 10px", borderRadius: 15, border: `1px solid ${NAVY}`, background: spotInc[g.code] ? NAVY : "#fff", color: spotInc[g.code] ? "#fff" : NAVY, fontSize: 12.5, fontWeight: 700 }
+          },
+          spotInc[g.code] ? "\u2713 Extra boxes \u2014 adding" : "Extra boxes? Add them"
+        ) : null);
+      })()), /* @__PURE__ */ React.createElement(
         "input",
         {
           "data-st-spot-n": g.code,
@@ -29846,7 +29877,7 @@ ${doneBays.size} of ${withStock.length} bays are done. The next count starts a n
         "data-st-spot-complete": true,
         disabled: !spotPlace || !spot.groups.length,
         onClick: () => {
-          const ok = spot.groups.filter((g) => g.status !== "unknown" && g.status !== "near" && Number(spotN[g.code]) > 0);
+          const ok = spot.groups.filter((g) => g.status !== "unknown" && g.status !== "near" && Number(spotN[g.code]) > 0 && spotInc[g.code]);
           for (const g of ok) addFound(g.code, Number(spotN[g.code]), spotPlace);
           setSpotsDone((d) => [...d, { place: spotPlace, codes: ok.length, boxes: ok.reduce((t, g) => t + Number(spotN[g.code]), 0) }]);
           celebrate(`${ok.length} code${ok.length === 1 ? "" : "s"} \u2192 ${spotPlace}`);
