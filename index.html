@@ -10240,7 +10240,8 @@ ${line}` : line;
     ["code", "A box code", "More in cases or shipped than was ever made"],
     ["material", "A material", "Count it \u2014 the count is the truth"],
     ["reel", "A reel", "On the rack, or not"],
-    ["line", "An order line", "Entered as the wrong product"]
+    ["line", "An order line", "Entered as the wrong product"],
+    ["swap", "Two cases", "Numbered the wrong way round"]
   ];
   var OVERNIGHT_MORNINGS = 7;
   function overnightPolicyWords(p) {
@@ -10250,6 +10251,27 @@ ${line}` : line;
     const n = Number(p.mornings_yes) || 0;
     return `${n} of ${OVERNIGHT_MORNINGS} mornings \u2014 ${OVERNIGHT_MORNINGS - n} more yes${OVERNIGHT_MORNINGS - n === 1 ? "" : "es"} and it switches on`;
   }
+  var UNDO_CAUSES = ["Wrong code", "Wrong case", "Wrong count", "Entered twice", "Wrong product", "Wrong order", "Other"];
+  function causesLines(rep) {
+    const r = rep || {};
+    const arrow = (n, b) => b == null ? "" : n > b ? ` (up from ${b})` : n < b ? ` (down from ${b})` : " (same as before)";
+    const out = [];
+    for (const c of r.by_cause || []) out.push({ k: "cause", text: `${c.cause.charAt(0).toUpperCase() + c.cause.slice(1)} \u2014 ${c.n}\xD7${arrow(c.n, c.before)}`, sub: c.latest || "" });
+    for (const u of r.undone_saves || []) out.push({ k: "undone", text: `${u.kind} undone ${u.n}\xD7`, sub: u.who ? `saved by ${u.who}` : "" });
+    return out;
+  }
+  var TRUTH_SHORT = Object.fromEntries([
+    ["made", "More out than made"],
+    ["case_ledger", "Case and ledger disagree"],
+    ["line_catalogue", "Line not in the catalogue"],
+    ["plan_lines", "Case plan doesn't add up"],
+    ["one_form", "Two forms of one product"],
+    ["pt_twin", "Product with and without pt"],
+    ["shipped", "Shipped order changed"],
+    ["packing", "Packing rule broken"],
+    ["material_stock", "Material below zero"],
+    ["build", "Device on an old build"]
+  ]);
 
   // mx_pickwalk.js
   var up2 = (s) => String(s || "").trim().toUpperCase();
@@ -11753,7 +11775,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-02.4";
+  var APP_VERSION = "2026-10-02.5";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -22494,14 +22516,38 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     const typedUp = typed.toUpperCase();
     const exactCode = typed ? allBoxCodes.find((c) => c.toUpperCase() === typedUp) : null;
     const sameBox = !exactCode && typed.length >= 6 ? allBoxCodes.filter((c) => canonicalBoxCode(c) === canonicalBoxCode(typedUp)) : [];
+    const [cloudNames, setCloudNames] = useState([]);
+    useEffect(() => {
+      const c = EVENT_CLIENT;
+      if (!c) return;
+      let live = true;
+      c.from("code_names").select("old_code,new_code,at,why").limit(5e3).then(({ data: r }) => {
+        if (live && Array.isArray(r)) setCloudNames(r);
+      }, () => {
+      });
+      return () => {
+        live = false;
+      };
+    }, []);
+    const nameNow = (code) => {
+      let cur = String(code || "").toUpperCase();
+      for (let i = 0; i < 7; i++) {
+        const n = cloudNames.filter((x) => String(x.old_code).toUpperCase() === cur || cur.length >= 6 && canonicalBoxCode(String(x.old_code).toUpperCase()) === canonicalBoxCode(cur)).sort((a, b) => String(b.at).localeCompare(String(a.at)))[0];
+        if (!n || String(n.new_code).toUpperCase() === cur) break;
+        cur = String(n.new_code).toUpperCase();
+      }
+      return cur;
+    };
     const oldCodeRe = typedUp.length >= 6 ? new RegExp(`CODE CHANGED[^|]*\\b${typedUp.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i") : null;
-    const renamedTo = !exactCode && !sameBox.length && oldCodeRe ? [...new Set(bondingRuns.filter((r) => r && !r.deleted && oldCodeRe.test(r.comments || "")).map((r) => r.boxNumber))] : [];
+    const renamedByNote = !exactCode && !sameBox.length && oldCodeRe ? [...new Set(bondingRuns.filter((r) => r && !r.deleted && oldCodeRe.test(r.comments || "")).map((r) => r.boxNumber))] : [];
+    const cloudNow = !exactCode && !sameBox.length && typedUp.length >= 6 ? nameNow(typedUp) : typedUp;
+    const renamedTo = renamedByNote.length ? renamedByNote : cloudNow !== typedUp && allBoxCodes.includes(cloudNow) ? [cloudNow] : [];
     const q = exactCode || (sameBox.length === 1 ? sameBox[0] : renamedTo.length === 1 ? renamedTo[0] : typed);
     const respelled = !exactCode && sameBox.length === 1 ? { typed: typedUp, recorded: sameBox[0] } : null;
     const renamed = !exactCode && !respelled && renamedTo.length === 1 ? {
       typed: typedUp,
       recorded: renamedTo[0],
-      note: ((bondingRuns.find((r) => r && !r.deleted && r.boxNumber === renamedTo[0] && oldCodeRe.test(r.comments || "")) || {}).comments || "").match(/CODE CHANGED[^|]*/i)?.[0] || ""
+      note: ((bondingRuns.find((r) => r && !r.deleted && r.boxNumber === renamedTo[0] && oldCodeRe.test(r.comments || "")) || {}).comments || "").match(/CODE CHANGED[^|]*/i)?.[0] || ((cloudNames.find((x) => String(x.new_code).toUpperCase() === renamedTo[0]) || {}).why || "")
     } : null;
     const nearCodes = typed.length >= 6 && !exactCode && !sameBox.length && !renamedTo.length ? boxCodeNearMisses(typedUp, allBoxCodes) : [];
     const bondingMatch = q ? bondingRuns.find((r) => r.boxNumber === q) : null;
@@ -22583,7 +22629,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     )), !q && noCodeMode && /* @__PURE__ */ React.createElement(Panel, { className: "p-5 mb-5" }, /* @__PURE__ */ React.createElement(AddBoxOrReelChoice, { data, setData, query: "", onAdded: (v) => {
       setNoCodeMode(false);
       setQuery(v || "");
-    } })), /* @__PURE__ */ React.createElement("datalist", { id: "box-history-list" }, allBoxCodes.map((b) => /* @__PURE__ */ React.createElement("option", { key: b, value: b }))), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5" }, /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 320 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Box code"), /* @__PURE__ */ React.createElement(TextInput, { list: "box-history-list", value: query, placeholder: "e.g. BOX-101", onChange: (e) => setQuery(e.target.value) }))), renamed && found && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4", style: { borderLeft: `4px solid ${AMBER}` }, "data-box-renamed": renamed.recorded }, /* @__PURE__ */ React.createElement("div", { className: "text-sm" }, /* @__PURE__ */ React.createElement(Mono, null, renamed.typed), " is an old code \u2014 this box is recorded as ", /* @__PURE__ */ React.createElement(Mono, null, renamed.recorded), " since its code was corrected."), renamed.note && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, renamed.note)), respelled && found && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-3", style: { borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm" }, "Labelled ", /* @__PURE__ */ React.createElement(Mono, null, respelled.typed), ", recorded as ", /* @__PURE__ */ React.createElement(Mono, null, respelled.recorded), " \u2014 the same box, the letters in a different order.")), q && !found && sizeMatch && /* @__PURE__ */ React.createElement(SizeWhereabouts, { result: sizeMatch }), q && !found && !sizeMatch && /* @__PURE__ */ React.createElement(Panel, { className: "p-5" }, /* @__PURE__ */ React.createElement("div", { className: "text-center mb-3", style: { color: INK_MUTED } }, "No record found for ", /* @__PURE__ */ React.createElement(Mono, null, q), "."), nearCodes.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "text-center mb-3 text-sm" }, "Did you mean ", nearCodes.map((n, i) => /* @__PURE__ */ React.createElement(React.Fragment, { key: n.code }, i ? ", " : "", /* @__PURE__ */ React.createElement("button", { onClick: () => setQuery(n.code), style: { font: "inherit", color: NAVY, background: "none", border: 0, cursor: "pointer", textDecoration: "underline", padding: 0 } }, n.code))), "? Check the label before adding it as a new box."), typeof setData === "function" && (/^P[BP]L/i.test(q) ? /* @__PURE__ */ React.createElement(AddReelInline, { data, setData, batchNumber: q.toUpperCase(), onAdded: () => setQuery(q.toUpperCase()) }) : /* @__PURE__ */ React.createElement(AddBoxOrReelChoice, { data, setData, query: q, onAdded: (v) => setQuery(v || q) }))), found && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5", style: { borderLeft: `4px solid ${statusColor}` } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: INK_MUTED } }, "Status"), /* @__PURE__ */ React.createElement("div", { className: "text-lg font-semibold font-display", style: { color: INK } }, statusLabel), boxLabelsOn() && bondingMatch && bondingMatch.boxNumber && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement(Button, { onClick: () => setLabelsFor(bondingMatch), "data-print-box-labels": true }, "Print labels"))), labelsFor && /* @__PURE__ */ React.createElement(
+    } })), /* @__PURE__ */ React.createElement("datalist", { id: "box-history-list" }, allBoxCodes.map((b) => /* @__PURE__ */ React.createElement("option", { key: b, value: b }))), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5" }, /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 320 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Box code"), /* @__PURE__ */ React.createElement(TextInput, { list: "box-history-list", value: query, placeholder: "e.g. BOX-101", onChange: (e) => setQuery(e.target.value) }))), q && found && !renamed && cloudNames.some((x) => String(x.new_code).toUpperCase() === String(q).toUpperCase()) && /* @__PURE__ */ React.createElement("div", { "data-box-aka": true, className: "text-xs mb-3", style: { color: INK_MUTED } }, "Also known as ", cloudNames.filter((x) => String(x.new_code).toUpperCase() === String(q).toUpperCase()).map((x) => `${x.old_code} (until ${new Date(x.at).toLocaleDateString("en-GB", { day: "numeric", month: "short" })})`).join(", "), " \u2014 searching any of these finds this box."), renamed && found && /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-4", style: { borderLeft: `4px solid ${AMBER}` }, "data-box-renamed": renamed.recorded }, /* @__PURE__ */ React.createElement("div", { className: "text-sm" }, /* @__PURE__ */ React.createElement(Mono, null, renamed.typed), " is an old code \u2014 this box is recorded as ", /* @__PURE__ */ React.createElement(Mono, null, renamed.recorded), " since its code was corrected."), renamed.note && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, renamed.note)), respelled && found && /* @__PURE__ */ React.createElement(Panel, { className: "p-3 mb-3", style: { borderLeft: `4px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm" }, "Labelled ", /* @__PURE__ */ React.createElement(Mono, null, respelled.typed), ", recorded as ", /* @__PURE__ */ React.createElement(Mono, null, respelled.recorded), " \u2014 the same box, the letters in a different order.")), q && !found && sizeMatch && /* @__PURE__ */ React.createElement(SizeWhereabouts, { result: sizeMatch }), q && !found && !sizeMatch && /* @__PURE__ */ React.createElement(Panel, { className: "p-5" }, /* @__PURE__ */ React.createElement("div", { className: "text-center mb-3", style: { color: INK_MUTED } }, "No record found for ", /* @__PURE__ */ React.createElement(Mono, null, q), "."), nearCodes.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "text-center mb-3 text-sm" }, "Did you mean ", nearCodes.map((n, i) => /* @__PURE__ */ React.createElement(React.Fragment, { key: n.code }, i ? ", " : "", /* @__PURE__ */ React.createElement("button", { onClick: () => setQuery(n.code), style: { font: "inherit", color: NAVY, background: "none", border: 0, cursor: "pointer", textDecoration: "underline", padding: 0 } }, n.code))), "? Check the label before adding it as a new box."), typeof setData === "function" && (/^P[BP]L/i.test(q) ? /* @__PURE__ */ React.createElement(AddReelInline, { data, setData, batchNumber: q.toUpperCase(), onAdded: () => setQuery(q.toUpperCase()) }) : /* @__PURE__ */ React.createElement(AddBoxOrReelChoice, { data, setData, query: q, onAdded: (v) => setQuery(v || q) }))), found && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5", style: { borderLeft: `4px solid ${statusColor}` } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: INK_MUTED } }, "Status"), /* @__PURE__ */ React.createElement("div", { className: "text-lg font-semibold font-display", style: { color: INK } }, statusLabel), boxLabelsOn() && bondingMatch && bondingMatch.boxNumber && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement(Button, { onClick: () => setLabelsFor(bondingMatch), "data-print-box-labels": true }, "Print labels"))), labelsFor && /* @__PURE__ */ React.createElement(
       PrintLabelsDialog,
       {
         data,
@@ -24621,6 +24667,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     const [open, setOpen] = useState({});
     const [asking, setAsking] = useState(null);
     const [reason, setReason] = useState("");
+    const [cause, setCause] = useState("");
     const [busy, setBusy] = useState(null);
     const [said, setSaid] = useState({});
     const [tick, setTick] = useState(0);
@@ -24677,13 +24724,14 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
       if (!c) return;
       setBusy(cs.id);
       try {
-        const { data: res, error } = await c.rpc("reverse_changeset", { p_id: cs.id, p_reason: reason.trim() || null });
+        const { data: res, error } = await c.rpc("reverse_changeset", { p_id: cs.id, p_reason: reason.trim() || null, p_cause: cause ? cause.toLowerCase() : null });
         if (error) setSaid((s) => ({ ...s, [cs.id]: { bad: true, text: error.message } }));
         else if (!res || !res.ok) setSaid((s) => ({ ...s, [cs.id]: { bad: true, text: res && res.refused || "The cloud didn't say why." } }));
         else {
           setSaid((s) => ({ ...s, [cs.id]: { bad: false, text: "Undone. Every device picks it up on its next refresh." } }));
           setAsking(null);
           setReason("");
+          setCause("");
           try {
             window.dispatchEvent(new Event("mx-pull-now"));
           } catch (e) {
@@ -24729,7 +24777,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
       const lines = isOpen ? d.lines : d.lines.slice(0, 3);
       const handMade = cs.source === "claude" || cs.source === "sql";
       const result = said[cs.id];
-      return /* @__PURE__ */ React.createElement("div", { key: cs.id }, showDay && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, letterSpacing: 1.5, color: P.dim, textTransform: "uppercase", margin: "6px 0 4px" } }, day), /* @__PURE__ */ React.createElement("div", { "data-cs": cs.id, "data-cs-status": cs.status, style: { ...card, opacity: cs.status === "applied" ? 1 : 0.6, borderLeft: handMade ? `3px solid ${P.warn}` : cs.status === "refused" ? `3px solid ${P.bad}` : card.border } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { "data-cs-kind": true, style: { fontWeight: 650, color: P.head, fontSize: 15 } }, d.kind), cs.status === "reversed" && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: P.ok, border: `1px solid ${P.ok}`, borderRadius: 8, padding: "0 6px" } }, "UNDONE"), cs.status === "refused" && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: P.bad, border: `1px solid ${P.bad}`, borderRadius: 8, padding: "0 6px" } }, "REFUSED"), handMade && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: P.warn, border: `1px solid ${P.warn}`, borderRadius: 8, padding: "0 6px" } }, "BY HAND"), /* @__PURE__ */ React.createElement("span", { style: { marginLeft: "auto", fontSize: 12, color: P.dim } }, changeAgo(cs.created_at, nowMs))), /* @__PURE__ */ React.createElement("div", { "data-cs-who": true, style: { fontSize: 12.5, color: P.dim, marginTop: 2 } }, d.who, cs.build ? ` \xB7 ${cs.build}` : ""), d.why && /* @__PURE__ */ React.createElement("div", { "data-cs-why": true, style: { fontSize: 13.5, marginTop: 6 } }, d.why), cs.status === "refused" && cs.refusal && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, marginTop: 6, color: P.bad } }, cs.refusal), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6 } }, lines.map((l, i) => /* @__PURE__ */ React.createElement("div", { key: i, "data-cs-line": true, style: { fontSize: 13.5, padding: "3px 0", borderTop: i ? `1px solid ${P.line}` : "none" } }, l))), d.lines.length > 3 && /* @__PURE__ */ React.createElement("button", { onClick: () => setOpen((o) => ({ ...o, [cs.id]: !isOpen })), style: { background: "none", border: 0, color: P.head, fontSize: 13, padding: "4px 0", cursor: "pointer" } }, isOpen ? "Show less" : `+ ${d.lines.length - 3} more`), result && /* @__PURE__ */ React.createElement("div", { "data-cs-result": true, style: { fontSize: 13.5, marginTop: 8, color: result.bad ? P.bad : P.ok, fontWeight: 600 } }, result.text), cs.status === "applied" && rows.length > 0 && (asking === cs.id ? /* @__PURE__ */ React.createElement("div", { "data-cs-confirm": true, style: { marginTop: 10, paddingTop: 10, borderTop: `1px solid ${P.line}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: P.head } }, "Undo this ", d.kind.toLowerCase(), "?"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: P.dim, margin: "4px 0 8px" } }, "Everything above goes back to how it was before ", cs.actor || "it", " made it."), /* @__PURE__ */ React.createElement(
+      return /* @__PURE__ */ React.createElement("div", { key: cs.id }, showDay && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, letterSpacing: 1.5, color: P.dim, textTransform: "uppercase", margin: "6px 0 4px" } }, day), /* @__PURE__ */ React.createElement("div", { "data-cs": cs.id, "data-cs-status": cs.status, style: { ...card, opacity: cs.status === "applied" ? 1 : 0.6, borderLeft: handMade ? `3px solid ${P.warn}` : cs.status === "refused" ? `3px solid ${P.bad}` : card.border } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { "data-cs-kind": true, style: { fontWeight: 650, color: P.head, fontSize: 15 } }, d.kind), cs.status === "reversed" && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: P.ok, border: `1px solid ${P.ok}`, borderRadius: 8, padding: "0 6px" } }, "UNDONE"), cs.status === "refused" && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: P.bad, border: `1px solid ${P.bad}`, borderRadius: 8, padding: "0 6px" } }, "REFUSED"), handMade && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: P.warn, border: `1px solid ${P.warn}`, borderRadius: 8, padding: "0 6px" } }, "BY HAND"), /* @__PURE__ */ React.createElement("span", { style: { marginLeft: "auto", fontSize: 12, color: P.dim } }, changeAgo(cs.created_at, nowMs))), /* @__PURE__ */ React.createElement("div", { "data-cs-who": true, style: { fontSize: 12.5, color: P.dim, marginTop: 2 } }, d.who, cs.build ? ` \xB7 ${cs.build}` : ""), d.why && /* @__PURE__ */ React.createElement("div", { "data-cs-why": true, style: { fontSize: 13.5, marginTop: 6 } }, d.why), cs.status === "refused" && cs.refusal && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, marginTop: 6, color: P.bad } }, cs.refusal), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6 } }, lines.map((l, i) => /* @__PURE__ */ React.createElement("div", { key: i, "data-cs-line": true, style: { fontSize: 13.5, padding: "3px 0", borderTop: i ? `1px solid ${P.line}` : "none" } }, l))), d.lines.length > 3 && /* @__PURE__ */ React.createElement("button", { onClick: () => setOpen((o) => ({ ...o, [cs.id]: !isOpen })), style: { background: "none", border: 0, color: P.head, fontSize: 13, padding: "4px 0", cursor: "pointer" } }, isOpen ? "Show less" : `+ ${d.lines.length - 3} more`), result && /* @__PURE__ */ React.createElement("div", { "data-cs-result": true, style: { fontSize: 13.5, marginTop: 8, color: result.bad ? P.bad : P.ok, fontWeight: 600 } }, result.text), cs.status === "applied" && rows.length > 0 && (asking === cs.id ? /* @__PURE__ */ React.createElement("div", { "data-cs-confirm": true, style: { marginTop: 10, paddingTop: 10, borderTop: `1px solid ${P.line}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: P.head } }, "Undo this ", d.kind.toLowerCase(), "?"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: P.dim, margin: "4px 0 8px" } }, "Everything above goes back to how it was before ", cs.actor || "it", " made it."), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: P.dim, margin: "0 0 6px" } }, "What was wrong with it?"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 } }, UNDO_CAUSES.map((x) => /* @__PURE__ */ React.createElement("button", { key: x, "data-cs-cause": x, onClick: () => setCause(cause === x ? "" : x), style: { height: 30, padding: "0 10px", borderRadius: 999, fontSize: 12.5, border: `1px solid ${cause === x ? P.head : P.line}`, background: cause === x ? P.head : P.card, color: cause === x ? P.card : P.dim, cursor: "pointer" } }, x))), /* @__PURE__ */ React.createElement(
         "input",
         {
           "data-cs-reason": true,
@@ -24876,12 +24924,13 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
         return { subject: { type: "case", order_id: f.order, case_num: Number(f.caseNum) }, observed: { seen }, kind: f.photo ? "photo" : "count" };
       }
       if (kind === "code") return { subject: { type: "code", code: f.code.trim().toUpperCase() } };
+      if (kind === "swap") return { subject: { type: "swap", order_id: f.order, a: Number(f.a), b: Number(f.b) }, observed: { labels: "the other way round" }, kind: "word" };
       if (kind === "material") return { subject: { type: "material", material_id: f.material }, observed: { count: Number(f.count) }, kind: "count" };
       if (kind === "reel") return { subject: { type: "reel", batch_number: f.reel.trim().toUpperCase() }, observed: { state: f.reelState }, kind: "word" };
       if (kind === "line") return { subject: { type: "line", line_id: f.line }, observed: { form_id: f.product }, kind: "word" };
       return null;
     };
-    const ready = kind === "case" ? f.order && f.caseNum : kind === "code" ? f.code.trim().length >= 6 : kind === "material" ? f.material && f.count !== "" : kind === "reel" ? f.reel.trim() && f.reelState : kind === "line" ? f.line && f.product : false;
+    const ready = kind === "swap" ? f.order && f.a && f.b && f.a !== f.b : kind === "case" ? f.order && f.caseNum : kind === "code" ? f.code.trim().length >= 6 : kind === "material" ? f.material && f.count !== "" : kind === "reel" ? f.reel.trim() && f.reelState : kind === "line" ? f.line && f.product : false;
     const ask = async (body) => {
       const c = EVENT_CLIENT;
       if (!c) {
@@ -24958,10 +25007,42 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
       }
       setF((s) => ({ ...s, counts, extra, photo: true }));
       setProp(null);
-    } })), f.photo && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: P.dim } }, "Filled in from the photo \u2014 check it, then tap below."))), kind === "code" && input({ "data-wrong-code": true, value: f.code, placeholder: "Box code, e.g. I60205SDB", autoCapitalize: "characters", onChange: (e) => set("code", e.target.value.toUpperCase()), style: { fontFamily: "ui-monospace, Menlo, monospace" } }), kind === "material" && /* @__PURE__ */ React.createElement(React.Fragment, null, select({ "data-wrong-material": true, value: f.material, onChange: (e) => set("material", e.target.value) }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, "Material\u2026"), ...materials.map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id }, m.name))]), input({ "data-wrong-material-count": true, inputMode: "decimal", value: f.count, placeholder: "How many you counted", onChange: (e) => set("count", e.target.value.replace(/[^0-9.]/g, "")) })), kind === "reel" && /* @__PURE__ */ React.createElement(React.Fragment, null, input({ "data-wrong-reel": true, value: f.reel, placeholder: "Reel batch code, e.g. PBLH62901", onChange: (e) => set("reel", e.target.value.toUpperCase()), style: { fontFamily: "ui-monospace, Menlo, monospace" } }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, [["here", "It's on the rack"], ["not_here", "It's not on the rack"]].map(([k, l]) => /* @__PURE__ */ React.createElement("button", { key: k, "data-wrong-reel-state": k, onClick: () => set("reelState", k), style: { ...btn, flex: 1, ...f.reelState === k ? { background: P.head, color: P.card, borderColor: P.head } : {} } }, l)))), kind === "line" && /* @__PURE__ */ React.createElement(React.Fragment, null, select({ "data-wrong-line-order": true, value: f.order, onChange: (e) => {
+    } })), f.photo && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: P.dim } }, "Filled in from the photo \u2014 check it, then tap below."))), kind === "swap" && /* @__PURE__ */ React.createElement(React.Fragment, null, select({ "data-wrong-swap-order": true, value: f.order, onChange: (e) => {
+      set("order", e.target.value);
+      set("a", "");
+      set("b", "");
+    } }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, "Order\u2026"), ...live.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.id, value: o.id }, o.customer, " (", o.id, ")"))]), f.order && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } }, select({ "data-wrong-swap-a": true, value: f.a || "", onChange: (e) => set("a", e.target.value), style: { flex: 1 } }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, "Case\u2026"), ...caseNums.map((n) => /* @__PURE__ */ React.createElement("option", { key: n, value: n }, "Case ", n))]), /* @__PURE__ */ React.createElement("span", { style: { color: P.dim } }, "and"), select({ "data-wrong-swap-b": true, value: f.b || "", onChange: (e) => set("b", e.target.value), style: { flex: 1 } }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, "Case\u2026"), ...caseNums.map((n) => /* @__PURE__ */ React.createElement("option", { key: n, value: n }, "Case ", n))])), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: P.dim } }, "For when the labels on the floor are right and the records have them the other way round.")), kind === "code" && input({ "data-wrong-code": true, value: f.code, placeholder: "Box code, e.g. I60205SDB", autoCapitalize: "characters", onChange: (e) => set("code", e.target.value.toUpperCase()), style: { fontFamily: "ui-monospace, Menlo, monospace" } }), kind === "material" && /* @__PURE__ */ React.createElement(React.Fragment, null, select({ "data-wrong-material": true, value: f.material, onChange: (e) => set("material", e.target.value) }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, "Material\u2026"), ...materials.map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id }, m.name))]), input({ "data-wrong-material-count": true, inputMode: "decimal", value: f.count, placeholder: "How many you counted", onChange: (e) => set("count", e.target.value.replace(/[^0-9.]/g, "")) })), kind === "reel" && /* @__PURE__ */ React.createElement(React.Fragment, null, input({ "data-wrong-reel": true, value: f.reel, placeholder: "Reel batch code, e.g. PBLH62901", onChange: (e) => set("reel", e.target.value.toUpperCase()), style: { fontFamily: "ui-monospace, Menlo, monospace" } }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, [["here", "It's on the rack"], ["not_here", "It's not on the rack"]].map(([k, l]) => /* @__PURE__ */ React.createElement("button", { key: k, "data-wrong-reel-state": k, onClick: () => set("reelState", k), style: { ...btn, flex: 1, ...f.reelState === k ? { background: P.head, color: P.card, borderColor: P.head } : {} } }, l)))), kind === "line" && /* @__PURE__ */ React.createElement(React.Fragment, null, select({ "data-wrong-line-order": true, value: f.order, onChange: (e) => {
       set("order", e.target.value);
       set("line", "");
     } }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, "Order\u2026"), ...live.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.id, value: o.id }, o.customer, " (", o.id, ")"))]), f.order && select({ "data-wrong-line": true, value: f.line, onChange: (e) => set("line", e.target.value) }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, "Which line\u2026"), ...lines.map((l) => /* @__PURE__ */ React.createElement("option", { key: l.id, value: l.id }, l.qty, " \xD7 ", l.description))]), f.line && input({ "data-wrong-product-search": true, value: f.productQuery, placeholder: "It should be\u2026 (type part of the name)", onChange: (e) => set("productQuery", e.target.value) }), f.line && products.length > 0 && select({ "data-wrong-product": true, value: f.product, onChange: (e) => set("product", e.target.value) }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, products.length, " match", products.length === 1 ? "" : "es", "\u2026"), ...products.map((x) => /* @__PURE__ */ React.createElement("option", { key: x.id, value: x.id }, x.label))])), /* @__PURE__ */ React.createElement("button", { "data-wrong-ask": true, disabled: !ready || busy, onClick: () => ask(request()), style: { ...btn, height: 44, fontWeight: 600, background: ready ? P.head : P.btn, color: ready ? P.card : P.dim, borderColor: ready ? P.head : P.btnLine } }, busy ? "Working it out\u2026" : "What should change?")), prop && /* @__PURE__ */ React.createElement("div", { "data-wrong-proposal": true, style: card }, prop.title && /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 650, color: P.head, fontSize: 15 } }, prop.title), prop.ok === false && /* @__PURE__ */ React.createElement("div", { "data-wrong-refused": true, style: { color: P.bad, fontWeight: 600, marginTop: 6 } }, prop.refused), (prop.now || []).length > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: P.dim, marginTop: 4 } }, "The records say: ", (prop.now || []).join(" \xB7 ")), prop.right && /* @__PURE__ */ React.createElement("div", { "data-wrong-right": true, style: { color: P.ok, fontWeight: 600, marginTop: 8 } }, "\u2713 ", (prop.notes || [])[0] || "Nothing to change."), !prop.right && (prop.notes || []).map((n, i) => /* @__PURE__ */ React.createElement("div", { key: i, "data-wrong-note": true, style: { fontSize: 13.5, color: P.warn, marginTop: 6 } }, n)), prop.ask === "count" && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 8 } }, input({ "data-wrong-issue-count": true, inputMode: "decimal", value: f.count, placeholder: "How many you counted", onChange: (e) => setF((s) => ({ ...s, count: e.target.value.replace(/[^0-9.]/g, "") })), style: { flex: 1 } }), /* @__PURE__ */ React.createElement("button", { "data-wrong-issue-count-go": true, disabled: f.count === "", onClick: () => ask({ subject: { type: "material", material_id: (start && start.issue || "").split("|")[1] }, observed: { count: Number(f.count) }, kind: "count" }), style: btn }, "Go")), (prop.options || []).map((o, i) => /* @__PURE__ */ React.createElement("div", { key: i, "data-wrong-option": i, style: { marginTop: 10, paddingTop: 10, borderTop: `1px solid ${P.line}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, fontSize: 14.5 } }, o.label), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: P.dim, margin: "2px 0 6px" } }, o.why), (o.payload && o.payload.rows || []).map((r, j) => /* @__PURE__ */ React.createElement("div", { key: j, "data-wrong-row": true, style: { fontSize: 13.5, padding: "2px 0" } }, "\u2022 ", proposedRowWords(r, ctx))), /* @__PURE__ */ React.createElement("button", { "data-wrong-do": i, disabled: busy, onClick: () => apply(o), style: { ...btn, marginTop: 8, background: P.head, color: P.card, borderColor: P.head, fontWeight: 600 } }, busy ? "Doing it\u2026" : "Do it")))), done && /* @__PURE__ */ React.createElement("div", { "data-wrong-done": true, style: { ...card, color: done.bad ? P.bad : P.ok, fontWeight: 600 } }, done.text, done.id && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("button", { "data-wrong-see": true, onClick: () => openActivity(done.id), style: { ...btn, marginTop: 8, fontWeight: 400 } }, "See it in Activity \xB7 Undo"))));
+  }
+  function AdminCauses({ P, card, btn }) {
+    const [days, setDays] = useState(7);
+    const [rep, setRep] = useState(null);
+    const [err, setErr] = useState(null);
+    useEffect(() => {
+      const c = EVENT_CLIENT;
+      if (!c) {
+        setErr("Not connected to the cloud on this device.");
+        return;
+      }
+      let live = true;
+      setRep(null);
+      c.rpc("causes_report", { p_days: days }).then(({ data: r, error }) => {
+        if (!live) return;
+        if (error) setErr(error.message);
+        else {
+          setErr(null);
+          setRep(r);
+        }
+      }, (e) => live && setErr(String(e.message || e)));
+      return () => {
+        live = false;
+      };
+    }, [days]);
+    const lines = causesLines(rep);
+    const big = (n, label, sub, color) => /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 120px", ...card, padding: "10px 12px" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 24, fontWeight: 650, color: color || P.head } }, n), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: P.dim } }, label), sub && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: P.dim } }, sub));
+    return /* @__PURE__ */ React.createElement("div", { "data-causes": true, style: { display: "grid", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6 } }, [[7, "This week"], [30, "30 days"]].map(([n, l]) => /* @__PURE__ */ React.createElement("button", { key: n, "data-causes-days": n, onClick: () => setDays(n), style: { ...btn, ...days === n ? { background: P.head, color: P.card, borderColor: P.head } : {} } }, l))), err && /* @__PURE__ */ React.createElement("div", { style: { ...card, color: P.bad } }, err), !rep && !err && /* @__PURE__ */ React.createElement("div", { style: { ...card, color: P.dim } }, "Counting\u2026"), rep && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } }, big(rep.fixes, "fixes", rep.fixes_before != null ? `${rep.fixes_before} the ${days === 7 ? "week" : "30 days"} before` : ""), big(rep.by_hand, "done by hand", rep.by_hand ? "aim: zero" : "\u2713 none", rep.by_hand ? P.warn : P.ok), big(rep.saves, "ordinary saves", "from the floor")), /* @__PURE__ */ React.createElement("div", { "data-causes-list": true, style: card }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: P.head, marginBottom: 4 } }, "What keeps going wrong"), lines.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: P.dim } }, "Nothing needed fixing", days === 7 ? " this week" : "", "."), lines.map((l, i) => /* @__PURE__ */ React.createElement("div", { key: i, "data-causes-line": l.k, style: { padding: "6px 0", borderTop: i ? `1px solid ${P.line}` : "none" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14 } }, l.text), l.sub && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim } }, l.sub)))), (rep.issues || []).length > 0 && /* @__PURE__ */ React.createElement("div", { "data-causes-issues": true, style: card }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: P.head, marginBottom: 4 } }, "What the checks found"), rep.issues.map((x, i) => /* @__PURE__ */ React.createElement("div", { key: x.truth, style: { fontSize: 13.5, padding: "4px 0", borderTop: i ? `1px solid ${P.line}` : "none" } }, TRUTH_SHORT[x.truth] || x.truth, " \u2014 ", x.n, x.by_saves ? ` (${x.by_saves} straight after a save)` : "")))));
   }
   var ADMIN_THEME_KEY = "mxAdminTheme";
   var ADMIN_PALETTES = {
@@ -24973,6 +25054,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     { key: "fix", title: "Fix tools", sub: "the jobs Claude did by hand" },
     { key: "health", title: "Health", sub: "" },
     { key: "wrong", title: "This isn't right", sub: "show it what's true" },
+    { key: "causes", title: "What keeps going wrong", sub: "causes, week by week" },
     { key: "timemachine", title: "Time machine", sub: "any record, any moment" },
     { key: "truth", title: "Truth checks", sub: "every morning" },
     { key: "live", title: "Live floor", sub: "who's on what now" },
@@ -25038,6 +25120,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     const subOf = (s) => s.key === "health" ? `${toLook} to look at` : s.key === "refusals" ? `${refused.length} this session` : s.key === "printing" ? `${(data.printJobs || []).filter((j) => j && !j.deleted && j.status === "waiting").length} waiting to print` : s.sub;
     const head = /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", minHeight: 28 } }, section ? /* @__PURE__ */ React.createElement("button", { "data-admin-home": true, onClick: () => setSection(null), style: { background: "none", border: 0, padding: "4px 0", color: P.head, fontSize: 14.5, fontWeight: 500, cursor: "pointer" } }, "\u2039 Admin") : /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, letterSpacing: 2, color: P.dim } }, "MATRIX SYNC \xB7 CONTROL ROOM"), /* @__PURE__ */ React.createElement("button", { onClick: flip, "aria-label": "Light or dark", style: { background: "none", border: `1px solid ${P.btnLine}`, borderRadius: 999, padding: "3px 10px", fontSize: 12, color: P.dim, cursor: "pointer" } }, theme === "light" ? "\u263E Dark" : "\u2600 Light")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 26, fontWeight: 650, color: P.head, marginTop: 4, letterSpacing: -0.3 } }, section ? (ADMIN_SECTIONS.find((s) => s.key === section) || {}).title : "Admin"));
     const sectionBody = () => {
+      if (section === "causes") return /* @__PURE__ */ React.createElement(AdminCauses, { P, card, btn });
       if (section === "wrong") return /* @__PURE__ */ React.createElement(AdminWrong, { data, P, card, btn, openActivity: (id) => {
         try {
           sessionStorage.setItem("mxActivityQuery", id);
