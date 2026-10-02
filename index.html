@@ -626,6 +626,15 @@
     if (CATALOGUE.products === (products || CATALOGUE.products) && CATALOGUE.productForms === (productForms || CATALOGUE.productForms) && CATALOGUE.productAliases === al && products && productForms) return;
     CATALOGUE = { products: products || [], productForms: productForms || [], productAliases: al };
   }
+  var ORDER_RULES = /* @__PURE__ */ new Map();
+  function setOrderRules(map) {
+    ORDER_RULES = map instanceof Map ? map : /* @__PURE__ */ new Map();
+  }
+  function orderTakes(orderId, family) {
+    const r = ORDER_RULES.get(orderId);
+    const ex = r && r.takes && Array.isArray(r.takes[family]) ? r.takes[family] : [];
+    return [family, ...ex.filter((x) => x && x !== family)];
+  }
   var ACTOR = "Team";
   var DEVICE = "Device";
   function setActorAndDevice(actor, device) {
@@ -889,6 +898,23 @@
     CATALOGUE_INDEX.index = index;
     return index;
   }
+  function rubberSizeFromText(text) {
+    const raw = String(text || "").toLowerCase();
+    const bare = /^\s*7\.25\s*(mm)?\s*$/.test(raw);
+    if (!bare && !/\b(exceed|rubber)\b/.test(raw)) return null;
+    const words3 = raw.replace(/[()\[\],;:/]/g, " ").replace(/(\d)x(\d)/g, "$1 x $2").split(/\s+/).filter(Boolean);
+    const allowed = /* @__PURE__ */ new Set(["exceed", "rubber", "unimark", "matrix", "food", "safe", "speed", "mm", "x", "\xD7", "by", "box", "boxes"]);
+    const nums = [];
+    for (const w of words3) {
+      if (allowed.has(w)) continue;
+      const m = /^(\d+(?:\.\d+)?)(mm)?$/.exec(w);
+      if (!m) return null;
+      nums.push(Number(m[1]));
+    }
+    if (nums.length === 2) return `Exceed ${nums[0].toFixed(2)} x ${nums[1].toFixed(2)}mm`;
+    if (nums.length === 1 && nums[0] === 7.25) return "Exceed 7.25 x 8.00mm";
+    return null;
+  }
   function resolveProductFresh(data, text) {
     const { products, byId, aliasByText, aliasByKey, productByKey } = catalogueIndex(data);
     const typedRaw = String(text || "").trim();
@@ -898,6 +924,11 @@
     if (hit && byId.get(hit.productId)) return { status: "exact", product: byId.get(hit.productId), candidates: [] };
     const self = productByKey.get(rawKey);
     if (self) return { status: "exact", product: self, candidates: [] };
+    const rub = rubberSizeFromText(typedRaw);
+    if (rub) {
+      const rp = productByKey.get(productKey(normaliseProductText(rub)));
+      if (rp) return { status: "exact", product: rp, candidates: [] };
+    }
     const q = productParts(raw);
     const famWords = raw.replace(/[\d].*$/, "").trim().toUpperCase();
     const candidates = products.filter((p) => {
@@ -1293,7 +1324,7 @@
   }
   function runMatchesLine(r, li, { formCheck = true } = {}) {
     const a = r && r.formId, b = li && li.formId;
-    if (a && b) return a === b || refsEquivalent(CATALOGUE, a, b);
+    if (a && b) return a === b || refsEquivalent(CATALOGUE, a, b) || refsEquivalentForCustomer(CATALOGUE, a, b, li && li.orderId);
     const desc = li && li.description;
     return looseSpecMatch(r && r.productSize, desc) && (!formCheck || stockFormMatchesLine(r, desc));
   }
@@ -1575,7 +1606,15 @@
     }
     return built;
   }
-  function refsEquivalent(data, a, b) {
+  function refsEquivalentForCustomer(data, a, b, orderId) {
+    if (!a || !b || !orderId) return false;
+    const fa = formById(data, a), fb = formById(data, b);
+    if (!fa || !fb || !fa.product || !fb.product) return false;
+    const takes = orderTakes(orderId, fb.product.family);
+    if (takes.length < 2 || !takes.includes(fa.product.family)) return false;
+    return refsEquivalent(data, a, b, { families: takes });
+  }
+  function refsEquivalent(data, a, b, { families = null } = {}) {
     if (!a || !b) return false;
     if (a === b) return true;
     const fa = formById(data, a), fb = formById(data, b);
@@ -1586,7 +1625,8 @@
     const same = (x, y) => String(x ?? "").trim().toLowerCase() === String(y ?? "").trim().toLowerCase();
     const num = (x, y) => x == null && y == null || x != null && y != null && Number(x) === Number(y);
     const variantOf = (p) => p.variant || doubleGapOf(p.displayName) || (/\bO\/S\b/i.test(p.displayName || "") ? "O/S" : null);
-    return same(pa.family, pb.family) && num(pa.thickness, pb.thickness) && num(pa.gos, pb.gos) && same(variantOf(pa), variantOf(pb)) && (!pa.pt || !pb.pt || same(pa.pt, pb.pt));
+    const famOk = families ? families.some((f) => same(f, pa.family)) && families.some((f) => same(f, pb.family)) : same(pa.family, pb.family);
+    return famOk && num(pa.thickness, pb.thickness) && num(pa.gos, pb.gos) && same(variantOf(pa), variantOf(pb)) && (!pa.pt || !pb.pt || same(pa.pt, pb.pt));
   }
   function specIsReel(spec) {
     return isReelSpec(spec);
@@ -7307,6 +7347,28 @@
     }
     return Object.values(byCustomer);
   }
+  function boxMetresRule({ range, variant, gap, pt } = {}) {
+    const r = String(range || ""), v = String(variant || "").toUpperCase(), g = Number(gap);
+    if (/^exceed/i.test(r)) return { metres: 24, fixed: true, why: "rubber boxes are always 24 m" };
+    if (v === "O/S") return { metres: 21, fixed: true, why: "every O/S size is 21 m" };
+    if (/^D\d/.test(v)) return { metres: 18, fixed: true, why: "doubles are 18 m" };
+    if (v === "MINI") return { metres: 21, fixed: true, why: "Mini is 21 m" };
+    if (/^ultra sr/i.test(r)) return g >= 3.5 ? { metres: 15, fixed: true, why: "Ultra SR 12mm is 15 m" } : { metres: 24, fixed: true, why: "Ultra SR 10mm is 24 m" };
+    if (g > 0 && g < 3.5) return { metres: 24, fixed: true, why: `${r || "a box"} under a 3.50 gap is 24 m` };
+    return { metres: 20.25, fixed: false, why: "the 3-4pt sizes have been 20.25 m \u2014 check the box" };
+  }
+  var CUSTOMER_RULES_BUILTIN = { unimark: { takes: { "PX Plus": ["PX"] } }, uninark: { takes: { "PX Plus": ["PX"] } } };
+  function orderRulesMap(data) {
+    const out = /* @__PURE__ */ new Map();
+    const byId = new Map((data && data.customers || []).filter((c) => c && !c.deleted).map((c) => [c.id, c]));
+    for (const o of data && data.orders || []) {
+      if (!o || !o.id || o.deleted) continue;
+      const rec = o.customerId && byId.get(o.customerId) || (data && data.customers || []).find((c) => c && !c.deleted && custNorm(c.companyName) === custNorm(o.customer)) || null;
+      const rules = (rec && rec.rules && typeof rec.rules === "object" ? rec.rules : null) || CUSTOMER_RULES_BUILTIN[custNorm(o.customer)] || CUSTOMER_RULES_BUILTIN[custNorm(rec && rec.companyName)] || null;
+      if (rules) out.set(o.id, rules);
+    }
+    return out;
+  }
 
   // mx_changes.js
   var EDIT_LOG_IGNORE = /* @__PURE__ */ new Set(["id", "updatedAt", "updatedBy", "deleted", "deletedAt"]);
@@ -9302,6 +9364,27 @@ ${line}` : line;
     return String(f?.hint || "") === "app_update_required" || /out of date/i.test(String(f?.message || ""));
   }
   var MISSING_COLUMN_RE = /Could not find the '([^']+)' column/i;
+  function uniqueClash(error, outgoing, already) {
+    const text = [error && error.details, error && error.message, error && error.hint].filter(Boolean).join(" ");
+    if (!/duplicate key|unique constraint|unique_violation|23505/i.test(text)) return null;
+    const m = /Key \(([^)]+)\)=\((.*?)\) already exists/.exec(text);
+    if (!m) return null;
+    const cols = m[1].split(",").map((c) => c.trim().replace(/^"|"$/g, "")).filter(Boolean);
+    const vals = m[2].split(",").map((v) => v.trim());
+    if (!cols.length || cols.length !== vals.length) return null;
+    const have = new Set((already || []).map((x) => x.id));
+    const same = (a, b) => String(a == null ? "" : a).trim().toUpperCase() === String(b == null ? "" : b).trim().toUpperCase();
+    const rows = (outgoing || []).filter((r) => !have.has(r.id) && cols.every((c, i) => same(r[c], vals[i])));
+    if (!rows.length) return null;
+    const what = cols.map((c, i) => `${c.replace(/_/g, " ")} ${vals[i]}`).join(", ");
+    const noun = tableNoun(rows[0] && rows[0].batch_number ? "glue_line_batches" : rows[0] && rows[0].box_number ? "bonding_runs" : "", 1);
+    const reason = `${noun ? noun.charAt(0).toUpperCase() + noun.slice(1) + " " : ""}${vals.join(", ")} is already on the system \u2014 this copy was taken off the device; the one already saved stays.`;
+    return { rows: rows.map((r) => ({ id: r.id, reason })), ids: new Set(rows.map((r) => r.id)), reason, what };
+  }
+  function tableNoun(table, n) {
+    const one2 = { glue_line_batches: "reel", bonding_runs: "bonding entry", cases: "case", product_forms: "catalogue form", products: "catalogue size", orders: "order", line_items: "order line", customers: "customer record", movements: "ledger entry" }[table] || "row";
+    return n === 1 ? one2 : one2.endsWith("y") ? one2.slice(0, -1) + "ies" : one2 + "s";
+  }
   async function upsertHealingMissingColumns(client, table, rows, warnings) {
     const fillNotNullBooleans = (batch) => {
       const allKeys = /* @__PURE__ */ new Set();
@@ -9321,13 +9404,14 @@ ${line}` : line;
     let outgoing = rows;
     const dropped = [];
     const nulled = [];
+    const refusedHere = [];
     for (let attempt = 0; attempt < 8; attempt++) {
       outgoing = fillNotNullBooleans(outgoing);
       const { data: saved, error } = await client.from(table).upsert(outgoing).select("id");
       if (!error) {
         if (dropped.length) warnings.push({ table, dropped, message: `saved without ${dropped.join(", ")} \u2014 the database doesn't have ${dropped.length === 1 ? "that column" : "those columns"} yet` });
         const landed = new Set((saved || []).map((r) => r.id));
-        return outgoing.filter((r) => !landed.has(r.id)).map((r) => r.id);
+        return outgoing.filter((r) => !landed.has(r.id)).map((r) => r.id).concat(refusedHere.map((x) => x.id));
       }
       const m = MISSING_COLUMN_RE.exec(String(error.message || ""));
       if (table === "glue_line_batches" && /glue_line_batches_batch_number_unique/.test(String(error.message || ""))) {
@@ -9353,7 +9437,14 @@ ${line}` : line;
           retired.push({ localId: r.id, cloudId: t.id, code: r.batch_number });
         }
         if (!retired.length) throw error;
-        outgoing = healed;
+        {
+          const byId = /* @__PURE__ */ new Map();
+          for (const r of healed) {
+            const h = byId.get(r.id);
+            byId.set(r.id, h ? { ...h, ...r, comments: [h.comments, r.comments].filter((c, i, a) => c && a.indexOf(c) === i).join(". ") } : r);
+          }
+          outgoing = [...byId.values()];
+        }
         warnings.push({
           table,
           dropped: [],
@@ -9415,6 +9506,19 @@ ${line}` : line;
           dropped: [],
           message: `${touched} row${touched === 1 ? "" : "s"} had no ${col2} \u2014 saved with the database's own default instead of an empty value`
         });
+        continue;
+      }
+      const clash = uniqueClash(error, outgoing, refusedHere);
+      if (clash) {
+        for (const x of clash.rows) refusedHere.push(x);
+        outgoing = outgoing.filter((r) => !clash.ids.has(r.id));
+        warnings.push({
+          table,
+          dropped: [],
+          refusedRows: clash.rows.map((x) => ({ id: x.id, reason: clash.reason })),
+          message: `${clash.rows.length} ${tableNoun(table, clash.rows.length)} ${clash.rows.length === 1 ? "was" : "were"} already on the system (${clash.what}) \u2014 the copy on this device was taken off; the one already saved stays`
+        });
+        if (!outgoing.length) return refusedHere.map((x) => x.id);
         continue;
       }
       if (!m || dropped.includes(m[1])) throw error;
@@ -10241,7 +10345,8 @@ ${line}` : line;
     ["material", "A material", "Count it \u2014 the count is the truth"],
     ["reel", "A reel", "On the rack, or not"],
     ["line", "An order line", "Entered as the wrong product"],
-    ["swap", "Two cases", "Numbered the wrong way round"]
+    ["swap", "Two cases", "Numbered the wrong way round"],
+    ["split", "Some of a batch", "Part of one bonding entry is a different product, carton or order"]
   ];
   var OVERNIGHT_MORNINGS = 7;
   function overnightPolicyWords(p) {
@@ -10272,6 +10377,26 @@ ${line}` : line;
     ["material_stock", "Material below zero"],
     ["build", "Device on an old build"]
   ]);
+  function reelDoubleSaves(reels) {
+    const byCode = /* @__PURE__ */ new Map();
+    for (const r of reels || []) {
+      if (!r || r.deleted) continue;
+      const c = String(r.batchNumber || "").trim().toUpperCase();
+      if (!c) continue;
+      (byCode.get(c) || byCode.set(c, []).get(c)).push(r);
+    }
+    const drop = [];
+    for (const [code, list] of byCode) {
+      if (list.length < 2) continue;
+      const sorted = [...list].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+      const keep = sorted[0];
+      for (const r of sorted.slice(1)) {
+        const same = Number(r.meterage || 0) === Number(keep.meterage || 0) && String(r.date || "") === String(keep.date || "") && String(r.productSize || "") === String(keep.productSize || "") && String(r.runId || "") === String(keep.runId || "");
+        if (same) drop.push({ id: r.id, code, keep: keep.id });
+      }
+    }
+    return drop;
+  }
 
   // mx_pickwalk.js
   var up2 = (s) => String(s || "").trim().toUpperCase();
@@ -11638,7 +11763,7 @@ ${line}` : line;
     { key: "evareel", label: "EVA Rack (by die)", unit: "reels", actionType: "auto", actionLabel: "Counted at 4pm on the Daily Plan", icon: IconRoll, color: "#6B5BA8" },
     { key: "tape", label: "Tape", unit: "rolls", actionType: "checkbox", actionLabel: "Roll opened", icon: IconRoll, color: NAVY },
     { key: "boxes", label: "Boxes", unit: "boxes", actionType: "auto", actionLabel: "Auto \u2014 from Bonding Line", icon: IconPackage, color: ORANGE },
-    { key: "cases", label: "Cases", unit: "cases", actionType: "auto", actionLabel: "Auto \u2014 confirmed at shipping", icon: IconArchive, color: RED }
+    { key: "cases", label: "Shipping cases", unit: "cases", actionType: "auto", actionLabel: "One comes off each time a case ships \u2014 count them here", icon: IconArchive, color: RED }
   ];
   var IDB_NAME = "matrixSync";
   var IDB_KEY = "v1";
@@ -11775,7 +11900,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-02.5";
+  var APP_VERSION = "2026-10-02.8";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -11961,6 +12086,9 @@ ${line}` : line;
               const { data: why } = await client.from("refused_writes").select("row_id, reason, at").in("row_id", refusedIds).order("at", { ascending: false });
               reasons = why || [];
             } catch (e) {
+            }
+            for (const w of warnings) if (w && w.table === table && Array.isArray(w.refusedRows)) {
+              for (const x of w.refusedRows) if (!reasons.some((y) => y.row_id === x.id)) reasons.push({ row_id: x.id, reason: x.reason, at: (/* @__PURE__ */ new Date()).toISOString() });
             }
             refused.push({ table, ids: refusedIds, reasons });
             try {
@@ -13915,9 +14043,45 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     };
     return /* @__PURE__ */ React.createElement("div", { "data-what-i-did": true }, /* @__PURE__ */ React.createElement(NLLabel, null, "What I did for you"), /* @__PURE__ */ React.createElement("div", { style: { background: NL.PANEL, borderRadius: 16, padding: "6px 14px" } }, list.map((e) => /* @__PURE__ */ React.createElement("div", { key: e.id, "data-what-i-did-item": e.id, style: { display: "flex", gap: 10, alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${NL.LINE}` } }, /* @__PURE__ */ React.createElement("span", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 14.5, fontWeight: 600, textDecoration: e.undoneAt ? "line-through" : "none" } }, String(e.summary || "").replace(/ \(.*\)$/, "")), /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 12.5, color: NL.SUB } }, new Date(e.at).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" }), e.undoneAt ? " \xB7 undone" : "")), !e.undoneAt && /* @__PURE__ */ React.createElement("button", { type: "button", "data-what-i-did-undo": e.id, onClick: () => undo(e), style: { minHeight: 36, padding: "0 12px", borderRadius: 18, border: "1px solid #C5CBD8", background: "#fff", fontSize: 13.5, fontWeight: 600 } }, "Undo"))), msg && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 600, padding: "6px 0" } }, msg)));
   }
+  function orderFileKind(file) {
+    const name = String(file && file.name || ""), type = String(file && file.type || "").toLowerCase();
+    const ext = (/\.([a-z0-9]+)$/i.exec(name) || [, ""])[1].toLowerCase();
+    if (/pdf/.test(type) || ext === "pdf") return { kind: "pdf" };
+    if (/^image\//.test(type) || ["jpg", "jpeg", "png", "heic", "heif", "webp", "gif", "bmp", "tif", "tiff"].includes(ext)) return { kind: "image" };
+    const named = {
+      xlsx: "an Excel spreadsheet",
+      xls: "an Excel spreadsheet",
+      xlsm: "an Excel spreadsheet",
+      csv: "a spreadsheet (CSV)",
+      numbers: "a Numbers spreadsheet",
+      docx: "a Word document",
+      doc: "a Word document",
+      pages: "a Pages document",
+      txt: "a text file",
+      eml: "an email",
+      msg: "an email",
+      zip: "a zip file",
+      html: "a web page",
+      htm: "a web page"
+    }[ext];
+    const what = named || (ext ? `a .${ext} file` : type ? `a ${type} file` : "a file the reader can't open");
+    return { kind: "other", what, error: `${name || "That"} is ${what} \u2014 the order reader takes a photo or a PDF. Open it, print or save it as a PDF (or take a screenshot of it), then try again.` };
+  }
   async function readOrderFromFile(file) {
     if (window.__MX_TEST_MIRROR__ && typeof window.__readOrderFn === "function") return window.__readOrderFn(file);
-    const isPdf = /pdf/i.test(file.type || "") || /\.pdf$/i.test(file.name || "");
+    const t0 = Date.now();
+    const fk = orderFileKind(file);
+    const record = (outcome, message, extra) => {
+      try {
+        reportAppEvent({ kind: "order_read", screen: "Orders", message: `${outcome}: ${String(file && file.name || "photo")} (${fk.kind === "other" ? fk.what : fk.kind}, ${Math.round((file && file.size || 0) / 1024)} KB, ${Math.round((Date.now() - t0) / 100) / 10} s) \u2014 ${message}`, detail: extra || null });
+      } catch (e) {
+      }
+    };
+    if (fk.kind === "other") {
+      record("Not read", fk.error);
+      return { error: fk.error };
+    }
+    const isPdf = fk.kind === "pdf";
     let b64 = "", mediaType = isPdf ? "application/pdf" : "image/jpeg";
     try {
       if (isPdf) {
@@ -13944,25 +14108,58 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
         b64 = c.toDataURL("image/jpeg", 0.9).split(",")[1] || "";
       }
     } catch (e) {
-      return { error: "That file couldn't be opened \u2014 try again." };
+      const m = `${String(file && file.name || "That file")} couldn't be opened as ${isPdf ? "a PDF" : "a picture"} \u2014 try again, or save it as a PDF first.`;
+      record("Not read", m, String(e && e.message || e));
+      return { error: m };
+    }
+    if (!b64) {
+      const m = `${String(file && file.name || "That file")} came out empty \u2014 try again.`;
+      record("Not read", m);
+      return { error: m };
     }
     const client = makeSyncClient();
-    if (!client || !client.functions || !client.functions.invoke) return { error: "Reading an order needs the internet \u2014 try again when this phone is online." };
+    if (!client || !client.functions || !client.functions.invoke) {
+      record("Not read", "no internet");
+      return { error: "Reading an order needs the internet \u2014 try again when this phone is online." };
+    }
     try {
       const timeout = new Promise((res) => setTimeout(() => res({ error: { message: "The reader didn't answer in time \u2014 try again." } }), 9e4));
       const { data, error } = await Promise.race([client.functions.invoke("read-order", { body: { file: b64, mediaType, prompt: CLAUDE_ORDER_PROMPT, today: todayISO() } }), timeout]);
       if (error) {
         let m = error.message || "It didn't work.";
+        let detail = null;
         try {
           const j = error.context && typeof error.context.json === "function" ? await error.context.json() : null;
           if (j && j.error) m = j.error;
+          detail = j ? JSON.stringify(j).slice(0, 1500) : null;
         } catch (e) {
         }
-        return { error: /Failed to fetch|NetworkError|FunctionsFetchError/i.test(m) ? "Can't reach the server \u2014 check the internet and try again." : m };
+        const said = /Failed to fetch|NetworkError|FunctionsFetchError/i.test(m) ? "Can't reach the server \u2014 check the internet and try again." : m;
+        record("Not read", said, detail);
+        return { error: said };
       }
-      return data || { error: "No answer came back \u2014 try again." };
+      if (!data) {
+        record("Not read", "no answer came back");
+        return { error: "No answer came back \u2014 try again." };
+      }
+      if (data.error) {
+        record("Not read", String(data.error), data.raw ? String(data.raw).slice(0, 1500) : null);
+        return data;
+      }
+      const lines = (() => {
+        try {
+          const j = typeof data.raw === "string" ? JSON.parse(data.raw) : data.raw;
+          return Array.isArray(j && j.lines) ? j.lines.length : Array.isArray(j && j.items) ? j.items.length : null;
+        } catch (e) {
+          return null;
+        }
+      })();
+      record("Read", `${lines != null ? `${lines} line${lines === 1 ? "" : "s"}` : "an order"} came back for checking`);
+      return data;
     } catch (e) {
-      return { error: String(e && e.message || e) };
+      const m = String(e && e.message || e);
+      record("Not read", m);
+      return { error: m };
     }
   }
   function OrderPhotoButtons({ data, setData }) {
@@ -24401,6 +24598,9 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-10-02.8", "A refused save never jams a device again: a clash the cloud names comes off the device with a one-line reason and the rest carries on; two copies of one reel fold into one. This isn't right \u2192 Some of a batch: part of one bonding entry is a different product, carton or order \u2014 a second entry carries it, both trace to the run, Undo puts it back. The order reader says why a file won't read (a spreadsheet, a Word file\u2026) and records every read. Rules the app decides itself: box length by rule when adding a size (O/S 21 m, doubles 18 m, Mini 21 m, rubber 24 m, Ultra SR 24/15 m); a rubber label that says only 7.25 is 7.25 x 8.00; Unimark takes PX for PX Plus \u2014 PX boxes count as cover on its PX Plus lines."],
+    ["2026-10-02.7", "Glue line: one press, one reel \u2014 a second press within seconds is the same reel, and a second copy of a code is never added; a device holding a reel saved twice takes the later copy off by itself and says so."],
+    ["2026-10-02.6", "Materials \u2192 Shipping cases opens on Count the cases: one box per size (20, 15, 10, 5, reel cases) showing what the records say; Save writes count \u2212 records, so the figure becomes the count."],
     ["2026-10-01.23", "Materials: tape and mylar come off by themselves \u2014 every box bonded since the last count, metre for metre, plus a waste allowance that starts at 5% and learns from each count. Tape by the roll batch on the run (or its width; Strong for SDBS), mylar by the PET on the glue reel; 10mm mylar comes off the spools before the pancakes. A \u270E on tape or mylar counts as a count."],
     ["2026-10-01.22", "Materials: tape and mylar metres go by each batch's roll length (7mm Biesse 5,000 m, 7mm TP2462 bobbins 4,000 m, 12mm 4,000 m, 10mm 5,000 m); Goods in asks the metres on a roll for tape and mylar; a recount keeps each batch's length."],
     ["2026-10-01.21", "Materials: \uFF0B Goods in (which stock \u2192 which one \u2192 how many \u2192 the code); each kind of material opens in place to show its items; low-stock warnings on Materials and in the alerts \u2014 PVC and EVA below 20 bags, cartons below 1,000, glue below 25 blocks, each mylar and tape below 10,000 m."],
@@ -24883,7 +25083,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
       }
     }, []);
     const [kind, setKind] = useState(start && start.type || null);
-    const [f, setF] = useState(() => ({ order: "", caseNum: "", counts: {}, extra: [], code: "", material: "", count: "", reel: "", line: "", product: "", productQuery: "", photo: false, ...start || {} }));
+    const [f, setF] = useState(() => ({ order: "", caseNum: "", counts: {}, extra: [], code: "", material: "", count: "", reel: "", line: "", product: "", productQuery: "", photo: false, run: "", n: "", carton: "", ...start || {} }));
     const [prop, setProp] = useState(null);
     const [busy, setBusy] = useState(false);
     const [done, setDone] = useState(null);
@@ -24907,6 +25107,22 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     const known = useMemo(() => new Set((data.bondingRuns || []).filter((r) => r && !r.deleted && r.boxNumber).map((r) => String(r.boxNumber).toUpperCase())), [data.bondingRuns]);
     const materials = (data.materials || []).filter((m) => m && !m.deleted).sort((a, b) => String(a.name).localeCompare(String(b.name)));
     const lines = (data.lineItems || []).filter((l) => l && !l.deleted && l.orderId === f.order);
+    const runsOfCode2 = useMemo(() => {
+      const c = String(f.code || "").trim().toUpperCase();
+      if (c.length < 6) return [];
+      const key = (x) => {
+        const m = /^([A-Z][0-9]{4,5})([A-Z0-9]+)$/.exec(String(x || "").toUpperCase());
+        return m ? m[1] + m[2].split("").sort().join("") : String(x || "").toUpperCase();
+      };
+      const name = new Map((data.materials || []).map((m) => [m.id, m.name]));
+      const cust = new Map((data.orders || []).map((o) => [o.id, o.customer]));
+      return (data.bondingRuns || []).filter((r) => r && !r.deleted && key(r.boxNumber) === key(c)).map((r) => ({ id: r.id, label: `${r.amountMade} \xD7 ${r.productSize}${r.boxTypeId && name.get(r.boxTypeId) ? ` \xB7 ${name.get(r.boxTypeId)} cartons` : ""}${r.workNumber ? ` \xB7 for ${cust.get(r.workNumber) || r.workNumber}` : r.location ? ` \xB7 bay ${r.location}` : " \xB7 on the shelf"}` }));
+    }, [f.code, data.bondingRuns, data.materials, data.orders]);
+    useEffect(() => {
+      if (kind === "split" && runsOfCode2.length === 1 && f.run !== runsOfCode2[0].id) set("run", runsOfCode2[0].id);
+      if (kind === "split" && runsOfCode2.length !== 1 && f.run && !runsOfCode2.some((r) => r.id === f.run)) set("run", "");
+    }, [kind, runsOfCode2]);
+    const cartons = (data.materials || []).filter((m) => m && !m.deleted && m.category === "boxes").sort((a, b) => String(a.name).localeCompare(String(b.name)));
     const products = useMemo(() => {
       const q = f.productQuery.trim().toLowerCase();
       if (q.length < 2) return [];
@@ -24925,12 +25141,13 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
       }
       if (kind === "code") return { subject: { type: "code", code: f.code.trim().toUpperCase() } };
       if (kind === "swap") return { subject: { type: "swap", order_id: f.order, a: Number(f.a), b: Number(f.b) }, observed: { labels: "the other way round" }, kind: "word" };
+      if (kind === "split") return { subject: { type: "split", run_id: f.run }, observed: { n: Number(f.n), form_id: f.product || null, box_type_id: f.carton || null, order_id: f.order || null }, kind: "word" };
       if (kind === "material") return { subject: { type: "material", material_id: f.material }, observed: { count: Number(f.count) }, kind: "count" };
       if (kind === "reel") return { subject: { type: "reel", batch_number: f.reel.trim().toUpperCase() }, observed: { state: f.reelState }, kind: "word" };
       if (kind === "line") return { subject: { type: "line", line_id: f.line }, observed: { form_id: f.product }, kind: "word" };
       return null;
     };
-    const ready = kind === "swap" ? f.order && f.a && f.b && f.a !== f.b : kind === "case" ? f.order && f.caseNum : kind === "code" ? f.code.trim().length >= 6 : kind === "material" ? f.material && f.count !== "" : kind === "reel" ? f.reel.trim() && f.reelState : kind === "line" ? f.line && f.product : false;
+    const ready = kind === "split" ? f.run && Number(f.n) > 0 && (f.product || f.carton || f.order) : kind === "swap" ? f.order && f.a && f.b && f.a !== f.b : kind === "case" ? f.order && f.caseNum : kind === "code" ? f.code.trim().length >= 6 : kind === "material" ? f.material && f.count !== "" : kind === "reel" ? f.reel.trim() && f.reelState : kind === "line" ? f.line && f.product : false;
     const ask = async (body) => {
       const c = EVENT_CLIENT;
       if (!c) {
@@ -24978,6 +25195,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
       setKind(null);
       setProp(null);
       setDone(null);
+      setF({ order: "", caseNum: "", counts: {}, extra: [], code: "", material: "", count: "", reel: "", line: "", product: "", productQuery: "", photo: false, run: "", n: "", carton: "" });
     }, style: { ...btn, justifySelf: "start" } }, "\u2190 Something else"), (!(start && start.issue) || kind === "case") && /* @__PURE__ */ React.createElement("div", { style: { ...card, display: "grid", gap: 8 } }, kind === "case" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, select(
       { "data-wrong-order": true, value: f.order, onChange: (e) => {
         set("order", e.target.value);
@@ -25011,7 +25229,10 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
       set("order", e.target.value);
       set("a", "");
       set("b", "");
-    } }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, "Order\u2026"), ...live.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.id, value: o.id }, o.customer, " (", o.id, ")"))]), f.order && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } }, select({ "data-wrong-swap-a": true, value: f.a || "", onChange: (e) => set("a", e.target.value), style: { flex: 1 } }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, "Case\u2026"), ...caseNums.map((n) => /* @__PURE__ */ React.createElement("option", { key: n, value: n }, "Case ", n))]), /* @__PURE__ */ React.createElement("span", { style: { color: P.dim } }, "and"), select({ "data-wrong-swap-b": true, value: f.b || "", onChange: (e) => set("b", e.target.value), style: { flex: 1 } }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, "Case\u2026"), ...caseNums.map((n) => /* @__PURE__ */ React.createElement("option", { key: n, value: n }, "Case ", n))])), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: P.dim } }, "For when the labels on the floor are right and the records have them the other way round.")), kind === "code" && input({ "data-wrong-code": true, value: f.code, placeholder: "Box code, e.g. I60205SDB", autoCapitalize: "characters", onChange: (e) => set("code", e.target.value.toUpperCase()), style: { fontFamily: "ui-monospace, Menlo, monospace" } }), kind === "material" && /* @__PURE__ */ React.createElement(React.Fragment, null, select({ "data-wrong-material": true, value: f.material, onChange: (e) => set("material", e.target.value) }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, "Material\u2026"), ...materials.map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id }, m.name))]), input({ "data-wrong-material-count": true, inputMode: "decimal", value: f.count, placeholder: "How many you counted", onChange: (e) => set("count", e.target.value.replace(/[^0-9.]/g, "")) })), kind === "reel" && /* @__PURE__ */ React.createElement(React.Fragment, null, input({ "data-wrong-reel": true, value: f.reel, placeholder: "Reel batch code, e.g. PBLH62901", onChange: (e) => set("reel", e.target.value.toUpperCase()), style: { fontFamily: "ui-monospace, Menlo, monospace" } }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, [["here", "It's on the rack"], ["not_here", "It's not on the rack"]].map(([k, l]) => /* @__PURE__ */ React.createElement("button", { key: k, "data-wrong-reel-state": k, onClick: () => set("reelState", k), style: { ...btn, flex: 1, ...f.reelState === k ? { background: P.head, color: P.card, borderColor: P.head } : {} } }, l)))), kind === "line" && /* @__PURE__ */ React.createElement(React.Fragment, null, select({ "data-wrong-line-order": true, value: f.order, onChange: (e) => {
+    } }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, "Order\u2026"), ...live.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.id, value: o.id }, o.customer, " (", o.id, ")"))]), f.order && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } }, select({ "data-wrong-swap-a": true, value: f.a || "", onChange: (e) => set("a", e.target.value), style: { flex: 1 } }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, "Case\u2026"), ...caseNums.map((n) => /* @__PURE__ */ React.createElement("option", { key: n, value: n }, "Case ", n))]), /* @__PURE__ */ React.createElement("span", { style: { color: P.dim } }, "and"), select({ "data-wrong-swap-b": true, value: f.b || "", onChange: (e) => set("b", e.target.value), style: { flex: 1 } }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, "Case\u2026"), ...caseNums.map((n) => /* @__PURE__ */ React.createElement("option", { key: n, value: n }, "Case ", n))])), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: P.dim } }, "For when the labels on the floor are right and the records have them the other way round.")), kind === "split" && /* @__PURE__ */ React.createElement(React.Fragment, null, input({ "data-wrong-split-code": true, value: f.code, placeholder: "Box code, e.g. H62710GDB", autoCapitalize: "characters", onChange: (e) => {
+      set("code", e.target.value.toUpperCase());
+      set("run", "");
+    }, style: { fontFamily: "ui-monospace, Menlo, monospace" } }), f.code.trim().length >= 6 && runsOfCode2.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: P.warn } }, f.code.trim(), " isn't on the system."), runsOfCode2.length > 1 && select({ "data-wrong-split-run": true, value: f.run || "", onChange: (e) => set("run", e.target.value) }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, "Which entry\u2026"), ...runsOfCode2.map((r) => /* @__PURE__ */ React.createElement("option", { key: r.id, value: r.id }, r.label))]), runsOfCode2.length === 1 && /* @__PURE__ */ React.createElement("div", { "data-wrong-split-only": true, style: { fontSize: 13.5, color: P.dim } }, runsOfCode2[0].label), f.run && /* @__PURE__ */ React.createElement(React.Fragment, null, input({ "data-wrong-split-n": true, inputMode: "numeric", value: f.n || "", placeholder: "How many of them are different", onChange: (e) => set("n", e.target.value.replace(/[^0-9]/g, "")) }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: P.dim } }, "What's different about those? Fill in only what changes."), input({ "data-wrong-split-product-search": true, value: f.productQuery, placeholder: "They're really\u2026 (type part of a product name)", onChange: (e) => set("productQuery", e.target.value) }), products.length > 0 && select({ "data-wrong-split-product": true, value: f.product, onChange: (e) => set("product", e.target.value) }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, products.length, " match", products.length === 1 ? "" : "es", "\u2026"), ...products.map((x) => /* @__PURE__ */ React.createElement("option", { key: x.id, value: x.id }, x.label))]), select({ "data-wrong-split-carton": true, value: f.carton || "", onChange: (e) => set("carton", e.target.value) }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, "Carton \u2014 same as now"), ...cartons.map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id }, m.name, " cartons"))]), select({ "data-wrong-split-order": true, value: f.order, onChange: (e) => set("order", e.target.value) }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, "Order \u2014 same as now"), ...live.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.id, value: o.id }, "For ", o.customer, " (", o.id, ")"))])), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: P.dim } }, "One run that was packed two ways: the entry keeps what stays, a second entry carries the rest, both trace back to the same run.")), kind === "code" && input({ "data-wrong-code": true, value: f.code, placeholder: "Box code, e.g. I60205SDB", autoCapitalize: "characters", onChange: (e) => set("code", e.target.value.toUpperCase()), style: { fontFamily: "ui-monospace, Menlo, monospace" } }), kind === "material" && /* @__PURE__ */ React.createElement(React.Fragment, null, select({ "data-wrong-material": true, value: f.material, onChange: (e) => set("material", e.target.value) }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, "Material\u2026"), ...materials.map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id }, m.name))]), input({ "data-wrong-material-count": true, inputMode: "decimal", value: f.count, placeholder: "How many you counted", onChange: (e) => set("count", e.target.value.replace(/[^0-9.]/g, "")) })), kind === "reel" && /* @__PURE__ */ React.createElement(React.Fragment, null, input({ "data-wrong-reel": true, value: f.reel, placeholder: "Reel batch code, e.g. PBLH62901", onChange: (e) => set("reel", e.target.value.toUpperCase()), style: { fontFamily: "ui-monospace, Menlo, monospace" } }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, [["here", "It's on the rack"], ["not_here", "It's not on the rack"]].map(([k, l]) => /* @__PURE__ */ React.createElement("button", { key: k, "data-wrong-reel-state": k, onClick: () => set("reelState", k), style: { ...btn, flex: 1, ...f.reelState === k ? { background: P.head, color: P.card, borderColor: P.head } : {} } }, l)))), kind === "line" && /* @__PURE__ */ React.createElement(React.Fragment, null, select({ "data-wrong-line-order": true, value: f.order, onChange: (e) => {
       set("order", e.target.value);
       set("line", "");
     } }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, "Order\u2026"), ...live.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.id, value: o.id }, o.customer, " (", o.id, ")"))]), f.order && select({ "data-wrong-line": true, value: f.line, onChange: (e) => set("line", e.target.value) }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, "Which line\u2026"), ...lines.map((l) => /* @__PURE__ */ React.createElement("option", { key: l.id, value: l.id }, l.qty, " \xD7 ", l.description))]), f.line && input({ "data-wrong-product-search": true, value: f.productQuery, placeholder: "It should be\u2026 (type part of the name)", onChange: (e) => set("productQuery", e.target.value) }), f.line && products.length > 0 && select({ "data-wrong-product": true, value: f.product, onChange: (e) => set("product", e.target.value) }, [/* @__PURE__ */ React.createElement("option", { key: "", value: "" }, products.length, " match", products.length === 1 ? "" : "es", "\u2026"), ...products.map((x) => /* @__PURE__ */ React.createElement("option", { key: x.id, value: x.id }, x.label))])), /* @__PURE__ */ React.createElement("button", { "data-wrong-ask": true, disabled: !ready || busy, onClick: () => ask(request()), style: { ...btn, height: 44, fontWeight: 600, background: ready ? P.head : P.btn, color: ready ? P.card : P.dim, borderColor: ready ? P.head : P.btnLine } }, busy ? "Working it out\u2026" : "What should change?")), prop && /* @__PURE__ */ React.createElement("div", { "data-wrong-proposal": true, style: card }, prop.title && /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 650, color: P.head, fontSize: 15 } }, prop.title), prop.ok === false && /* @__PURE__ */ React.createElement("div", { "data-wrong-refused": true, style: { color: P.bad, fontWeight: 600, marginTop: 6 } }, prop.refused), (prop.now || []).length > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: P.dim, marginTop: 4 } }, "The records say: ", (prop.now || []).join(" \xB7 ")), prop.right && /* @__PURE__ */ React.createElement("div", { "data-wrong-right": true, style: { color: P.ok, fontWeight: 600, marginTop: 8 } }, "\u2713 ", (prop.notes || [])[0] || "Nothing to change."), !prop.right && (prop.notes || []).map((n, i) => /* @__PURE__ */ React.createElement("div", { key: i, "data-wrong-note": true, style: { fontSize: 13.5, color: P.warn, marginTop: 6 } }, n)), prop.ask === "count" && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 8 } }, input({ "data-wrong-issue-count": true, inputMode: "decimal", value: f.count, placeholder: "How many you counted", onChange: (e) => setF((s) => ({ ...s, count: e.target.value.replace(/[^0-9.]/g, "") })), style: { flex: 1 } }), /* @__PURE__ */ React.createElement("button", { "data-wrong-issue-count-go": true, disabled: f.count === "", onClick: () => ask({ subject: { type: "material", material_id: (start && start.issue || "").split("|")[1] }, observed: { count: Number(f.count) }, kind: "count" }), style: btn }, "Go")), (prop.options || []).map((o, i) => /* @__PURE__ */ React.createElement("div", { key: i, "data-wrong-option": i, style: { marginTop: 10, paddingTop: 10, borderTop: `1px solid ${P.line}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, fontSize: 14.5 } }, o.label), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: P.dim, margin: "2px 0 6px" } }, o.why), (o.payload && o.payload.rows || []).map((r, j) => /* @__PURE__ */ React.createElement("div", { key: j, "data-wrong-row": true, style: { fontSize: 13.5, padding: "2px 0" } }, "\u2022 ", proposedRowWords(r, ctx))), /* @__PURE__ */ React.createElement("button", { "data-wrong-do": i, disabled: busy, onClick: () => apply(o), style: { ...btn, marginTop: 8, background: P.head, color: P.card, borderColor: P.head, fontWeight: 600 } }, busy ? "Doing it\u2026" : "Do it")))), done && /* @__PURE__ */ React.createElement("div", { "data-wrong-done": true, style: { ...card, color: done.bad ? P.bad : P.ok, fontWeight: 600 } }, done.text, done.id && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("button", { "data-wrong-see": true, onClick: () => openActivity(done.id), style: { ...btn, marginTop: 8, fontWeight: 400 } }, "See it in Activity \xB7 Undo"))));
@@ -25857,6 +26078,46 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
       if (e.key === "Enter") add();
     }, autoFocus: true }), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: add }, "Add"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setOpen(false) }, "Cancel"));
   }
+  var CASE_SIZE_ORDER = { "mat-case-20": 1, "mat-case-15": 2, "mat-case-10": 3, "mat-case-5": 4, "mat-case-reel": 5 };
+  function caseMaterialLabel(m) {
+    const n = String(m && m.name || "").match(/(\d+)/);
+    if (m && /reel/i.test(m.name || "")) return "Reel cases";
+    return n ? `Cases that hold ${n[1]} boxes` : m && m.name || "Cases";
+  }
+  function CasesCount({ rows, data, setData }) {
+    const list = [...rows].filter((m) => m && !m.deleted).sort((a, b) => (CASE_SIZE_ORDER[a.id] || 9) - (CASE_SIZE_ORDER[b.id] || 9));
+    const [counts, setCounts] = useState({});
+    const [said, setSaid] = useState(null);
+    const now = (m) => materialStockFrom(data.materialMovements, m.id);
+    const filled = list.filter((m) => counts[m.id] !== void 0 && counts[m.id] !== "");
+    const save = () => {
+      if (!filled.length) return;
+      const today = todayISO();
+      const who = String(currentActor() || "").split("@")[0] || "admin";
+      setData((prev) => {
+        const mms = prev.materialMovements || [];
+        const add = [];
+        const mats = (prev.materials || []).map((m) => {
+          if (!filled.some((f) => f.id === m.id)) return m;
+          const counted = Math.max(0, Math.round(Number(counts[m.id]) || 0));
+          const was = materialStockFrom(mms, m.id);
+          const d = counted - was;
+          if (d !== 0) add.push({ id: uid("mm"), materialId: m.id, qty: d, sourceType: "stocktake", sourceId: null, note: `Cases counted: ${counted} (records said ${was}) \u2014 ${who}`, date: today });
+          return { ...m, currentStock: counted, lastStockTakeDate: today };
+        });
+        return { ...prev, materials: mats, materialMovements: [...mms, ...add] };
+      });
+      setSaid(`Saved \u2014 ${filled.map((m) => `${caseMaterialLabel(m).replace("Cases that hold ", "").replace(" boxes", "")}: ${Math.max(0, Math.round(Number(counts[m.id]) || 0))}`).join(", ")}. From now on one comes off each time a case ships.`);
+      setCounts({});
+    };
+    return /* @__PURE__ */ React.createElement("div", { "data-cases-count": true, style: { border: `1px solid ${BORDER}`, borderRadius: 10, padding: "10px 12px", margin: "4px 0 10px", background: "#FAFBFD" } }, /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold", style: { color: INK } }, "Count the cases"), /* @__PURE__ */ React.createElement("div", { className: "text-xs mb-2", style: { color: INK_MUTED } }, "Type how many empty cases of each size are on the shelf. Leave a size blank to keep it as it is."), list.map((m) => {
+      const n = now(m);
+      return /* @__PURE__ */ React.createElement("div", { key: m.id, "data-cases-row": m.id, className: "flex items-center gap-2", style: { padding: "6px 0", borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("span", { className: "flex-1 min-w-0" }, /* @__PURE__ */ React.createElement("span", { className: "block text-sm", style: { color: INK } }, caseMaterialLabel(m)), /* @__PURE__ */ React.createElement("span", { className: "block text-xs", style: { color: n < 0 ? RED : INK_MUTED } }, "Records say ", n, m.lastStockTakeDate ? ` \xB7 counted ${m.lastStockTakeDate}` : " \xB7 never counted")), /* @__PURE__ */ React.createElement(TextInput, { "data-cases-input": m.id, type: "number", inputMode: "numeric", placeholder: "count", value: counts[m.id] ?? "", onChange: (e) => {
+        setCounts((c) => ({ ...c, [m.id]: e.target.value.replace(/[^0-9]/g, "") }));
+        setSaid(null);
+      }, style: { width: 90, textAlign: "center" } }));
+    }), /* @__PURE__ */ React.createElement(Button, { variant: "accent", "data-cases-save": true, disabled: !filled.length, onClick: save, style: { marginTop: 8, width: "100%" } }, filled.length ? `Save ${filled.length} count${filled.length === 1 ? "" : "s"}` : "Save the counts"), said && /* @__PURE__ */ React.createElement("div", { "data-cases-said": true, className: "text-sm font-semibold mt-2", style: { color: GREEN } }, said));
+  }
   function MaterialsView({ data, setData }) {
     const materials = data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS;
     const movements = data.materialMovements || [];
@@ -25901,7 +26162,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
         /* @__PURE__ */ React.createElement("span", { className: "flex-1 min-w-0" }, /* @__PURE__ */ React.createElement("span", { className: "block text-sm font-semibold", style: { color: INK } }, cat.label), lows.length > 0 ? /* @__PURE__ */ React.createElement("span", { className: "block text-xs font-semibold", style: { color: RED } }, "\u26A0 ", lows.map((m) => m.name).join(", "), " low") : /* @__PURE__ */ React.createElement("span", { className: "block text-xs", style: { color: INK_MUTED } }, rows.length, " ", rows.length === 1 ? "item" : "items")),
         /* @__PURE__ */ React.createElement("span", { className: "text-right shrink-0" }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 20, fontWeight: 700, color: lows.length ? RED : INK }, "data-material-cat-total": true }, Math.round(inMetres ? metresTotal : Number(total || 0)).toLocaleString("en-GB")), " ", /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, inMetres ? "m" : cat.unit)),
         /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 18, width: 16, textAlign: "center" } }, isOpen ? "\u2212" : "+")
-      ), isOpen && /* @__PURE__ */ React.createElement("div", { style: { padding: "0 14px 10px" }, "data-material-cat-open": cat.key }, rows.map((m) => /* @__PURE__ */ React.createElement(MaterialVariantRow, { key: m.id, material: m, category: cat, data, setData })), rows.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-sm py-3", style: { color: INK_MUTED } }, "No variants yet."), inMetres && /* @__PURE__ */ React.createElement("div", { className: "text-xs pt-2", style: { color: INK_MUTED } }, "Taken off automatically: every box bonded since the last count, metre for metre, plus its waste allowance \u2014 learned from each count.", cat.key === "mylar" && materialsAutoUse(data).unknownMylar > 0 ? ` ${Math.round(materialsAutoUse(data).unknownMylar).toLocaleString("en-GB")} m of 7mm was bonded from reels with no PET recorded (75 or 100 micron?) \u2014 not taken off.` : ""), /* @__PURE__ */ React.createElement(AddMaterialVariant, { category: cat, setData })));
+      ), isOpen && /* @__PURE__ */ React.createElement("div", { style: { padding: "0 14px 10px" }, "data-material-cat-open": cat.key }, cat.key === "cases" && /* @__PURE__ */ React.createElement(CasesCount, { rows, data, setData }), rows.map((m) => /* @__PURE__ */ React.createElement(MaterialVariantRow, { key: m.id, material: m, category: cat, data, setData })), rows.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-sm py-3", style: { color: INK_MUTED } }, "No variants yet."), inMetres && /* @__PURE__ */ React.createElement("div", { className: "text-xs pt-2", style: { color: INK_MUTED } }, "Taken off automatically: every box bonded since the last count, metre for metre, plus its waste allowance \u2014 learned from each count.", cat.key === "mylar" && materialsAutoUse(data).unknownMylar > 0 ? ` ${Math.round(materialsAutoUse(data).unknownMylar).toLocaleString("en-GB")} m of 7mm was bonded from reels with no PET recorded (75 or 100 micron?) \u2014 not taken off.` : ""), /* @__PURE__ */ React.createElement(AddMaterialVariant, { category: cat, setData })));
     })), /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-2", style: { color: INK_MUTED } }, "Recent activity"), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden" }, recentMovements.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-sm p-4", style: { color: INK_MUTED } }, "Nothing logged yet."), recentMovements.map((mv, i) => {
       const mat = materialById[mv.materialId];
       const cat = mat ? MATERIAL_CATEGORIES.find((c) => c.key === mat.category) : null;
@@ -30498,6 +30759,7 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
       "button",
       {
         type: "button",
+        "data-glue-log": true,
         onClick: onSubmit,
         disabled: glueSpecMalformed(form),
         style: {
@@ -31614,7 +31876,7 @@ ${doneBays.size} of ${withStock.length} bays are done. The next count starts a n
         date: todayISO(),
         assignedOrderId: ""
       };
-      setData((prevData) => ({ ...prevData, glueLineBatches: [...prevData.glueLineBatches, newBatch] }));
+      setData((prevData) => (prevData.glueLineBatches || []).some((r) => r && !r.deleted && String(r.batchNumber || "").trim().toUpperCase() === reelCode) ? prevData : { ...prevData, glueLineBatches: [...prevData.glueLineBatches, newBatch] });
       setReelSessionAdds([{ id: newBatch.id, size, reelCode, meterage }, ...reelSessionAdds]);
       setReelInputs({ ...reelInputs, [size]: { reelCode: "", meterage: "" } });
     };
@@ -31653,7 +31915,7 @@ ${doneBays.size} of ${withStock.length} bays are done. The next count starts a n
         date: todayISO(),
         assignedOrderId: ""
       };
-      setData((prevData) => ({ ...prevData, glueLineBatches: [...prevData.glueLineBatches, newBatch] }));
+      setData((prevData) => (prevData.glueLineBatches || []).some((r) => r && !r.deleted && String(r.batchNumber || "").trim().toUpperCase() === reelCode) ? prevData : { ...prevData, glueLineBatches: [...prevData.glueLineBatches, newBatch] });
       setReelSessionAdds([{ id: newBatch.id, size, reelCode, meterage }, ...reelSessionAdds]);
       setCustomReel({ size: "", reelCode: "", meterage: "" });
     };
@@ -31945,7 +32207,11 @@ ${doneBays.size} of ${withStock.length} bays are done. The next count starts a n
     const [gap, setGap] = useState(dims[1] != null ? Number(dims[1]).toFixed(2) : "");
     const [variant, setVariant] = useState(v0);
     const [pt, setPt] = useState(Number(dims[1]) >= 3 ? "3-4pt" : "2-3pt");
-    const [metres, setMetres] = useState(/^D/.test(v0) ? "18" : v0 === "O/S" ? "21" : "24");
+    const rule = boxMetresRule({ range, variant, gap });
+    const [metres, setMetres] = useState(String(rule.metres));
+    useEffect(() => {
+      if (rule.fixed) setMetres(String(rule.metres));
+    }, [rule.fixed, rule.metres]);
     const [err, setErr] = useState("");
     const near = useMemo(() => {
       const t0 = Number(dims[0]), g0 = Number(dims[1]);
@@ -31966,8 +32232,8 @@ ${doneBays.size} of ${withStock.length} bays are done. The next count starts a n
     }, [data.products, spec]);
     const add = () => {
       const t = Number(thick), g = Number(gap), mm = Number(metres);
-      if (!(t > 0 && t < 5) || !(g > 0 && g < 20)) {
-        setErr("Give the thickness and the gap in mm \u2014 e.g. 0.55 and 1.60.");
+      if (!(t > 0 && t < (range === "Exceed" ? 20 : 5)) || !(g > 0 && g < 20)) {
+        setErr(range === "Exceed" ? "Give the rubber's two sizes in mm \u2014 e.g. 7.25 and 8.00." : "Give the thickness and the gap in mm \u2014 e.g. 0.55 and 1.60.");
         return;
       }
       if (!(mm > 0)) {
@@ -32013,8 +32279,9 @@ ${doneBays.size} of ${withStock.length} bays are done. The next count starts a n
     const inp = { font: "inherit", minHeight: 40, padding: "0 10px", border: `1px solid ${BORDER}`, borderRadius: 6, background: "#fff" };
     return /* @__PURE__ */ React.createElement("div", { "data-notincat": true, style: box }, /* @__PURE__ */ React.createElement("div", { style: { background: "#fff", borderRadius: 12, padding: 20, maxWidth: 520, width: "100%", maxHeight: "90vh", overflowY: "auto" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 18, fontWeight: 700, color: NAVY } }, spec, " isn't in the catalogue yet"), near.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: INK_MUTED, marginBottom: 6 } }, "Did you mean:"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } }, near.map((n) => /* @__PURE__ */ React.createElement(Button, { key: n.size, "data-nc-near": n.size, onClick: () => onUseSize(n.size) }, range0, " ", n.size)))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 16, fontSize: 14.5, fontWeight: 600 } }, "Or add it \u2014 what's being made?"), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10, marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED } }, "Range", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("select", { "data-nc-range": true, value: range, onChange: (e) => setRange(e.target.value), style: { ...inp, width: "100%" } }, NC_RANGES.map((r) => /* @__PURE__ */ React.createElement("option", { key: r }, r)))), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED } }, "Variant", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("select", { "data-nc-variant": true, value: variant, onChange: (e) => {
       setVariant(e.target.value);
-      setMetres(/^D/.test(e.target.value) ? "18" : e.target.value === "O/S" ? "21" : "24");
-    }, style: { ...inp, width: "100%" } }, ["", "O/S", "D3", "D4", "D5", "MINI"].map((x) => /* @__PURE__ */ React.createElement("option", { key: x, value: x }, x || "none")))), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED } }, "Thickness (mm)", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("input", { "data-nc-thick": true, value: thick, onChange: (e) => setThick(e.target.value), inputMode: "decimal", style: { ...inp, width: "100%" } })), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED } }, "Gap (mm)", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("input", { "data-nc-gap": true, value: gap, onChange: (e) => setGap(e.target.value), inputMode: "decimal", style: { ...inp, width: "100%" } })), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED } }, "Pt", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("select", { "data-nc-pt": true, value: pt, onChange: (e) => setPt(e.target.value), style: { ...inp, width: "100%" } }, ["2-3pt", "3-4pt", "6pt"].map((x) => /* @__PURE__ */ React.createElement("option", { key: x }, x)))), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED } }, "Box length (m)", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("input", { "data-nc-metres": true, value: metres, onChange: (e) => setMetres(e.target.value), inputMode: "numeric", style: { ...inp, width: "100%" } }))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED, marginTop: 8 } }, "Added with your name and flagged for Chris to check. ", ["PX Plus", "Smart Formes", "Speedy Crease"].includes(range) ? "PX Plus, Smart Formes and Speedy Crease are added together, as every size is." : ""), err && /* @__PURE__ */ React.createElement("div", { style: { color: RED, fontSize: 13.5, marginTop: 8 } }, err), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: onCancel }, "Cancel"), /* @__PURE__ */ React.createElement(Button, { variant: "accent", "data-nc-add": true, onClick: add }, "Add to catalogue and save"))));
+      const nr = boxMetresRule({ range, variant: e.target.value, gap });
+      setMetres(String(nr.metres));
+    }, style: { ...inp, width: "100%" } }, ["", "O/S", "D3", "D4", "D5", "MINI"].map((x) => /* @__PURE__ */ React.createElement("option", { key: x, value: x }, x || "none")))), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED } }, "Thickness (mm)", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("input", { "data-nc-thick": true, value: thick, onChange: (e) => setThick(e.target.value), inputMode: "decimal", style: { ...inp, width: "100%" } })), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED } }, "Gap (mm)", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("input", { "data-nc-gap": true, value: gap, onChange: (e) => setGap(e.target.value), inputMode: "decimal", style: { ...inp, width: "100%" } })), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED } }, "Pt", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("select", { "data-nc-pt": true, value: pt, onChange: (e) => setPt(e.target.value), style: { ...inp, width: "100%" } }, ["2-3pt", "3-4pt", "6pt"].map((x) => /* @__PURE__ */ React.createElement("option", { key: x }, x)))), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED } }, "Box length (m)", /* @__PURE__ */ React.createElement("br", null), rule.fixed ? /* @__PURE__ */ React.createElement("div", { "data-nc-metres-rule": true, style: { ...inp, display: "flex", alignItems: "center", background: "#f4f6fa", color: INK } }, rule.metres, " m ", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 12, marginLeft: 6 } }, "\u2014 ", rule.why)) : /* @__PURE__ */ React.createElement("input", { "data-nc-metres": true, value: metres, onChange: (e) => setMetres(e.target.value), inputMode: "decimal", style: { ...inp, width: "100%" } }))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED, marginTop: 8 } }, "Added with your name and flagged for Chris to check. ", ["PX Plus", "Smart Formes", "Speedy Crease"].includes(range) ? "PX Plus, Smart Formes and Speedy Crease are added together, as every size is." : ""), err && /* @__PURE__ */ React.createElement("div", { style: { color: RED, fontSize: 13.5, marginTop: 8 } }, err), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: onCancel }, "Cancel"), /* @__PURE__ */ React.createElement(Button, { variant: "accent", "data-nc-add": true, onClick: add }, "Add to catalogue and save"))));
   }
   function GlueLineView({ data, setData }) {
     const rows = (data.glueLineBatches || []).map((b) => glueSettingsFor(b, data.glueRuns));
@@ -32378,6 +32645,7 @@ ${doneBays.size} of ${withStock.length} bays are done. The next count starts a n
       setData((prev) => ({ ...prev, glueRuns: (prev.glueRuns || []).map((r) => r.id === openRun.id ? { ...r, endedAt: (/* @__PURE__ */ new Date()).toISOString() } : r) }));
     };
     const openReel = (data.glueLineBatches || []).find((b) => !b.deleted && b.startedAt && !b.endedAt && !(Number(b.meterage) > 0)) || null;
+    const reelSaveLockRef = useRef({ code: "", at: 0 });
     const confirmReel = (metreage, weight5m, comments) => {
       if (!openRun) return;
       const metres = Number(metreage);
@@ -32411,7 +32679,9 @@ ${doneBays.size} of ${withStock.length} bays are done. The next count starts a n
         startedAt: null,
         endedAt: (/* @__PURE__ */ new Date()).toISOString()
       };
-      setRows((prevRows) => [...prevRows, row]);
+      if (reelSaveLockRef.current.code === code && Date.now() - reelSaveLockRef.current.at < 8e3) return;
+      reelSaveLockRef.current = { code, at: Date.now() };
+      setRows((prevRows) => prevRows.some((r) => r && !r.deleted && String(r.batchNumber || "").trim().toUpperCase() === String(code).trim().toUpperCase()) ? prevRows : [...prevRows, row]);
       setJustConfirmed({ code, metres, weight: row.weightPer5m, runtimeHrs });
       setForm((f) => ({ ...f, meterage: "", weightPer5m: "", comments: "", batchNumber: "" }));
       setAddError("");
@@ -32457,7 +32727,10 @@ ${doneBays.size} of ${withStock.length} bays are done. The next count starts a n
         endedAt: nowIso,
         ...openRun ? { runId: openRun.id } : {}
       };
-      setRows((prevRows) => [...prevRows, newRow]);
+      const lockCode = String(newRow.batchNumber || "").trim().toUpperCase();
+      if (lockCode && reelSaveLockRef.current.code === lockCode && Date.now() - reelSaveLockRef.current.at < 8e3) return;
+      reelSaveLockRef.current = { code: lockCode, at: Date.now() };
+      setRows((prevRows) => lockCode && prevRows.some((r) => r && !r.deleted && String(r.batchNumber || "").trim().toUpperCase() === lockCode) ? prevRows : [...prevRows, newRow]);
       if (form.direct !== true && form.extReelCleared) {
         const reelCode = String(form.plCode || "").trim().toUpperCase();
         if (reelCode) {
@@ -34139,6 +34412,8 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const ledgerReservations = NO_PROMISES;
     setLedgerMovements(storedData.movements || []);
     setCatalogue(storedData.products || [], storedData.productForms || [], storedData.productAliases || []);
+    const orderRules = useMemo(() => orderRulesMap({ orders: storedData.orders, customers: storedData.customers }), [storedData.orders, storedData.customers]);
+    setOrderRules(orderRules);
     refreshActorAndDevice();
     setLedgerCaseHoldings(ledgerCases, storedData.orders || []);
     setBoxMaterials(storedData.materials);
@@ -35294,6 +35569,27 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     syncStatusRef.current = syncStatus;
     const refreshFromCloudRef = useRef(refreshFromCloud);
     refreshFromCloudRef.current = refreshFromCloud;
+    useEffect(() => {
+      const drop = reelDoubleSaves(data && data.glueLineBatches);
+      if (!drop.length) return;
+      const ids = new Set(drop.map((x) => x.id));
+      const stamp = (/* @__PURE__ */ new Date()).toISOString();
+      setData((prev) => {
+        const now = reelDoubleSaves(prev.glueLineBatches);
+        if (!now.length) return prev;
+        const gone = new Set(now.map((x) => x.id));
+        let d = { ...prev, glueLineBatches: (prev.glueLineBatches || []).map((r) => gone.has(r.id) ? { ...r, deleted: true, deletedAt: stamp, updatedAt: stamp } : r) };
+        for (const x of now) d = { ...d, ...appendLog(d, { action: "delete", entity: "glueLineBatch", entityId: x.id, summary: `Reel ${x.code} was saved twice \u2014 the second copy is taken away (the first, ${x.keep}, stays)` }) };
+        return d;
+      });
+      if (ids.size) {
+        try {
+          setToast(`Reel ${drop.map((x) => x.code).join(", ")} was saved twice \u2014 the extra copy is taken away and syncing carries on.`);
+          setTimeout(() => setToast(""), 6e3);
+        } catch (e) {
+        }
+      }
+    }, [data && data.glueLineBatches]);
     useEffect(() => {
       const f = () => {
         try {
