@@ -2056,14 +2056,14 @@
       if (!metal.length) return { flag: `${desc}: the catalogue has no Speedy Crease Metal` };
       const best = Math.min(...metal.map((x) => Math.abs(x.n - thou)));
       if (best > thou * 0.05) return { flag: `${desc}: no Speedy Crease Metal near ${thou.toFixed(0)} thou (${mm}mm) in the catalogue` };
-      let pick = metal.filter((x) => Math.abs(x.n - thou) === best);
-      if (pick.length > 1) {
-        const byColour = pick.filter((x) => x.colour === colour);
-        if (byColour.length === 1) pick = byColour;
+      let pick2 = metal.filter((x) => Math.abs(x.n - thou) === best);
+      if (pick2.length > 1) {
+        const byColour = pick2.filter((x) => x.colour === colour);
+        if (byColour.length === 1) pick2 = byColour;
       }
-      if (pick.length !== 1) return { flag: `${desc}: #${pick[0].n} is ${pick.map((x) => x.colour).join(" or ")} \u2014 say which` };
-      const out = withMetres(pick[0].p.displayName);
-      return { ...out, from: desc, why: `${mm}mm = ${thou.toFixed(0)} thou \u2192 #${pick[0].n}${pick[0].colour !== colour ? ` (${pick[0].colour} in the catalogue)` : ""}` };
+      if (pick2.length !== 1) return { flag: `${desc}: #${pick2[0].n} is ${pick2.map((x) => x.colour).join(" or ")} \u2014 say which` };
+      const out = withMetres(pick2[0].p.displayName);
+      return { ...out, from: desc, why: `${mm}mm = ${thou.toFixed(0)} thou \u2192 #${pick2[0].n}${pick2[0].colour !== colour ? ` (${pick2[0].colour} in the catalogue)` : ""}` };
     }
     if (/^px plus/i.test(desc) || /^px plus$/i.test(family)) {
       const rest = desc.replace(/^px plus\s*/i, "").replace(/\s*\((\d+(?:\.\d+)?)\s*m\)\s*$/, "").trim();
@@ -3525,7 +3525,7 @@
       spec: null,
       reasons: ["fully made or allocated \u2014 nothing outstanding"]
     }));
-    const pick = orders.filter((o) => o.stage !== "Shipped").map((o) => ({ o, pct: orderPickablePercent(o, lineItems, bondingRuns, data.stockPicks, null, data.materials) })).filter((x) => x.pct > 0 && x.pct < 101 && orderPctComplete(lineItems, bondingRuns, x.o.id) < 100).map(({ o, pct }) => finish({
+    const pick2 = orders.filter((o) => o.stage !== "Shipped").map((o) => ({ o, pct: orderPickablePercent(o, lineItems, bondingRuns, data.stockPicks, null, data.materials) })).filter((x) => x.pct > 0 && x.pct < 101 && orderPctComplete(lineItems, bondingRuns, x.o.id) < 100).map(({ o, pct }) => finish({
       lane: "pick",
       orderId: o.id,
       ...decorate(o.id),
@@ -3591,7 +3591,7 @@
       });
     });
     const rank = (arr) => arr.sort((a, b) => b.score - a.score);
-    return { ship: rank(ship), pick: rank(pick), bond: rank(bond), glue: rank(glue) };
+    return { ship: rank(ship), pick: rank(pick2), bond: rank(bond), glue: rank(glue) };
   }
 
   // mx_ledger.js
@@ -6500,9 +6500,9 @@
         needOut: n - totalEmpty
       };
     }
-    const pick = perCase || proposeCut(spaces, n);
+    const pick2 = perCase || proposeCut(spaces, n);
     let sum = 0;
-    for (const [cn, q0] of Object.entries(pick)) {
+    for (const [cn, q0] of Object.entries(pick2)) {
       const q = Math.max(0, Math.round(Number(q0) || 0));
       if (!q) continue;
       const x = spaces.find((s) => s.caseNum === Number(cn));
@@ -6512,7 +6512,7 @@
     }
     if (sum !== n) return { error: `${key}: the cases add up to ${sum}, but ${n} ${n === 1 ? "is" : "are"} coming off.` };
     const change = /* @__PURE__ */ new Map();
-    for (const [cn, q0] of Object.entries(pick)) {
+    for (const [cn, q0] of Object.entries(pick2)) {
       const q = Math.round(Number(q0) || 0);
       if (q) change.set(spaces.find((s) => s.caseNum === Number(cn)).id, q);
     }
@@ -9921,6 +9921,312 @@ ${line}` : line;
     return { kind: "box", id: w, made, shipped, scrapped, inCases: inCases.map(([k, q]) => `${q} in ${k}`), shelf: made - shipped - scrapped - packed, facts: own.length };
   }
 
+  // mx_fix.js
+  var TABLE_WORDS = {
+    orders: "order",
+    line_items: "order line",
+    bonding_runs: "bonding entry",
+    glue_line_batches: "glue line reel",
+    glue_runs: "glue run",
+    extrusion_runs: "extruded reel",
+    stock_picks: "stock pick",
+    other_stock: "bought-in stock",
+    cases: "case",
+    pick_sheets: "pick sheet",
+    movements: "stock entry",
+    issues: "issue",
+    tooling: "tooling",
+    ncrs: "NCR",
+    custom_sizes: "size",
+    production_rates: "production rate",
+    materials: "material",
+    material_movements: "material entry",
+    eva_runs: "EVA run",
+    work_centres: "work centre",
+    schedule_settings: "schedule",
+    line_downtime: "downtime",
+    label_templates: "label layout",
+    run_starts: "bonding run start",
+    products: "catalogue product",
+    product_forms: "catalogue form",
+    product_aliases: "catalogue wording",
+    customers: "customer",
+    discrepancy_dismissals: "dismissed discrepancy"
+  };
+  var tableWord = (t) => TABLE_WORDS[t] || String(t || "record").replace(/_/g, " ");
+  var FIELD_WORDS = {
+    case_num: "Case number",
+    weight: "Weight",
+    pallet: "Pallet",
+    confirmed: "Confirmed",
+    planned: "Case plan",
+    notes: "Notes",
+    max_size: "Carton",
+    kind: "Kind",
+    weight_ok: "Weight checked",
+    packed_outside: "Packed outside",
+    description: "Product",
+    qty: "Qty",
+    unit_price: "Price",
+    customer: "Customer",
+    customer_id: "Customer record",
+    stage: "Stage",
+    due_date: "Due",
+    priority: "Priority",
+    floor_note: "Note to the floor",
+    strong_tape: "Strong tape",
+    box_type: "Carton",
+    reference: "Reference",
+    shipped_date: "Shipped",
+    current_stock: "Stock",
+    batches: "Batches",
+    amount_made: "Bonded",
+    box_number: "Box code",
+    product_size: "Product",
+    location: "Bay",
+    checked: "Checked",
+    cleared: "Cleared",
+    meterage: "Metres",
+    batch_number: "Batch",
+    work_number: "Order",
+    tape_code: "Tape",
+    eva_code: "EVA code",
+    baseline_batch_code: "Reel used",
+    meters_per_box: "Metres per box",
+    comments: "Comments",
+    display_name: "Name",
+    metres: "Metres",
+    active: "In use",
+    form: "Form",
+    deleted: "Removed",
+    form_id: "Catalogue form",
+    date: "Date",
+    resolved_at: "Resolved",
+    summary: "Summary",
+    name: "Name",
+    status: "Status",
+    note: "Note"
+  };
+  var fieldWord = (f) => FIELD_WORDS[f] || String(f || "").replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+  function valueWords(v) {
+    if (v == null || v === "") return "blank";
+    if (v === true) return "Yes";
+    if (v === false) return "No";
+    if (Array.isArray(v)) return v.length ? v.map(valueWords).join(", ") : "none";
+    if (typeof v === "object") {
+      const ents = Object.entries(v);
+      if (!ents.length) return "empty";
+      if (ents.every(([, n]) => typeof n === "number")) return ents.map(([k, n]) => `${n} \xD7 ${k}`).join(", ");
+      return ents.slice(0, 4).map(([k, x]) => `${k}: ${typeof x === "object" ? "\u2026" : x}`).join(", ") + (ents.length > 4 ? "\u2026" : "");
+    }
+    const s = String(v);
+    if (/^\d{4}-\d{2}-\d{2}T/.test(s)) return s.slice(0, 16).replace("T", " ");
+    return s.length > 60 ? s.slice(0, 57) + "\u2026" : s;
+  }
+  function orderWords(orderId, ctx) {
+    if (!orderId) return "an order";
+    const o = ctx && ctx.orders ? ctx.orders.get(orderId) : null;
+    return o && o.customer ? `${o.customer} (${orderId})` : String(orderId);
+  }
+  var pick = (row, k) => {
+    const a = row.after || {}, b = row.before || {}, i = row.ident || {};
+    if (b[k] !== void 0 && b[k] !== null) return b[k];
+    if (a[k] !== void 0 && a[k] !== null) return a[k];
+    return i[k] !== void 0 ? i[k] : void 0;
+  };
+  function thingWords(row, ctx) {
+    const t = row.table_name, id = row.row_id;
+    const known = ctx && ctx.lookup ? ctx.lookup(t, id) : null;
+    const g = (snake, camel) => {
+      const v = pick(row, snake);
+      if (v !== void 0 && v !== null) return v;
+      return known ? known[camel || snake] ?? known[snake] : void 0;
+    };
+    if (t === "cases") {
+      const n = row.op === "update" && row.before && row.before.case_num != null ? row.before.case_num : g("case_num", "caseNum");
+      return `${orderWords(g("order_id", "orderId"), ctx)} case ${n ?? "?"}`;
+    }
+    if (t === "orders") return orderWords(id, ctx);
+    if (t === "line_items") return `${orderWords(g("order_id", "orderId"), ctx)} line ${g("description") || ""}`.trim();
+    if (t === "bonding_runs") return `bonding entry ${g("box_number", "boxNumber") || id}`;
+    if (t === "glue_line_batches") return `glue line reel ${g("batch_number", "batchNumber") || id}`;
+    if (t === "materials") return g("name") || id;
+    if (t === "products") return g("display_name", "displayName") || id;
+    if (t === "product_forms") return `${g("product_id", "productId") || id} (${g("form") || "form"})`;
+    if (t === "customers") return `customer ${g("name") || id}`;
+    if (t === "movements") return movementWords({ ...known || {}, ...row.ident || {}, ...row.before || {}, ...row.after || {} }, ctx) || `stock entry ${id}`;
+    return `${tableWord(t)} ${id}`;
+  }
+  function movementWords(m, ctx) {
+    if (!m) return "";
+    const qty = Number(m.qty) || 0, code = m.box_number || m.boxNumber || "?";
+    const order = m.order_id || m.orderId, cn = m.case_num ?? m.caseNum;
+    const where = order ? `${orderWords(order, ctx)}${cn != null ? ` case ${cn}` : ""}` : "";
+    switch (m.kind) {
+      case "made":
+        return `Made ${qty} \xD7 ${code}`;
+      case "found":
+        return `Found ${qty} \xD7 ${code}`;
+      case "placed":
+        return `Put ${qty} \xD7 ${code} into ${where || "a case"}`;
+      case "unplaced":
+        return `Took ${qty} \xD7 ${code} out of ${where || "a case"}`;
+      case "shipped":
+        return `Shipped ${qty} \xD7 ${code}${order ? ` with ${orderWords(order, ctx)}` : ""}`;
+      case "scrapped":
+        return `Scrapped ${qty} \xD7 ${code}`;
+      case "adjusted":
+        return `Corrected ${code} by ${qty > 0 ? "+" : ""}${qty}`;
+      case "counted":
+        return `Counted ${qty} \xD7 ${code}`;
+      case "allocated":
+        return `Booked ${qty} \xD7 ${code} to ${where || "an order"}`;
+      case "unallocated":
+        return `Unbooked ${qty} \xD7 ${code}${where ? ` from ${where}` : ""}`;
+      case "sampled":
+        return `Took ${qty} \xD7 ${code} as a sample`;
+      default:
+        return `${m.kind || "Entry"} ${qty} \xD7 ${code}`;
+    }
+  }
+  function describeRow(row, ctx) {
+    const t = row.table_name, a = row.after || {};
+    if (row.op === "insert") {
+      if (t === "movements") return movementWords(a, ctx);
+      if (t === "bonding_runs") return `Bonding entry ${a.box_number || "?"}: ${a.product_size || "?"}, ${a.amount_made ?? "?"} boxes${a.location ? ` (bay ${a.location})` : ""}`;
+      if (t === "glue_line_batches") return `Glue line reel ${a.batch_number || "?"}: ${a.product_size || "?"}${a.meterage != null ? `, ${a.meterage} m` : ""}`;
+      if (t === "cases") return `New case ${a.case_num ?? "?"} on ${orderWords(a.order_id, ctx)}${a.planned ? ` \u2014 ${valueWords(a.planned)}` : ""}`;
+      if (t === "line_items") return `Added ${a.qty ?? "?"} \xD7 ${a.description || "?"} to ${orderWords(a.order_id, ctx)}`;
+      if (t === "orders") return `New order ${row.row_id} for ${a.customer || "?"}`;
+      if (t === "products") return `Catalogue: added ${a.display_name || row.row_id}`;
+      if (t === "product_forms") return `Catalogue: ${a.form || "form"}${a.metres != null ? ` of ${a.metres} m` : ""} for ${a.product_id || "?"}`;
+      if (t === "material_movements") {
+        const m = ctx && ctx.lookup ? ctx.lookup("materials", a.material_id) : null;
+        const q = Number(a.qty) || 0;
+        return `${m && m.name || a.material_id || "Material"} ${q > 0 ? "+" : ""}${q}${a.note ? ` \u2014 ${a.note}` : ""}`;
+      }
+      if (t === "customers") return `New customer ${a.name || row.row_id}`;
+      if (t === "issues") return `Raised: ${a.summary || row.row_id}`;
+      return `Added ${tableWord(t)} ${row.row_id}`;
+    }
+    if (row.op === "remove") return `Removed ${t === "movements" ? `the entry "${thingWords(row, ctx)}"` : thingWords(row, ctx)}`;
+    if (row.op === "restore") return `Brought back ${t === "movements" ? `the entry "${thingWords(row, ctx)}"` : thingWords(row, ctx)}`;
+    if (row.op === "delete") return `Deleted ${thingWords(row, ctx)}`;
+    const fields = Object.keys(a);
+    const changes = fields.map((f) => `${fieldWord(f)} ${valueWords((row.before || {})[f])} \u2192 ${valueWords(a[f])}`);
+    return `${thingWords(row, ctx).replace(/^./, (c) => c.toUpperCase())}: ${changes.join("; ")}`;
+  }
+  function changesetKind(cs, rows) {
+    if (cs && cs.kind) return cs.kind;
+    const rs = rows || [];
+    const ins = (t) => rs.some((r) => r.table_name === t && r.op === "insert");
+    const touched = (t) => rs.some((r) => r.table_name === t);
+    const mv = rs.filter((r) => r.table_name === "movements" && r.op === "insert").map((r) => r.after || {});
+    const mvKinds = new Set(mv.map((m) => m.kind));
+    if (ins("bonding_runs")) return "Bonding entry";
+    if (ins("glue_line_batches")) return "Glue line reel";
+    if (ins("extrusion_runs")) return "Extrusion";
+    if (ins("orders")) return "New order";
+    if (mvKinds.has("shipped")) return "Shipped";
+    if (mvKinds.has("counted") || mv.some((m) => m.source === "stocktake")) return "Stock take";
+    if (mv.some((m) => m.source === "pick")) return "Pick";
+    if (mvKinds.has("placed") || mvKinds.has("unplaced")) return "Packing";
+    if (mvKinds.has("found")) return "Found boxes";
+    if (mvKinds.has("adjusted") || mvKinds.has("scrapped")) return "Stock correction";
+    if (mvKinds.has("made")) return "Boxes made";
+    if (touched("movements")) return "Stock entries";
+    if (touched("line_items") || touched("orders")) return "Order change";
+    if (touched("cases")) return "Case change";
+    if (touched("material_movements") || touched("materials")) return "Materials";
+    if (touched("products") || touched("product_forms") || touched("product_aliases")) return "Catalogue";
+    if (touched("run_starts")) return "Bonding run started";
+    if (touched("glue_line_batches")) return "Glue line reel";
+    if (touched("bonding_runs")) return "Bonding entry";
+    if (touched("tooling")) return "Tooling";
+    if (touched("customers")) return "Customer";
+    if (touched("issues")) return "Issue";
+    return "Change";
+  }
+  var SOURCE_WORDS = { app: "", tool: "admin tool", claude: "Claude", sql: "", undo: "" };
+  function changesetWho(cs) {
+    const who = cs.actor || (cs.source === "sql" ? "Database (no login)" : "Someone");
+    const where = cs.device || SOURCE_WORDS[cs.source] || "";
+    return where && !who.toLowerCase().startsWith(where.toLowerCase()) ? `${who} \xB7 ${where}` : who;
+  }
+  function describeChangeset(cs, rows, ctx) {
+    const rs = rows || [];
+    const lines = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const r of rs) {
+      const line = describeRow(r, ctx);
+      if (seen.has(line)) continue;
+      seen.add(line);
+      lines.push(line);
+    }
+    const kind = changesetKind(cs, rs);
+    const why = cs.reason && cs.reason !== kind ? cs.reason : cs.summary || "";
+    return { kind, why, lines, who: changesetWho(cs) };
+  }
+  function changesetMatches(cs, described, rows, query) {
+    const q = String(query || "").trim().toUpperCase();
+    if (!q) return true;
+    const hay = [
+      cs.id,
+      cs.actor,
+      cs.device,
+      cs.reason,
+      cs.summary,
+      described.kind,
+      ...described.lines,
+      ...(rows || []).map((r) => r.row_id)
+    ].filter(Boolean).join(" ").toUpperCase();
+    return hay.includes(q);
+  }
+  function activityDay(iso, nowMs) {
+    const d = new Date(iso);
+    if (isNaN(d)) return "";
+    const startOf = (ms) => {
+      const x = new Date(ms);
+      x.setHours(0, 0, 0, 0);
+      return x.getTime();
+    };
+    const diff = Math.round((startOf(nowMs) - startOf(d.getTime())) / 864e5);
+    if (diff === 0) return "Today";
+    if (diff === 1) return "Yesterday";
+    return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+  }
+  var TRUTHS = [
+    ["made", "A box code never has more in cases, shipped and scrapped than was made"],
+    ["case_ledger", "What's in a case is what the ledger put there"],
+    ["line_catalogue", "Every line on a live order is a catalogue product"],
+    ["plan_lines", "An order's case plan adds up to its lines"],
+    ["one_form", "A product has one box form and one reel form in use"],
+    ["pt_twin", "A product never exists both with and without its pt"],
+    ["shipped", "Nothing on a shipped order changes"],
+    ["packing", "Cartons are 20, 15, 10 or 5, with one part case per order"],
+    ["material_stock", "No material's stock is below zero"],
+    ["build", "Every device saves on the current build"]
+  ];
+  var SEV_ORDER = { order: 0, stock: 1, history: 2 };
+  var SEV_WORDS = { order: "Could hold up an order", stock: "Stock and catalogue", history: "History" };
+  function healthView(issues, nowMs) {
+    const rows = (issues || []).filter(Boolean);
+    const open = rows.filter((i) => i.status === "open").sort((a, b) => (SEV_ORDER[a.sev] ?? 3) - (SEV_ORDER[b.sev] ?? 3) || String(b.first_seen).localeCompare(String(a.first_seen)));
+    const groups = ["order", "stock", "history"].map((sev) => ({ sev, title: SEV_WORDS[sev], items: open.filter((i) => (i.sev || "stock") === sev) })).filter((g) => g.items.length);
+    const perTruth = Object.fromEntries(TRUTHS.map(([k]) => [k, open.filter((i) => i.truth === k).length]));
+    const accepted = rows.filter((i) => i.status === "accepted");
+    const weekAgo = (nowMs || Date.now()) - 7 * 864e5;
+    const fixedThisWeek = rows.filter((i) => i.status === "fixed" && Date.parse(i.closed_at || 0) >= weekAgo);
+    return { open, groups, perTruth, accepted, fixedThisWeek };
+  }
+  function foundWords(i, cs) {
+    const at = i.first_seen ? new Date(i.first_seen) : null;
+    const when = at && !isNaN(at) ? at.toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "";
+    if (cs && (i.found_by === "save" || i.found_by === "tool")) return `Broken by ${cs.actor || "someone"}'s ${i.found_by === "tool" ? "fix" : "save"}${cs.device ? ` on ${cs.device}` : ""}${when ? ` \xB7 ${when}` : ""}`;
+    const by = i.found_by === "save" ? "a save" : i.found_by === "tool" ? "a fix" : i.found_by === "check" ? "Check now" : "the nightly check";
+    return `Found by ${by}${when ? ` \xB7 ${when}` : ""}`;
+  }
+
   // mx_pickwalk.js
   var up2 = (s) => String(s || "").trim().toUpperCase();
   var famOf = (fid) => String(fid || "").replace(/-\d.*$/, "");
@@ -11423,12 +11729,13 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-01.23";
+  var APP_VERSION = "2026-10-02.2";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
     __syncClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      global: { headers: { "x-app-version": APP_VERSION } }
+      /* x-device-key: which device a save came from, so Activity can say "Work PC" (the fix system, 2 Oct 2026). */
+      global: { headers: { "x-app-version": APP_VERSION, "x-device-key": deviceKey() } }
     });
     return __syncClient;
   }
@@ -13808,7 +14115,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     const rules = rulesDraft || baseWordRules(rows);
     const carton = sel === "px" ? "White" : sel === "smart" ? "Smart Formes" : sel === "ultra" ? "Ultra SR" : "PX Plus";
     const fields = labelFields({ productName: sample, code: "I62314SDB", metres: boxMetresFor(data, sample), rules });
-    const pick = (id) => {
+    const pick2 = (id) => {
       setSel(id);
       setDraft(null);
       setRulesDraft(null);
@@ -13848,7 +14155,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
         "button",
         {
           key: id,
-          onClick: () => pick(id),
+          onClick: () => pick2(id),
           "data-template": id,
           style: {
             display: "block",
@@ -15658,13 +15965,13 @@ ${recent}` : null });
       if (!cut) continue;
       const spaces = planSpacesFor({ ...data, cases }, orderId, li.description);
       if (!spaces.length) continue;
-      const pick = caseCuts[li.id] || proposeCut(spaces, cut);
-      const r = planCutForLine({ ...data, cases }, orderId, li.description, cut, pick);
+      const pick2 = caseCuts[li.id] || proposeCut(spaces, cut);
+      const r = planCutForLine({ ...data, cases }, orderId, li.description, cut, pick2);
       if (r.error) errors.push(r.error);
       else cases = r.cases;
       const before2 = planSpacesFor(data0, orderId, li.description);
       const totalEmpty = spaces.reduce((t, x) => t + x.empty, 0);
-      lines.push({ liId: li.id, description: li.description, cut, spaces, before: before2, pick, shortOfEmpty: Math.max(0, cut - totalEmpty) });
+      lines.push({ liId: li.id, description: li.description, cut, spaces, before: before2, pick: pick2, shortOfEmpty: Math.max(0, cut - totalEmpty) });
     }
     const before = new Map((data.cases || []).filter((c) => c && !c.deleted && c.orderId === orderId).map((c) => [c.id, c]));
     const inCases = ledgerCaseContents(data.movements || []);
@@ -16126,7 +16433,7 @@ ${recent}` : null });
         description = orderLineName(data, description);
       } else if (res.status === "candidates") {
         const list = res.candidates.slice(0, 6).map((p, i) => `  ${i + 1}. ${p.displayName}`).join("\n");
-        const pick = window.prompt(
+        const pick2 = window.prompt(
           `"${description}" is not exactly a product we make.
 
 Which one is it? Type the number:
@@ -16136,7 +16443,7 @@ ${list}
 To clear this: pick a number, or Cancel and correct the line \u2014 most often the pt (2-3pt, 3-4pt or 6pt) is missing.`,
           "1"
         );
-        const chosen = res.candidates[Number(pick) - 1];
+        const chosen = res.candidates[Number(pick2) - 1];
         if (!chosen) return;
         description = chosen.displayName;
       } else {
@@ -22666,13 +22973,13 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     } catch {
     }
     const mem = DRAFTS_MEM ? DRAFTS_MEM[key] ?? null : null;
-    const pick = !mem ? ls : !ls ? mem : draftAt(mem) >= draftAt(ls) ? mem : ls;
-    if (!pick) return null;
+    const pick2 = !mem ? ls : !ls ? mem : draftAt(mem) >= draftAt(ls) ? mem : ls;
+    if (!pick2) return null;
     try {
-      if (JSON.parse(pick).cleared) return null;
+      if (JSON.parse(pick2).cleared) return null;
     } catch {
     }
-    return pick;
+    return pick2;
   }
   function draftSetRaw(key, raw) {
     try {
@@ -23665,7 +23972,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
   }
   function FixPasswords({ data, setData, P, card, btn }) {
     const [users, setUsers] = useState(null);
-    const [pick, setPick] = useState("");
+    const [pick2, setPick] = useState("");
     const [pw1, setPw1] = useState("");
     const [pw2, setPw2] = useState("");
     const [busy, setBusy] = useState(false);
@@ -23682,7 +23989,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       load();
     }, []);
     const set = async () => {
-      if (!pick) {
+      if (!pick2) {
         setMsg({ bad: true, t: "Pick whose password to set." });
         return;
       }
@@ -23695,7 +24002,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
         return;
       }
       setBusy(true);
-      const r = await callAdminUsers({ action: "set", email: pick, password: pw1 });
+      const r = await callAdminUsers({ action: "set", email: pick2, password: pw1 });
       setBusy(false);
       if (r.error) {
         setMsg({ bad: true, t: r.error });
@@ -23703,11 +24010,11 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       }
       setPw1("");
       setPw2("");
-      setData((prev) => ({ ...prev, ...appendLog(prev, { action: "update", entity: "login", entityId: pick, summary: `Password set for ${pick} (Admin \u2192 Set a password)` }) }));
-      setMsg({ bad: false, t: `Password set for ${pick}. Devices already signed in stay signed in; the new password is for the next sign-in.` });
+      setData((prev) => ({ ...prev, ...appendLog(prev, { action: "update", entity: "login", entityId: pick2, summary: `Password set for ${pick2} (Admin \u2192 Set a password)` }) }));
+      setMsg({ bad: false, t: `Password set for ${pick2}. Devices already signed in stay signed in; the new password is for the next sign-in.` });
     };
     const when = (t) => t ? new Date(t).toLocaleDateString(void 0, { day: "numeric", month: "short" }) : "never";
-    return /* @__PURE__ */ React.createElement("div", { style: card, "data-fix-pw": true }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: P.head, marginBottom: 8 } }, "Set a password"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: P.dim, marginBottom: 8 } }, "For when someone can't sign in. Needs the internet."), users === null ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14 } }, busy ? "Loading logins\u2026" : "") : /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 4, marginBottom: 8 } }, users.map((u) => /* @__PURE__ */ React.createElement("label", { key: u.email, "data-pw-user": true, style: { display: "flex", gap: 8, alignItems: "center", fontSize: 14 } }, /* @__PURE__ */ React.createElement("input", { type: "radio", name: "pw-user", checked: pick === u.email, onChange: () => {
+    return /* @__PURE__ */ React.createElement("div", { style: card, "data-fix-pw": true }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: P.head, marginBottom: 8 } }, "Set a password"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: P.dim, marginBottom: 8 } }, "For when someone can't sign in. Needs the internet."), users === null ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14 } }, busy ? "Loading logins\u2026" : "") : /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 4, marginBottom: 8 } }, users.map((u) => /* @__PURE__ */ React.createElement("label", { key: u.email, "data-pw-user": true, style: { display: "flex", gap: 8, alignItems: "center", fontSize: 14 } }, /* @__PURE__ */ React.createElement("input", { type: "radio", name: "pw-user", checked: pick2 === u.email, onChange: () => {
       setPick(u.email);
       setMsg(null);
     } }), /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "monospace" } }, u.email), /* @__PURE__ */ React.createElement("span", { style: { color: P.dim, fontSize: 12.5 } }, "last signed in ", when(u.lastSignIn))))), users !== null && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("input", { "data-pw-1": true, type: "password", autoComplete: "new-password", value: pw1, onChange: (e) => setPw1(e.target.value), placeholder: "New password", style: adminInput(P, { width: 180 }) }), /* @__PURE__ */ React.createElement("input", { "data-pw-2": true, type: "password", autoComplete: "new-password", value: pw2, onChange: (e) => setPw2(e.target.value), placeholder: "Again", style: adminInput(P, { width: 180 }) }), /* @__PURE__ */ React.createElement("button", { "data-pw-set": true, disabled: busy, onClick: set, style: { ...btn, fontWeight: 600 } }, busy ? "Setting\u2026" : "Set password")), msg && /* @__PURE__ */ React.createElement("div", { "data-fix-msg": true, style: { marginTop: 10, fontSize: 13.5, fontWeight: 600, color: msg.bad ? P.bad : P.ok } }, msg.t), users === null && !busy && /* @__PURE__ */ React.createElement("button", { onClick: load, style: { ...btn, marginTop: 8 } }, "Try again"));
@@ -24156,7 +24463,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     return /* @__PURE__ */ React.createElement("div", { "data-admin-alert-banner": true, onClick: onOpen, className: "no-print", style: { background: "#FFF3E6", borderBottom: `1px solid ${AMBER}`, color: "#8A4B00", padding: "8px 14px", fontSize: 13.5, fontWeight: 600, cursor: "pointer" } }, "\u26A0 ", items[0], items.length > 1 ? ` \xB7 +${items.length - 1} more` : "", " \u2014 open Admin");
   }
   function AdminStuckPanel({ data, setData, P, card, btn }) {
-    const [pick, setPick] = useState({});
+    const [pick2, setPick] = useState({});
     const [msg, setMsg] = useState(null);
     const failures = typeof window !== "undefined" && window.__mxSyncFailures || [];
     const forms = (data.productForms || []).filter((x) => x && !x.deleted && x.active !== false);
@@ -24171,23 +24478,249 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     ];
     const fix = (s, how) => {
       const at = (/* @__PURE__ */ new Date()).toISOString();
-      if (how === "product" && !pick[s.row.id]) {
+      if (how === "product" && !pick2[s.row.id]) {
         setMsg({ bad: true, t: "Choose its product first." });
         return;
       }
       if (how === "discard" && !window.confirm(`Discard "${s.label}"? It goes up as a deleted record (kept as history) and stops being stuck.`)) return;
       setData((prev) => {
-        const d = { ...prev, [s.table]: (prev[s.table] || []).map((x) => x.id !== s.row.id ? x : how === "discard" ? { ...x, deleted: true, deletedAt: at, updatedAt: at } : { ...x, formId: pick[s.row.id], updatedAt: at }) };
+        const d = { ...prev, [s.table]: (prev[s.table] || []).map((x) => x.id !== s.row.id ? x : how === "discard" ? { ...x, deleted: true, deletedAt: at, updatedAt: at } : { ...x, formId: pick2[s.row.id], updatedAt: at }) };
         return { ...d, ...appendLog(d, {
           action: how === "discard" ? "delete" : "edit",
           entity: s.table === "movements" ? "movement" : "bondingRun",
           entityId: s.row.id,
-          summary: how === "discard" ? `Discarded a stuck entry: ${s.label} (Admin \u2192 Health)` : `Gave a stuck entry its product: ${s.label} \u2192 ${prodOf(pick[s.row.id])} (Admin \u2192 Health)`
+          summary: how === "discard" ? `Discarded a stuck entry: ${s.label} (Admin \u2192 Health)` : `Gave a stuck entry its product: ${s.label} \u2192 ${prodOf(pick2[s.row.id])} (Admin \u2192 Health)`
         }) };
       });
       setMsg({ bad: false, t: how === "discard" ? "Discarded \u2014 it goes up as a deleted record on the next save." : "Product given \u2014 it goes up on the next save." });
     };
-    return /* @__PURE__ */ React.createElement("div", { style: card, "data-admin-stuck": true }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: P.head, marginBottom: 6 } }, "Stuck on this device"), failures.map((f, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { fontSize: 13, color: P.bad, padding: "2px 0" } }, f.table, ": ", String(f.message || "").slice(0, 160))), !stuck.length && /* @__PURE__ */ React.createElement("div", { style: { color: P.ok, fontSize: 13.5 } }, "Nothing on this device is waiting for a product. \u2713"), stuck.map((s) => /* @__PURE__ */ React.createElement("div", { key: s.row.id, "data-stuck-row": s.row.id, style: { padding: "8px 0", borderBottom: `1px solid ${P.line}`, fontSize: 13.5 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("b", { style: { fontFamily: "monospace" } }, s.label), " ", /* @__PURE__ */ React.createElement("span", { style: { color: P.dim } }, String(s.when || "").slice(0, 16).replace("T", " "))), s.why && /* @__PURE__ */ React.createElement("div", { style: { color: P.dim, fontSize: 12.5 } }, String(s.why).slice(0, 160)), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("select", { "data-stuck-product": true, value: pick[s.row.id] || "", onChange: (e) => setPick((p) => ({ ...p, [s.row.id]: e.target.value })), style: { height: 34, borderRadius: 6, border: `1px solid ${P.line}`, background: P.card, color: P.ink, maxWidth: 280 } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Its product\u2026"), forms.map((f) => /* @__PURE__ */ React.createElement("option", { key: f.id, value: f.id }, prodOf(f.id)))), /* @__PURE__ */ React.createElement("button", { "data-stuck-give": true, onClick: () => fix(s, "product"), style: btn }, "Give it its product"), /* @__PURE__ */ React.createElement("button", { "data-stuck-discard": true, onClick: () => fix(s, "discard"), style: btn }, "Discard it")))), msg && /* @__PURE__ */ React.createElement("div", { "data-fix-msg": true, style: { marginTop: 8, fontSize: 13.5, fontWeight: 600, color: msg.bad ? P.bad : P.ok } }, msg.t));
+    return /* @__PURE__ */ React.createElement("div", { style: card, "data-admin-stuck": true }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: P.head, marginBottom: 6 } }, "Stuck on this device"), failures.map((f, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { fontSize: 13, color: P.bad, padding: "2px 0" } }, f.table, ": ", String(f.message || "").slice(0, 160))), !stuck.length && /* @__PURE__ */ React.createElement("div", { style: { color: P.ok, fontSize: 13.5 } }, "Nothing on this device is waiting for a product. \u2713"), stuck.map((s) => /* @__PURE__ */ React.createElement("div", { key: s.row.id, "data-stuck-row": s.row.id, style: { padding: "8px 0", borderBottom: `1px solid ${P.line}`, fontSize: 13.5 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("b", { style: { fontFamily: "monospace" } }, s.label), " ", /* @__PURE__ */ React.createElement("span", { style: { color: P.dim } }, String(s.when || "").slice(0, 16).replace("T", " "))), s.why && /* @__PURE__ */ React.createElement("div", { style: { color: P.dim, fontSize: 12.5 } }, String(s.why).slice(0, 160)), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("select", { "data-stuck-product": true, value: pick2[s.row.id] || "", onChange: (e) => setPick((p) => ({ ...p, [s.row.id]: e.target.value })), style: { height: 34, borderRadius: 6, border: `1px solid ${P.line}`, background: P.card, color: P.ink, maxWidth: 280 } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Its product\u2026"), forms.map((f) => /* @__PURE__ */ React.createElement("option", { key: f.id, value: f.id }, prodOf(f.id)))), /* @__PURE__ */ React.createElement("button", { "data-stuck-give": true, onClick: () => fix(s, "product"), style: btn }, "Give it its product"), /* @__PURE__ */ React.createElement("button", { "data-stuck-discard": true, onClick: () => fix(s, "discard"), style: btn }, "Discard it")))), msg && /* @__PURE__ */ React.createElement("div", { "data-fix-msg": true, style: { marginTop: 8, fontSize: 13.5, fontWeight: 600, color: msg.bad ? P.bad : P.ok } }, msg.t));
+  }
+  var ACTIVITY_TABLE_KEYS = {
+    cases: "cases",
+    bonding_runs: "bondingRuns",
+    glue_line_batches: "glueLineBatches",
+    materials: "materials",
+    products: "products",
+    product_forms: "productForms",
+    movements: "movements",
+    line_items: "lineItems",
+    customers: "customers",
+    orders: "orders"
+  };
+  function AdminActivity({ data, P, card, btn, openOldLog }) {
+    const [days, setDays] = useState(() => {
+      try {
+        return sessionStorage.getItem("mxActivityQuery") ? 30 : 1;
+      } catch (e) {
+        return 1;
+      }
+    });
+    const [person, setPerson] = useState("all");
+    const [query, setQuery] = useState(() => {
+      try {
+        const q = sessionStorage.getItem("mxActivityQuery") || "";
+        sessionStorage.removeItem("mxActivityQuery");
+        return q;
+      } catch (e) {
+        return "";
+      }
+    });
+    const [state, setState] = useState({ loading: true, err: null, list: [], rows: {} });
+    const [open, setOpen] = useState({});
+    const [asking, setAsking] = useState(null);
+    const [reason, setReason] = useState("");
+    const [busy, setBusy] = useState(null);
+    const [said, setSaid] = useState({});
+    const [tick, setTick] = useState(0);
+    const ctx = useMemo(() => {
+      const maps = {};
+      const lookup = (t, id) => {
+        const key = ACTIVITY_TABLE_KEYS[t];
+        if (!key || !id) return null;
+        if (!maps[key]) {
+          maps[key] = /* @__PURE__ */ new Map();
+          for (const r of data[key] || []) if (r && r.id) maps[key].set(r.id, r);
+        }
+        return maps[key].get(id) || null;
+      };
+      const orders = new Map((data.orders || []).filter((o) => o && o.id).map((o) => [o.id, o]));
+      return { orders, lookup };
+    }, [data]);
+    useEffect(() => {
+      let live = true;
+      const c = EVENT_CLIENT;
+      if (!c) {
+        setState({ loading: false, err: "Not connected to the cloud on this device \u2014 Activity is kept in the cloud.", list: [], rows: {} });
+        return;
+      }
+      setState((s) => ({ ...s, loading: true, err: null }));
+      const since = new Date(Date.now() - days * 864e5).toISOString();
+      (async () => {
+        try {
+          const { data: list, error } = await c.from("changesets").select("*").gte("created_at", since).order("created_at", { ascending: false }).limit(200);
+          if (error) throw new Error(error.message);
+          const ids = (list || []).map((x) => x.id);
+          const rows = {};
+          for (let i = 0; i < ids.length; i += 60) {
+            const { data: rs, error: e2 } = await c.from("changeset_rows").select("*").in("changeset_id", ids.slice(i, i + 60)).order("id", { ascending: true }).limit(4e3);
+            if (e2) throw new Error(e2.message);
+            for (const r of rs || []) (rows[r.changeset_id] = rows[r.changeset_id] || []).push(r);
+          }
+          if (live) setState({ loading: false, err: null, list: (list || []).slice().sort((x, y) => String(y.created_at).localeCompare(String(x.created_at))), rows });
+        } catch (e) {
+          if (live) setState({ loading: false, err: `Couldn't fetch Activity: ${e.message || e}`, list: [], rows: {} });
+        }
+      })();
+      return () => {
+        live = false;
+      };
+    }, [days, tick]);
+    const nowMs = Date.now();
+    const described = state.list.map((cs) => ({ cs, rows: state.rows[cs.id] || [], d: describeChangeset(cs, state.rows[cs.id] || [], ctx) }));
+    const people = [...new Set(state.list.map((cs) => cs.actor).filter(Boolean))];
+    const shown = described.filter((x) => (person === "all" || x.cs.actor === person) && changesetMatches(x.cs, x.d, x.rows, query));
+    const byClaude = state.list.filter((cs) => cs.source === "claude" || cs.source === "sql").length;
+    const undo = async (cs) => {
+      const c = EVENT_CLIENT;
+      if (!c) return;
+      setBusy(cs.id);
+      try {
+        const { data: res, error } = await c.rpc("reverse_changeset", { p_id: cs.id, p_reason: reason.trim() || null });
+        if (error) setSaid((s) => ({ ...s, [cs.id]: { bad: true, text: error.message } }));
+        else if (!res || !res.ok) setSaid((s) => ({ ...s, [cs.id]: { bad: true, text: res && res.refused || "The cloud didn't say why." } }));
+        else {
+          setSaid((s) => ({ ...s, [cs.id]: { bad: false, text: "Undone. Every device picks it up on its next refresh." } }));
+          setAsking(null);
+          setReason("");
+          try {
+            window.dispatchEvent(new Event("mx-pull-now"));
+          } catch (e) {
+          }
+          setTick((t) => t + 1);
+        }
+      } catch (e) {
+        setSaid((s) => ({ ...s, [cs.id]: { bad: true, text: String(e.message || e) } }));
+      }
+      setBusy(null);
+    };
+    const chip = (on, label, onClick, key) => /* @__PURE__ */ React.createElement("button", { key, onClick, style: {
+      height: 30,
+      padding: "0 12px",
+      borderRadius: 999,
+      fontSize: 12.5,
+      whiteSpace: "nowrap",
+      border: `1px solid ${on ? P.head : P.line}`,
+      background: on ? P.head : P.card,
+      color: on ? P.card : P.dim,
+      fontWeight: on ? 600 : 400,
+      cursor: "pointer",
+      flex: "0 0 auto"
+    } }, label);
+    let lastDay = null;
+    return /* @__PURE__ */ React.createElement("div", { "data-activity": true, style: { display: "grid", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { ...card, fontSize: 13.5, color: P.dim } }, "Every change by everyone, newest first. ", /* @__PURE__ */ React.createElement("b", { style: { color: P.ink } }, "Undo"), " puts a change back exactly as it was \u2014 the cloud refuses if something since depends on it, and says what."), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        "data-activity-search": true,
+        value: query,
+        onChange: (e) => setQuery(e.target.value),
+        placeholder: "Box code, order, customer, reel, person\u2026",
+        autoCorrect: "off",
+        autoCapitalize: "characters",
+        spellCheck: "false",
+        style: { height: 38, border: `1px solid ${P.line}`, borderRadius: 8, fontSize: 15, padding: "0 10px", background: P.card, color: P.ink }
+      }
+    ), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, overflowX: "auto" } }, [[1, "Today"], [2, "2 days"], [7, "7 days"], [30, "30 days"]].map(([n, l]) => chip(days === n, l, () => setDays(n), "d" + n))), people.length > 1 && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, overflowX: "auto" } }, [chip(person === "all", "Everyone", () => setPerson("all"), "pall"), ...people.map((p) => chip(person === p, p, () => setPerson(p), "p" + p))]), state.loading && /* @__PURE__ */ React.createElement("div", { style: { ...card, color: P.dim } }, "Fetching from the cloud\u2026"), state.err && /* @__PURE__ */ React.createElement("div", { "data-activity-err": true, style: { ...card, color: P.bad } }, state.err), !state.loading && !state.err && /* @__PURE__ */ React.createElement("div", { "data-activity-count": true, style: { fontSize: 12.5, color: P.dim } }, /* @__PURE__ */ React.createElement("b", { style: { color: P.ink } }, shown.length), " change", shown.length === 1 ? "" : "s", byClaude ? /* @__PURE__ */ React.createElement(React.Fragment, null, " \xB7 ", /* @__PURE__ */ React.createElement("span", { style: { color: P.warn } }, byClaude, " made in the database by hand")) : null), !state.loading && !state.err && shown.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { ...card, color: P.dim, textAlign: "center" } }, "Nothing in this time."), shown.map(({ cs, rows, d }) => {
+      const day = activityDay(cs.created_at, nowMs);
+      const showDay = day !== lastDay;
+      lastDay = day;
+      const isOpen = !!open[cs.id];
+      const lines = isOpen ? d.lines : d.lines.slice(0, 3);
+      const handMade = cs.source === "claude" || cs.source === "sql";
+      const result = said[cs.id];
+      return /* @__PURE__ */ React.createElement("div", { key: cs.id }, showDay && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, letterSpacing: 1.5, color: P.dim, textTransform: "uppercase", margin: "6px 0 4px" } }, day), /* @__PURE__ */ React.createElement("div", { "data-cs": cs.id, "data-cs-status": cs.status, style: { ...card, opacity: cs.status === "applied" ? 1 : 0.6, borderLeft: handMade ? `3px solid ${P.warn}` : cs.status === "refused" ? `3px solid ${P.bad}` : card.border } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { "data-cs-kind": true, style: { fontWeight: 650, color: P.head, fontSize: 15 } }, d.kind), cs.status === "reversed" && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: P.ok, border: `1px solid ${P.ok}`, borderRadius: 8, padding: "0 6px" } }, "UNDONE"), cs.status === "refused" && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: P.bad, border: `1px solid ${P.bad}`, borderRadius: 8, padding: "0 6px" } }, "REFUSED"), handMade && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: P.warn, border: `1px solid ${P.warn}`, borderRadius: 8, padding: "0 6px" } }, "BY HAND"), /* @__PURE__ */ React.createElement("span", { style: { marginLeft: "auto", fontSize: 12, color: P.dim } }, changeAgo(cs.created_at, nowMs))), /* @__PURE__ */ React.createElement("div", { "data-cs-who": true, style: { fontSize: 12.5, color: P.dim, marginTop: 2 } }, d.who, cs.build ? ` \xB7 ${cs.build}` : ""), d.why && /* @__PURE__ */ React.createElement("div", { "data-cs-why": true, style: { fontSize: 13.5, marginTop: 6 } }, d.why), cs.status === "refused" && cs.refusal && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, marginTop: 6, color: P.bad } }, cs.refusal), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6 } }, lines.map((l, i) => /* @__PURE__ */ React.createElement("div", { key: i, "data-cs-line": true, style: { fontSize: 13.5, padding: "3px 0", borderTop: i ? `1px solid ${P.line}` : "none" } }, l))), d.lines.length > 3 && /* @__PURE__ */ React.createElement("button", { onClick: () => setOpen((o) => ({ ...o, [cs.id]: !isOpen })), style: { background: "none", border: 0, color: P.head, fontSize: 13, padding: "4px 0", cursor: "pointer" } }, isOpen ? "Show less" : `+ ${d.lines.length - 3} more`), result && /* @__PURE__ */ React.createElement("div", { "data-cs-result": true, style: { fontSize: 13.5, marginTop: 8, color: result.bad ? P.bad : P.ok, fontWeight: 600 } }, result.text), cs.status === "applied" && rows.length > 0 && (asking === cs.id ? /* @__PURE__ */ React.createElement("div", { "data-cs-confirm": true, style: { marginTop: 10, paddingTop: 10, borderTop: `1px solid ${P.line}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: P.head } }, "Undo this ", d.kind.toLowerCase(), "?"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: P.dim, margin: "4px 0 8px" } }, "Everything above goes back to how it was before ", cs.actor || "it", " made it."), /* @__PURE__ */ React.createElement(
+        "input",
+        {
+          "data-cs-reason": true,
+          value: reason,
+          onChange: (e) => setReason(e.target.value),
+          placeholder: "Why? (optional \u2014 kept with the undo)",
+          style: { width: "100%", boxSizing: "border-box", height: 36, border: `1px solid ${P.line}`, borderRadius: 6, padding: "0 8px", fontSize: 14, background: P.card, color: P.ink }
+        }
+      ), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 8 } }, /* @__PURE__ */ React.createElement("button", { "data-cs-undo-yes": true, disabled: busy === cs.id, onClick: () => undo(cs), style: { ...btn, background: P.head, color: P.card, borderColor: P.head, fontWeight: 600 } }, busy === cs.id ? "Undoing\u2026" : "Undo it"), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+        setAsking(null);
+        setReason("");
+      }, style: btn }, "Keep it"))) : /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("button", { "data-cs-undo": true, onClick: () => {
+        setAsking(cs.id);
+        setReason("");
+        setSaid((s) => ({ ...s, [cs.id]: void 0 }));
+      }, style: btn }, "Undo")))));
+    }), /* @__PURE__ */ React.createElement("button", { "data-activity-oldlog": true, onClick: openOldLog, style: { ...btn, justifySelf: "start", color: P.dim } }, "The old change log (before 2 Oct)"));
+  }
+  function AdminTruths({ P, card, btn, openActivity }) {
+    const [state, setState] = useState({ loading: true, err: null, issues: [], cs: {}, run: null });
+    const [tick, setTick] = useState(0);
+    const [busy, setBusy] = useState(null);
+    const [note, setNote] = useState(null);
+    const [showAccepted, setShowAccepted] = useState(false);
+    const [asking, setAsking] = useState(null);
+    useEffect(() => {
+      let live = true;
+      const c = EVENT_CLIENT;
+      if (!c) {
+        setState({ loading: false, err: "Not connected to the cloud on this device \u2014 the checks run in the cloud.", issues: [], cs: {}, run: null });
+        return;
+      }
+      (async () => {
+        try {
+          const since = new Date(Date.now() - 7 * 864e5).toISOString();
+          const { data: a, error: e1 } = await c.from("health_issues").select("*").in("status", ["open", "accepted"]).limit(500);
+          if (e1) throw new Error(e1.message);
+          const { data: f, error: e2 } = await c.from("health_issues").select("*").eq("status", "fixed").gte("closed_at", since).limit(500);
+          if (e2) throw new Error(e2.message);
+          const { data: runs } = await c.from("truth_runs").select("*").order("at", { ascending: false }).limit(1);
+          const issues = [...a || [], ...f || []];
+          const ids = [...new Set(issues.map((i) => i.changeset_id).filter(Boolean))];
+          const cs = {};
+          if (ids.length) {
+            const { data: list } = await c.from("changesets").select("*").in("id", ids.slice(0, 100));
+            for (const x of list || []) cs[x.id] = x;
+          }
+          const run = (runs || []).slice().sort((x, y) => String(y.at).localeCompare(String(x.at)))[0] || null;
+          if (live) setState({ loading: false, err: null, issues, cs, run });
+        } catch (e) {
+          if (live) setState({ loading: false, err: `Couldn't fetch Health: ${e.message || e}`, issues: [], cs: {}, run: null });
+        }
+      })();
+      return () => {
+        live = false;
+      };
+    }, [tick]);
+    const call = async (key, fn, args, done) => {
+      const c = EVENT_CLIENT;
+      if (!c) return;
+      setBusy(key);
+      setNote(null);
+      try {
+        const { data: res, error } = await c.rpc(fn, args || {});
+        if (error) setNote({ bad: true, text: error.message });
+        else if (!res || res.ok === false) setNote({ bad: true, text: res && res.refused || "The cloud didn't say why." });
+        else {
+          setNote({ bad: false, text: done(res) });
+          setTick((t) => t + 1);
+        }
+      } catch (e) {
+        setNote({ bad: true, text: String(e.message || e) });
+      }
+      setBusy(null);
+      setAsking(null);
+    };
+    const v = healthView(state.issues, Date.now());
+    const runWhen = state.run && state.run.at ? new Date(state.run.at).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" }) : null;
+    return /* @__PURE__ */ React.createElement("div", { "data-truths": true, style: { display: "grid", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: card }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("div", { "data-truths-headline": true, style: { fontSize: 18, fontWeight: 650, color: v.open.length ? P.warn : P.ok } }, state.loading ? "Checking\u2026" : v.open.length ? `${v.open.length} to put right` : "Everything holds \u2713"), /* @__PURE__ */ React.createElement("button", { "data-truths-check": true, disabled: busy === "check", onClick: () => call("check", "check_truths", {}, (r) => `Checked everything: ${r.broken} broken, ${r.opened} new, ${r.closed} put right since last time.`), style: { ...btn, marginLeft: "auto" } }, busy === "check" ? "Checking\u2026" : "Check now")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: P.dim, marginTop: 4 } }, runWhen ? `Last full check ${runWhen}` : "Checked every night, after every save, and when you tap Check now.", v.fixedThisWeek.length ? ` \xB7 ${v.fixedThisWeek.length} put right this week` : ""), note && /* @__PURE__ */ React.createElement("div", { "data-truths-note": true, style: { fontSize: 13.5, marginTop: 8, fontWeight: 600, color: note.bad ? P.bad : P.ok } }, note.text)), state.err && /* @__PURE__ */ React.createElement("div", { style: { ...card, color: P.bad } }, state.err), v.groups.map((g) => /* @__PURE__ */ React.createElement("div", { key: g.sev, "data-truths-group": g.sev, style: card }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: g.sev === "order" ? P.bad : P.head, marginBottom: 4 } }, g.title, " \xB7 ", g.items.length), g.items.map((i) => {
+      const cs = i.changeset_id ? state.cs[i.changeset_id] : null;
+      return /* @__PURE__ */ React.createElement("div", { key: i.id, "data-issue": i.id, style: { padding: "8px 0", borderTop: `1px solid ${P.line}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14 } }, i.words), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 2 } }, foundWords(i, cs)), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" } }, cs && cs.status === "applied" && /* @__PURE__ */ React.createElement("button", { "data-issue-activity": true, onClick: () => openActivity(cs.id), style: btn }, "See the save \xB7 Undo"), asking === i.id ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { "data-issue-accept-yes": true, disabled: busy === i.id, onClick: () => call(i.id, "accept_health_issue", { p_id: i.id, p_note: null }, () => "Accepted as history. It won't ask again unless it changes."), style: { ...btn, background: P.head, color: P.card, borderColor: P.head } }, "Yes, accept it"), /* @__PURE__ */ React.createElement("button", { onClick: () => setAsking(null), style: btn }, "No")) : /* @__PURE__ */ React.createElement("button", { "data-issue-accept": true, onClick: () => setAsking(i.id), style: { ...btn, color: P.dim } }, "Accept as history")));
+    }))), /* @__PURE__ */ React.createElement("div", { style: card }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: P.head, marginBottom: 4 } }, "The ten truths"), TRUTHS.map(([k, says], n) => /* @__PURE__ */ React.createElement("div", { key: k, "data-truth": k, style: { display: "flex", gap: 8, fontSize: 13.5, padding: "4px 0", borderTop: n ? `1px solid ${P.line}` : "none" } }, /* @__PURE__ */ React.createElement("span", { style: { width: 22, color: v.perTruth[k] ? P.warn : P.ok, fontWeight: 700 } }, v.perTruth[k] ? v.perTruth[k] : "\u2713"), /* @__PURE__ */ React.createElement("span", null, says)))), v.accepted.length > 0 && /* @__PURE__ */ React.createElement("div", { style: card }, /* @__PURE__ */ React.createElement("button", { "data-truths-accepted": true, onClick: () => setShowAccepted((x) => !x), style: { background: "none", border: 0, color: P.dim, fontSize: 13, padding: 0, cursor: "pointer" } }, showAccepted ? "Hide" : "Show", " ", v.accepted.length, " accepted as history"), showAccepted && v.accepted.map((i) => /* @__PURE__ */ React.createElement("div", { key: i.id, style: { fontSize: 13, color: P.dim, padding: "4px 0", borderTop: `1px solid ${P.line}` } }, i.words, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5 } }, "Accepted by ", i.accepted_by || "admin", i.accepted_note ? ` \u2014 ${i.accepted_note}` : "")))));
   }
   var ADMIN_THEME_KEY = "mxAdminTheme";
   var ADMIN_PALETTES = {
@@ -24244,14 +24777,34 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     const refused = Object.entries(typeof window !== "undefined" && window.__mxRefusedReasons || {});
     const openIssues2 = (data.issues || []).filter((i) => i && !i.deleted && !i.resolvedAt);
     const stuckHere = (data.movements || []).filter((m) => m && !m.deleted && !m.formId).length;
-    const toLook = waitingLabels.length + refused.length + openIssues2.length + stuckHere;
+    const [truthsOpen, setTruthsOpen] = useState(0);
+    useEffect(() => {
+      const c = EVENT_CLIENT;
+      if (!c) return;
+      let live = true;
+      c.from("health_issues").select("id").eq("status", "open").limit(1e3).then(({ data: r }) => {
+        if (live && Array.isArray(r)) setTruthsOpen(r.length);
+      }, () => {
+      });
+      return () => {
+        live = false;
+      };
+    }, [section]);
+    const toLook = waitingLabels.length + refused.length + openIssues2.length + stuckHere + truthsOpen;
     const card = { background: P.card, border: `1px solid ${P.line}`, borderRadius: 12, padding: "12px 14px", boxShadow: theme === "light" ? "0 1px 2px rgba(20,30,60,.05)" : "none" };
     const btn = { background: P.btn, color: P.head, border: `1px solid ${P.btnLine}`, borderRadius: 6, padding: "6px 12px", fontSize: 13, cursor: "pointer" };
     const subOf = (s) => s.key === "health" ? `${toLook} to look at` : s.key === "refusals" ? `${refused.length} this session` : s.key === "printing" ? `${(data.printJobs || []).filter((j) => j && !j.deleted && j.status === "waiting").length} waiting to print` : s.sub;
     const head = /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", minHeight: 28 } }, section ? /* @__PURE__ */ React.createElement("button", { "data-admin-home": true, onClick: () => setSection(null), style: { background: "none", border: 0, padding: "4px 0", color: P.head, fontSize: 14.5, fontWeight: 500, cursor: "pointer" } }, "\u2039 Admin") : /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, letterSpacing: 2, color: P.dim } }, "MATRIX SYNC \xB7 CONTROL ROOM"), /* @__PURE__ */ React.createElement("button", { onClick: flip, "aria-label": "Light or dark", style: { background: "none", border: `1px solid ${P.btnLine}`, borderRadius: 999, padding: "3px 10px", fontSize: 12, color: P.dim, cursor: "pointer" } }, theme === "light" ? "\u263E Dark" : "\u2600 Light")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 26, fontWeight: 650, color: P.head, marginTop: 4, letterSpacing: -0.3 } }, section ? (ADMIN_SECTIONS.find((s) => s.key === section) || {}).title : "Admin"));
     const sectionBody = () => {
+      if (section === "activity") return /* @__PURE__ */ React.createElement(AdminActivity, { data, P, card, btn, openOldLog: () => setSection("oldlog") });
       if (section === "fix") return /* @__PURE__ */ React.createElement(AdminFixTools, { data, setData, P, card, btn });
-      if (section === "health") return /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: card }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: P.head, marginBottom: 6 } }, "To look at"), toLook === 0 && /* @__PURE__ */ React.createElement("div", { style: { color: P.ok } }, "Nothing waiting. \u2713"), refused.map(([id, why]) => /* @__PURE__ */ React.createElement("div", { key: id, style: { color: P.bad, fontSize: 13.5, padding: "4px 0" } }, "Refused by the cloud: ", why, " ", /* @__PURE__ */ React.createElement("span", { style: { color: P.dim } }, "(", id, ")"))), waitingLabels.map((j) => /* @__PURE__ */ React.createElement("div", { key: j.id, style: { color: P.warn, fontSize: 13.5, padding: "4px 0" } }, "Label for ", j.ref, " waiting since ", String(j.requestedAt || "").slice(11, 16), " \u2014 is the print station on?")), openIssues2.slice(0, 20).map((i) => /* @__PURE__ */ React.createElement("div", { key: i.id, style: { fontSize: 13.5, padding: "4px 0" } }, i.summary))), /* @__PURE__ */ React.createElement(AdminStuckPanel, { data, setData, P, card, btn }), /* @__PURE__ */ React.createElement(SyncHealthPanel, null), /* @__PURE__ */ React.createElement(DataHealthPanel, { data }), /* @__PURE__ */ React.createElement(BondingOutputPanel, { data }));
+      if (section === "health") return /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 10 } }, /* @__PURE__ */ React.createElement(AdminTruths, { P, card, btn, openActivity: (id) => {
+        try {
+          sessionStorage.setItem("mxActivityQuery", id);
+        } catch (e) {
+        }
+        setSection("activity");
+      } }), /* @__PURE__ */ React.createElement("div", { style: card }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: P.head, marginBottom: 6 } }, "On this device"), toLook === 0 && /* @__PURE__ */ React.createElement("div", { style: { color: P.ok } }, "Nothing waiting. \u2713"), refused.map(([id, why]) => /* @__PURE__ */ React.createElement("div", { key: id, style: { color: P.bad, fontSize: 13.5, padding: "4px 0" } }, "Refused by the cloud: ", why, " ", /* @__PURE__ */ React.createElement("span", { style: { color: P.dim } }, "(", id, ")"))), waitingLabels.map((j) => /* @__PURE__ */ React.createElement("div", { key: j.id, style: { color: P.warn, fontSize: 13.5, padding: "4px 0" } }, "Label for ", j.ref, " waiting since ", String(j.requestedAt || "").slice(11, 16), " \u2014 is the print station on?")), openIssues2.slice(0, 20).map((i) => /* @__PURE__ */ React.createElement("div", { key: i.id, style: { fontSize: 13.5, padding: "4px 0" } }, i.summary))), /* @__PURE__ */ React.createElement(AdminStuckPanel, { data, setData, P, card, btn }), /* @__PURE__ */ React.createElement(SyncHealthPanel, null), /* @__PURE__ */ React.createElement(DataHealthPanel, { data }), /* @__PURE__ */ React.createElement(BondingOutputPanel, { data }));
       if (section === "refusals") return /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 10 } }, /* @__PURE__ */ React.createElement(AdminRefusals, { P, card }), /* @__PURE__ */ React.createElement("div", { style: card }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: P.head, marginBottom: 6 } }, "On this device, since it was opened"), !refused.length && /* @__PURE__ */ React.createElement("div", { style: { color: P.ok } }, "None on this device since it was opened. \u2713"), refused.map(([id, why]) => /* @__PURE__ */ React.createElement("div", { key: id, style: { fontSize: 13.5, padding: "6px 0", borderBottom: `1px solid ${P.line}` } }, /* @__PURE__ */ React.createElement("b", { style: { color: P.bad } }, "Refused"), " \u2014 ", why, /* @__PURE__ */ React.createElement("div", { style: { color: P.dim, fontSize: 12 } }, id))), /* @__PURE__ */ React.createElement("div", { style: { color: P.dim, fontSize: 12, marginTop: 8 } }, "Above: this device's refusals since it was opened.")));
       if (section === "people") {
         const seen = /* @__PURE__ */ new Map();
@@ -24444,12 +24997,12 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
       setLogDays(999);
     };
     let lastDay = null;
-    if (adminSection !== "activity") return /* @__PURE__ */ React.createElement("div", null, modal, /* @__PURE__ */ React.createElement(AdminShell, { data, setData, section: adminSection, setSection: setAdminSection }));
-    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("button", { "data-admin-home": true, onClick: () => setAdminSection(null), style: { marginBottom: 10, padding: "6px 12px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", color: NAVY, cursor: "pointer" } }, "\u2190 Admin"), /* @__PURE__ */ React.createElement(
+    if (adminSection !== "oldlog") return /* @__PURE__ */ React.createElement("div", null, modal, /* @__PURE__ */ React.createElement(AdminShell, { data, setData, section: adminSection, setSection: setAdminSection }));
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("button", { "data-admin-home": true, onClick: () => setAdminSection("activity"), style: { marginBottom: 10, padding: "6px 12px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", color: NAVY, cursor: "pointer" } }, "\u2190 Activity"), /* @__PURE__ */ React.createElement(
       SectionHeader,
       {
-        title: "Activity",
-        subtitle: "Everything that changed, who changed it, and what it was before. Revert puts one change back without touching anything else."
+        title: "The old change log",
+        subtitle: "What each device recorded before 2 Oct 2026, when Activity began. Revert puts one change back without touching anything else."
       }
     ), modal, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 10 } }, /* @__PURE__ */ React.createElement(
       "input",
@@ -27023,8 +27576,8 @@ Plan it?`
       if (String(form.location || "").trim() || toShelf <= 0 && allocated <= 0) return;
       const runs = [...allBondingRuns || []].filter((r) => !r.deleted && r.location).sort((a, b) => `${b.date || ""} ${b.timeOfDay || ""}`.localeCompare(`${a.date || ""} ${a.timeOfDay || ""}`));
       const same = runs.find((r) => spec && looseSpecMatch(r.productSize, spec));
-      const pick = (same || runs[0] || {}).location;
-      if (pick) setForm((f) => ({ ...f, location: pick }));
+      const pick2 = (same || runs[0] || {}).location;
+      if (pick2) setForm((f) => ({ ...f, location: pick2 }));
     }, [toShelf > 0, allocated > 0, spec]);
     const boxTypeFor = (orderId, desc) => {
       const o = orders.find((x) => x.id === orderId);
@@ -27653,7 +28206,7 @@ Plan it?`
     }, [product, data.orders, data.cases, data.movements]);
     const n = Math.round(Number(qty) || 0), need = needs.find((x) => x.o.id === orderId) || null;
     const toOrder = need ? Math.min(n, need.room) : 0, toShelf = n - toOrder;
-    const pick = (id) => {
+    const pick2 = (id) => {
       setPid(id);
       const p = products.find((x) => x.id === id);
       const f = p ? (data.productForms || []).find((f2) => f2 && !f2.deleted && f2.productId === p.id) : null;
@@ -27735,7 +28288,7 @@ Plan it?`
       setBay("");
     };
     const inp = { minHeight: 42, borderRadius: 8, border: `1px solid ${BORDER}`, padding: "0 10px", fontSize: 15, background: "#fff" };
-    return /* @__PURE__ */ React.createElement("div", { "data-rubber": true, className: "mb-4", style: { border: `1px solid ${BORDER}`, borderRadius: 12, padding: 14, background: "#FAFAF8" } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, fontSize: 16, marginBottom: 10 } }, "Rubber (Exceed) \u2014 no reel, tape, EVA or pt"), /* @__PURE__ */ React.createElement("div", { className: "flex gap-3 flex-wrap items-end" }, /* @__PURE__ */ React.createElement("label", { style: { fontSize: 13, color: INK_MUTED } }, "Exceed size", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("select", { "data-rubber-size": true, value: pid, onChange: (e) => pick(e.target.value), style: { ...inp, minWidth: 240 } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014 pick \u2014"), products.map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.displayName)))), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 13, color: INK_MUTED } }, "Metres in a box", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("input", { "data-rubber-metres": true, value: metres, onChange: (e) => setMetres(e.target.value.replace(/[^0-9.]/g, "")), inputMode: "decimal", style: { ...inp, width: 110 } })), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 13, color: INK_MUTED } }, "Boxes made", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("input", { "data-rubber-qty": true, value: qty, onChange: (e) => setQty(e.target.value.replace(/[^0-9]/g, "")), inputMode: "numeric", style: { ...inp, width: 110 } })), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 13, color: INK_MUTED } }, "Box code", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("input", { "data-rubber-code": true, value: code, onChange: (e) => setCode(e.target.value.toUpperCase()), placeholder: "e.g. I63001EX", style: { ...inp, width: 150, fontFamily: "ui-monospace, Menlo, monospace" } }))), product && /* @__PURE__ */ React.createElement("div", { className: "flex gap-3 flex-wrap items-end mt-3" }, /* @__PURE__ */ React.createElement("label", { style: { fontSize: 13, color: INK_MUTED } }, "For an order", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("select", { "data-rubber-order": true, value: orderId, onChange: (e) => setOrderId(e.target.value), style: { ...inp, minWidth: 260 } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014 none, all to the shelf \u2014"), needs.map((x) => /* @__PURE__ */ React.createElement("option", { key: x.o.id, value: x.o.id }, x.o.id, " ", x.o.customer, " \u2014 needs ", x.room, " (case ", x.rooms.map((r) => r.caseNum).join(", "), ")")))), (toShelf > 0 || !orderId) && /* @__PURE__ */ React.createElement("label", { style: { fontSize: 13, color: INK_MUTED } }, "Shelf bay", toShelf > 0 && orderId ? ` (${toShelf} left over)` : "", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("select", { "data-rubber-bay": true, value: bay, onChange: (e) => setBay(e.target.value), style: { ...inp, width: 110 } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014"), BOX_LOCATIONS.map((b) => /* @__PURE__ */ React.createElement("option", { key: b, value: b }, b)))), /* @__PURE__ */ React.createElement("button", { "data-rubber-save": true, onClick: save, style: { minHeight: 44, padding: "0 18px", borderRadius: 10, border: 0, background: NAVY, color: "#fff", fontWeight: 700, fontSize: 15.5 } }, "Log ", n > 0 ? `${n} box${n === 1 ? "" : "es"}` : "rubber")), msg && /* @__PURE__ */ React.createElement("div", { "data-rubber-msg": true, style: { marginTop: 10, fontWeight: 600, color: msg.bad ? RED : GREEN } }, msg.t));
+    return /* @__PURE__ */ React.createElement("div", { "data-rubber": true, className: "mb-4", style: { border: `1px solid ${BORDER}`, borderRadius: 12, padding: 14, background: "#FAFAF8" } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, fontSize: 16, marginBottom: 10 } }, "Rubber (Exceed) \u2014 no reel, tape, EVA or pt"), /* @__PURE__ */ React.createElement("div", { className: "flex gap-3 flex-wrap items-end" }, /* @__PURE__ */ React.createElement("label", { style: { fontSize: 13, color: INK_MUTED } }, "Exceed size", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("select", { "data-rubber-size": true, value: pid, onChange: (e) => pick2(e.target.value), style: { ...inp, minWidth: 240 } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014 pick \u2014"), products.map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.displayName)))), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 13, color: INK_MUTED } }, "Metres in a box", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("input", { "data-rubber-metres": true, value: metres, onChange: (e) => setMetres(e.target.value.replace(/[^0-9.]/g, "")), inputMode: "decimal", style: { ...inp, width: 110 } })), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 13, color: INK_MUTED } }, "Boxes made", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("input", { "data-rubber-qty": true, value: qty, onChange: (e) => setQty(e.target.value.replace(/[^0-9]/g, "")), inputMode: "numeric", style: { ...inp, width: 110 } })), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 13, color: INK_MUTED } }, "Box code", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("input", { "data-rubber-code": true, value: code, onChange: (e) => setCode(e.target.value.toUpperCase()), placeholder: "e.g. I63001EX", style: { ...inp, width: 150, fontFamily: "ui-monospace, Menlo, monospace" } }))), product && /* @__PURE__ */ React.createElement("div", { className: "flex gap-3 flex-wrap items-end mt-3" }, /* @__PURE__ */ React.createElement("label", { style: { fontSize: 13, color: INK_MUTED } }, "For an order", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("select", { "data-rubber-order": true, value: orderId, onChange: (e) => setOrderId(e.target.value), style: { ...inp, minWidth: 260 } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014 none, all to the shelf \u2014"), needs.map((x) => /* @__PURE__ */ React.createElement("option", { key: x.o.id, value: x.o.id }, x.o.id, " ", x.o.customer, " \u2014 needs ", x.room, " (case ", x.rooms.map((r) => r.caseNum).join(", "), ")")))), (toShelf > 0 || !orderId) && /* @__PURE__ */ React.createElement("label", { style: { fontSize: 13, color: INK_MUTED } }, "Shelf bay", toShelf > 0 && orderId ? ` (${toShelf} left over)` : "", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("select", { "data-rubber-bay": true, value: bay, onChange: (e) => setBay(e.target.value), style: { ...inp, width: 110 } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014"), BOX_LOCATIONS.map((b) => /* @__PURE__ */ React.createElement("option", { key: b, value: b }, b)))), /* @__PURE__ */ React.createElement("button", { "data-rubber-save": true, onClick: save, style: { minHeight: 44, padding: "0 18px", borderRadius: 10, border: 0, background: NAVY, color: "#fff", fontWeight: 700, fontSize: 15.5 } }, "Log ", n > 0 ? `${n} box${n === 1 ? "" : "es"}` : "rubber")), msg && /* @__PURE__ */ React.createElement("div", { "data-rubber-msg": true, style: { marginTop: 10, fontWeight: 600, color: msg.bad ? RED : GREEN } }, msg.t));
   }
   function BondingLineView({ data, setData, jumpToPacking }) {
     const { bondingRuns, orders } = data;
@@ -34394,6 +34947,16 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     syncStatusRef.current = syncStatus;
     const refreshFromCloudRef = useRef(refreshFromCloud);
     refreshFromCloudRef.current = refreshFromCloud;
+    useEffect(() => {
+      const f = () => {
+        try {
+          refreshFromCloudRef.current();
+        } catch (e) {
+        }
+      };
+      window.addEventListener("mx-pull-now", f);
+      return () => window.removeEventListener("mx-pull-now", f);
+    }, []);
     const flashRef = useRef(flash);
     flashRef.current = flash;
     const [pullState, setPullState] = useState({ pulling: false, distance: 0, refreshing: false });
