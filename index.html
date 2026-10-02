@@ -11900,7 +11900,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-02.25";
+  var APP_VERSION = "2026-10-02.26";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -24714,6 +24714,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-10-02.26", "Phone: the order page \u2014 the band says how the order is doing; NEXT says the one thing to do; Lines \xB7 Cases \xB7 Paperwork: every line with its packed / on-the-shelf / to-make bar and a 'why?' on anything to make, or the same lines by what happens next; the case map; every document with its state, the customer, the notes and the order's own history."],
     ["2026-10-02.25", "Stock \u2192 Boxes: a Viking chip after Speedy Crease \u2014 every size on the shelf already in Viking cartons, with its count."],
     ["2026-10-02.24", "Phone, decluttered: every screen's explanation is behind a (?) by its title; a step's hint is behind its number; the Register opens one answer box at a time; our own record-keeping notes come off the floor's rows; Cleared reels, the bonding day panel and 'How a bonding row works' are off the phone; Metrics shows no efficiency figure until there is enough timed running to mean something."],
     ["2026-10-02.23", "An order's add-line form (range, size, pt, box or reel, amount, qty, unit \xA3) shows only while adding extras or editing the lines, not all the time."],
@@ -34571,6 +34572,145 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       go("materials");
     }, style: { flex: 1, height: 44, borderRadius: 14, border: 0, background: i === 0 ? NL.NAVY : NL.PANEL, color: i === 0 ? "#fff" : NL.INK, fontFamily: NLT.FONT, fontSize: 14.5, fontWeight: 600, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 } }, /* @__PURE__ */ React.createElement(NLIcon, { name: ic, size: 18, color: i === 0 ? "#fff" : NL.NAVY, sw: 1.7 }), t))), lowMats.length > 0 ? /* @__PURE__ */ React.createElement(NLIn, { i: 0 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, "Low \u2014 order soon"), /* @__PURE__ */ React.createElement("div", { style: { background: NLT.TINT.warm, borderRadius: NLT.R.card } }, lowMats.map((m, i) => matRow(m, i, i === 0)))) : /* @__PURE__ */ React.createElement(NLIn, { i: 0 }, /* @__PURE__ */ React.createElement("div", { style: { marginTop: 12 } }, /* @__PURE__ */ React.createElement(NLAllGood, { title: "Nothing is low", sub: "Every material is above its line." }))), grouped.filter((g) => g[1].length).map(([title, list], gi) => /* @__PURE__ */ React.createElement(NLIn, { key: title, i: gi + 1 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, title), /* @__PURE__ */ React.createElement(NLCard, null, list.filter((m) => !term || String(m.name || "").toLowerCase().includes(term)).map((m, i) => matRow(m, i, i === 0)))))), /* @__PURE__ */ React.createElement("div", { style: { height: 24 } })));
   }
+  function nlLineFigures(data, o, plan) {
+    const lines = (data.lineItems || []).filter((l) => l && !l.deleted && l.orderId === o.id);
+    const moves = (data.movements || []).filter((m) => m && !m.deleted && m.orderId === o.id);
+    const forLine = (arr, l) => (arr || []).filter((x) => sameProductSpec(x.spec, l.description) && (x.amendmentLabel || null) === (l.amendmentLabel || null));
+    return lines.map((l) => {
+      const spec = String(l.description || "");
+      const delivery = isDelivery(spec);
+      const tapeOrShim = /profile tape|shim/i.test(spec);
+      const shelfItems = forLine([...plan.shelfItems || [], ...plan.checkItems || []], l), bondItems = forLine([...plan.bondingItems || [], ...plan.tomorrowItems || []], l), glueItems = forLine(plan.glueItems, l), otherItems = forLine(plan.otherItems, l);
+      const ordered = Math.max(0, (Number(l.qty) || 0) - (Number(l.cancelledQty) || 0));
+      const packed = delivery ? 0 : Math.max(0, moves.filter((m) => m.kind === "placed" && sameProductSpec(m.spec, spec)).reduce((t, m) => t + (Number(m.qty) || 0), 0) - moves.filter((m) => m.kind === "unplaced" && sameProductSpec(m.spec, spec)).reduce((t, m) => t + (Number(m.qty) || 0), 0));
+      const shelf = Math.min(Math.max(0, ordered - packed), shelfItems.reduce((t, x) => t + (Number(x.covered) || 0), 0));
+      const bond = bondItems.reduce((t, x) => t + (Number(x.needed) || 0), 0), glue = glueItems.reduce((t, x) => t + (Number(x.boxesNeeded) || 0), 0), other = otherItems.reduce((t, x) => t + (Number(x.needed) || 0), 0);
+      const make = Math.min(Math.max(0, ordered - packed - shelf), bond + glue + other);
+      const left = Math.max(0, ordered - packed - shelf - make);
+      const why = [];
+      for (const x of bondItems) why.push(`${x.needed} off reel${x.reels.length === 1 ? "" : "s"} ${x.reels.map((r) => r.batchNumber).join(", ")}${x.reels.every((r) => r.gluedToday) ? " \u2014 glued today, bond tomorrow" : x.reels.some((r) => r.unchecked) ? " \u2014 a reel still unchecked" : " \u2014 on the rack, bonding can start"}`);
+      for (const x of glueItems) why.push(x.noLength ? `${x.boxesNeeded} with no length on record \u2014 the size needs its metres in the catalogue` : `${x.boxesNeeded} with no reel on the rack \u2014 ${x.metersNeeded ? `${x.metersNeeded.toLocaleString("en-GB")} m to glue` : "to the glue line first"}`);
+      for (const x of otherItems) why.push(`${x.needed} made by hand, not off a glue-line reel`);
+      if (left) why.push(`${left} the planner can't place yet \u2014 check the size is in the catalogue`);
+      const picks = shelfItems.flatMap((x) => x.boxes || []);
+      return { id: l.id, spec, ref: l.customerRef || "", amendment: l.amendmentLabel || null, delivery, tapeOrShim, ordered, packed, shelf, make: make + left, bond, glue: glue + other + left, why, picks, bondReels: bondItems.flatMap((x) => x.reels.map((r) => r.batchNumber)), glueM: glueItems.reduce((t, x) => t + (Number(x.metersNeeded) || 0), 0) };
+    });
+  }
+  function NLBar3({ packed, shelf, make, total }) {
+    const w = (n) => total > 0 ? `${Math.max(0, Math.min(100, 100 * n / total))}%` : "0%";
+    return /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { display: "flex", height: 6, borderRadius: 3, overflow: "hidden", background: NLT.TINT.navy, marginTop: 8 } }, /* @__PURE__ */ React.createElement("i", { style: { width: w(packed), background: NL.OK, display: "block" } }), /* @__PURE__ */ React.createElement("i", { style: { width: w(shelf), background: NL.NAVY, display: "block" } }), /* @__PURE__ */ React.createElement("i", { style: { width: w(make), background: NL.AMBERTXT, display: "block" } }));
+  }
+  function NLOrderPage({ data, setData, orderId, go, jumpToPacking, onPick, renderRecord, renderCases, alerts = [] }) {
+    const o = (data.orders || []).find((x) => x && x.id === orderId);
+    const [seg, setSeg] = useState(() => {
+      try {
+        return sessionStorage.getItem("mxOrderSeg:" + orderId) || "lines";
+      } catch (e) {
+        return "lines";
+      }
+    });
+    const pickSeg = (k) => {
+      nlHaptic();
+      setSeg(k);
+      try {
+        sessionStorage.setItem("mxOrderSeg:" + orderId, k);
+      } catch (e) {
+      }
+    };
+    const [byNext, setByNext] = useState(false);
+    const [why, setWhy] = useState(null);
+    const [showAll, setShowAll] = useState(false);
+    const [record, setRecord] = useState(false);
+    const plan = useMemo(() => {
+      try {
+        return orderMakePlan(data).get(orderId) || { shelfItems: [], checkItems: [], bondingItems: [], tomorrowItems: [], glueItems: [], otherItems: [] };
+      } catch (e) {
+        return { shelfItems: [], checkItems: [], bondingItems: [], tomorrowItems: [], glueItems: [], otherItems: [] };
+      }
+    }, [data, orderId]);
+    const lines = useMemo(() => o ? nlLineFigures(data, o, plan) : [], [data, o, plan]);
+    if (!o) return null;
+    const boxLines = lines.filter((l) => !l.delivery && !l.tapeOrShim), extras = lines.filter((l) => l.delivery || l.tapeOrShim);
+    const sum = (k) => boxLines.reduce((t, l) => t + (l[k] || 0), 0);
+    const ordered = sum("ordered"), packed = sum("packed"), shelf = sum("shelf"), make = sum("make");
+    const pct = ordered > 0 ? Math.min(100, Math.floor(100 * packed / ordered)) : 0;
+    const cases = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === o.id);
+    const rec = recordedByCase(data, o.id);
+    const planOf = (c) => Object.values(c.planned || {}).reduce((t, v) => t + (Number(v) || 0), 0), gotOf = (c) => Object.values(rec[Number(c.caseNum)] || {}).reduce((t, v) => t + (Number(v) || 0), 0);
+    const full = cases.filter((c) => c.confirmed || planOf(c) > 0 && gotOf(c) >= planOf(c)).length;
+    const due = nlDue(o);
+    const done = o.stage === "Shipped" || ordered > 0 && packed >= ordered;
+    const bondBoxes = (plan.bondingItems || []).concat(plan.tomorrowItems || []).reduce((t, x) => t + (Number(x.needed) || 0), 0), glueBoxes = (plan.glueItems || []).reduce((t, x) => t + (Number(x.boxesNeeded) || 0), 0);
+    const next = o.stage === "Shipped" ? null : done ? { text: "Ready to ship", go: () => jumpToPacking(o.id) } : shelf > 0 ? { text: `Pick ${shelf.toLocaleString("en-GB")} from the shelf`, go: () => onPick && onPick(o.id) } : bondBoxes > 0 ? { text: `Bond ${bondBoxes.toLocaleString("en-GB")} off reels`, go: () => go("bonding") } : glueBoxes > 0 ? { text: `${glueBoxes.toLocaleString("en-GB")} to the glue line first`, go: () => go("glueline") } : make > 0 ? { text: `${make.toLocaleString("en-GB")} still to make`, go: () => go("production") } : null;
+    const fmt = (n) => (Number(n) || 0).toLocaleString("en-GB");
+    const dayStr = (iso) => iso ? (/* @__PURE__ */ new Date(String(iso).slice(0, 10) + "T12:00:00")).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }) : "";
+    const stat3 = (v, l, c) => /* @__PURE__ */ React.createElement("span", { style: { flex: 1, textAlign: "center", padding: "10px 6px", background: NL.PANEL, borderRadius: 14 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 22, fontWeight: 600, fontVariantNumeric: "tabular-nums", color: c || NL.INK } }, fmt(v)), /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 12, color: NL.SUB } }, l));
+    const segBtn = (k, label, n) => /* @__PURE__ */ React.createElement("button", { key: k, "data-nl-oseg": k, onClick: () => pickSeg(k), style: { flex: 1, height: 38, border: 0, borderRadius: 10, fontFamily: NLT.FONT, fontSize: 14, fontWeight: seg === k ? 600 : 500, background: seg === k ? "#fff" : "none", color: seg === k ? NL.INK : NL.SUB, boxShadow: seg === k ? "0 1px 3px rgba(27,43,107,0.12)" : "none" } }, label, n != null && /* @__PURE__ */ React.createElement("span", { style: { opacity: 0.7 } }, " \xB7 ", n));
+    const legend = /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 14, margin: "10px 2px 0", fontSize: 12.5, color: NL.SUB } }, [[NL.OK, "packed"], [NL.NAVY, "on the shelf"], [NL.AMBERTXT, "to make"]].map(([c, t]) => /* @__PURE__ */ React.createElement("span", { key: t, style: { display: "inline-flex", alignItems: "center", gap: 6 } }, /* @__PURE__ */ React.createElement("span", { style: { width: 8, height: 8, borderRadius: 4, background: c, display: "inline-block" } }), t)));
+    const words3 = (l) => {
+      const parts = [];
+      if (l.packed) parts.push(/* @__PURE__ */ React.createElement("span", { key: "p", style: { color: NL.OK, fontWeight: 600 } }, fmt(l.packed), " packed"));
+      if (l.shelf) parts.push(/* @__PURE__ */ React.createElement("span", { key: "s", style: { color: NL.NAVY, fontWeight: 600 } }, fmt(l.shelf), " on the shelf"));
+      if (l.make) parts.push(/* @__PURE__ */ React.createElement("button", { key: "m", "data-nl-why": l.id, onClick: (e) => {
+        e.stopPropagation();
+        nlHaptic();
+        setWhy(l);
+      }, style: { border: 0, background: "none", padding: 0, font: "inherit", color: NL.AMBERTXT, fontWeight: 600, textDecoration: "underline dotted", textUnderlineOffset: 3 } }, fmt(l.make), " to make \xB7 why?"));
+      if (!parts.length) parts.push(/* @__PURE__ */ React.createElement("span", { key: "d", style: { color: NL.OK, fontWeight: 600 } }, "all packed \u2713"));
+      return parts.reduce((acc, x, i) => i ? [...acc, /* @__PURE__ */ React.createElement("span", { key: "sep" + i }, " \xB7 "), x] : [x], []);
+    };
+    const lineRow = (l, i, first) => /* @__PURE__ */ React.createElement("div", { key: l.id, "data-nl-line": l.id, style: { padding: "14px 16px", borderTop: first ? 0 : `1px solid ${NL.LINE}` } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } }, /* @__PURE__ */ React.createElement(NLDot, { spec: l.spec }), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 15.5, fontWeight: 600, fontVariantNumeric: "tabular-nums", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, l.spec.replace(/\s*\(\d+m\)$/, "")), (l.ref || l.amendment) && /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 12.5, color: NL.SUB } }, [l.ref, l.amendment].filter(Boolean).join(" \xB7 "))), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 18, fontWeight: 600, fontVariantNumeric: "tabular-nums" } }, fmt(l.ordered))), /* @__PURE__ */ React.createElement(NLBar3, { packed: l.packed, shelf: l.shelf, make: l.make, total: l.ordered }), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6, fontSize: 12.5, color: NL.SUB } }, words3(l)));
+    const groups = [
+      ["Pick from the shelf", NL.NAVY, boxLines.filter((l) => l.shelf > 0), (l) => `${fmt(l.shelf)} \xB7 ${l.picks.slice(0, 3).map((b) => `${b.boxNumber}${b.location ? ` (${b.location})` : ""}`).join(", ")}${l.picks.length > 3 ? ` +${l.picks.length - 3}` : ""}`, "Walk these \u2014 the pick sheet has the bays in order"],
+      ["Bond from reels", NL.INK, boxLines.filter((l) => l.bond > 0), (l) => `${fmt(l.bond)} \xB7 ${l.bondReels.slice(0, 3).join(", ")}${l.bondReels.length > 3 ? ` +${l.bondReels.length - 3}` : ""}`, "Reels on the rack \u2014 bonding can start"],
+      ["Glue line first", NL.AMBERTXT, boxLines.filter((l) => l.glue > 0), (l) => `${fmt(l.glue)}${l.glueM ? ` \xB7 ${fmt(l.glueM)} m to glue` : ""}`, "Nothing on the rack for these yet"],
+      ["Packed", NL.OK, boxLines.filter((l) => l.ordered > 0 && l.packed >= l.ordered), (l) => `${fmt(l.packed)} of ${fmt(l.ordered)} \u2713`, ""]
+    ].filter((g) => g[2].length);
+    const amendments = [...new Set(lines.map((l) => l.amendment).filter(Boolean))];
+    const runs = (data.bondingRuns || []).filter((r) => r && !r.deleted && r.workNumber === o.id);
+    const placedAt = (data.movements || []).filter((m) => m && !m.deleted && m.orderId === o.id && m.kind === "placed").map((m) => String(m.at || "")).filter(Boolean).sort();
+    const timeline = [
+      [o.orderDate || o.confirmedAt, `Received${o.source ? ` \u2014 ${/photo|camera|upload/i.test(o.source) ? "from a photo" : /paste/i.test(o.source) ? "from a paste" : o.source}` : ""}${o.confirmedBy ? ` by ${o.confirmedBy}` : ""}`],
+      ...amendments.map((a) => [null, a]),
+      [runs.map((r) => r.date).sort()[0], runs.length ? `First boxes bonded for it (${runs.length} run${runs.length === 1 ? "" : "s"} so far)` : null],
+      [placedAt[0] ? placedAt[0].slice(0, 10) : null, placedAt.length ? "First case started" : null],
+      [null, full ? `${full} of ${cases.length} cases full` : null],
+      [o.shippedDate, o.stage === "Shipped" ? "Shipped" : null]
+    ].filter((x) => x[1]);
+    const stored = (data.orderAcknowledgements || []).filter((a) => a && !a.deleted && a.orderId === o.id).sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))[0];
+    const its = (data.lineItems || []).filter((l) => l && !l.deleted && l.orderId === o.id);
+    const paper = (icon, title, state, action, onClick, tone) => /* @__PURE__ */ React.createElement(NLRow, { lead: /* @__PURE__ */ React.createElement(NLSq, { name: icon, tone: tone || "navy" }), title, sub: state, right: action ? /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: NL.NAVY } }, action) : /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 18, color: "#8A93A8", sw: 2 }), onClick });
+    return /* @__PURE__ */ React.createElement("div", { "data-nl-order-page": true, style: { display: "flex", flexDirection: "column", fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement("div", { "data-nl-order-hero": true }, /* @__PURE__ */ React.createElement(NLHero, { title: o.customer, sub: `${o.id}${o.boxType ? ` \xB7 ${o.boxType} cartons` : ""} \xB7 ${o.stage === "Shipped" ? `shipped ${dayStr(o.shippedDate)}` : done ? "ready to ship" : due.tone === "warn" ? `due ${due.text.toLowerCase()}` : `due ${due.text}`}`, back: true, onBack: () => go("dashboard"), backAttrs: { "data-nl-back-orders": true }, alerts, onOpenAdmin: () => go("admin") }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 16, alignItems: "center", marginTop: 18 } }, /* @__PURE__ */ React.createElement(NLRing, { pct, size: 96, stroke: 9, color: "#fff", track: "rgba(255,255,255,0.22)", label: `${pct}%`, lsize: 22, lcolor: "#fff" }), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 30, fontWeight: 600, fontVariantNumeric: "tabular-nums", letterSpacing: -0.8 } }, fmt(packed), " ", /* @__PURE__ */ React.createElement("span", { style: { fontSize: 16, fontWeight: 400, opacity: 0.85 } }, "of ", fmt(ordered), " packed")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, opacity: 0.85 } }, full, " of ", cases.length, " cases full", o.priority ? ` \xB7 priority ${o.priority}` : "", o.strongTape ? " \xB7 strong tape" : ""))))), /* @__PURE__ */ React.createElement(NLOver, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, background: "#fff", borderRadius: NLT.R.card, boxShadow: NLT.SHADOW, padding: 8 } }, stat3(shelf, "on the shelf", NL.NAVY), stat3(bondBoxes, "off reels"), stat3(glueBoxes + (make - bondBoxes - glueBoxes > 0 ? make - bondBoxes - glueBoxes : 0), "to make", NL.AMBERTXT))), next && /* @__PURE__ */ React.createElement(NLIn, { i: 0 }, /* @__PURE__ */ React.createElement("div", { style: { marginTop: 12, background: NL.PANEL, borderRadius: NLT.R.card, padding: "14px 16px" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: NL.SUB } }, "Packed"), done ? /* @__PURE__ */ React.createElement(NLChip, { tone: "green" }, "READY TO SHIP") : /* @__PURE__ */ React.createElement(NLChip, { tone: /late/.test(due.text) ? "red" : due.tone === "warn" ? "amber" : "plain" }, (/late/.test(due.text) ? due.text : `DUE ${due.text}`).toUpperCase())), /* @__PURE__ */ React.createElement("span", { style: { display: "block", height: 8, borderRadius: 4, background: NL.TRACK, overflow: "hidden", marginTop: 10 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block", width: `${pct}%`, height: 8, borderRadius: 4, background: done ? NL.OK : `linear-gradient(90deg, ${NL.NAVY}, #3D5BD9)`, transition: nlMotionOK() ? "width 700ms cubic-bezier(.2,.7,.2,1)" : "none" } })), /* @__PURE__ */ React.createElement("button", { "data-nl-next": true, onClick: () => {
+      nlHaptic();
+      next.go();
+    }, style: { marginTop: 12, width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "14px 16px", borderRadius: 14, border: 0, background: NL.NAVY, color: "#fff", textAlign: "left", fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", flexDirection: "column", gap: 1 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, fontWeight: 700, letterSpacing: 1.2, color: "#AEB8DE" } }, "NEXT"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15.5, fontWeight: 600 } }, next.text)), /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 18, color: "#fff", sw: 2.2 })))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", background: NL.PANEL, borderRadius: 12, padding: 3, marginTop: 14 } }, segBtn("lines", "Lines", boxLines.length), segBtn("cases", "Cases", cases.length), segBtn("paperwork", "Paperwork")), seg === "lines" && /* @__PURE__ */ React.createElement(NLIn, { i: 1 }, /* @__PURE__ */ React.createElement(NLEyebrow, { right: /* @__PURE__ */ React.createElement("button", { "data-nl-bynext": true, onClick: () => {
+      nlHaptic();
+      setByNext((v) => !v);
+    }, style: { border: 0, background: "none", padding: 0, font: "inherit", fontSize: 12.5, fontWeight: 600, color: NL.NAVY, letterSpacing: 0, textTransform: "none" } }, byNext ? "By line \u25BE" : "By what's next \u25BE") }, byNext ? "What's ordered \xB7 by what's next" : `What's ordered \xB7 ${boxLines.length} line${boxLines.length === 1 ? "" : "s"}`), !byNext && /* @__PURE__ */ React.createElement(React.Fragment, null, legend, /* @__PURE__ */ React.createElement(NLCard, null, boxLines.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { padding: "14px 16px", fontSize: 14, color: NL.SUB } }, "No box lines on this order."), boxLines.slice(0, showAll ? 999 : 12).map((l, i) => lineRow(l, i, i === 0)), boxLines.length > 12 && !showAll && /* @__PURE__ */ React.createElement("button", { onClick: () => setShowAll(true), style: { width: "100%", border: 0, borderTop: `1px solid ${NL.LINE}`, background: "none", padding: 12, fontFamily: NLT.FONT, fontSize: 14, fontWeight: 600, color: NL.NAVY } }, "All ", boxLines.length, " lines")), extras.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { margin: "10px 2px 0", fontSize: 13, color: NL.SUB } }, "Also on the order: ", extras.map((l) => `${l.ordered} \xD7 ${l.spec}`).join(" \xB7 "))), byNext && groups.map(([title, col, ls, sub, hint]) => /* @__PURE__ */ React.createElement("div", { key: title }, /* @__PURE__ */ React.createElement(NLEyebrow, null, /* @__PURE__ */ React.createElement("span", { style: { color: col } }, title, " \xB7 ", fmt(ls.reduce((t, l) => t + (title === "Packed" ? l.packed : title === "Pick from the shelf" ? l.shelf : title === "Bond from reels" ? l.bond : l.glue), 0)))), hint && /* @__PURE__ */ React.createElement("div", { style: { margin: "-6px 2px 8px", fontSize: 12.5, color: NL.SUB } }, hint), /* @__PURE__ */ React.createElement(NLCard, null, ls.map((l, i) => /* @__PURE__ */ React.createElement(NLRow, { key: l.id, first: i === 0, lead: /* @__PURE__ */ React.createElement(NLDot, { spec: l.spec }), title: l.spec.replace(/\s*\(\d+m\)$/, ""), mono: true, sub: sub(l), right: /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15, fontWeight: 600, fontVariantNumeric: "tabular-nums" } }, fmt(l.ordered)), onClick: () => l.make > 0 && setWhy(l) }))))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 14 } }, /* @__PURE__ */ React.createElement("button", { "data-nl-record": true, onClick: () => {
+      nlHaptic();
+      setRecord((v) => !v);
+    }, style: { flex: 1, height: 44, borderRadius: 22, border: 0, background: record ? NL.NAVY : NL.PANEL, color: record ? "#fff" : NL.INK, fontFamily: NLT.FONT, fontSize: 14.5, fontWeight: 600 } }, record ? "Hide the order record" : "Order record \xB7 extras, edit, notes")), amendments.length > 0 && !record && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10, fontSize: 13, color: NL.SUB } }, amendments.length, " amendment", amendments.length === 1 ? "" : "s", ": ", amendments.join(" \xB7 "), " \u2014 in the order record."), record && /* @__PURE__ */ React.createElement("div", { "data-nl-record-body": true, style: { marginTop: 12 } }, renderRecord && renderRecord())), seg === "cases" && /* @__PURE__ */ React.createElement(NLIn, { i: 1 }, /* @__PURE__ */ React.createElement("div", { "data-nl-cases": true }, /* @__PURE__ */ React.createElement(NLEyebrow, { right: /* @__PURE__ */ React.createElement("span", { style: { letterSpacing: 0, textTransform: "none", fontWeight: 500 } }, cases.filter((c) => Number(c.weight) > 0).length, " weighed") }, cases.length, " case", cases.length === 1 ? "" : "s", " \xB7 ", full, " full"), renderCases && renderCases())), seg === "paperwork" && /* @__PURE__ */ React.createElement(NLIn, { i: 1 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, "Documents"), /* @__PURE__ */ React.createElement(NLCard, null, paper("admin", "Acknowledgement", stored ? `Sent ${dayStr(stored.at)}${stored.openedAt ? ` \xB7 opened ${dayStr(stored.openedAt)}` : " \xB7 not opened yet"}` : "Not sent yet \u2014 print or send from the order record", "Print", () => {
+      try {
+        printInFrame("ack-print-frame", stored ? stored.html : orderAckDoc(o, its, {}));
+      } catch (e) {
+      }
+    }), paper("pick", "Pick list", shelf > 0 ? `${fmt(shelf)} boxes to walk for, in bay order` : "Nothing to pick right now", shelf > 0 ? "Open" : null, () => onPick && onPick(o.id)), paper("packing", "Packing list", `${cases.length} cases \xB7 prints from Cases`, "Cases", () => pickSeg("cases")), paper("finish", "Shipping manifest", o.shippingManifest ? `Ready \xB7 ${o.stage === "Shipped" ? `shipped ${dayStr(o.shippedDate)}` : "not shipped yet"}` : done ? "Ready to make \u2014 Ship from Cases" : "Appears when every case is full", o.shippingManifest ? "Print" : null, () => {
+      try {
+        if (o.shippingManifest) printInFrame("manifest-print-frame", shippingManifestDoc(o));
+        else pickSeg("cases");
+      } catch (e) {
+      }
+    }, o.shippingManifest ? "green" : "navy")), /* @__PURE__ */ React.createElement(NLEyebrow, null, "On the order"), /* @__PURE__ */ React.createElement(NLCard, null, /* @__PURE__ */ React.createElement(NLRow, { first: true, lead: /* @__PURE__ */ React.createElement(NLSq, { name: "customers" }), title: o.customer, sub: [o.reference ? `Their reference ${o.reference}` : null, o.address || null].filter(Boolean).join(" \xB7 ") || "No reference or address recorded", right: /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 18, color: "#8A93A8", sw: 2 }), onClick: () => go("customers") }), o.floorNote && /* @__PURE__ */ React.createElement(NLRow, { lead: /* @__PURE__ */ React.createElement(NLSq, { name: "bonding", tone: "amber" }), title: "Note to the floor", sub: o.floorNote }), o.notes && /* @__PURE__ */ React.createElement(NLRow, { lead: /* @__PURE__ */ React.createElement(NLSq, { name: "register", tone: "white" }), title: "Office notes", sub: String(o.notes).length > 140 ? String(o.notes).slice(0, 140) + "\u2026" : o.notes, onClick: () => {
+      pickSeg("lines");
+      setRecord(true);
+    } })), /* @__PURE__ */ React.createElement(NLEyebrow, null, "Its history"), /* @__PURE__ */ React.createElement(NLCard, null, timeline.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { padding: "14px 16px", fontSize: 14, color: NL.SUB } }, "Nothing recorded yet."), timeline.map(([when, what], i) => /* @__PURE__ */ React.createElement(NLRow, { key: i, first: i === 0, lead: /* @__PURE__ */ React.createElement("span", { style: { width: 10, height: 10, borderRadius: 5, background: i === timeline.length - 1 ? NL.NAVY : NL.LINE, display: "inline-block", margin: "0 15px" } }), title: what, sub: when ? dayStr(when) : "" })))), why && ReactDOM.createPortal(/* @__PURE__ */ React.createElement("div", { "data-nl-why-sheet": true, style: { position: "fixed", inset: 0, zIndex: 1150, background: "rgba(20,33,82,0.35)" }, onClick: () => setWhy(null) }, /* @__PURE__ */ React.createElement("div", { onClick: (e) => e.stopPropagation(), className: "nl-up", style: { position: "absolute", left: 0, right: 0, bottom: 0, background: "#fff", borderRadius: "28px 28px 0 0", boxShadow: "0 -12px 40px rgba(20,33,82,0.22)", padding: "10px 20px calc(24px + env(safe-area-inset-bottom, 0px))", fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement("div", { "aria-hidden": "true", style: { width: 40, height: 5, borderRadius: 3, background: NL.LINE, margin: "0 auto 14px" } }), /* @__PURE__ */ React.createElement(NLChip, { tone: "amber" }, fmt(why.make), " TO MAKE"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 20, fontWeight: 600, margin: "10px 0 6px", fontVariantNumeric: "tabular-nums" } }, why.spec.replace(/\s*\(\d+m\)$/, "")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: NL.SUB, marginBottom: 12 } }, fmt(why.ordered), " ordered \xB7 ", fmt(why.packed), " packed \xB7 ", fmt(why.shelf), " on the shelf"), why.why.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, lineHeight: 1.5 } }, "The planner hasn't placed this yet \u2014 it will once a reel of this size is on the rack or a run is booked to the order.") : why.why.map((w, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { display: "flex", gap: 10, padding: "10px 0", borderTop: i ? `1px solid ${NL.LINE}` : 0, fontSize: 15, lineHeight: 1.45 } }, /* @__PURE__ */ React.createElement("span", { style: { width: 8, height: 8, borderRadius: 4, background: NL.AMBERTXT, marginTop: 7, flex: "none" } }), /* @__PURE__ */ React.createElement("span", null, w))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 14 } }, why.bondReels.length > 0 && /* @__PURE__ */ React.createElement("button", { onClick: () => {
+      setWhy(null);
+      go("bonding");
+    }, style: { flex: 1, height: 46, borderRadius: 23, border: 0, background: NL.NAVY, color: "#fff", font: "inherit", fontWeight: 600 } }, "Bonding"), why.glueM > 0 && /* @__PURE__ */ React.createElement("button", { onClick: () => {
+      setWhy(null);
+      go("glueline");
+    }, style: { flex: 1, height: 46, borderRadius: 23, border: 0, background: why.bondReels.length ? NL.PANEL : NL.NAVY, color: why.bondReels.length ? NL.INK : "#fff", font: "inherit", fontWeight: 600 } }, "Glue line"), /* @__PURE__ */ React.createElement("button", { onClick: () => setWhy(null), style: { flex: 1, height: 46, borderRadius: 23, border: 0, background: NL.PANEL, color: NL.INK, font: "inherit", fontWeight: 600 } }, "Close")))), document.body), /* @__PURE__ */ React.createElement("div", { style: { height: 24 } }));
+  }
   function nlBandFor(view, data) {
     const today = todayISO();
     const reels = (data.glueLineBatches || []).filter((g) => g && !g.deleted && g.date === today), m = reels.reduce((t2, g) => t2 + (Number(g.meterage) || 0), 0);
@@ -36576,7 +36716,27 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         }
       ),
       neworders: /* @__PURE__ */ React.createElement(NewOrdersView, { data, setData, jumpToOrder }),
-      orders: /* @__PURE__ */ React.createElement(React.Fragment, null, newLayout && searchJump?.view === "orders" && searchJump.orderId && /* @__PURE__ */ React.createElement(NLOrderHero, { data, orderId: searchJump.orderId, go: navigateTo, jumpToPacking, setData }), /* @__PURE__ */ React.createElement(OrdersView, { data, setData, initialExpandedId: shipTarget ? shipTarget.id : searchJump?.view === "orders" ? searchJump.orderId : null, jumpToPacking, onBackToOrders: () => navigateTo("dashboard"), autoShip: shipTarget, onShipStarted: () => setShipTarget(null), nlMode: newLayout })),
+      orders: newLayout && searchJump?.view === "orders" && searchJump.orderId && (data.orders || []).some((x) => x && x.id === searchJump.orderId) ? /* @__PURE__ */ React.createElement(
+        NLOrderPage,
+        {
+          data,
+          setData,
+          orderId: searchJump.orderId,
+          go: navigateTo,
+          jumpToPacking,
+          onPick: (id) => {
+            setPackJump({ orderId: id, highlightBoxes: null, at: Date.now() });
+            navigateTo("pick");
+          },
+          alerts: /^chris@creasingmatrix\.com$/i.test(nlEmail()) ? adminAlertItems(data) : [],
+          renderRecord: () => /* @__PURE__ */ React.createElement(OrdersView, { data, setData, initialExpandedId: searchJump.orderId, jumpToPacking, onBackToOrders: () => navigateTo("dashboard"), autoShip: shipTarget, onShipStarted: () => setShipTarget(null), nlMode: true }),
+          renderCases: () => /* @__PURE__ */ React.createElement(PackingListScreen, { data, setData, packJump: { orderId: searchJump.orderId, highlightBoxes: null, at: 0 }, onPick: (id) => {
+            setPackJump({ orderId: id, highlightBoxes: null, at: Date.now() });
+            navigateTo("pick");
+          }, onBack: () => {
+          } })
+        }
+      ) : /* @__PURE__ */ React.createElement(React.Fragment, null, newLayout && searchJump?.view === "orders" && searchJump.orderId && /* @__PURE__ */ React.createElement(NLOrderHero, { data, orderId: searchJump.orderId, go: navigateTo, jumpToPacking, setData }), /* @__PURE__ */ React.createElement(OrdersView, { data, setData, initialExpandedId: shipTarget ? shipTarget.id : searchJump?.view === "orders" ? searchJump.orderId : null, jumpToPacking, onBackToOrders: () => navigateTo("dashboard"), autoShip: shipTarget, onShipStarted: () => setShipTarget(null), nlMode: newLayout })),
       completed: /* @__PURE__ */ React.createElement(OrdersView, { data, setData, mode: "completed", initialExpandedId: searchJump?.view === "completed" ? searchJump.orderId : null, jumpToPacking }),
       /* Back from a packing list now returns to the packing list of orders —
          Packing is a destination in its own right, so its own list is the place
@@ -36714,6 +36874,8 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         .nl-on main.app-main table input, .nl-on main.app-main table select { min-height: 36px; padding: 4px 8px !important; border-radius: 8px !important; font-size: 14px; }
         .nl-on main.app-main .mx-btn, .nl-on main.app-main button.mx-btn { border-radius: 22px !important; min-height: 44px !important; padding: 0 16px !important; font-weight: 600 !important; }
         .nl-on main.app-main [data-panel] { padding: 16px !important; }
+        .nl-on [data-nl-record-body] [data-order-detail="nl"] > div > .flex.flex-wrap.gap-3 .mx-btn:first-child { display: none; }   /* Delete order stays on the PC; the phone's record is for extras, edit and notes */
+        .nl-on [data-nl-cases] h2, .nl-on [data-nl-cases] > div > div > button:first-child { display: none !important; }
         .nl-on [data-tooling-card] .mx-btn { min-height: 40px !important; }
 
         html[data-nl-scale] .nl-on main.app-main, html[data-nl-scale] [data-nl-tabbar], html[data-nl-scale] [data-nl-compact], html[data-nl-scale] [data-nl-alerts] > div, html[data-nl-scale] [data-nl-peek] > div { zoom: var(--nl-scale, 1); }
