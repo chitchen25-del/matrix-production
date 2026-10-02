@@ -11900,7 +11900,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-02.11";
+  var APP_VERSION = "2026-10-02.13";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -24661,6 +24661,8 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-10-02.13", "Phone: Stock, at a glance \u2014 one search in the band for a size, a code, a bay or a material (with a scan key); Boxes \xB7 Reels \xB7 Materials; sizes on the shelf by amount with their bays, codes and age (OLD past a year); Look at (unchecked, missing, don't add up); Found a box, Stock take and Wrong stock in a case as tools; materials now live in Stock, low first."],
+    ["2026-10-02.12", "Phone: the Something's wrong? button sits bottom-left, clear of the + on Orders."],
     ["2026-10-02.11", "The phone, at a glance (Chris's phone only): the scanner's viewfinder \u2014 orange corner marks, a moving scan line, the last thing scanned ready to use again; swipe a Needs-you item left (or tap Later) and it stays quiet until tomorrow on this phone; the Orders figures are worked out once per change, not per keystroke."],
     ["2026-10-02.10", "The phone, at a glance (Chris's phone only): Orders and each order in the band with rings, status chips and the next job; hold an order to peek at its cases; a band with the day's figures on the glue line, bonding, stock, materials and admin; the title stays as a slim bar once the band scrolls off; swipe up on the tab bar to scan."],
     ["2026-10-02.9", "The phone, at a glance (Chris's phone only): Today rebuilt \u2014 the navy band with the real logo, the day in one sentence, four tiles with rings and five-day bars, your next move, quick actions, the lines grouped by size; the Morning opens as yes/no cards; Everything as tiles; Geist; motion with meaning, off with Reduce Motion; the tab bar steps aside while you read."],
@@ -34288,6 +34290,157 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       /^Pick/.test(next) ? go("pick") : done ? jumpToPacking(o.id) : null;
     }, style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "14px 16px", borderRadius: 14, border: 0, background: NL.NAVY, color: "#fff", textAlign: "left", fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", flexDirection: "column", gap: 1 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, fontWeight: 700, letterSpacing: 1.2, color: "#AEB8DE" } }, "NEXT"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15.5, fontWeight: 600 } }, next)), /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 18, color: "#fff", sw: 2.2 }))), /* @__PURE__ */ React.createElement("section", { style: { background: NL.PANEL, borderRadius: 14, overflow: "hidden" } }, act("packing", "Cases and packing", `${cases.length} cases \u2014 contents, swap, move, count`, () => jumpToPacking(o.id), true), act("pick", "Pick by phone", "Walk the shelf for this order", () => go("pick")), photoOn && setData && act("packing", "Check the whole order", "A photo of each case \u2014 I'll check it all", () => setPhotoCheck(true))), photoCheck && /* @__PURE__ */ React.createElement(OrderPhotoCheck, { order: o, data, setData, onClose: () => setPhotoCheck(false) }), /* @__PURE__ */ React.createElement(NLLabel, null, "Everything for this order"));
   }
+  var NL_RANGES = ["All", "PX Plus", "PX", "Smart Formes", "Ultra SR", "Exceed", "Speedy Crease"];
+  function nlRangeOf(spec) {
+    const s = String(spec || "");
+    const m = /^(PX Plus|PX|Smart Formes|Ultra SR|Exceed|Speedy Crease|Phoenix XL)\b/i.exec(s);
+    return m ? m[1].replace(/\b\w/g, (c) => c.toUpperCase()).replace("Px", "PX").replace("Ultra sr", "Ultra SR") : "Other";
+  }
+  function nlAgeDays(iso) {
+    const t = Date.parse(String(iso || "").slice(0, 10) + "T12:00:00");
+    return isFinite(t) ? Math.round((Date.now() - t) / 864e5) : null;
+  }
+  function NLStock({ data, setData, go, openBox, openStockTab, onScan, onSearch, alerts = [], onRefresh = null }) {
+    const [tab, setTab] = useState("boxes");
+    const [q, setQ] = useState("");
+    const [range, setRange] = useState("All");
+    const [showAll, setShowAll] = useState(false);
+    const term = q.trim().toLowerCase();
+    const shelf = useMemo(() => {
+      try {
+        return boxedStockAvailable(data.bondingRuns || [], data.stockPicks || []);
+      } catch (e) {
+        return [];
+      }
+    }, [data.bondingRuns, data.stockPicks, data.movements]);
+    const unchecked = useMemo(() => {
+      try {
+        return uncheckedShelfStock(data.bondingRuns || []);
+      } catch (e) {
+        return [];
+      }
+    }, [data.bondingRuns]);
+    const disc = useMemo(() => {
+      try {
+        const dis = readDiscrepancyDismissals();
+        return findDiscrepancies(data).filter((f) => !dis[f.id]).length;
+      } catch (e) {
+        return 0;
+      }
+    }, [data]);
+    const missing = useMemo(() => (data.movements || []).filter((m) => m && !m.deleted && m.kind === "adjusted" && Number(m.qty) < 0 && /not ?there|notthere|missing/i.test(`${m.source || ""} ${m.note || ""}`)).length, [data.movements]);
+    const reels = useMemo(() => (data.glueLineBatches || []).filter((g) => g && !g.deleted && g.cleared !== "Yes" && g.batchNumber), [data.glueLineBatches]);
+    const mats = useMemo(() => (data.materials || []).filter((m) => m && !m.deleted), [data.materials]);
+    const matInfo = (m) => {
+      try {
+        return materialLow(m, data.materialMovements || [], data);
+      } catch (e) {
+        return null;
+      }
+    };
+    const lowMats = mats.filter((m) => {
+      const i = matInfo(m);
+      return i && i.low;
+    });
+    const totalBoxes = shelf.reduce((t, r) => t + (Number(r.available) || 0), 0), totalReels = reels.length;
+    const sizes = useMemo(() => {
+      const m = /* @__PURE__ */ new Map();
+      for (const r of shelf) {
+        const k = String(r.productSize || "?");
+        const e = m.get(k) || { spec: k, n: 0, bays: /* @__PURE__ */ new Set(), codes: /* @__PURE__ */ new Set(), oldest: null, range: nlRangeOf(k) };
+        e.n += Number(r.available) || 0;
+        for (const b of String(r.location || "").split(" / ").filter(Boolean)) e.bays.add(b);
+        e.codes.add(r.boxNumber);
+        const d = String(r.date || "").slice(0, 10);
+        if (d && (!e.oldest || d < e.oldest)) e.oldest = d;
+        m.set(k, e);
+      }
+      return [...m.values()].sort((a, b) => b.n - a.n);
+    }, [shelf]);
+    const codeHit = term.length >= 6 && shelf.filter((r) => String(r.boxNumber || "").toLowerCase().includes(term));
+    const bayHit = /^[a-z]\d$/i.test(term) || /rubber/i.test(term) ? sizes.filter((s) => [...s.bays].some((b) => b.toLowerCase() === term || term === "rubber" && /rubber/i.test(b))) : null;
+    const sizeList = (bayHit || sizes).filter((s) => range === "All" || s.range === range || range === "PX" && s.range === "PX").filter((s) => !term || bayHit || s.spec.toLowerCase().includes(term) || [...s.codes].some((c) => String(c).toLowerCase().includes(term)));
+    const litBays = term && !bayHit ? [...new Set(sizeList.flatMap((s) => [...s.bays]))].sort() : [];
+    const matHits = term ? mats.filter((m) => String(m.name || "").toLowerCase().includes(term)) : [];
+    const reelGroups = useMemo(() => {
+      const m = /* @__PURE__ */ new Map();
+      const today = todayISO();
+      for (const g of reels) {
+        const k = String(g.productSize || "?");
+        const e = m.get(k) || { spec: k, n: 0, metres: 0, latest: "", today: 0, unchecked: 0 };
+        e.n++;
+        e.metres += Number(g.meterage) || 0;
+        if (String(g.date || "") > e.latest) e.latest = String(g.date || "");
+        if (g.date === today) e.today++;
+        if (g.checked !== "Yes") e.unchecked++;
+        m.set(k, e);
+      }
+      return [...m.values()].filter((x) => !term || x.spec.toLowerCase().includes(term)).sort((a, b) => b.metres - a.metres);
+    }, [reels, term]);
+    const fmt = (n) => (Number(n) || 0).toLocaleString("en-GB");
+    const teal = (n) => /* @__PURE__ */ React.createElement("span", { style: { background: NLT.TEAL, color: "#fff", fontWeight: 600, fontSize: 12.5, padding: "2px 8px", borderRadius: 7, fontVariantNumeric: "tabular-nums" } }, fmt(n));
+    const seg = (k, label) => /* @__PURE__ */ React.createElement("button", { key: k, "data-nl-stock-tab": k, onClick: () => {
+      nlHaptic();
+      setTab(k);
+      setShowAll(false);
+    }, style: { flex: 1, height: 36, border: 0, borderRadius: 10, fontFamily: NLT.FONT, fontSize: 14, fontWeight: tab === k ? 600 : 500, background: tab === k ? "#fff" : "none", color: tab === k ? NL.INK : NL.SUB, boxShadow: tab === k ? "0 1px 3px rgba(27,43,107,0.12)" : "none" } }, label);
+    const chip = (c) => /* @__PURE__ */ React.createElement("button", { key: c, "data-nl-stock-range": c, onClick: () => setRange(c), style: { flex: "0 0 auto", height: 36, padding: "0 12px", borderRadius: 18, border: 0, background: range === c ? NL.NAVY : NL.PANEL, fontFamily: NLT.FONT, fontSize: 14, fontWeight: 500, color: range === c ? "#fff" : NL.INK } }, c);
+    const tile = (label, icon, onClick, k) => /* @__PURE__ */ React.createElement("button", { key: k, "data-nl-stock-tool": k, onClick: () => {
+      nlHaptic();
+      onClick();
+    }, style: { minWidth: 0, textAlign: "left", display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 8, padding: "14px 12px 12px", border: 0, borderRadius: 16, background: NL.PANEL, color: NL.INK, fontFamily: NLT.FONT, fontSize: 14, fontWeight: 500, lineHeight: 1.2 } }, /* @__PURE__ */ React.createElement(NLSq, { name: icon, tone: "white" }), label);
+    const matRow = (m, i, first) => {
+      const info = matInfo(m);
+      const fig = info && info.figure != null ? info.figure : Number(m.currentStock) || 0;
+      const unit = info && info.unit ? info.unit : m.unit || "";
+      const low = !!(info && info.low);
+      const below = info && info.below ? info.below : null;
+      const pct = below ? Math.max(0, Math.min(100, Math.round(100 * fig / (below * 3)))) : 60;
+      return /* @__PURE__ */ React.createElement(
+        NLRow,
+        {
+          key: m.id,
+          first,
+          lead: /* @__PURE__ */ React.createElement(NLRing, { pct, size: 40, stroke: 5, color: low ? NL.AMBERTXT : NL.NAVY }),
+          title: m.name,
+          sub: `${low ? `below ${fmt(below)} ${unit} \xB7 ` : ""}${m.lastStockTakeDate ? `counted ${m.lastStockTakeDate}` : "never counted"}`,
+          right: /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 18, fontWeight: 600, fontVariantNumeric: "tabular-nums", color: low ? NL.AMBERTXT : NL.INK } }, fmt(fig)), /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 12, color: NL.SUB } }, unit)),
+          onClick: () => go("materials")
+        }
+      );
+    };
+    const groupsOf = (list) => [["Tape and mylar \u2014 come off by themselves", list.filter((m) => /tape|mylar|pet/i.test(m.category || m.name))], ["PVC, EVA, glue \u2014 opened a bag", list.filter((m) => /pvc|eva|glue/i.test(m.category || m.name) && !/tape|mylar/i.test(m.category || m.name))], ["Cartons and cases", list.filter((m) => /box|carton|case/i.test(m.category || m.name) && !/tape|mylar|pvc|eva|glue/i.test(m.category || m.name))]];
+    const grouped = groupsOf(mats);
+    const seenG = new Set(grouped.flatMap((g) => g[1].map((m) => m.id)));
+    const other = mats.filter((m) => !seenG.has(m.id));
+    if (other.length) grouped.push(["Everything else", other]);
+    return /* @__PURE__ */ React.createElement(PullToRefresh, { onRefresh }, /* @__PURE__ */ React.createElement("div", { "data-nl-stock": true, style: { display: "flex", flexDirection: "column", fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement(NLHero, { title: "Stock", sub: `${fmt(totalBoxes)} boxes \xB7 ${fmt(totalReels)} reels \xB7 ${mats.length} materials`, onSearch, alerts, onOpenAdmin: () => go("admin") }, /* @__PURE__ */ React.createElement("label", { "data-nl-stock-search": true, style: { display: "flex", alignItems: "center", gap: 10, height: 46, marginTop: 16, padding: "0 6px 0 14px", borderRadius: 14, background: "rgba(255,255,255,0.14)", border: "1px solid rgba(255,255,255,0.22)", color: "rgba(255,255,255,0.85)" } }, /* @__PURE__ */ React.createElement(NLIcon, { name: "search", size: 20, color: "rgba(255,255,255,0.85)", sw: 1.8 }), /* @__PURE__ */ React.createElement("input", { value: q, onChange: (e) => setQ(e.target.value), placeholder: "A size, a code, a bay or a material", "aria-label": "Search stock", autoCapitalize: "characters", style: { flex: 1, minWidth: 0, border: 0, outline: "none", background: "transparent", color: "#fff", fontFamily: NLT.FONT, fontSize: 15 } }), /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => {
+      nlHaptic();
+      onScan && onScan();
+    }, "aria-label": "Scan a code", style: { width: 36, height: 36, borderRadius: 18, border: 0, background: "rgba(255,255,255,0.18)", display: "flex", alignItems: "center", justifyContent: "center" } }, /* @__PURE__ */ React.createElement(NLIcon, { name: "scan", size: 18, color: "#fff", sw: 1.8 }))), /* @__PURE__ */ React.createElement(NLBandStats, { items: [[unchecked.length, "unchecked"], [missing, "still missing"], [disc, "don't add up"], [lowMats.length, lowMats.length === 1 ? "material low" : "materials low"]] })), /* @__PURE__ */ React.createElement(NLOver, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", background: "#fff", borderRadius: 12, padding: 3, boxShadow: NLT.SHADOW } }, seg("boxes", "Boxes"), seg("reels", "Reels"), seg("materials", "Materials"))), term && matHits.length > 0 && tab !== "materials" && /* @__PURE__ */ React.createElement(NLIn, { i: 0 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, "Materials matching"), /* @__PURE__ */ React.createElement(NLCard, null, matHits.slice(0, 3).map((m, i) => matRow(m, i, i === 0)))), tab === "boxes" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, overflowX: "auto", paddingBottom: 2, marginTop: 12 } }, NL_RANGES.map(chip)), codeHit && codeHit.length > 0 && /* @__PURE__ */ React.createElement(NLIn, { i: 0 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, "Codes"), /* @__PURE__ */ React.createElement(NLCard, null, codeHit.slice(0, 5).map((r, i) => /* @__PURE__ */ React.createElement(NLRow, { key: r.id, first: i === 0, lead: /* @__PURE__ */ React.createElement(NLDot, { spec: r.productSize }), title: r.boxNumber, mono: true, sub: `${r.productSize} \xB7 ${r.location || "no bay"} \xB7 ${r.date || ""}`, right: teal(r.available), onClick: () => openBox && openBox(r.boxNumber) })))), litBays.length > 0 && /* @__PURE__ */ React.createElement(NLIn, { i: 0 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, bayHit ? "" : "In these bays"), /* @__PURE__ */ React.createElement("div", { "data-nl-stock-bays": true, style: { display: "flex", gap: 8, flexWrap: "wrap" } }, litBays.map((b) => /* @__PURE__ */ React.createElement("button", { key: b, onClick: () => setQ(b), style: { height: 36, padding: "0 12px", borderRadius: 10, border: 0, background: NLT.TINT.navy, color: NL.NAVY, fontFamily: NLT.FONT, fontSize: 14, fontWeight: 600 } }, b)))), /* @__PURE__ */ React.createElement(NLIn, { i: 1 }, /* @__PURE__ */ React.createElement(NLEyebrow, { right: /* @__PURE__ */ React.createElement("span", { style: { letterSpacing: 0, textTransform: "none", fontWeight: 500 } }, bayHit ? `bay ${q.trim().toUpperCase()}` : "most first") }, "On the shelf \xB7 by size"), /* @__PURE__ */ React.createElement(NLCard, null, sizeList.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { padding: "14px 16px", fontSize: 14, color: NL.SUB } }, term ? `Nothing on the shelf matches "${q.trim()}".` : "Nothing on the shelf."), sizeList.slice(0, showAll ? 500 : 8).map((s, i) => {
+      const days = nlAgeDays(s.oldest);
+      const old = days != null && days > 365;
+      return /* @__PURE__ */ React.createElement(
+        NLRow,
+        {
+          key: s.spec,
+          first: i === 0,
+          lead: /* @__PURE__ */ React.createElement(NLDot, { spec: s.spec }),
+          title: s.spec.replace(/\s+(2-3pt|3-4pt|6pt)$/i, ""),
+          mono: true,
+          sub: `${[...s.bays].sort().join(" \xB7 ") || "no bay"} \u2014 ${s.codes.size} code${s.codes.size === 1 ? "" : "s"}${s.oldest ? ` \xB7 oldest ${(/* @__PURE__ */ new Date(s.oldest + "T12:00:00")).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: s.oldest.slice(0, 4) !== String((/* @__PURE__ */ new Date()).getFullYear()) ? "numeric" : void 0 })}` : ""}`,
+          right: /* @__PURE__ */ React.createElement("span", { style: { display: "inline-flex", gap: 6, alignItems: "center" } }, old && /* @__PURE__ */ React.createElement(NLChip, { tone: "amber" }, "OLD"), teal(s.n)),
+          onClick: () => {
+            setQ(s.spec.replace(/\s+(2-3pt|3-4pt|6pt)$/i, ""));
+            openStockTab && openStockTab("history", s.spec);
+          }
+        }
+      );
+    }), sizeList.length > 8 && !showAll && /* @__PURE__ */ React.createElement("button", { onClick: () => setShowAll(true), style: { width: "100%", border: 0, borderTop: `1px solid ${NL.LINE}`, background: "none", padding: 12, fontFamily: NLT.FONT, fontSize: 14, fontWeight: 600, color: NL.NAVY } }, "All ", sizeList.length, " sizes"))), /* @__PURE__ */ React.createElement(NLIn, { i: 2 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, "Look at"), unchecked.length === 0 && missing === 0 && disc === 0 ? /* @__PURE__ */ React.createElement(NLAllGood, { title: "The shelf adds up", sub: "Nothing unchecked, nothing missing, every count agrees." }) : /* @__PURE__ */ React.createElement(NLCard, null, unchecked.length > 0 && /* @__PURE__ */ React.createElement(NLRow, { first: true, lead: /* @__PURE__ */ React.createElement(NLSq, { name: "register", tone: "amber" }), title: `${unchecked.length} box${unchecked.length === 1 ? "" : "es"} not yet checked`, sub: "Hidden from picking until ticked \u2014 tap to tick them", right: /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 18, color: "#8A93A8", sw: 2 }), onClick: () => openStockTab("boxes") }), missing > 0 && /* @__PURE__ */ React.createElement(NLRow, { first: unchecked.length === 0, lead: /* @__PURE__ */ React.createElement(NLSq, { name: "search", tone: "red" }), title: `${missing} written off, still missing`, sub: "Found one? Put it back here", right: /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 18, color: "#8A93A8", sw: 2 }), onClick: () => openStockTab("boxes") }), disc > 0 && /* @__PURE__ */ React.createElement(NLRow, { first: unchecked.length === 0 && missing === 0, lead: /* @__PURE__ */ React.createElement(NLSq, { name: "admin" }), title: `${disc} don't add up`, sub: "Counts that disagree with the records \u2014 a count settles each", right: /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 18, color: "#8A93A8", sw: 2 }), onClick: () => openStockTab("discrepancies") }))), /* @__PURE__ */ React.createElement(NLIn, { i: 3 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, "Tools"), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 } }, tile("Found a box", "stocktake", () => openStockTab("history"), "found"), tile("Stock take", "pick", () => go("stocktake"), "stocktake"), tile("Wrong stock in a case", "packing", () => openStockTab("wrongcase"), "wrongcase")))), tab === "reels" && /* @__PURE__ */ React.createElement(NLIn, { i: 1 }, /* @__PURE__ */ React.createElement(NLEyebrow, { right: /* @__PURE__ */ React.createElement("span", { style: { letterSpacing: 0, textTransform: "none", fontWeight: 500 } }, fmt(reels.reduce((t, g) => t + (Number(g.meterage) || 0), 0)), " m") }, "On the rack \xB7 by size"), /* @__PURE__ */ React.createElement(NLCard, null, reelGroups.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { padding: "14px 16px", fontSize: 14, color: NL.SUB } }, "Nothing on the rack."), reelGroups.slice(0, showAll ? 500 : 10).map((r, i) => /* @__PURE__ */ React.createElement(NLRow, { key: r.spec, first: i === 0, lead: /* @__PURE__ */ React.createElement(NLDot, { spec: r.spec }), title: r.spec, mono: true, sub: `${r.n} reel${r.n === 1 ? "" : "s"}${r.today ? ` \xB7 ${r.today} glued today, bond tomorrow` : ""}${r.unchecked ? ` \xB7 ${r.unchecked} unchecked` : ""}${r.latest ? ` \xB7 latest ${r.latest}` : ""}`, right: /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15, fontWeight: 600, fontVariantNumeric: "tabular-nums" } }, fmt(r.metres), " m"), onClick: () => go("batches") })), reelGroups.length > 10 && !showAll && /* @__PURE__ */ React.createElement("button", { onClick: () => setShowAll(true), style: { width: "100%", border: 0, borderTop: `1px solid ${NL.LINE}`, background: "none", padding: 12, fontFamily: NLT.FONT, fontSize: 14, fontWeight: 600, color: NL.NAVY } }, "All ", reelGroups.length, " sizes")), /* @__PURE__ */ React.createElement(NLEyebrow, null, "Tools"), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 } }, tile("Log a reel", "glueline", () => go("glueline"), "reel"), tile("Batches to bond", "batches", () => go("batches"), "batches"), tile("Reel history", "search", () => openStockTab("reels"), "reels"))), tab === "materials" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 12 } }, [["Goods in", "production"], ["Count", "pick"], ["Opened a bag", "materials"]].map(([t, ic], i) => /* @__PURE__ */ React.createElement("button", { key: t, "data-nl-stock-mat": t, onClick: () => {
+      nlHaptic();
+      go("materials");
+    }, style: { flex: 1, height: 44, borderRadius: 14, border: 0, background: i === 0 ? NL.NAVY : NL.PANEL, color: i === 0 ? "#fff" : NL.INK, fontFamily: NLT.FONT, fontSize: 14.5, fontWeight: 600, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 } }, /* @__PURE__ */ React.createElement(NLIcon, { name: ic, size: 18, color: i === 0 ? "#fff" : NL.NAVY, sw: 1.7 }), t))), lowMats.length > 0 ? /* @__PURE__ */ React.createElement(NLIn, { i: 0 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, "Low \u2014 order soon"), /* @__PURE__ */ React.createElement("div", { style: { background: NLT.TINT.warm, borderRadius: NLT.R.card } }, lowMats.map((m, i) => matRow(m, i, i === 0)))) : /* @__PURE__ */ React.createElement(NLIn, { i: 0 }, /* @__PURE__ */ React.createElement("div", { style: { marginTop: 12 } }, /* @__PURE__ */ React.createElement(NLAllGood, { title: "Nothing is low", sub: "Every material is above its line." }))), grouped.filter((g) => g[1].length).map(([title, list], gi) => /* @__PURE__ */ React.createElement(NLIn, { key: title, i: gi + 1 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, title), /* @__PURE__ */ React.createElement(NLCard, null, list.filter((m) => !term || String(m.name || "").toLowerCase().includes(term)).map((m, i) => matRow(m, i, i === 0)))))), /* @__PURE__ */ React.createElement("div", { style: { height: 24 } })));
+  }
   function nlBandFor(view, data) {
     const today = todayISO();
     const reels = (data.glueLineBatches || []).filter((g) => g && !g.deleted && g.date === today), m = reels.reduce((t2, g) => t2 + (Number(g.meterage) || 0), 0);
@@ -35005,6 +35158,10 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     }, [newLayout]);
     const [nlTabHidden, setNlTabHidden] = useState(false);
     const [nlCompact, setNlCompact] = useState(false);
+    useEffect(() => {
+      setNlTabHidden(false);
+      setNlCompact((window.scrollY || 0) > 170);
+    }, [view]);
     useEffect(() => {
       let last = window.scrollY || 0, raf = 0;
       const f = () => {
@@ -36280,7 +36437,13 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       gluelineschedule: /* @__PURE__ */ React.createElement(GlueLineScheduleView, { data, setData }),
       bonding: /* @__PURE__ */ React.createElement(BondingLineView, { data, setData, jumpToPacking }),
       eva: /* @__PURE__ */ React.createElement(EvaLineView, { data, setData }),
-      stock: /* @__PURE__ */ React.createElement(StockSection, { data, setData, initialQuery: searchJump?.view === "stock" ? searchJump.query : null, initialTab: stockTab, jumpToOrder }),
+      stock: newLayout && !stockTab && !(searchJump?.view === "stock" && searchJump.query) ? /* @__PURE__ */ React.createElement(NLStock, { data, setData, go: navigateTo, openBox: (code) => jumpToSearchResult({ type: "box", value: code }), openStockTab: (t, query) => {
+        setStockTab(t);
+        if (query) setSearchJump({ view: "stock", query });
+      }, onScan: () => {
+        setScanNotice(null);
+        setScanOpen(true);
+      }, onSearch: () => setNlSearch(true), alerts: /^chris@creasingmatrix\.com$/i.test(nlEmail()) ? adminAlertItems(data) : [], onRefresh: refreshFromCloud }) : /* @__PURE__ */ React.createElement(StockSection, { data, setData, initialQuery: searchJump?.view === "stock" ? searchJump.query : null, initialTab: stockTab, jumpToOrder }),
       materials: /* @__PURE__ */ React.createElement(MaterialsView, { data, setData }),
       tooling: /* @__PURE__ */ React.createElement(BaselineToolingView, { data, setData }),
       labels: /* @__PURE__ */ React.createElement(LabelsView, { data, setData }),
@@ -36318,6 +36481,10 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         @keyframes nlPulse { 0%, 100% { box-shadow: 0 0 0 3px rgba(94,224,154,0.3); } 50% { box-shadow: 0 0 0 6px rgba(94,224,154,0.12); } }
         @media (prefers-reduced-motion: reduce) { .nl-on .nl-in, .nl-on .nl-pulse { animation: none !important; } }
         .nl-on main.app-main button { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+        .nl-on [data-st-bays] { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; }   /* the stock take's bays as the by-bay view (C), 2 Oct 2026 */
+        .nl-on [data-st-bay] { border-radius: 14px !important; background: #fff !important; box-shadow: 0 4px 14px rgba(27,43,107,0.08); align-items: flex-start !important; padding: 10px 10px 8px; min-height: 72px !important; }
+        .nl-on [data-st-bay] span:first-child { font-size: 15px !important; font-weight: 600 !important; }
+        .nl-on [data-st-bay] span:last-child { font-size: 12px !important; color: #5E6A82; }
         .nl-on main.app-main button:active { opacity: .78; }
         .nl-on main.app-main button, .nl-on main.app-main input, .nl-on main.app-main select, .nl-on main.app-main textarea, .nl-on main.app-main table { font-family: ${NL.SANS}; }
                 .nl-on main.app-main [data-panel] { border-radius: 14px !important; border-color: ${NL.LINE} !important; box-shadow: none !important; }
@@ -36326,7 +36493,8 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         .nl-on main.app-main input:not([type=checkbox]):not([type=radio]), .nl-on main.app-main select, .nl-on main.app-main textarea { border-radius: 10px; }
         .nl-on main.app-main table { font-variant-numeric: tabular-nums; }
         .nl-on [data-global-undo], .nl-on .fixed.bottom-5 { bottom: calc(100px + env(safe-area-inset-bottom, 0px)) !important; z-index: 1001 !important; }
-        .nl-on [data-something-wrong] { z-index: 1001 !important; }
+        .nl-on [data-something-wrong] { z-index: 1001 !important; right: auto !important; left: max(12px, env(safe-area-inset-left, 0px)) !important; }   /* the ? sits bottom-left on the phone, clear of the + (Chris, 2 Oct 2026) */
+        .nl-on [data-something-wrong] > div { transform-origin: bottom left; }
       `), /* @__PURE__ */ React.createElement("div", { id: "print-portal-root" }), /* @__PURE__ */ React.createElement("div", { className: "no-print" }, /* @__PURE__ */ React.createElement(HazardStripe, { height: 4 })), scanOpen && /* @__PURE__ */ React.createElement(ScanOverlay, { onResult: handleScan, onClose: () => setScanOpen(false), knownCodes: scanKnownCodes }), /* @__PURE__ */ React.createElement(ScanNotice, { notice: scanNotice, onScanAgain: () => {
       setScanNotice(null);
       setScanOpen(true);
@@ -36334,7 +36502,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       const u = globalUndo.undo;
       setGlobalUndo(null);
       u();
-    }, className: "font-semibold underline", style: { color: "#fff" } }, "Undo"), /* @__PURE__ */ React.createElement("button", { onClick: () => setGlobalUndo(null), className: "opacity-60 hover:opacity-100" }, "\u2715")), newLayout && nlCompact && (view === "home" || view === "dashboard" || nlBandFor(view, data) || view === "orders" && searchJump?.view === "orders") && ReactDOM.createPortal(/* @__PURE__ */ React.createElement("div", { "data-nl-compact": true, className: nlMotionOK() ? "nl-in" : "", style: { position: "fixed", top: 0, left: 0, right: 0, zIndex: 950, height: "calc(44px + env(safe-area-inset-top, 0px))", paddingTop: "env(safe-area-inset-top, 0px)", background: "rgba(27,43,107,0.86)", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, fontFamily: NLT.FONT, fontSize: 15, fontWeight: 600 } }, /* @__PURE__ */ React.createElement("span", { style: { background: "#fff", borderRadius: 6, padding: "2px 5px", display: "flex" } }, /* @__PURE__ */ React.createElement("img", { src: "data:image/png;base64," + LOGO_B64, alt: "", style: { height: 14, display: "block" } })), view === "home" ? "Today" : view === "dashboard" ? `Orders \xB7 ${(data.orders || []).filter((o) => o && !o.deleted && o.stage !== "Shipped").length} live` : view === "orders" && searchJump?.orderId ? ((data.orders || []).find((o) => o && o.id === searchJump.orderId) || {}).customer || "Order" : (nlBandFor(view, data) || [""])[0]), document.body), newLayout && nlBandFor(view, data) && /* @__PURE__ */ React.createElement(NLBand, { view, data, canGoBack, onBack: goBack, onSearch: () => setNlSearch(true), alerts: /^chris@creasingmatrix\.com$/i.test(nlEmail()) ? adminAlertItems(data) : [], onOpenAdmin: () => navigateTo("admin") }), newLayout && view !== "home" && view !== "dashboard" && !nlBandFor(view, data) && !(view === "orders" && searchJump?.view === "orders" && searchJump.orderId) && /* @__PURE__ */ React.createElement(
+    }, className: "font-semibold underline", style: { color: "#fff" } }, "Undo"), /* @__PURE__ */ React.createElement("button", { onClick: () => setGlobalUndo(null), className: "opacity-60 hover:opacity-100" }, "\u2715")), newLayout && nlCompact && (view === "home" || view === "dashboard" || nlBandFor(view, data) || view === "orders" && searchJump?.view === "orders") && ReactDOM.createPortal(/* @__PURE__ */ React.createElement("div", { "data-nl-compact": true, className: nlMotionOK() ? "nl-in" : "", style: { position: "fixed", top: 0, left: 0, right: 0, zIndex: 950, height: "calc(44px + env(safe-area-inset-top, 0px))", paddingTop: "env(safe-area-inset-top, 0px)", background: "rgba(27,43,107,0.86)", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, fontFamily: NLT.FONT, fontSize: 15, fontWeight: 600 } }, /* @__PURE__ */ React.createElement("span", { style: { background: "#fff", borderRadius: 6, padding: "2px 5px", display: "flex" } }, /* @__PURE__ */ React.createElement("img", { src: "data:image/png;base64," + LOGO_B64, alt: "", style: { height: 14, display: "block" } })), view === "home" ? "Today" : view === "dashboard" ? `Orders \xB7 ${(data.orders || []).filter((o) => o && !o.deleted && o.stage !== "Shipped").length} live` : view === "orders" && searchJump?.orderId ? ((data.orders || []).find((o) => o && o.id === searchJump.orderId) || {}).customer || "Order" : (nlBandFor(view, data) || [""])[0]), document.body), newLayout && nlBandFor(view, data) && !(view === "stock" && !stockTab && !(searchJump?.view === "stock" && searchJump.query)) && /* @__PURE__ */ React.createElement(NLBand, { view, data, canGoBack, onBack: goBack, onSearch: () => setNlSearch(true), alerts: /^chris@creasingmatrix\.com$/i.test(nlEmail()) ? adminAlertItems(data) : [], onOpenAdmin: () => navigateTo("admin") }), newLayout && view !== "home" && view !== "dashboard" && view !== "stock" && !nlBandFor(view, data) && !(view === "orders" && searchJump?.view === "orders" && searchJump.orderId) && /* @__PURE__ */ React.createElement(
       NLTopBar,
       {
         onSearch: () => setNlSearch(true),
@@ -36549,7 +36717,13 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       const syncLive = ["connected", "saving", "refreshing"].includes(syncStatus) && !testMode;
       const syncedAgo = lastSyncedAt ? formatAgo(lastSyncedAt) : null;
       return /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: syncLive ? ORANGE : RED, color: "#fff", borderRadius: 5, fontWeight: 700, fontSize: 13, letterSpacing: 0.3 } }, "\u26A0 THIS DEVICE CAN NO LONGER KEEP ITS OWN COPY \u2014 its storage is full.", syncLive ? /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 500, display: "block", marginTop: 4 } }, "Cloud Sync is live", syncedAgo ? ` (last saved ${syncedAgo})` : "", ", so what you enter is still being saved to the cloud. The risk is closing or reloading the app before a save goes out \u2014 there is no local copy to fall back on. Keep going, but don't close the app, and get the storage cleared when you can.") : /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 500, display: "block", marginTop: 4 } }, "Cloud Sync is NOT carrying this work either, so nothing you type here is being saved anywhere. Connect Cloud Sync before entering anything further."));
-    })(), testMode && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: ORANGE, color: "#fff", borderRadius: 5, fontWeight: 700, fontSize: 13, letterSpacing: 0.3 } }, "\u26A0 TEST MODE \u2014 this is practice data only. Nothing here is real, and none of it will sync to the live system."), staleOnServer && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: "#FFF4E0", border: `1px solid ${AMBER}`, borderRadius: 5, color: INK, fontSize: 13 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, marginBottom: 2 } }, "The update can't finish \u2014 index.html hasn't been published"), "This device asked the server for ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, staleWanted), " and got", " ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, APP_VERSION), " back. That isn't a cache on this device \u2014 it's a fresh address the server answered with the old file. ", /* @__PURE__ */ React.createElement("b", null, "version.txt was pushed to the site but index.html wasn't"), ", so every device keeps being told there's an update it can never get. Push index.html and this clears itself."), updateReady && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5 flex flex-wrap items-center gap-3", style: { background: "#EEF1FA", border: `1px solid ${NAVY}`, borderRadius: 5, color: NAVY, fontSize: 13 } }, /* @__PURE__ */ React.createElement("span", { style: { flex: "1 1 260px" } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 700 } }, "New version available"), " \u2014 this device is on ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, APP_VERSION), ", latest is ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, updateLatest), ". Updating reloads the page, so finish anything you're part-way through typing first. Saved work is safe."), /* @__PURE__ */ React.createElement("button", { onClick: applyUpdate, className: "shrink-0 px-3", style: { height: 34, background: NAVY, color: "#fff", border: "none", borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: "pointer" } }, "Update now"), /* @__PURE__ */ React.createElement("button", { onClick: snoozeUpdate, className: "shrink-0 px-3", style: { height: 34, background: "none", color: NAVY, border: `1px solid ${NAVY}`, borderRadius: 6, fontSize: 13, cursor: "pointer" } }, "Later")), /* @__PURE__ */ React.createElement(ScreenErrorBoundary, { viewKey: view, key: view }, screenAllowed(view) ? views[view] : /* @__PURE__ */ React.createElement(ScreenOff, null)), newLayout && /* @__PURE__ */ React.createElement("div", { style: { height: 96 }, "aria-hidden": "true" })), newLayout && !scanOpen && ReactDOM.createPortal(/* @__PURE__ */ React.createElement(NLTabBar, { view, go: navigateTo, hidden: nlTabHidden, onScan: () => {
+    })(), testMode && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: ORANGE, color: "#fff", borderRadius: 5, fontWeight: 700, fontSize: 13, letterSpacing: 0.3 } }, "\u26A0 TEST MODE \u2014 this is practice data only. Nothing here is real, and none of it will sync to the live system."), staleOnServer && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: "#FFF4E0", border: `1px solid ${AMBER}`, borderRadius: 5, color: INK, fontSize: 13 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, marginBottom: 2 } }, "The update can't finish \u2014 index.html hasn't been published"), "This device asked the server for ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, staleWanted), " and got", " ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, APP_VERSION), " back. That isn't a cache on this device \u2014 it's a fresh address the server answered with the old file. ", /* @__PURE__ */ React.createElement("b", null, "version.txt was pushed to the site but index.html wasn't"), ", so every device keeps being told there's an update it can never get. Push index.html and this clears itself."), updateReady && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5 flex flex-wrap items-center gap-3", style: { background: "#EEF1FA", border: `1px solid ${NAVY}`, borderRadius: 5, color: NAVY, fontSize: 13 } }, /* @__PURE__ */ React.createElement("span", { style: { flex: "1 1 260px" } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 700 } }, "New version available"), " \u2014 this device is on ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, APP_VERSION), ", latest is ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, updateLatest), ". Updating reloads the page, so finish anything you're part-way through typing first. Saved work is safe."), /* @__PURE__ */ React.createElement("button", { onClick: applyUpdate, className: "shrink-0 px-3", style: { height: 34, background: NAVY, color: "#fff", border: "none", borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: "pointer" } }, "Update now"), /* @__PURE__ */ React.createElement("button", { onClick: snoozeUpdate, className: "shrink-0 px-3", style: { height: 34, background: "none", color: NAVY, border: `1px solid ${NAVY}`, borderRadius: 6, fontSize: 13, cursor: "pointer" } }, "Later")), /* @__PURE__ */ React.createElement(ScreenErrorBoundary, { viewKey: view, key: view }, screenAllowed(view) ? views[view] : /* @__PURE__ */ React.createElement(ScreenOff, null)), newLayout && /* @__PURE__ */ React.createElement("div", { style: { height: 96 }, "aria-hidden": "true" })), newLayout && !scanOpen && ReactDOM.createPortal(/* @__PURE__ */ React.createElement(NLTabBar, { view, go: (k) => {
+      if (k === "stock") {
+        setStockTab(null);
+        setSearchJump(null);
+      }
+      navigateTo(k);
+    }, hidden: nlTabHidden, onScan: () => {
       setScanNotice(null);
       setScanOpen(true);
     } }), document.body)), toast && /* @__PURE__ */ React.createElement("div", { className: "fixed bottom-5 right-5 px-4 py-2 rounded text-sm text-white shadow-lg", style: { background: NAVY } }, toast));
