@@ -11900,7 +11900,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-02.19";
+  var APP_VERSION = "2026-10-02.20";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -24694,6 +24694,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-10-02.20", "Phone: text follows the phone's text-size setting (Settings \u2192 Display \u2192 Text Size), within limits so nothing breaks; Stock \u2192 Materials says how many working days a material has left at the rate it has been coming off."],
     ["2026-10-02.19", "Phone: the floor forms \u2014 glue line, bonding, Baseline extrusion, EVA \u2014 in the new clothes: navy step numbers, soft grey fields, navy-filled choices, white option cards, a warm draft banner; the EVA line gets its band; every field and button on the phone follows the one style."],
     ["2026-10-02.18", "Phone: Shipped lives inside Orders \u2014 the segment, a search, shipped orders newest first as cards; Admin sits straight on the page under its band, with its figures as cards and its tools as tiles; the band also covers Shipped orders and New orders."],
     ["2026-10-02.17", "Packing: the case map (the squares) is never refused on a big order \u2014 it opens on the list over 60 cases, Cases is one tap away, and the choice is remembered on this device."],
@@ -26023,6 +26024,35 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     const e = data ? materialsAutoUse(data).byId.get(m.id) : null;
     if (e && e.leftMetres !== void 0) return e.leftMetres;
     return materialMetres(m);
+  }
+  function nlWorkingDays(fromMs, toMs) {
+    let n = 0;
+    const d = new Date(fromMs);
+    d.setHours(12, 0, 0, 0);
+    while (d.getTime() <= toMs) {
+      const w = d.getDay();
+      if (w !== 0 && w !== 6) n++;
+      d.setDate(d.getDate() + 1);
+    }
+    return Math.max(1, n);
+  }
+  function materialDaysLeft(m, data, figure) {
+    if (!m || figure == null || !(Number(figure) > 0)) return null;
+    const now = Date.now();
+    const moves = (data.materialMovements || []).filter((x) => x && !x.deleted && x.materialId === m.id);
+    const rule = LOW_STOCK_RULES[m.category];
+    let rate = null;
+    if (rule && rule.metres) {
+      const e = materialsAutoUse(data).byId.get(m.id);
+      const lastCount = Math.max(m.lastStockTakeDate ? Date.parse(`${m.lastStockTakeDate}T00:00:00`) : 0, ...moves.filter((x) => /stocktake|count/.test(String(x.sourceType || ""))).map((x) => Date.parse(String(x.date || x.at || "").slice(0, 10) + "T00:00:00") || 0));
+      if (e && e.usedMetres > 0 && lastCount > 0) rate = e.usedMetres / nlWorkingDays(lastCount, now);
+    } else {
+      const since = now - 28 * 864e5;
+      const used = moves.filter((x) => Number(x.qty) < 0 && /opened|auto/.test(String(x.sourceType || "")) && (Date.parse(String(x.date || x.at || "").slice(0, 10) + "T12:00:00") || 0) >= since);
+      if (used.length >= 2) rate = used.reduce((t, x) => t - Number(x.qty), 0) / nlWorkingDays(since, now);
+    }
+    if (!(rate > 0)) return null;
+    return { days: Math.floor(Number(figure) / rate), rate };
   }
   function lowStockAlerts(data) {
     const mats = (data.materials || []).filter((m) => m && !m.deleted);
@@ -34470,6 +34500,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       const low = !!(info && info.low);
       const below = info && info.below ? info.below : null;
       const pct = below ? Math.max(0, Math.min(100, Math.round(100 * fig / (below * 3)))) : 60;
+      const dl = materialDaysLeft(m, data, fig);
       return /* @__PURE__ */ React.createElement(
         NLRow,
         {
@@ -34477,7 +34508,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           first,
           lead: /* @__PURE__ */ React.createElement(NLRing, { pct, size: 40, stroke: 5, color: low ? NL.AMBERTXT : NL.NAVY }),
           title: m.name,
-          sub: `${low ? `below ${fmt(below)} ${unit} \xB7 ` : ""}${m.lastStockTakeDate ? `counted ${m.lastStockTakeDate}` : "never counted"}`,
+          sub: `${low ? `below ${fmt(below)} ${unit} \xB7 ` : ""}${dl ? dl.days <= 0 ? "runs out today at this rate \xB7 " : dl.days > 260 ? "more than a year at this rate \xB7 " : `~${dl.days} working day${dl.days === 1 ? "" : "s"} at this rate \xB7 ` : ""}${m.lastStockTakeDate ? `counted ${m.lastStockTakeDate}` : "never counted"}`,
           right: /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 18, fontWeight: 600, fontVariantNumeric: "tabular-nums", color: low ? NL.AMBERTXT : NL.INK } }, fmt(fig)), /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 12, color: NL.SUB } }, unit)),
           onClick: () => go("materials")
         }
@@ -35241,6 +35272,45 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     }, [newLayout]);
     const [nlTabHidden, setNlTabHidden] = useState(false);
     const [nlCompact, setNlCompact] = useState(false);
+    useEffect(() => {
+      if (!newLayout) {
+        try {
+          document.documentElement.style.removeProperty("--nl-scale");
+          document.documentElement.removeAttribute("data-nl-scale");
+        } catch (e) {
+        }
+        return;
+      }
+      const read = () => {
+        try {
+          if (!(window.CSS && window.CSS.supports && window.CSS.supports("font", "-apple-system-body"))) {
+            document.documentElement.style.setProperty("--nl-scale", "1");
+            document.documentElement.setAttribute("data-nl-scale", "1");
+            return;
+          }
+          const probe = document.createElement("span");
+          probe.style.cssText = "position:absolute;visibility:hidden;font:-apple-system-body;";
+          probe.textContent = "a";
+          document.body.appendChild(probe);
+          const px = parseFloat(getComputedStyle(probe).fontSize) || 17;
+          probe.remove();
+          const k = Math.max(0.9, Math.min(1.35, px / 17));
+          document.documentElement.style.setProperty("--nl-scale", String(Math.round(k * 100) / 100));
+          document.documentElement.setAttribute("data-nl-scale", k === 1 ? "1" : String(Math.round(k * 100) / 100));
+        } catch (e) {
+        }
+      };
+      read();
+      const f = () => {
+        if (document.visibilityState === "visible") read();
+      };
+      document.addEventListener("visibilitychange", f);
+      window.addEventListener("orientationchange", read);
+      return () => {
+        document.removeEventListener("visibilitychange", f);
+        window.removeEventListener("orientationchange", read);
+      };
+    }, [newLayout]);
     useEffect(() => {
       setNlTabHidden(false);
       setNlCompact((window.scrollY || 0) > 170);
@@ -36617,6 +36687,8 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         .nl-on main.app-main table input, .nl-on main.app-main table select { min-height: 36px; padding: 4px 8px !important; border-radius: 8px !important; font-size: 14px; }
         .nl-on main.app-main .mx-btn, .nl-on main.app-main button.mx-btn { border-radius: 22px !important; min-height: 44px !important; padding: 0 16px !important; font-weight: 600 !important; }
         .nl-on main.app-main [data-panel] { padding: 16px !important; }
+
+        html[data-nl-scale] .nl-on main.app-main, html[data-nl-scale] [data-nl-tabbar], html[data-nl-scale] [data-nl-compact], html[data-nl-scale] [data-nl-alerts] > div, html[data-nl-scale] [data-nl-peek] > div { zoom: var(--nl-scale, 1); }
         .nl-on main.app-main button { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
         .nl-on [data-st-bays] { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; }   /* the stock take's bays as the by-bay view (C), 2 Oct 2026 */
         .nl-on [data-st-bay] { border-radius: 14px !important; background: #fff !important; box-shadow: 0 4px 14px rgba(27,43,107,0.08); align-items: flex-start !important; padding: 10px 10px 8px; min-height: 72px !important; }
