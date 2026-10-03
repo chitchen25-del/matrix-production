@@ -10035,6 +10035,317 @@ ${line}` : line;
     return { kind: "box", id: w, made, shipped, scrapped, inCases: inCases.map(([k, q]) => `${q} in ${k}`), shelf: made - shipped - scrapped - packed, facts: own.length };
   }
 
+  // mx_metrics.js
+  function mylarKeyOfPet(pet) {
+    const t = String(pet || "").toLowerCase();
+    const w = (t.match(/^\s*(7|10|12)\b/) || t.match(/^\s*(7|10|12)mm/) || [])[1];
+    if (!w) return null;
+    if (/100/.test(t)) return `${w}-100`;
+    if (/75/.test(t)) return `${w}-75`;
+    return w === "7" ? null : `${w}-75`;
+  }
+  var MYLAR_NAMES = { "10-75": "10mm 75 micron", "12-75": "12mm 75 micron", "7-75": "7mm 75 micron", "7-100": "7mm 100 micron" };
+  var TAPE_KEYS = ["10mm", "10mm strong", "12mm", "12mm strong", "7mm", "7mm strong"];
+  function metricsRangeOf(spec) {
+    const s = String(spec || "");
+    if (isExceed(s)) return "Exceed";
+    if (isKenPin(s) || /\bspeedy\b|\bken\b/i.test(s)) return "Speedy Crease";
+    if (/\bultra\b/i.test(s)) return "Ultra SR";
+    if (/smart\s*formes?/i.test(s)) return "Smart Formes";
+    if (/phoenix\s*xl/i.test(s)) return "Phoenix XL";
+    if (/\bpx\s*plus\b/i.test(s)) return "PX Plus";
+    if (/^\s*px\b/i.test(s)) return "PX";
+    return "Other";
+  }
+  var pad = (n) => String(n).padStart(2, "0");
+  var dOf = (iso) => {
+    const [y, m, d] = String(iso).slice(0, 10).split("-").map(Number);
+    return new Date(y, (m || 1) - 1, d || 1, 12, 0, 0);
+  };
+  var addDays = (iso, n) => {
+    const d = dOf(iso);
+    d.setDate(d.getDate() + n);
+    return localISO(d);
+  };
+  var hhOf = (t) => {
+    const m = String(t || "").match(/^(\d{1,2}):(\d{2})/);
+    return m ? `${pad(Number(m[1]))}:${m[2]}` : null;
+  };
+  var localHM = (stamp) => {
+    const t = Date.parse(stamp || "");
+    if (!isFinite(t)) return null;
+    const d = new Date(t);
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+  var localDay = (stamp) => {
+    const t = Date.parse(stamp || "");
+    return isFinite(t) ? localISO(new Date(t)) : null;
+  };
+  var MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  var MONTH2 = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  var DAY = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  var DAY3 = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  function metricsDayLabel(iso, long = false) {
+    const d = dOf(iso);
+    return long ? `${DAY[d.getDay()]} ${d.getDate()} ${MONTH2[d.getMonth()]}` : `${DAY3[d.getDay()]} ${d.getDate()} ${MON[d.getMonth()]}`;
+  }
+  function metricsPeriod(kind, anchor, today) {
+    const a = String(anchor || today).slice(0, 10), t = String(today).slice(0, 10), d = dOf(a);
+    let from, to, buckets = [], title, prev, next;
+    if (kind === "D") {
+      from = to = a;
+      title = metricsDayLabel(a, true);
+      for (let h = 6; h <= 19; h++) buckets.push({ key: pad(h), from: a, to: a, hour: h, label: h === 6 ? "6a" : h === 9 ? "9a" : h === 12 ? "12p" : h === 15 ? "3p" : h === 18 ? "6p" : "", long: `${h <= 12 ? h : h - 12}${h < 12 ? "am" : "pm"}` });
+      prev = addDays(a, -1);
+      next = addDays(a, 1);
+    } else if (kind === "M") {
+      const y = d.getFullYear(), m = d.getMonth(), days = new Date(y, m + 1, 0).getDate();
+      from = `${y}-${pad(m + 1)}-01`;
+      to = `${y}-${pad(m + 1)}-${pad(days)}`;
+      title = `${MONTH2[m]} ${y}`;
+      for (let i = 1; i <= days; i++) {
+        const k = `${y}-${pad(m + 1)}-${pad(i)}`;
+        buckets.push({ key: k, from: k, to: k, label: [1, 8, 15, 22, 29].includes(i) ? String(i) : "", long: metricsDayLabel(k) });
+      }
+      prev = localISO(new Date(y, m - 1, 1, 12));
+      next = localISO(new Date(y, m + 1, 1, 12));
+    } else if (kind === "Y") {
+      const y = d.getFullYear();
+      from = `${y}-01-01`;
+      to = `${y}-12-31`;
+      title = String(y);
+      for (let m = 0; m < 12; m++) {
+        const days = new Date(y, m + 1, 0).getDate();
+        buckets.push({ key: `${y}-${pad(m + 1)}`, from: `${y}-${pad(m + 1)}-01`, to: `${y}-${pad(m + 1)}-${pad(days)}`, label: MON[m][0], long: `${MONTH2[m]} ${y}` });
+      }
+      prev = `${y - 1}-06-15`;
+      next = `${y + 1}-06-15`;
+    } else {
+      const back = (d.getDay() + 6) % 7;
+      from = addDays(a, -back);
+      to = addDays(from, 6);
+      const f = dOf(from), e = dOf(to);
+      title = f.getMonth() === e.getMonth() ? `${f.getDate()}\u2013${e.getDate()} ${MON[e.getMonth()]} ${e.getFullYear()}` : `${f.getDate()} ${MON[f.getMonth()]} \u2013 ${e.getDate()} ${MON[e.getMonth()]} ${e.getFullYear()}`;
+      for (let i = 0; i < 7; i++) {
+        const k = addDays(from, i);
+        buckets.push({ key: k, from: k, to: k, label: DAY3[dOf(k).getDay()], long: metricsDayLabel(k) });
+      }
+      prev = addDays(from, -7);
+      next = addDays(from, 7);
+      kind = "W";
+    }
+    if (next && metricsPeriod0(kind, next) > t) next = null;
+    const nowIn = t >= from && t <= to;
+    return { kind, from, to, title, buckets, prev, next, nowIn, anchor: a };
+  }
+  var metricsPeriod0 = (kind, anchor) => {
+    const d = dOf(anchor);
+    if (kind === "D") return String(anchor).slice(0, 10);
+    if (kind === "M") return localISO(new Date(d.getFullYear(), d.getMonth(), 1, 12));
+    if (kind === "Y") return `${d.getFullYear()}-01-01`;
+    return addDays(String(anchor).slice(0, 10), -((d.getDay() + 6) % 7));
+  };
+  function workingDaysBetween(from, to) {
+    let n = 0;
+    for (let k = from; k <= to; k = addDays(k, 1)) {
+      const w = dOf(k).getDay();
+      if (w !== 0 && w !== 6) n++;
+    }
+    return n;
+  }
+  function metricsIndex(data) {
+    const days = /* @__PURE__ */ new Map();
+    const day = (k) => {
+      if (!days.has(k)) days.set(k, { glue: [], bond: [], shippedBoxes: 0, shippedOrders: [], newOrders: [], ncrs: [], cartons: {}, cases: {}, opened: {} });
+      return days.get(k);
+    };
+    const reels = /* @__PURE__ */ new Map();
+    for (const g of data.glueLineBatches || []) if (g && !g.deleted) {
+      for (const c of [g.batchNumber, g.plCode]) if (c) reels.set(String(c).trim().toUpperCase(), g);
+    }
+    for (const g of data.glueLineBatches || []) {
+      if (!g || g.deleted || !g.date) continue;
+      const m = Number(g.meterage) || 0;
+      day(String(g.date).slice(0, 10)).glue.push({ t: hhOf(g.timeOfDay) || localHM(g.endedAt || g.createdAt || g.updatedAt), m, size: g.productSize || "", code: g.batchNumber || "" });
+    }
+    for (const r of data.bondingRuns || []) {
+      if (!r || r.deleted || r.packingOnly || r._synth || !r.date || !String(r.boxNumber || "").trim()) continue;
+      const boxes = Number(r.amountMade) || 0, metres = boxes * (Number(r.metersPerBox) || 0);
+      const width = classifySize(r.productSize);
+      const taped = ["7mm", "10mm", "12mm"].includes(width) && metres > 0;
+      const reel = r.baselineBatchCode ? reels.get(String(r.baselineBatchCode).trim().toUpperCase()) : null;
+      day(String(r.date).slice(0, 10)).bond.push({
+        t: hhOf(r.timeOfDay) || localHM(r.createdAt),
+        boxes,
+        metres,
+        size: r.productSize || "",
+        code: r.boxNumber,
+        order: r.workNumber || null,
+        range: metricsRangeOf(r.productSize),
+        tape: taped ? width + (isStrongTapeBoxCode(r.boxNumber) ? " strong" : "") : null,
+        /* like for like (Chris, 2 Oct 2026): every metre taped took a metre of mylar; which mylar comes from the PET on the glue reel it was bonded from — no reel named, or no PET on it, is "not recorded" */
+        mylar: taped ? reel && mylarKeyOfPet(reel.petType) || "unknown" : null
+      });
+    }
+    for (const m of data.movements || []) {
+      if (!m || m.deleted || m.kind !== "shipped") continue;
+      const k = localDay(m.at);
+      if (k) day(k).shippedBoxes += Number(m.qty) || 0;
+    }
+    const lines = /* @__PURE__ */ new Map();
+    for (const l of data.lineItems || []) {
+      if (!l || l.deleted) continue;
+      if (!lines.has(l.orderId)) lines.set(l.orderId, []);
+      lines.get(l.orderId).push(l);
+    }
+    for (const o of data.orders || []) {
+      if (!o || o.deleted) continue;
+      if (o.shippedDate) day(String(o.shippedDate).slice(0, 10)).shippedOrders.push({ id: o.id, customer: o.customer || "" });
+      if (o.orderDate) {
+        const ls = lines.get(o.id) || [];
+        const made = ls.filter((l) => !/profile|shim|delivery|carriage|tape\b/i.test(String(l.description || "")));
+        const value = ls.reduce((t, l) => t + (Number(l.qty) || 0) * (Number(l.unitPrice) || 0), 0);
+        day(String(o.orderDate).slice(0, 10)).newOrders.push({ id: o.id, customer: o.customer || "", value, boxes: made.reduce((t, l) => t + (Number(l.qty) || 0), 0), priced: ls.some((l) => Number(l.unitPrice) > 0) });
+      }
+    }
+    for (const n of data.ncrs || []) {
+      if (!n || n.deleted || !n.date) continue;
+      day(String(n.date).slice(0, 10)).ncrs.push({ id: n.id, what: n.description || n.issue || n.title || n.product || "", batch: n.batch || n.batchCode || "" });
+    }
+    const into = { auto_box: "cartons", auto_case: "cases", block_opened: "opened", bag_opened: "opened" };
+    for (const x of data.materialMovements || []) {
+      if (!x || x.deleted || !into[x.sourceType] || !x.date) continue;
+      const used = -(Number(x.qty) || 0);
+      if (!(used > 0)) continue;
+      const e = day(String(x.date).slice(0, 10))[into[x.sourceType]];
+      e[x.materialId] = (e[x.materialId] || 0) + used;
+    }
+    return days;
+  }
+  function metricsSlice(index, period) {
+    const inRange = (k, b) => k >= b.from && k <= b.to;
+    const keys = [...index.keys()].filter((k) => k >= period.from && k <= period.to).sort();
+    const sum = (pick2) => period.buckets.map((b) => {
+      if (period.kind === "D") return pick2(index.get(period.from) || null, b.hour);
+      let t = 0;
+      for (const k of keys) if (inRange(k, b)) t += pick2(index.get(k), null);
+      return t;
+    });
+    const atHour = (xs, h) => h == null ? xs : xs.filter((x) => x.t && Number(x.t.slice(0, 2)) === h);
+    const glueM = sum((d, h) => d ? atHour(d.glue, h).reduce((t, x) => t + x.m, 0) : 0);
+    const reels = sum((d, h) => d ? atHour(d.glue, h).length : 0);
+    const boxes = sum((d, h) => d ? atHour(d.bond, h).reduce((t, x) => t + x.boxes, 0) : 0);
+    const bondM = sum((d, h) => d ? atHour(d.bond, h).reduce((t, x) => t + x.metres, 0) : 0);
+    const runs = sum((d, h) => d ? atHour(d.bond, h).length : 0);
+    const all = keys.map((k) => [k, index.get(k)]);
+    const flat = (f) => all.flatMap(([k, d]) => f(d).map((x) => ({ ...x, day: k })));
+    const glue = flat((d) => d.glue), bond = flat((d) => d.bond);
+    const add = (o, k, v) => {
+      o[k] = (o[k] || 0) + v;
+      return o;
+    };
+    const tape = {}, mylar = {}, tapeBy = period.buckets.map(() => ({}));
+    for (const x of bond) {
+      if (!x.tape) continue;
+      add(tape, x.tape, x.metres);
+      if (x.mylar) add(mylar, x.mylar, x.metres);
+      const i = period.kind === "D" ? period.buckets.findIndex((b) => x.t && Number(x.t.slice(0, 2)) === b.hour) : period.buckets.findIndex((b) => inRange(x.day, b));
+      if (i >= 0) add(tapeBy[i], x.tape, x.metres);
+    }
+    const merge = (f) => all.reduce((o, [, d]) => {
+      for (const [k, v] of Object.entries(f(d))) add(o, k, v);
+      return o;
+    }, {});
+    const bySize = /* @__PURE__ */ new Map();
+    for (const g of glue) {
+      const e = bySize.get(g.size) || { size: g.size, m: 0, reels: 0 };
+      e.m += g.m;
+      e.reels++;
+      bySize.set(g.size, e);
+    }
+    const byRange = {};
+    for (const r of bond) add(byRange, r.range, r.boxes);
+    const byBondSize = /* @__PURE__ */ new Map();
+    for (const r of bond) {
+      const e = byBondSize.get(r.size) || { size: r.size, boxes: 0, runs: 0 };
+      e.boxes += r.boxes;
+      e.runs++;
+      byBondSize.set(r.size, e);
+    }
+    const shippedOrders = all.flatMap(([k, d]) => d.shippedOrders.map((o) => ({ ...o, day: k })));
+    const newOrders = all.flatMap(([k, d]) => d.newOrders.map((o) => ({ ...o, day: k })));
+    const ncrs = all.flatMap(([k, d]) => d.ncrs.map((o) => ({ ...o, day: k })));
+    const byDay = (f) => period.buckets.map((b) => all.filter(([k]) => inRange(k, b)).reduce((t, [, d]) => t + f(d), 0));
+    return {
+      glueM,
+      reels,
+      boxes,
+      bondM,
+      runs,
+      tapeBy,
+      shippedBoxes: period.kind === "D" ? period.buckets.map(() => 0) : byDay((d) => d.shippedBoxes),
+      shippedOrderN: period.kind === "D" ? period.buckets.map(() => 0) : byDay((d) => d.shippedOrders.length),
+      newOrderN: period.kind === "D" ? period.buckets.map(() => 0) : byDay((d) => d.newOrders.length),
+      ncrN: period.kind === "D" ? period.buckets.map(() => 0) : byDay((d) => d.ncrs.length),
+      tapeM: period.buckets.map((b, i) => Object.values(tapeBy[i]).reduce((t, v) => t + v, 0)),
+      totals: {
+        glueM: glue.reduce((t, x) => t + x.m, 0),
+        reels: glue.length,
+        boxes: bond.reduce((t, x) => t + x.boxes, 0),
+        bondM: bond.reduce((t, x) => t + x.metres, 0),
+        runs: bond.length,
+        shippedBoxes: all.reduce((t, [, d]) => t + d.shippedBoxes, 0),
+        shippedOrders: shippedOrders.length,
+        newOrders: newOrders.length,
+        newValue: newOrders.reduce((t, o) => t + o.value, 0),
+        ncrs: ncrs.length,
+        tapeM: Object.values(tape).reduce((t, v) => t + v, 0)
+      },
+      glue,
+      bond,
+      tape,
+      mylar,
+      cartons: merge((d) => d.cartons),
+      cases: merge((d) => d.cases),
+      opened: merge((d) => d.opened),
+      bySize: [...bySize.values()].sort((a, b) => b.m - a.m),
+      byRange,
+      byBondSize: [...byBondSize.values()].sort((a, b) => b.boxes - a.boxes),
+      shippedOrders,
+      newOrders,
+      ncrs
+    };
+  }
+  function metricsDaysSoFar(period, today) {
+    if (period.kind === "D") return 1;
+    const end = period.to < today ? period.to : today;
+    if (end < period.from) return 0;
+    return Math.max(1, workingDaysBetween(period.from, end));
+  }
+  function longestStretch(glue) {
+    const xs = [...glue].sort((a, b) => (a.day + (a.t || "")).localeCompare(b.day + (b.t || "")));
+    let best = null, cur = null;
+    for (const x of xs) {
+      if (cur && cur.size === x.size && cur.day === x.day) {
+        cur.n++;
+        cur.m += x.m;
+        cur.last = x.t;
+      } else {
+        cur = { size: x.size, day: x.day, n: 1, m: x.m, first: x.t, last: x.t };
+      }
+      if (!best || cur.n > best.n) best = { ...cur };
+    }
+    return best && best.n >= 3 ? best : null;
+  }
+  function rateFlags(row, kind, lineMetresPerHour) {
+    const s = kind === "glue" ? row.metres : row.boxes;
+    if (!s) return null;
+    if (s.n >= 3 && Math.abs(s.high - s.low) < 1e-9) return `All ${s.n} read exactly the same \u2014 check how they were timed.`;
+    if (kind === "glue" && lineMetresPerHour > 0 && s.median > lineMetresPerHour * 1.02) return `Faster than the line's set speed (${Math.round(lineMetresPerHour)} m an hour) \u2014 check the reel times.`;
+    if (s.n >= 4 && s.low < s.median * 0.5) return `A quarter of runs come in under ${Math.round(s.low)} an hour \u2014 worth a look.`;
+    return null;
+  }
+
   // mx_fix.js
   var TABLE_WORDS = {
     orders: "order",
@@ -11910,7 +12221,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-03.22";
+  var APP_VERSION = "2026-10-03.23";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -26082,14 +26393,6 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
   var MYLAR_TARGETS = { "10-75": ["mat-mylar-10-75", "mat-mylar-10-75-pancake"], "12-75": ["mat-mylar-12-75"], "7-75": ["mat-mylar-7-75"], "7-100": ["mat-mylar-7-100"] };
   var AUTO_WASTE_START = 0.05;
   var AUTO_OPENING_COUNT_DAY = "2026-10-01";
-  function mylarKeyOfPet(pet) {
-    const t = String(pet || "").toLowerCase();
-    const w = (t.match(/^\s*(7|10|12)\b/) || t.match(/^\s*(7|10|12)mm/) || [])[1];
-    if (!w) return null;
-    if (/100/.test(t)) return `${w}-100`;
-    if (/75/.test(t)) return `${w}-75`;
-    return w === "7" ? null : `${w}-75`;
-  }
   var AUTO_USE_MEMO = /* @__PURE__ */ new WeakMap();
   function materialsAutoUse(data) {
     const runs = data.bondingRuns || [], key = runs;
@@ -27858,6 +28161,367 @@ Plan it?`
     const card = (title, o, extra) => /* @__PURE__ */ React.createElement("div", { className: "p-3 rounded", style: { border: `1px solid ${BORDER}`, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: INK_MUTED } }, title), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 24, fontWeight: 700, color: INK } }, o ? `${f0(o.median)} m/hour` : "\u2014"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, o ? `${f1(o.median / 60)} m/min \xB7 usually ${f0(o.low)}\u2013${f0(o.high)} m/hour \xB7 ${o.n} timed` : "no timed runs yet", extra));
     const rows = showAll ? r.bonding.byProduct : r.bonding.byProduct.slice(0, 15);
     return /* @__PURE__ */ React.createElement("div", { className: "mt-6" }, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Measured rates", subtitle: "What the lines actually do, worked out from every timed bonding run and glue reel \u2014 the typical rate is the middle run, so one badly logged run cannot move it." }), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4" }, card("Bonding \u2014 all products", r.bonding.overall, r.bonding.untimed ? ` \xB7 ${r.bonding.untimed} runs have no time and are left out` : ""), card("Glue line \u2014 all sizes", r.glue.overall, r.glue.untimed ? ` \xB7 ${r.glue.untimed} reels have no time and are left out` : "")), /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: INK_MUTED } }, "Bonding, by product \u2014 most runs first"), /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm mb-2", style: { borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { color: INK_MUTED, textAlign: "left" } }, /* @__PURE__ */ React.createElement("th", { className: "py-1" }, "Product"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Runs"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Boxes or reels / hour"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Usually"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Metres / hour"))), /* @__PURE__ */ React.createElement("tbody", null, rows.map((g) => /* @__PURE__ */ React.createElement("tr", { key: g.key, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-1" }, g.label), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, g.boxes.n), /* @__PURE__ */ React.createElement("td", { className: "text-right", style: { fontWeight: 600 } }, f1(g.boxes.median)), /* @__PURE__ */ React.createElement("td", { className: "text-right", style: { color: INK_MUTED } }, g.boxes.n >= 3 ? `${f1(g.boxes.low)}\u2013${f1(g.boxes.high)}` : "too few runs"), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, g.metres ? f0(g.metres.median) : "\u2014")))))), r.bonding.byProduct.length > 15 && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setShowAll((v) => !v) }, showAll ? "Show the top 15" : `Show all ${r.bonding.byProduct.length} products`), /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1 mt-4", style: { color: INK_MUTED } }, "Glue line, by size \u2014 most reels first"), /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { borderCollapse: "collapse" } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { color: INK_MUTED, textAlign: "left" } }, /* @__PURE__ */ React.createElement("th", { className: "py-1" }, "Size"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Reels"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Metres / hour"), /* @__PURE__ */ React.createElement("th", { className: "text-right" }, "Usually"))), /* @__PURE__ */ React.createElement("tbody", null, r.glue.bySize.slice(0, showAll ? 999 : 15).map((g) => /* @__PURE__ */ React.createElement("tr", { key: g.key, style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-1" }, g.label), /* @__PURE__ */ React.createElement("td", { className: "text-right" }, g.metres.n), /* @__PURE__ */ React.createElement("td", { className: "text-right", style: { fontWeight: 600 } }, f0(g.metres.median)), /* @__PURE__ */ React.createElement("td", { className: "text-right", style: { color: INK_MUTED } }, g.metres.n >= 3 ? `${f0(g.metres.low)}\u2013${f0(g.metres.high)}` : "too few reels")))))));
+  }
+  function nlMetricsPageNow() {
+    try {
+      const st = window.history.state || {};
+      return st.view === "metrics" ? st.metricsPage || null : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  var NLM = {
+    col: { glue: "#2F5BD3", bond: "#D9482F", ship: "#1E7F3C", mat: "#B7791F", orders: "#1B2B6B", rates: "#6A4FB5", ncr: "#C8102E" },
+    title: {
+      glue: ["Glue line", "Metres off the line"],
+      bond: ["Bonding", "Boxes made"],
+      ship: ["Shipped", "Orders and boxes out of the door"],
+      mat: ["Materials used", "Worked out from what was made"],
+      orders: ["Orders in", "New orders and what they're worth"],
+      rates: ["Rates", "What the lines actually do"],
+      ncr: ["Problems raised", "Non-conformance reports"]
+    },
+    icon: {
+      glue: "M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z",
+      bond: "M3 9h18M3 15h18M7 9v6M12 9v6M17 9v6",
+      ship: "M3 7h11v9H3zM14 10h4l3 3v3h-7M7 16.4a1.6 1.6 0 1 0 0 3.2 1.6 1.6 0 0 0 0-3.2zM17 16.4a1.6 1.6 0 1 0 0 3.2 1.6 1.6 0 0 0 0-3.2z",
+      mat: "M9 6a6 6 0 1 0 0 12 6 6 0 0 0 0-12zM9 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM15 12h6",
+      orders: "M8 4h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM9 9h6M9 13h6M9 17h3",
+      rates: "M4 18a8 8 0 1 1 16 0M12 18l4-6",
+      ncr: "M12 4 3 20h18L12 4zM12 10v4M12 17h.01"
+    },
+    tape: { "10mm": "#2F5BD3", "10mm strong": "#1B2B6B", "12mm": "#7EA2F0", "12mm strong": "#3D4F8F", "7mm": "#B9CBF5", "7mm strong": "#6E7FB8" },
+    mylar: { "10-75": "#B7791F", "12-75": "#E3B26A", "7-75": "#F2D6A6", "7-100": "#8A5A12" },
+    range: { "PX Plus": "#D9482F", "Speedy Crease": "#2EA84A", "Ultra SR": "#E8D3B8", "Smart Formes": "#1F4FA3", "Exceed": "#D5D9E1", "PX": "#8A93A8", "Phoenix XL": "#6A4FB5", "Other": "#A3ABBD" },
+    card: { background: "#fff", borderRadius: 18, padding: "14px 16px 16px", boxShadow: "0 1px 2px rgba(27,43,107,0.06), 0 6px 18px rgba(27,43,107,0.06)", marginTop: 12 },
+    amber: { color: "#9A4A06", fontWeight: 600 }
+  };
+  var nlmN = (v) => Math.round(Number(v) || 0).toLocaleString("en-GB");
+  var nlmAxis = (v) => v >= 1e4 ? `${Math.round(v / 1e3)}k` : v >= 1e3 ? `${(v / 1e3).toFixed(1).replace(/\.0$/, "")}k` : String(Math.round(v));
+  var nlmNice = (v) => {
+    if (!(v > 0)) return 1;
+    const e = Math.pow(10, Math.floor(Math.log10(v)));
+    for (const m of [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (m * e >= v) return m * e;
+    return 10 * e;
+  };
+  var nlmWord = (kind) => ({ D: "the day before", W: "last week", M: "last month", Y: "last year" })[kind] || "before";
+  var nlmIn = (kind) => ({ D: "today", W: "this week", M: "this month", Y: "this year" })[kind] || "";
+  function NLMIcon({ k, size = 18, color }) {
+    return /* @__PURE__ */ React.createElement("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: color, strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" }, /* @__PURE__ */ React.createElement("path", { d: NLM.icon[k] }));
+  }
+  function NLMSeg({ value, onChange, opts = ["D", "W", "M", "Y"], labels = null }) {
+    return /* @__PURE__ */ React.createElement("div", { role: "tablist", "data-nlm-seg": true, style: { display: "flex", background: "#E4E8F0", borderRadius: 12, padding: 3, marginTop: 2 } }, opts.map((o, i) => /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        key: o,
+        role: "tab",
+        "aria-selected": value === o,
+        "data-nlm-kind": o,
+        onClick: () => {
+          nlHaptic();
+          onChange(o);
+        },
+        style: { flex: 1, height: 34, border: 0, borderRadius: 10, fontFamily: NLT.FONT, fontSize: 15, fontWeight: value === o ? 600 : 500, background: value === o ? "#fff" : "none", color: NL.INK, boxShadow: value === o ? "0 1px 3px rgba(27,43,107,0.14)" : "none" }
+      },
+      labels ? labels[i] : o
+    )));
+  }
+  function NLMNav({ period, onGo }) {
+    const btn = (to, label, d) => /* @__PURE__ */ React.createElement("button", { "aria-label": label, disabled: !to, onClick: () => to && onGo(to), style: { width: 44, height: 44, border: 0, borderRadius: 22, background: "none", color: to ? NL.NAVY : "#C5CBD6", display: "flex", alignItems: "center", justifyContent: "center" } }, /* @__PURE__ */ React.createElement("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.2", strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" }, /* @__PURE__ */ React.createElement("path", { d })));
+    return /* @__PURE__ */ React.createElement("div", { "data-nlm-period": true, style: { display: "flex", alignItems: "center", margin: "6px -8px 0" } }, btn(period.prev, "Earlier", "m15 6-6 6 6 6"), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, textAlign: "center", fontSize: 14.5, fontWeight: 600, color: NL.INK } }, period.title, period.nowIn && period.kind !== "D" ? /* @__PURE__ */ React.createElement("span", { style: { color: NL.SUB, fontWeight: 500 } }, " \xB7 so far") : null), btn(period.next, "Later", "m9 6 6 6-6 6"));
+  }
+  function NLMChart({ period, vals, stacks = null, color, avg = null, avgLabel = "", height = 190, selected = null, onSelect = null, unit = "", callout = null }) {
+    const tot = vals.map((v) => Number(v) || 0);
+    const M = nlmNice(Math.max(1, ...tot, avg || 0) * 1.05);
+    const n = tot.length;
+    const gap = n > 20 ? 2 : 4;
+    return /* @__PURE__ */ React.createElement("div", { "data-nlm-chart": true }, /* @__PURE__ */ React.createElement("div", { style: { position: "relative", height, marginTop: selected != null ? 54 : 14 } }, [1, 0.5, 0].map((f) => /* @__PURE__ */ React.createElement(React.Fragment, { key: f }, /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: 0, right: 40, top: (1 - f) * height, borderTop: f === 0 ? "1px solid #D5DAE4" : "1px dashed #E2E6EE" } }), /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", right: 0, width: 36, top: (1 - f) * height, transform: "translateY(-50%)", fontSize: 11, color: "#8A93A8" } }, f ? nlmAxis(M * f) : "0"))), /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: 0, right: 40, top: 0, bottom: 0, display: "flex", alignItems: "flex-end", gap } }, tot.map((v, i) => {
+      const st = stacks ? stacks[i] : [[v, color]];
+      const h = height * v / M;
+      const dim = selected != null && selected !== i;
+      return /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          key: i,
+          "data-nlm-bar": i,
+          "aria-label": `${period.buckets[i].long}: ${nlmN(v)}${unit ? " " + unit : ""}`,
+          onClick: () => onSelect && onSelect(selected === i ? null : i),
+          style: { flex: 1, height: "100%", border: 0, padding: 0, background: "none", display: "flex", flexDirection: "column", justifyContent: "flex-end", alignItems: "center", minWidth: 0 }
+        },
+        /* @__PURE__ */ React.createElement("span", { style: { width: n > 20 ? "82%" : "70%", height: Math.max(v > 0 ? 2 : 0, h), borderRadius: "4px 4px 0 0", overflow: "hidden", display: "flex", flexDirection: "column-reverse", opacity: dim ? 0.35 : 1, transition: "opacity 200ms" } }, st.filter(([x]) => x > 0).map(([x, c], j) => /* @__PURE__ */ React.createElement("i", { key: j, style: { display: "block", flex: "none", height: `${100 * x / (v || 1)}%`, background: c, boxShadow: /^#(F|E|D)/i.test(c) ? "inset 0 0 0 1px rgba(0,0,0,0.12)" : "none" } })))
+      );
+    })), avg > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: 0, right: 40, top: (1 - avg / M) * height, borderTop: `2px dashed ${color}`, pointerEvents: "none" } }), /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", right: 0, top: (1 - avg / M) * height, transform: "translateY(-50%)", fontSize: 10.5, fontWeight: 600, padding: "1px 5px", borderRadius: 5, background: color, color: "#fff", pointerEvents: "none" } }, avgLabel)), selected != null && callout && /* @__PURE__ */ React.createElement("div", { "data-nlm-callout": true, style: { position: "absolute", top: -50, left: `calc(${Math.min(68, Math.max(0, 100 * (selected + 0.5) / n - 18))}% )`, background: NL.PANEL, borderRadius: 12, padding: "6px 10px", boxShadow: "0 2px 8px rgba(27,43,107,0.12)", whiteSpace: "nowrap", zIndex: 2 } }, callout)), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap, marginRight: 40, marginTop: 5 } }, period.buckets.map((b, i) => /* @__PURE__ */ React.createElement("span", { key: i, style: { flex: 1, textAlign: "center", fontSize: 11.5, color: selected === i ? NL.INK : "#8A93A8", fontWeight: selected === i ? 600 : 400, whiteSpace: "nowrap" } }, b.label))));
+  }
+  function NLMMini({ vals, color, period }) {
+    const M = Math.max(1, ...vals);
+    const n = vals.length;
+    const lab = period.kind === "W" ? period.buckets.map((b) => b.label[0]) : period.kind === "Y" ? period.buckets.map((b) => b.label) : null;
+    return /* @__PURE__ */ React.createElement("div", { "aria-hidden": "true", style: { width: 132, flex: "none" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-end", gap: n > 20 ? 1 : 4, height: 46 } }, vals.map((v, i) => /* @__PURE__ */ React.createElement("i", { key: i, style: { flex: 1, display: "block", height: v > 0 ? Math.max(3, 46 * v / M) : 3, borderRadius: "3px 3px 0 0", background: v > 0 ? color : "#E4E8F0" } }))), lab && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 4, marginTop: 3 } }, lab.map((l, i) => /* @__PURE__ */ React.createElement("span", { key: i, style: { flex: 1, textAlign: "center", fontSize: 10.5, color: "#8A93A8" } }, l))));
+  }
+  function NLMHead({ k, when, right = null, label = null }) {
+    return /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, color: NLM.col[k], fontSize: 15, fontWeight: 600 } }, /* @__PURE__ */ React.createElement(NLMIcon, { k, color: NLM.col[k] }), /* @__PURE__ */ React.createElement("span", null, label || NLM.title[k][0]), /* @__PURE__ */ React.createElement("span", { style: { marginLeft: "auto", fontSize: 13, fontWeight: 500, color: "#8A93A8", display: "flex", alignItems: "center", gap: 4 } }, right || when, /* @__PURE__ */ React.createElement("svg", { width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: "#A3ABBD", strokeWidth: "2.2", strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" }, /* @__PURE__ */ React.createElement("path", { d: "m9 6 6 6-6 6" }))));
+  }
+  var nlmBig = (n, unit, size = 30) => /* @__PURE__ */ React.createElement("div", { style: { fontSize: size, fontWeight: 600, letterSpacing: -1, lineHeight: 1.05, fontVariantNumeric: "tabular-nums", color: NL.INK } }, n, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15, fontWeight: 500, color: NL.SUB, letterSpacing: 0 } }, " ", unit));
+  var nlmSay = (children, style = {}) => /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, lineHeight: 1.38, marginTop: 8, color: NL.INK, ...style } }, children);
+  var nlmCap = (children, style = {}) => /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: NL.SUB, ...style } }, children);
+  var nlmRow = (key, children, style = {}) => /* @__PURE__ */ React.createElement("div", { key, style: { display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderTop: "1px solid #EEF1F6", ...style } }, children);
+  var nlmTeal = (n) => /* @__PURE__ */ React.createElement("span", { style: { background: NLT.TEAL, color: "#fff", fontWeight: 600, fontSize: 12.5, padding: "2px 8px", borderRadius: 7, fontVariantNumeric: "tabular-nums" } }, n);
+  var nlmTime = (t) => {
+    if (!t) return "";
+    const h = Number(t.slice(0, 2));
+    return `${h > 12 ? h - 12 : h || 12}:${t.slice(3, 5)}${h < 12 ? "am" : "pm"}`;
+  };
+  function nlmTapeInfo(data) {
+    let use = null;
+    try {
+      use = materialsAutoUse(data);
+    } catch (e) {
+    }
+    const mats = new Map((data.materials || []).filter((m) => m && !m.deleted).map((m) => [m.id, m]));
+    const roll = { "10mm": 5e3, "12mm": 4e3, "7mm": 5e3 };
+    const out = {};
+    for (const k of TAPE_KEYS) {
+      const id = `mat-tape-${k.replace("mm", "").replace(" strong", "")}${/strong/.test(k) ? "-strong" : ""}`;
+      const m = mats.get(id);
+      const len = m && (Number(m.fullMetres) || Number(((m.batches || []).find((b) => b && Number(b.metres)) || {}).metres)) || roll[k.split(" ")[0]];
+      const w = use && use.byId.get(id) && use.byId.get(id).waste != null ? use.byId.get(id).waste : 0.05;
+      out[k] = { roll: len, waste: w };
+    }
+    return out;
+  }
+  function nlmLineSpeeds(data) {
+    const r = Object.fromEntries((data.productionRates && data.productionRates.length ? data.productionRates : DEFAULT_PRODUCTION_RATES).map((x) => [x.line, Number(x.metersPerMin) || 0]));
+    return { bonding: r.bonding || 20, glue: r.glue || 11 };
+  }
+  function NLMetrics({ data, setData }) {
+    const today = todayISO();
+    const [kind, setKind] = useState("W");
+    const [anchor, setAnchor] = useState(today);
+    const [sel, setSel] = useState(null);
+    const [showAll, setShowAll] = useState(false);
+    const [page, setPageState] = useState(() => {
+      try {
+        const st = window.history.state || {};
+        return st.view === "metrics" ? st.metricsPage || null : null;
+      } catch (e) {
+        return null;
+      }
+    });
+    useEffect(() => {
+      const f = (e) => {
+        const st = e.state || {};
+        if (st.view === "metrics") {
+          setPageState(st.metricsPage || null);
+          setSel(null);
+          setShowAll(false);
+        }
+      };
+      window.addEventListener("popstate", f);
+      return () => window.removeEventListener("popstate", f);
+    }, []);
+    const openPage = (k) => {
+      nlHaptic();
+      try {
+        const st = window.history.state || {};
+        if (st.metricsPage !== k) {
+          window.history.pushState({ ...st, depth: (st.depth || 0) + 1, metricsPage: k, from: "Metrics", fromView: "metrics", fromTab: st.tab || st.fromTab }, "");
+          window.dispatchEvent(new Event("mx-pushed"));
+        }
+      } catch (e) {
+      }
+      setPageState(k);
+      setSel(null);
+      setShowAll(false);
+      try {
+        window.scrollTo(0, 0);
+      } catch (e) {
+      }
+    };
+    const index = useMemo(() => metricsIndex(data), [data.glueLineBatches, data.bondingRuns, data.movements, data.orders, data.lineItems, data.materialMovements, data.ncrs]);
+    const period = useMemo(() => metricsPeriod(kind, anchor, today), [kind, anchor, today]);
+    const before = useMemo(() => metricsPeriod(kind, period.prev, today), [kind, period.prev, today]);
+    const S = useMemo(() => metricsSlice(index, period), [index, period]);
+    const P = useMemo(() => metricsSlice(index, before), [index, before]);
+    const rates = useMemo(() => {
+      try {
+        return measuredRates(data);
+      } catch (e) {
+        return null;
+      }
+    }, [data.bondingRuns, data.glueLineBatches, data.productForms, data.products]);
+    const tapeInfo = useMemo(() => nlmTapeInfo(data), [data.materials, data.materialMovements, data.bondingRuns, data.glueLineBatches]);
+    const speeds = nlmLineSpeeds(data);
+    const setKindKeep = (k) => {
+      setKind(k);
+      setSel(null);
+    };
+    const goDay = (iso) => {
+      setKind("D");
+      setAnchor(iso);
+      setSel(null);
+    };
+    const daysSoFar = metricsDaysSoFar(period, today), daysBefore = metricsDaysSoFar(before, today);
+    const per = (t, d) => d > 0 ? t / d : 0;
+    const when = { D: period.from === today ? "Today" : metricsDayLabel(period.from), W: period.nowIn ? "This week" : "That week", M: period.nowIn ? "This month" : "That month", Y: period.nowIn ? "This year" : "That year" }[kind];
+    const kindWord = nlmIn(kind);
+    const compare = (now, then, unit) => kind === "D" ? `${nlmWord(kind).replace(/^./, (c2) => c2.toUpperCase())}: ${nlmN(then)} ${unit}.` : `${nlmN(per(now, daysSoFar))} ${unit} a working day, against ${nlmN(per(then, daysBefore))} ${nlmWord(kind)}.`;
+    const zeroDays = (vals) => kind === "W" ? period.buckets.map((b, i) => ({ b, v: vals[i] })).filter((x) => x.b.from <= today && x.v === 0 && ![0, 6].includes((/* @__PURE__ */ new Date(x.b.from + "T12:00:00")).getDay())) : [];
+    const best = (vals) => {
+      let bi = -1;
+      vals.forEach((v, i) => {
+        if (v > 0 && (bi < 0 || v > vals[bi])) bi = i;
+      });
+      return bi;
+    };
+    const tapeTot = S.totals.tapeM;
+    const tapeTop = Object.entries(S.tape).sort((a, b) => b[1] - a[1])[0];
+    const rollsOf = (k, m) => m * (1 + tapeInfo[k].waste) / tapeInfo[k].roll;
+    const tapeWaste = Object.entries(S.tape).reduce((t, [k, m]) => t + m * (1 + tapeInfo[k].waste), 0);
+    const cartonsTot = Object.values(S.cartons).reduce((t, v) => t + v, 0), casesTot = Object.values(S.cases).reduce((t, v) => t + v, 0);
+    const matName = (id) => {
+      const m = (data.materials || []).find((x) => x && x.id === id);
+      return m ? m.name : id.replace(/^mat-/, "");
+    };
+    const unpriced = S.newOrders.filter((o) => !o.priced), future = S.newOrders.filter((o) => o.day > today);
+    const exceedMade = S.bond.filter((r) => r.range === "Exceed").reduce((t, r) => t + r.boxes, 0), exceedCartons = S.cartons["mat-box-exceed"] || 0;
+    const orderCust = (id) => {
+      const o = (data.orders || []).find((x) => x && x.id === id);
+      return o ? o.customer : id;
+    };
+    const top = /* @__PURE__ */ React.createElement(React.Fragment, null, kind && /* @__PURE__ */ React.createElement(NLMSeg, { value: kind, onChange: setKindKeep }), /* @__PURE__ */ React.createElement(NLMNav, { period, onGo: (a) => {
+      setAnchor(a);
+      setSel(null);
+    } }));
+    if (!page) {
+      const card = (k, body2) => /* @__PURE__ */ React.createElement("button", { key: k, "data-nlm-card": k, onClick: () => openPage(k), style: { ...NLM.card, display: "block", width: "100%", textAlign: "left", border: 0, font: "inherit", color: NL.INK } }, /* @__PURE__ */ React.createElement(NLMHead, { k, when: k === "rates" ? "Every timed run" : when }), body2);
+      const gz = zeroDays(S.glueM);
+      const bb = best(S.boxes);
+      return /* @__PURE__ */ React.createElement("div", { "data-nlm-front": true, style: { fontFamily: NLT.FONT, paddingBottom: 8 } }, top, card("glue", /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-end", gap: 12, marginTop: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 }, "data-nlm-figure": "glue" }, nlmBig(nlmN(S.totals.glueM), "m"), nlmCap(`${S.totals.reels} reel${S.totals.reels === 1 ? "" : "s"}`, { marginTop: 3 })), /* @__PURE__ */ React.createElement(NLMMini, { vals: S.glueM, color: NLM.col.glue, period })), nlmSay(/* @__PURE__ */ React.createElement(React.Fragment, null, S.totals.glueM || P.totals.glueM ? compare(S.totals.glueM, P.totals.glueM, "m") : `Nothing glued ${kindWord}.`, gz.length === 1 ? ` Nothing was glued on ${DAYNAME(gz[0].b.from)}.` : gz.length > 1 ? ` Nothing glued on ${gz.length} working days.` : "")))), card("bond", /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-end", gap: 12, marginTop: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 }, "data-nlm-figure": "bond" }, nlmBig(nlmN(S.totals.boxes), "boxes"), nlmCap(`${S.totals.runs} runs \xB7 ${nlmN(S.totals.bondM)} m`, { marginTop: 3 })), /* @__PURE__ */ React.createElement(NLMMini, { vals: S.boxes, color: NLM.col.bond, period })), nlmSay(/* @__PURE__ */ React.createElement(React.Fragment, null, S.totals.boxes || P.totals.boxes ? compare(S.totals.boxes, P.totals.boxes, "boxes") : `Nothing bonded ${kindWord}.`, bb >= 0 && kind !== "D" ? ` Best: ${period.buckets[bb].long}, ${nlmN(S.boxes[bb])}.` : "")))), card("ship", /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-end", gap: 12, marginTop: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 }, "data-nlm-figure": "ship" }, nlmBig(S.totals.shippedOrders, S.totals.shippedOrders === 1 ? "order" : "orders"), nlmCap(`${nlmN(S.totals.shippedBoxes)} boxes`, { marginTop: 3 })), kind !== "D" && /* @__PURE__ */ React.createElement(NLMMini, { vals: S.shippedOrderN, color: NLM.col.ship, period })), nlmSay(S.totals.shippedOrders ? /* @__PURE__ */ React.createElement(React.Fragment, null, S.shippedOrders.slice(0, 3).map((o) => o.customer).join(", "), S.shippedOrders.length > 3 ? ` and ${S.shippedOrders.length - 3} more` : "", ". ", nlmWord(kind).replace(/^./, (c2) => c2.toUpperCase()), ": ", P.totals.shippedOrders, ".") : `Nothing shipped ${kindWord}.`))), card("mat", /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-end", gap: 12, marginTop: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 }, "data-nlm-figure": "mat" }, nlmBig(nlmN(tapeTot), "m tape"), nlmCap("worked out from what was made", { marginTop: 3 })), /* @__PURE__ */ React.createElement(NLMMini, { vals: S.tapeM, color: NLM.col.mat, period })), nlmSay(tapeTot ? /* @__PURE__ */ React.createElement(React.Fragment, null, "Mostly ", tapeTop[0], " \u2014 about ", /* @__PURE__ */ React.createElement("b", null, rollsOf(tapeTop[0], tapeTop[1]).toFixed(1), " rolls"), " with waste. ", nlmN(cartonsTot), " cartons and ", nlmN(casesTot), " cases.") : `No tape used ${kindWord}.`))), card("orders", /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 14, marginTop: 8, flexWrap: "wrap" }, "data-nlm-figure": "orders" }, nlmBig(S.totals.newOrders, S.totals.newOrders === 1 ? "order" : "orders"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 24, fontWeight: 600, letterSpacing: -0.8, fontVariantNumeric: "tabular-nums" } }, "\xA3", S.totals.newValue.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 }))), nlmSay(S.totals.newOrders ? /* @__PURE__ */ React.createElement(React.Fragment, null, (() => {
+        const big = [...S.newOrders].sort((a, b) => b.boxes - a.boxes)[0];
+        return /* @__PURE__ */ React.createElement(React.Fragment, null, "Biggest: ", /* @__PURE__ */ React.createElement("b", null, big.customer), ", ", nlmN(big.boxes), " boxes.");
+      })(), unpriced.length ? /* @__PURE__ */ React.createElement("span", { style: NLM.amber }, " ", unpriced.length === 1 ? `${unpriced[0].customer} has` : `${unpriced.length} have`, " no prices yet, so the \xA3 leaves ", unpriced.length === 1 ? "it" : "them", " out.") : null) : `No new orders ${kindWord}.`))), card("rates", /* @__PURE__ */ React.createElement(React.Fragment, null, rates && rates.bonding.overall && rates.glue.overall ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 12, marginTop: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, nlmCap("Bonding"), nlmBig(nlmN(rates.bonding.overall.median), "m/h", 24), nlmCap(`usually ${nlmN(rates.bonding.overall.low)}\u2013${nlmN(rates.bonding.overall.high)}`)), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, nlmCap("Glue line"), nlmBig(nlmN(rates.glue.overall.median), "m/h", 24), nlmCap(`usually ${nlmN(rates.glue.overall.low)}\u2013${nlmN(rates.glue.overall.high)}`))), nlmSay(/* @__PURE__ */ React.createElement(React.Fragment, null, "Bonding runs at about ", /* @__PURE__ */ React.createElement("b", null, Math.round(100 * rates.bonding.overall.median / (speeds.bonding * 60)), "% of its ", speeds.bonding, " m/min"), " once set-ups are counted."))) : nlmSay("No timed runs yet."))), card("ncr", /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, marginTop: 8 }, "data-nlm-figure": "ncr" }, nlmBig(S.totals.ncrs, S.totals.ncrs === 1 ? "NCR" : "NCRs"), S.ncrs.length ? nlmCap(`last ${metricsDayLabel(S.ncrs[S.ncrs.length - 1].day)}`) : null))));
+    }
+    const c = NLM.col[page];
+    const totalCard = (big, unit, vals, opts = {}) => {
+      const { stacks = null, avgUnit = unit, sub = null, dayLink = true } = opts;
+      const avg = kind === "D" || kind === "Y" ? null : per(vals.reduce((t, v) => t + v, 0), daysSoFar);
+      return /* @__PURE__ */ React.createElement("div", { style: NLM.card, "data-nlm-total": true }, nlmCap("TOTAL", { fontWeight: 600, letterSpacing: 0.2 }), nlmBig(big, unit, 36), nlmCap(sub || `${period.title}${period.nowIn && kind !== "D" ? " \xB7 so far" : ""}`), /* @__PURE__ */ React.createElement(
+        NLMChart,
+        {
+          period,
+          vals,
+          stacks,
+          color: c,
+          avg,
+          avgLabel: `avg ${nlmAxis(avg || 0)}`,
+          selected: sel,
+          onSelect: setSel,
+          unit: avgUnit,
+          callout: sel != null ? /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: NL.SUB } }, period.buckets[sel].long), /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, fontSize: 15 } }, nlmN(vals[sel]), " ", /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: NL.SUB, fontWeight: 500 } }, avgUnit), dayLink && kind !== "D" && kind !== "Y" && /* @__PURE__ */ React.createElement("button", { "data-nlm-openday": true, onClick: () => goDay(period.buckets[sel].from), style: { marginLeft: 8, border: 0, background: "none", color: NL.NAVY, fontWeight: 600, fontSize: 13, padding: 0 } }, "Open the day \u203A"), kind === "Y" && /* @__PURE__ */ React.createElement("button", { "data-nlm-openday": true, onClick: () => {
+            setKind("M");
+            setAnchor(period.buckets[sel].from);
+            setSel(null);
+          }, style: { marginLeft: 8, border: 0, background: "none", color: NL.NAVY, fontWeight: 600, fontSize: 13, padding: 0 } }, "Open the month \u203A"))) : null
+        }
+      ));
+    };
+    const highlights = (lines) => lines.filter(Boolean).length ? /* @__PURE__ */ React.createElement("div", { style: NLM.card, "data-nlm-highlights": true }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, fontSize: 16 } }, "Highlights"), lines.filter(Boolean).map((l, i) => nlmSay(l, i ? { borderTop: "1px solid #EEF1F6", paddingTop: 10 } : {}))) : null;
+    const more = (n, cap = 8) => n > cap ? /* @__PURE__ */ React.createElement("button", { "data-nlm-more": true, onClick: () => setShowAll((v) => !v), style: { width: "100%", height: 44, marginTop: 6, border: 0, borderRadius: 12, background: NL.PANEL, color: NL.NAVY, fontFamily: NLT.FONT, fontWeight: 600, fontSize: 14.5 } }, showAll ? "Show fewer" : `Show all ${n}`) : null;
+    const listCard = (title, right, rows, n, cap = 8) => /* @__PURE__ */ React.createElement("div", { style: NLM.card }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "baseline" } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, fontSize: 16 } }, title), right ? nlmCap(right, { marginLeft: "auto" }) : null), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 4 } }, rows), more(n, cap));
+    const empty = (text) => /* @__PURE__ */ React.createElement("div", { style: NLM.card }, nlmSay(text, { marginTop: 0, color: NL.SUB }));
+    let body = null;
+    if (page === "glue") {
+      const st = longestStretch(S.glue);
+      const dayList = kind === "D" ? (() => {
+        const xs = [...S.glue].sort((a, b) => String(a.t || "").localeCompare(String(b.t || "")));
+        let prev = null;
+        return listCard("The day, reel by reel", "metres \xB7 time", xs.map((x, i) => {
+          const change = prev && prev !== x.size;
+          prev = x.size;
+          return /* @__PURE__ */ React.createElement(React.Fragment, { key: i }, change && /* @__PURE__ */ React.createElement("div", { "data-nlm-change": true, style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 0 6px 44px", fontSize: 12.5, ...NLM.amber } }, /* @__PURE__ */ React.createElement("span", { style: { flex: 1, borderTop: "1px dashed #E8C9A0" } }), "changed to ", x.size, /* @__PURE__ */ React.createElement("span", { style: { flex: 1, borderTop: "1px dashed #E8C9A0" } })), nlmRow("r", /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(MatrixFace, { spec: x.size, w: 34 }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, fontSize: 14 } }, x.size, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: NL.SUB } }, x.code)), /* @__PURE__ */ React.createElement("b", { style: { fontVariantNumeric: "tabular-nums" } }, nlmN(x.m)), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: NL.SUB, width: 54, textAlign: "right" } }, nlmTime(x.t))), { padding: "8px 0" }));
+        }), 0);
+      })() : null;
+      body = /* @__PURE__ */ React.createElement(React.Fragment, null, totalCard(nlmN(S.totals.glueM), "m", S.glueM, { stacks: kind === "D" ? period.buckets.map((b) => S.glue.filter((x) => x.t && Number(x.t.slice(0, 2)) === b.hour).map((x) => [x.m, productColourFor(x.size) && productColourFor(x.size).hex || c])) : null, sub: `${period.title} \xB7 ${S.totals.reels} reel${S.totals.reels === 1 ? "" : "s"}${kind === "D" ? " \xB7 each bar in its matrix colour" : ""}` }), highlights([
+        kind !== "D" && S.totals.glueM ? /* @__PURE__ */ React.createElement(React.Fragment, null, "You glued an average of ", /* @__PURE__ */ React.createElement("b", null, nlmN(per(S.totals.glueM, daysSoFar)), " m"), " a working day, against ", /* @__PURE__ */ React.createElement("b", null, nlmN(per(P.totals.glueM, daysBefore)), " m"), " ", nlmWord(kind), ".") : null,
+        st ? /* @__PURE__ */ React.createElement(React.Fragment, null, "Longest stretch on one size: ", /* @__PURE__ */ React.createElement("b", null, st.size), ", ", st.n, " reels ", kind === "D" ? "in a row" : `on ${DAYNAME(st.day)}`, ".") : null,
+        kind === "D" && S.totals.reels ? /* @__PURE__ */ React.createElement(React.Fragment, null, S.totals.reels, " reels, ", new Set(S.glue.map((x) => x.size)).size, " size", new Set(S.glue.map((x) => x.size)).size === 1 ? "" : "s", ". ", nlmWord(kind).replace(/^./, (x) => x.toUpperCase()), ": ", nlmN(P.totals.glueM), " m.") : null
+      ]), kind === "D" ? S.glue.length ? dayList : empty("Nothing glued that day.") : S.bySize.length ? listCard("By size", "metres \xB7 reels", (showAll ? S.bySize : S.bySize.slice(0, 8)).map((g, i) => nlmRow(i, /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(MatrixFace, { spec: g.size, w: 34 }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, fontSize: 14.5, lineHeight: 1.25 } }, g.size, /* @__PURE__ */ React.createElement("div", { style: { height: 5, borderRadius: 3, background: "#EEF1F6", marginTop: 6, position: "relative" } }, /* @__PURE__ */ React.createElement("i", { style: { position: "absolute", left: 0, top: 0, bottom: 0, borderRadius: 3, width: `${100 * g.m / S.bySize[0].m}%`, background: c } }))), /* @__PURE__ */ React.createElement("div", { style: { textAlign: "right" } }, /* @__PURE__ */ React.createElement("b", { style: { fontVariantNumeric: "tabular-nums" } }, nlmN(g.m)), nlmCap(g.reels))))), S.bySize.length) : empty(`Nothing glued ${kindWord}.`));
+    }
+    if (page === "bond") {
+      const bi = best(S.boxes);
+      const ranges = Object.entries(S.byRange).sort((a, b) => b[1] - a[1]);
+      body = /* @__PURE__ */ React.createElement(React.Fragment, null, totalCard(nlmN(S.totals.boxes), "boxes", S.boxes, { sub: `${period.title} \xB7 ${S.totals.runs} runs \xB7 ${nlmN(S.totals.bondM)} m` }), highlights([
+        kind !== "D" && S.totals.boxes ? /* @__PURE__ */ React.createElement(React.Fragment, null, "You bonded an average of ", /* @__PURE__ */ React.createElement("b", null, nlmN(per(S.totals.boxes, daysSoFar)), " boxes"), " a working day, against ", /* @__PURE__ */ React.createElement("b", null, nlmN(per(P.totals.boxes, daysBefore))), " ", nlmWord(kind), ".") : null,
+        bi >= 0 && kind !== "D" ? /* @__PURE__ */ React.createElement(React.Fragment, null, "Best ", kind === "Y" ? "month" : "day", ": ", /* @__PURE__ */ React.createElement("b", null, period.buckets[bi].long), ", ", nlmN(S.boxes[bi]), " boxes.") : null,
+        kind === "D" && S.totals.boxes ? /* @__PURE__ */ React.createElement(React.Fragment, null, nlmWord(kind).replace(/^./, (x) => x.toUpperCase()), ": ", nlmN(P.totals.boxes), " boxes.") : null
+      ]), ranges.length > 0 && /* @__PURE__ */ React.createElement("div", { style: NLM.card, "data-nlm-ranges": true }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, fontSize: 16 } }, "By range"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", height: 12, borderRadius: 6, overflow: "hidden", margin: "12px 0 6px" } }, ranges.map(([r, v]) => /* @__PURE__ */ React.createElement("i", { key: r, style: { display: "block", flex: v, background: NLM.range[r] || NLM.range.Other } }))), ranges.map(([r, v]) => nlmRow(r, /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { style: { width: 9, height: 9, borderRadius: 3, background: NLM.range[r] || NLM.range.Other, boxShadow: "inset 0 0 0 1px rgba(0,0,0,.12)", flex: "none" } }), /* @__PURE__ */ React.createElement("span", { style: { flex: 1 } }, r), /* @__PURE__ */ React.createElement("b", { style: { fontVariantNumeric: "tabular-nums" } }, nlmN(v)), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: NL.SUB, width: 42, textAlign: "right" } }, Math.round(100 * v / (S.totals.boxes || 1)), "%")), { padding: "8px 0" }))), kind === "D" ? S.bond.length ? listCard("The day, run by run", "boxes \xB7 time", [...S.bond].sort((a, b) => String(a.t || "").localeCompare(String(b.t || ""))).map((x, i) => nlmRow(i, /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(MatrixFace, { spec: x.size, w: 34 }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, fontSize: 14 } }, x.size, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: NL.SUB } }, x.code, x.order ? ` \xB7 ${orderCust(x.order)}` : " \xB7 to stock")), nlmTeal(nlmN(x.boxes)), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: NL.SUB, width: 54, textAlign: "right" } }, nlmTime(x.t))), { padding: "8px 0" })), 0) : empty("Nothing bonded that day.") : S.byBondSize.length ? listCard("By product", "boxes \xB7 runs", (showAll ? S.byBondSize : S.byBondSize.slice(0, 8)).map((g, i) => nlmRow(i, /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(MatrixFace, { spec: g.size, w: 34 }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, fontSize: 14.5 } }, g.size), nlmTeal(nlmN(g.boxes)), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: NL.SUB, width: 26, textAlign: "right" } }, g.runs)))), S.byBondSize.length) : empty(`Nothing bonded ${kindWord}.`));
+    }
+    if (page === "ship") {
+      body = /* @__PURE__ */ React.createElement(React.Fragment, null, kind === "D" ? /* @__PURE__ */ React.createElement("div", { style: NLM.card, "data-nlm-total": true }, nlmCap("TOTAL", { fontWeight: 600 }), nlmBig(S.totals.shippedOrders, S.totals.shippedOrders === 1 ? "order" : "orders", 36), nlmCap(`${period.title} \xB7 ${nlmN(S.totals.shippedBoxes)} boxes`)) : totalCard(String(S.totals.shippedOrders), S.totals.shippedOrders === 1 ? "order" : "orders", S.shippedOrderN, { sub: `${period.title} \xB7 ${nlmN(S.totals.shippedBoxes)} boxes`, avgUnit: "orders", dayLink: false }), highlights([S.totals.shippedBoxes ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("b", null, nlmN(S.totals.shippedBoxes), " boxes"), " went out, against ", nlmN(P.totals.shippedBoxes), " ", nlmWord(kind), ".") : null]), S.shippedOrders.length ? listCard("What went", "shipped", S.shippedOrders.map((o, i) => nlmRow(i, /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14.5, fontWeight: 600 } }, o.customer), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: NL.SUB } }, o.id)), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: NL.SUB } }, metricsDayLabel(o.day))))), 0) : empty(`Nothing shipped ${kindWord}.`));
+    }
+    if (page === "mat") {
+      const keys = TAPE_KEYS.filter((k) => S.tape[k]);
+      const stacks = S.tapeBy.map((o) => TAPE_KEYS.filter((k) => o[k]).map((k) => [o[k], NLM.tape[k]]));
+      const mylarRows = [...Object.keys(MYLAR_NAMES).filter((k) => S.mylar[k]).map((k) => [MYLAR_NAMES[k], S.mylar[k], NLM.mylar[k]]), ...S.mylar.unknown ? [["Not recorded", S.mylar.unknown, null]] : []];
+      const mylarTot = mylarRows.reduce((t, r) => t + r[1], 0);
+      body = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: NLM.card, "data-nlm-tape": true }, /* @__PURE__ */ React.createElement(NLMHead, { k: "mat", when, label: "Bonding tape" }), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8 } }), nlmBig(nlmN(tapeWaste), "m with waste"), nlmCap(`${nlmN(tapeTot)} m of matrix bonded, plus each tape's learned waste`), /* @__PURE__ */ React.createElement(
+        NLMChart,
+        {
+          period,
+          vals: S.tapeM,
+          stacks,
+          color: c,
+          height: 150,
+          selected: sel,
+          onSelect: setSel,
+          unit: "m",
+          callout: sel != null ? /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: NL.SUB } }, period.buckets[sel].long), /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, fontSize: 15 } }, nlmN(S.tapeM[sel]), " ", /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: NL.SUB, fontWeight: 500 } }, "m"))) : null
+        }
+      ), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, keys.length ? keys.map((k) => nlmRow(k, /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { style: { width: 9, height: 9, borderRadius: 3, background: NLM.tape[k], flex: "none" } }), /* @__PURE__ */ React.createElement("span", { style: { flex: 1 } }, k), /* @__PURE__ */ React.createElement("b", { style: { fontVariantNumeric: "tabular-nums" } }, nlmN(S.tape[k] * (1 + tapeInfo[k].waste)), " m"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, fontWeight: 600, padding: "3px 8px", borderRadius: 8, background: NL.PANEL, color: NL.SUB, marginLeft: 8 }, "data-nlm-rolls": true }, rollsOf(k, S.tape[k]).toFixed(1), " rolls")), { padding: "8px 0" })) : nlmCap(`No tape used ${kindWord}.`, { marginTop: 6 }))), /* @__PURE__ */ React.createElement("div", { style: NLM.card, "data-nlm-mylar": true }, /* @__PURE__ */ React.createElement(NLMHead, { k: "mat", when, label: "Mylar" }), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8 } }, nlmBig(nlmN(mylarTot), "m")), mylarTot > 0 && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", height: 12, borderRadius: 6, overflow: "hidden", margin: "12px 0 4px", background: "#EEF1F6" } }, mylarRows.map(([n, v, col]) => /* @__PURE__ */ React.createElement("i", { key: n, style: { display: "block", flex: v, background: col || "#C9CDD6", backgroundImage: col ? "none" : "repeating-linear-gradient(135deg,#fff 0 3px,transparent 3px 6px)" } }))), mylarRows.map(([n, v, col]) => nlmRow(n, /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { style: { width: 9, height: 9, borderRadius: 3, background: col || "#C9CDD6", flex: "none" } }), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, ...col ? {} : NLM.amber } }, n), /* @__PURE__ */ React.createElement("b", { style: { fontVariantNumeric: "tabular-nums" } }, nlmN(v), " m")), { padding: "8px 0" })), S.mylar.unknown > 0 && nlmSay(`${Math.round(100 * S.mylar.unknown / (mylarTot || 1))}% of these metres can't say which mylar \u2014 the run names no glue reel, or the reel has no mylar recorded.`, { fontSize: 13.5, ...NLM.amber })), /* @__PURE__ */ React.createElement("div", { style: NLM.card, "data-nlm-cartons": true }, /* @__PURE__ */ React.createElement(NLMHead, { k: "mat", when, label: "Cartons and cases" }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 12, marginTop: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, nlmCap("Cartons"), nlmBig(nlmN(cartonsTot), "", 26), nlmCap(Object.entries(S.cartons).sort((a, b) => b[1] - a[1]).map(([id, v]) => `${matName(id)} ${nlmN(v)}`).join(" \xB7 ") || "none")), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, nlmCap("Cases out"), nlmBig(nlmN(casesTot), "", 26), nlmCap(Object.entries(S.cases).sort((a, b) => b[1] - a[1]).map(([id, v]) => `${matName(id).replace(/ box capacity/, "-box")} ${nlmN(v)}`).join(" \xB7 ") || "none"))), exceedMade > 0 && exceedCartons < exceedMade && nlmSay(`${nlmN(exceedMade)} Exceed boxes made ${kindWord}, ${exceedCartons ? `only ${nlmN(exceedCartons)}` : "no"} Exceed cartons taken off.`, { fontSize: 13.5, ...NLM.amber })), /* @__PURE__ */ React.createElement("div", { style: NLM.card, "data-nlm-opened": true }, /* @__PURE__ */ React.createElement(NLMHead, { k: "mat", when, label: "Opened" }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 } }, Object.entries(S.opened).length ? Object.entries(S.opened).sort((a, b) => b[1] - a[1]).map(([id, v]) => /* @__PURE__ */ React.createElement("span", { key: id, style: { fontSize: 13, fontWeight: 600, padding: "4px 10px", borderRadius: 8, background: NL.PANEL, color: NL.SUB } }, `${matName(id)} \xB7 ${nlmN(v)}`)) : nlmCap("Nothing opened.")), nlmCap("From the Opened buttons on Materials.", { marginTop: 8 })));
+    }
+    if (page === "orders") {
+      body = /* @__PURE__ */ React.createElement(React.Fragment, null, kind === "D" ? /* @__PURE__ */ React.createElement("div", { style: NLM.card, "data-nlm-total": true }, nlmCap("TOTAL", { fontWeight: 600 }), nlmBig(S.totals.newOrders, S.totals.newOrders === 1 ? "order" : "orders", 36), nlmCap(period.title)) : totalCard(String(S.totals.newOrders), S.totals.newOrders === 1 ? "order" : "orders", S.newOrderN, { sub: `${period.title} \xB7 \xA3${S.totals.newValue.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, avgUnit: "orders", dayLink: false }), highlights([
+        unpriced.length ? /* @__PURE__ */ React.createElement("span", { style: NLM.amber }, unpriced.map((o) => o.customer).join(" and "), " ", unpriced.length === 1 ? "has" : "have", " no prices yet, so the \xA3 leaves ", unpriced.length === 1 ? "it" : "them", " out.") : null,
+        future.length ? /* @__PURE__ */ React.createElement("span", { style: NLM.amber }, future.map((o) => `${o.customer} (${o.id})`).join(", "), " ", future.length === 1 ? "is" : "are", " dated after today \u2014 check the order date.") : null
+      ]), S.newOrders.length ? listCard("What came in", "boxes \xB7 value", [...S.newOrders].sort((a, b) => b.boxes - a.boxes).map((o, i) => nlmRow(i, /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14.5, fontWeight: 600 } }, o.customer), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: NL.SUB } }, o.id, " \xB7 ", metricsDayLabel(o.day))), /* @__PURE__ */ React.createElement("div", { style: { textAlign: "right" } }, nlmTeal(nlmN(o.boxes)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, marginTop: 3, ...o.priced ? { color: NL.SUB } : NLM.amber } }, o.priced ? `\xA3${o.value.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "no prices"))))), 0) : empty(`No new orders ${kindWord}.`));
+    }
+    if (page === "ncr") {
+      body = /* @__PURE__ */ React.createElement(React.Fragment, null, kind === "D" ? /* @__PURE__ */ React.createElement("div", { style: NLM.card, "data-nlm-total": true }, nlmCap("TOTAL", { fontWeight: 600 }), nlmBig(S.totals.ncrs, S.totals.ncrs === 1 ? "NCR" : "NCRs", 36), nlmCap(period.title)) : totalCard(String(S.totals.ncrs), S.totals.ncrs === 1 ? "NCR" : "NCRs", S.ncrN, { avgUnit: "NCRs", dayLink: false }), S.ncrs.length ? listCard("Raised", "", S.ncrs.map((n, i) => nlmRow(i, /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, fontSize: 14.5 } }, n.what || "NCR", n.batch ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: NL.SUB } }, n.batch) : null), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: NL.SUB } }, metricsDayLabel(n.day))))), 0) : empty(`No NCRs raised ${kindWord}.`));
+    }
+    if (page === "rates") body = /* @__PURE__ */ React.createElement(NLMRates, { data, setData, rates, speeds });
+    return /* @__PURE__ */ React.createElement("div", { "data-nlm-page": page, style: { fontFamily: NLT.FONT, paddingBottom: 8 } }, page !== "rates" && top, body);
+  }
+  var DAYNAME = (iso) => ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][(/* @__PURE__ */ new Date(String(iso).slice(0, 10) + "T12:00:00")).getDay()];
+  function NLMRates({ data, setData, rates, speeds }) {
+    const [line, setLine] = useState("bond");
+    const [q, setQ] = useState("");
+    const [all, setAll] = useState(false);
+    const [edit, setEdit] = useState(null);
+    if (!rates) return /* @__PURE__ */ React.createElement("div", { style: NLM.card }, nlmSay("No timed runs yet.", { marginTop: 0 }));
+    const bond = line === "bond";
+    const R = bond ? rates.bonding : rates.glue;
+    const lineMph = (bond ? speeds.bonding : speeds.glue) * 60;
+    const rows = (bond ? R.byProduct : R.bySize).filter((g) => !q.trim() || g.label.toLowerCase().includes(q.trim().toLowerCase()));
+    const stat = (g) => bond ? g.boxes : g.metres;
+    const max = Math.max(1, ...rows.slice(0, 40).map((g) => stat(g).high)) * 1.08;
+    const scale = nlmNice(max);
+    const saveRate = () => {
+      const n = Number(edit);
+      if (n > 0) setData((prev) => ({ ...prev, productionRates: (prev.productionRates && prev.productionRates.length ? prev.productionRates : DEFAULT_PRODUCTION_RATES).map((r) => r.line === (bond ? "bonding" : "glue") ? { ...r, metersPerMin: n } : r) }));
+      setEdit(null);
+    };
+    const o = R.overall;
+    const pct = o ? Math.round(100 * o.median / lineMph) : null;
+    return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(NLMSeg, { value: line, onChange: (v) => {
+      setLine(v);
+      setAll(false);
+      setQ("");
+    }, opts: ["bond", "glue"], labels: ["Bonding", "Glue line"] }), /* @__PURE__ */ React.createElement("div", { style: NLM.card, "data-nlm-rates-overall": true }, nlmCap(`All ${bond ? "products" : "sizes"} \xB7 ${R.timed} timed ${bond ? "runs" : "reels"}`), o ? /* @__PURE__ */ React.createElement(React.Fragment, null, nlmBig(nlmN(o.median), "m an hour", 34), nlmCap(`${(o.median / 60).toFixed(1)} m/min \xB7 usually ${nlmN(o.low)}\u2013${nlmN(o.high)} m/h`), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 14 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12.5, color: NL.SUB } }, /* @__PURE__ */ React.createElement("span", null, "Running at"), /* @__PURE__ */ React.createElement("span", null, "line speed ", bond ? speeds.bonding : speeds.glue, " m/min")), /* @__PURE__ */ React.createElement("div", { style: { position: "relative", height: 12, borderRadius: 6, background: "#EEF1F6", marginTop: 6 } }, /* @__PURE__ */ React.createElement("i", { style: { position: "absolute", left: 0, top: 0, bottom: 0, width: `${Math.min(100, pct)}%`, background: bond ? NLM.col.bond : NLM.col.glue, borderRadius: 6 } })), nlmSay(pct <= 100 ? /* @__PURE__ */ React.createElement(React.Fragment, null, "About ", /* @__PURE__ */ React.createElement("b", null, pct, "% of the line speed"), " once set-ups, reel changes and breaks are counted.") : /* @__PURE__ */ React.createElement("span", { style: NLM.amber }, "Faster than the line's set speed \u2014 either the speed setting or some ", bond ? "run" : "reel", " times are off."), { fontSize: 14 }))) : nlmSay("No timed runs yet."), R.untimed > 0 && nlmCap(`${nlmN(R.untimed)} ${bond ? "runs have" : "reels have"} no time on them and are left out.`, { marginTop: 10, ...NLM.amber }), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, edit == null ? /* @__PURE__ */ React.createElement("button", { "data-nlm-speed": true, onClick: () => setEdit(String(bond ? speeds.bonding : speeds.glue)), style: { border: 0, background: "none", padding: 0, color: NL.NAVY, fontWeight: 600, fontSize: 14 } }, "Change the line speed") : /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } }, /* @__PURE__ */ React.createElement("input", { type: "number", inputMode: "decimal", "aria-label": "Line speed in metres a minute", value: edit, onChange: (e) => setEdit(e.target.value), style: { width: 90, height: 40, borderRadius: 12, border: 0, background: NL.PANEL, padding: "0 12px", fontSize: 16, fontFamily: NLT.FONT } }), /* @__PURE__ */ React.createElement("span", { style: { color: NL.SUB } }, "m/min"), /* @__PURE__ */ React.createElement("button", { onClick: saveRate, style: { height: 40, borderRadius: 20, border: 0, background: NL.NAVY, color: "#fff", fontWeight: 600, padding: "0 16px", fontFamily: NLT.FONT } }, "Save"), /* @__PURE__ */ React.createElement("button", { onClick: () => setEdit(null), style: { border: 0, background: "none", color: NL.SUB } }, "Cancel")))), /* @__PURE__ */ React.createElement("div", { style: NLM.card }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "baseline" } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, fontSize: 16 } }, "By ", bond ? "product" : "size"), nlmCap(bond ? "boxes an hour" : "metres an hour", { marginLeft: "auto" })), /* @__PURE__ */ React.createElement("div", { style: { height: 40, borderRadius: 14, background: NL.PANEL, display: "flex", alignItems: "center", gap: 10, padding: "0 14px", marginTop: 10, color: NL.SUB } }, /* @__PURE__ */ React.createElement("svg", { width: "18", height: "18", viewBox: "0 0 24 24", fill: "none", stroke: "#8A93A8", strokeWidth: "2", strokeLinecap: "round", "aria-hidden": "true" }, /* @__PURE__ */ React.createElement("circle", { cx: "11", cy: "11", r: "6" }), /* @__PURE__ */ React.createElement("path", { d: "m20 20-4.5-4.5" })), /* @__PURE__ */ React.createElement("input", { "data-nlm-find": true, "aria-label": `Find a ${bond ? "product" : "size"}`, placeholder: `Find a ${bond ? "product" : "size"}`, value: q, onChange: (e) => setQ(e.target.value), style: { flex: 1, border: 0, background: "none", fontSize: 15, fontFamily: NLT.FONT, outline: "none", minWidth: 0, color: NL.INK } })), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", margin: "12px 0 0 44px", fontSize: 11, color: "#8A93A8" } }, /* @__PURE__ */ React.createElement("span", null, "0"), /* @__PURE__ */ React.createElement("span", null, nlmAxis(scale / 2)), /* @__PURE__ */ React.createElement("span", null, nlmAxis(scale))), (all || q ? rows : rows.slice(0, 15)).map((g) => {
+      const s = stat(g);
+      const flag = rateFlags(g, bond ? "bond" : "glue", bond ? 0 : lineMph);
+      const lab = g.label.replace(/ REEL$/, " \xB7 reels");
+      return nlmRow(g.key, /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(MatrixFace, { spec: g.label, w: 34 }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 8 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 14.5, flex: 1, minWidth: 0 } }, lab), /* @__PURE__ */ React.createElement("b", { style: { fontSize: 17, fontVariantNumeric: "tabular-nums" } }, bond ? (Math.round(s.median * 10) / 10).toLocaleString("en-GB") : nlmN(s.median))), /* @__PURE__ */ React.createElement("div", { style: { position: "relative", height: 8, borderRadius: 4, background: "#EEF1F6", marginTop: 8 } }, /* @__PURE__ */ React.createElement("i", { style: { position: "absolute", top: 0, bottom: 0, borderRadius: 4, left: `${100 * s.low / scale}%`, width: `${Math.max(1.5, 100 * (s.high - s.low) / scale)}%`, background: (bond ? NLM.col.bond : NLM.col.glue) + "44" } }), /* @__PURE__ */ React.createElement("b", { style: { position: "absolute", top: "50%", left: `${Math.min(100, 100 * s.median / scale)}%`, width: 12, height: 12, borderRadius: 6, transform: "translate(-50%,-50%)", border: "2px solid #fff", boxShadow: "0 1px 3px rgba(0,0,0,.25)", background: bond ? NLM.col.bond : NLM.col.glue } })), nlmCap(`${s.n} ${bond ? "runs" : "reels"}${s.n >= 3 ? ` \xB7 middle half ${bond ? s.low.toFixed(0) : nlmN(s.low)}\u2013${bond ? s.high.toFixed(0) : nlmN(s.high)}` : " \xB7 too few to say"}${bond && g.metres ? ` \xB7 ${nlmN(g.metres.median)} m/h` : ""}`, { marginTop: 5 }), flag && /* @__PURE__ */ React.createElement("div", { "data-nlm-flag": true, style: { fontSize: 12.5, marginTop: 3, ...NLM.amber } }, flag))), { alignItems: "flex-start", padding: "11px 0" });
+    }), !q && rows.length > 15 && /* @__PURE__ */ React.createElement("button", { "data-nlm-more": true, onClick: () => setAll((v) => !v), style: { width: "100%", height: 44, marginTop: 6, border: 0, borderRadius: 12, background: NL.PANEL, color: NL.NAVY, fontFamily: NLT.FONT, fontWeight: 600, fontSize: 14.5 } }, all ? "Show the top 15" : `Show all ${rows.length} ${bond ? "products" : "sizes"}`)));
   }
   function MetricsView({ data, setData }) {
     const { orders, lineItems, bondingRuns, glueLineBatches, ncrs = [] } = data;
@@ -31410,10 +32074,10 @@ OK = finish anyway \xB7 Cancel = keep the run open`)) return;
     const esc2 = (x) => String(x == null ? "" : x).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
     const f = stockTakeSummaryFigures(data), span = stockTakeSpan(data);
     const n = (x) => Number(x || 0).toLocaleString("en-GB");
-    const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const MON2 = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const day = (iso, withYear) => {
       const [y, m, dd] = String(iso).split("-").map(Number);
-      return `${dd} ${MON[m - 1]}${withYear ? " " + y : ""}`;
+      return `${dd} ${MON2[m - 1]}${withYear ? " " + y : ""}`;
     };
     const when = span.start === span.end ? day(span.end, true) : `${day(span.start, span.start.slice(0, 4) !== span.end.slice(0, 4))} \u2013 ${day(span.end, true)}`;
     const head = (label, total, unit, last) => `<div class="hd${last ? " last" : ""}"><span>${esc2(label)}</span><span class="big">${total}${unit ? ` <small>${esc2(unit)}</small>` : ""}</span></div>`;
@@ -35158,8 +35822,8 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
   }
   var NL_VAPID_PUBLIC = "BOMeswZZ13RyPFpw6fny4Ic2fh_EQazj_UPT1zSH24ExXOpC1LFDWv3VgWhwDQxAgxUnDc_x4YiPSwVIALBAuCc";
   function nlB64ToBytes(str) {
-    const pad = "=".repeat((4 - str.length % 4) % 4);
-    const b = atob((str + pad).replace(/-/g, "+").replace(/_/g, "/"));
+    const pad2 = "=".repeat((4 - str.length % 4) % 4);
+    const b = atob((str + pad2).replace(/-/g, "+").replace(/_/g, "/"));
     return Uint8Array.from(b, (c) => c.charCodeAt(0));
   }
   var NL_NOTIFY_KINDS = [
@@ -35316,7 +35980,10 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       overview: ["Matrix overview", "The whole business at a glance", null],
       register: ["Register", `${(data.issues || []).filter((i) => i && !i.deleted && !i.resolvedAt).length} open`, null],
       ncr: ["NCR log", "Non-conformance reports", null],
-      metrics: ["Metrics", "How the lines are running", null],
+      metrics: (() => {
+        const mp = nlMetricsPageNow();
+        return mp && NLM.title[mp] ? [NLM.title[mp][0], NLM.title[mp][1], null] : ["Metrics", "How the lines are running", null];
+      })(),
       completed: ["Shipped orders", `${(data.orders || []).filter((o) => o && !o.deleted && o.stage === "Shipped").length} shipped`, null],
       neworders: ["New orders", "From a photo, a paste or by hand", null]
     };
@@ -37810,7 +38477,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       messages: /* @__PURE__ */ React.createElement(MessagesView, { data, setData, jumpToOrder }),
       clientorders: /* @__PURE__ */ React.createElement(ClientOrdersView, { data, setData, jumpToOrder }),
       overview: /* @__PURE__ */ React.createElement(MatrixOverviewView, { data, setData, jumpToOrder }),
-      metrics: /* @__PURE__ */ React.createElement(MetricsView, { data, setData }),
+      metrics: newLayout ? /* @__PURE__ */ React.createElement(NLMetrics, { data, setData }) : /* @__PURE__ */ React.createElement(MetricsView, { data, setData }),
       admin: syncUserRole === "standard" ? (
         // Reached via search or direct navigation, not the nav link — the nav
         // link is already hidden for a standard-role account, but that alone
