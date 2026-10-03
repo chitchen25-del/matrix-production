@@ -10036,13 +10036,26 @@ ${line}` : line;
   }
 
   // mx_metrics.js
-  function mylarKeyOfPet(pet) {
-    const t = String(pet || "").toLowerCase();
-    const w = (t.match(/^\s*(7|10|12)\b/) || t.match(/^\s*(7|10|12)mm/) || [])[1];
-    if (!w) return null;
-    if (/100/.test(t)) return `${w}-100`;
-    if (/75/.test(t)) return `${w}-75`;
-    return w === "7" ? null : `${w}-75`;
+  function mylarKeyForProduct(spec) {
+    const w = classifySize(spec);
+    if (w === "10mm") return "10-75";
+    if (w === "12mm") return "12-75";
+    if (w === "7mm") return /speedy\s*crease\s*metal/i.test(String(spec || "")) || !isKenPin(spec) && rangeBoxFor(spec) === "Ultra SR" ? "7-100" : "7-75";
+    return null;
+  }
+  var FIND_SOURCES = /* @__PURE__ */ new Set(["found", "found-stock", "count", "boxhistory"]);
+  function foundRunIds(movements) {
+    const src = /* @__PURE__ */ new Map();
+    for (const m of movements || []) {
+      if (!m || m.deleted || m.kind !== "made" || !m.sourceId) continue;
+      const e = src.get(m.sourceId) || { find: false, line: false };
+      if (FIND_SOURCES.has(m.source)) e.find = true;
+      else e.line = true;
+      src.set(m.sourceId, e);
+    }
+    const out = /* @__PURE__ */ new Set();
+    for (const [id, e] of src) if (e.find && !e.line) out.add(id);
+    return out;
   }
   var MYLAR_NAMES = { "10-75": "10mm 75 micron", "12-75": "12mm 75 micron", "7-75": "7mm 75 micron", "7-100": "7mm 100 micron" };
   var TAPE_KEYS = ["10mm", "10mm strong", "12mm", "12mm strong", "7mm", "7mm strong"];
@@ -10159,21 +10172,17 @@ ${line}` : line;
       if (!days.has(k)) days.set(k, { glue: [], bond: [], shippedBoxes: 0, shippedOrders: [], newOrders: [], ncrs: [], cartons: {}, cases: {}, opened: {} });
       return days.get(k);
     };
-    const reels = /* @__PURE__ */ new Map();
-    for (const g of data.glueLineBatches || []) if (g && !g.deleted) {
-      for (const c of [g.batchNumber, g.plCode]) if (c) reels.set(String(c).trim().toUpperCase(), g);
-    }
     for (const g of data.glueLineBatches || []) {
       if (!g || g.deleted || !g.date) continue;
       const m = Number(g.meterage) || 0;
       day(String(g.date).slice(0, 10)).glue.push({ t: hhOf(g.timeOfDay) || localHM(g.endedAt || g.createdAt || g.updatedAt), m, size: g.productSize || "", code: g.batchNumber || "" });
     }
+    const finds = foundRunIds(data.movements);
     for (const r of data.bondingRuns || []) {
       if (!r || r.deleted || r.packingOnly || r._synth || !r.date || !String(r.boxNumber || "").trim()) continue;
-      const boxes = Number(r.amountMade) || 0, metres = boxes * (Number(r.metersPerBox) || 0);
+      const boxes = Number(r.amountMade) || 0, metres = boxes * (Number(r.metersPerBox) || 0), found = finds.has(r.id);
       const width = classifySize(r.productSize);
-      const taped = ["7mm", "10mm", "12mm"].includes(width) && metres > 0;
-      const reel = r.baselineBatchCode ? reels.get(String(r.baselineBatchCode).trim().toUpperCase()) : null;
+      const taped = !found && ["7mm", "10mm", "12mm"].includes(width) && metres > 0;
       day(String(r.date).slice(0, 10)).bond.push({
         t: hhOf(r.timeOfDay) || localHM(r.createdAt),
         boxes,
@@ -10182,9 +10191,10 @@ ${line}` : line;
         code: r.boxNumber,
         order: r.workNumber || null,
         range: metricsRangeOf(r.productSize),
+        found,
         tape: taped ? width + (isStrongTapeBoxCode(r.boxNumber) ? " strong" : "") : null,
-        /* like for like (Chris, 2 Oct 2026): every metre taped took a metre of mylar; which mylar comes from the PET on the glue reel it was bonded from — no reel named, or no PET on it, is "not recorded" */
-        mylar: taped ? reel && mylarKeyOfPet(reel.petType) || "unknown" : null
+        /* like for like (Chris, 2 Oct 2026): every metre taped took a metre of mylar — which one, by the product (above) */
+        mylar: taped ? mylarKeyForProduct(r.productSize) : null
       });
     }
     for (const m of data.movements || []) {
@@ -10203,7 +10213,7 @@ ${line}` : line;
       if (o.shippedDate) day(String(o.shippedDate).slice(0, 10)).shippedOrders.push({ id: o.id, customer: o.customer || "" });
       if (o.orderDate) {
         const ls = lines.get(o.id) || [];
-        const made = ls.filter((l) => !/profile|shim|delivery|carriage|tape\b/i.test(String(l.description || "")));
+        const made = ls.filter((l) => !isSmallItem(l.description) && !isDelivery(l.description) && !/\b(carriage|delivery|shipping|freight|postage)\b/i.test(String(l.description || "")));
         const value = ls.reduce((t, l) => t + (Number(l.qty) || 0) * (Number(l.unitPrice) || 0), 0);
         day(String(o.orderDate).slice(0, 10)).newOrders.push({ id: o.id, customer: o.customer || "", value, boxes: made.reduce((t, l) => t + (Number(l.qty) || 0), 0), priced: ls.some((l) => Number(l.unitPrice) > 0) });
       }
@@ -10299,7 +10309,8 @@ ${line}` : line;
         newOrders: newOrders.length,
         newValue: newOrders.reduce((t, o) => t + o.value, 0),
         ncrs: ncrs.length,
-        tapeM: Object.values(tape).reduce((t, v) => t + v, 0)
+        tapeM: Object.values(tape).reduce((t, v) => t + v, 0),
+        foundBoxes: bond.filter((x) => x.found).reduce((t, x) => t + x.boxes, 0)
       },
       glue,
       bond,
@@ -12221,7 +12232,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-03.23";
+  var APP_VERSION = "2026-10-03.24";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -16858,6 +16869,7 @@ ${recent}` : null });
     }, [initialExpandedId]);
     const nothingToShow = !expanded && !initialExpandedId;
     const [lineEditMode, setLineEditMode] = useState(false);
+    const [boxPriceDraft, setBoxPriceDraft] = useState("");
     const [lineEditBaseline, setLineEditBaseline] = useState({});
     const [lineChangeReasons, setLineChangeReasons] = useState({});
     const lineChanged = (li) => {
@@ -18325,7 +18337,29 @@ Everything else was booked.`);
           title: lineEditMode && changedLinesWithoutReason(o.id).length ? "Say why each changed line has changed first" : void 0
         },
         lineEditMode ? changedLinesWithoutReason(o.id).length ? `Done editing \u2014 ${changedLinesWithoutReason(o.id).length} change${changedLinesWithoutReason(o.id).length === 1 ? " needs" : "s need"} a reason` : "Done editing" : "Edit order"
-      ), (o.stage === "Shipped" || mode === "completed") && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => {
+      ), lineEditMode && (() => {
+        const boxLines = lineItems.filter((li) => li.orderId === o.id && !li.deleted && !isSmallItem(li.description) && !isDelivery(li.description) && !/\b(carriage|delivery|shipping|freight|postage)\b/i.test(String(li.description || "")));
+        const n = Number(boxPriceDraft);
+        return /* @__PURE__ */ React.createElement("span", { "data-box-price": true, className: "flex items-center gap-2", style: { fontSize: 14 } }, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "Every box line \xA3"), /* @__PURE__ */ React.createElement(
+          "input",
+          {
+            "data-box-price-input": true,
+            type: "number",
+            inputMode: "decimal",
+            step: "0.01",
+            min: "0",
+            value: boxPriceDraft,
+            onChange: (e) => setBoxPriceDraft(e.target.value),
+            placeholder: "0.00",
+            className: "w-20 text-right px-1.5 py-0.5 rounded text-sm",
+            style: { border: `1px solid ${BORDER}` }
+          }
+        ), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", disabled: !(n > 0) || !boxLines.length, onClick: () => {
+          const ids = new Set(boxLines.map((li) => li.id));
+          setLineItems((prev) => prev.map((li) => ids.has(li.id) ? { ...li, unitPrice: Math.round(n * 100) / 100 } : li));
+          setBoxPriceDraft("");
+        } }, "Put on ", boxLines.length, " line", boxLines.length === 1 ? "" : "s"));
+      })(), (o.stage === "Shipped" || mode === "completed") && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => {
         if (!o.shippingManifest) {
           setShipError({ ...shipError, [o.id]: "No shipped record for this order \u2014 it was likely marked Shipped before this feature existed." });
           return;
@@ -26397,7 +26431,8 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
   function materialsAutoUse(data) {
     const runs = data.bondingRuns || [], key = runs;
     const hit = AUTO_USE_MEMO.get(key);
-    if (hit && hit.mats === data.materials && hit.moves === data.materialMovements && hit.reels === data.glueLineBatches) return hit.out;
+    if (hit && hit.mats === data.materials && hit.moves === data.materialMovements && hit.reels === data.glueLineBatches && hit.mv === data.movements) return hit.out;
+    const finds = foundRunIds(data.movements);
     const mats = (data.materials || []).filter((m) => m && !m.deleted);
     const byId = new Map(mats.map((m) => [m.id, m]));
     const moves = (data.materialMovements || []).filter((x) => x && !x.deleted);
@@ -26408,10 +26443,6 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
       const cs = countsOf(m.id);
       const last = cs.length ? cs[cs.length - 1].t : 0;
       countAt.set(m.id, Math.max(last, m.lastStockTakeDate ? Date.parse(`${m.lastStockTakeDate}T00:00:00`) : 0));
-    }
-    const reels = /* @__PURE__ */ new Map();
-    for (const g of data.glueLineBatches || []) if (g && !g.deleted) {
-      for (const c of [g.batchNumber, g.plCode]) if (c) reels.set(String(c).trim().toUpperCase(), g);
     }
     const tapes = mats.filter((m) => m.category === "tape");
     const runTime = (r) => Date.parse(r.createdAt || "") || Date.parse(`${r.date || "1970-01-01"}T${(r.timeOfDay || "12:00").slice(0, 5)}:00`);
@@ -26426,13 +26457,12 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     };
     const made = [];
     for (const r of runs) {
-      if (!r || r.deleted || r._synth) continue;
+      if (!r || r.deleted || r._synth || r.packingOnly || finds.has(r.id)) continue;
       const metres = (Number(r.amountMade) || 0) * (Number(r.metersPerBox) || 0);
       if (!(metres > 0)) continue;
       const width = classifySize(r.productSize);
       if (!["7mm", "10mm", "12mm"].includes(width)) continue;
-      const reel = r.baselineBatchCode ? reels.get(String(r.baselineBatchCode).trim().toUpperCase()) : null;
-      made.push({ t: runTime(r), metres, tape: tapeOf(r, width), mylar: reel ? mylarKeyOfPet(reel.petType) : null, width, reelCode: r.baselineBatchCode || "" });
+      made.push({ t: runTime(r), metres, tape: tapeOf(r, width), mylar: mylarKeyForProduct(r.productSize), width, reelCode: r.baselineBatchCode || "" });
     }
     const waste = /* @__PURE__ */ new Map();
     for (const m of mats) if (m.category === "tape" || m.category === "mylar") {
@@ -26469,7 +26499,6 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
         e.made += x.metres;
         e.usedMetres += x.metres * (1 + waste.get(x.tape));
       }
-      if (!x.reelCode) continue;
       const targets = MYLAR_TARGETS[x.mylar];
       if (!targets) {
         if (x.t > Math.min(...["mat-mylar-7-75", "mat-mylar-7-100"].map((id) => countAt.get(id) || Infinity))) unknownMylar += x.metres;
@@ -26499,7 +26528,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
       e.leftMetres = full == null ? null : Math.max(0, full - e.usedMetres);
     }
     const res = { byId: out, unknownMylar };
-    AUTO_USE_MEMO.set(key, { mats: data.materials, moves: data.materialMovements, reels: data.glueLineBatches, out: res });
+    AUTO_USE_MEMO.set(key, { mats: data.materials, moves: data.materialMovements, reels: data.glueLineBatches, mv: data.movements, out: res });
     return res;
   }
   function materialMetresLeft(m, data) {
@@ -28383,7 +28412,6 @@ Plan it?`
       return m ? m.name : id.replace(/^mat-/, "");
     };
     const unpriced = S.newOrders.filter((o) => !o.priced), future = S.newOrders.filter((o) => o.day > today);
-    const exceedMade = S.bond.filter((r) => r.range === "Exceed").reduce((t, r) => t + r.boxes, 0), exceedCartons = S.cartons["mat-box-exceed"] || 0;
     const orderCust = (id) => {
       const o = (data.orders || []).find((x) => x && x.id === id);
       return o ? o.customer : id;
@@ -28464,7 +28492,7 @@ Plan it?`
       const stacks = S.tapeBy.map((o) => TAPE_KEYS.filter((k) => o[k]).map((k) => [o[k], NLM.tape[k]]));
       const mylarRows = [...Object.keys(MYLAR_NAMES).filter((k) => S.mylar[k]).map((k) => [MYLAR_NAMES[k], S.mylar[k], NLM.mylar[k]]), ...S.mylar.unknown ? [["Not recorded", S.mylar.unknown, null]] : []];
       const mylarTot = mylarRows.reduce((t, r) => t + r[1], 0);
-      body = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: NLM.card, "data-nlm-tape": true }, /* @__PURE__ */ React.createElement(NLMHead, { k: "mat", when, label: "Bonding tape" }), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8 } }), nlmBig(nlmN(tapeWaste), "m with waste"), nlmCap(`${nlmN(tapeTot)} m of matrix bonded, plus each tape's learned waste`), /* @__PURE__ */ React.createElement(
+      body = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: NLM.card, "data-nlm-tape": true }, /* @__PURE__ */ React.createElement(NLMHead, { k: "mat", when, label: "Bonding tape" }), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8 } }), nlmBig(nlmN(tapeWaste), "m with waste"), nlmCap(`${nlmN(tapeTot)} m of matrix bonded on the line, plus each tape's learned waste`), /* @__PURE__ */ React.createElement(
         NLMChart,
         {
           period,
@@ -28477,7 +28505,7 @@ Plan it?`
           unit: "m",
           callout: sel != null ? /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: NL.SUB } }, period.buckets[sel].long), /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, fontSize: 15 } }, nlmN(S.tapeM[sel]), " ", /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: NL.SUB, fontWeight: 500 } }, "m"))) : null
         }
-      ), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, keys.length ? keys.map((k) => nlmRow(k, /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { style: { width: 9, height: 9, borderRadius: 3, background: NLM.tape[k], flex: "none" } }), /* @__PURE__ */ React.createElement("span", { style: { flex: 1 } }, k), /* @__PURE__ */ React.createElement("b", { style: { fontVariantNumeric: "tabular-nums" } }, nlmN(S.tape[k] * (1 + tapeInfo[k].waste)), " m"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, fontWeight: 600, padding: "3px 8px", borderRadius: 8, background: NL.PANEL, color: NL.SUB, marginLeft: 8 }, "data-nlm-rolls": true }, rollsOf(k, S.tape[k]).toFixed(1), " rolls")), { padding: "8px 0" })) : nlmCap(`No tape used ${kindWord}.`, { marginTop: 6 }))), /* @__PURE__ */ React.createElement("div", { style: NLM.card, "data-nlm-mylar": true }, /* @__PURE__ */ React.createElement(NLMHead, { k: "mat", when, label: "Mylar" }), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8 } }, nlmBig(nlmN(mylarTot), "m")), mylarTot > 0 && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", height: 12, borderRadius: 6, overflow: "hidden", margin: "12px 0 4px", background: "#EEF1F6" } }, mylarRows.map(([n, v, col]) => /* @__PURE__ */ React.createElement("i", { key: n, style: { display: "block", flex: v, background: col || "#C9CDD6", backgroundImage: col ? "none" : "repeating-linear-gradient(135deg,#fff 0 3px,transparent 3px 6px)" } }))), mylarRows.map(([n, v, col]) => nlmRow(n, /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { style: { width: 9, height: 9, borderRadius: 3, background: col || "#C9CDD6", flex: "none" } }), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, ...col ? {} : NLM.amber } }, n), /* @__PURE__ */ React.createElement("b", { style: { fontVariantNumeric: "tabular-nums" } }, nlmN(v), " m")), { padding: "8px 0" })), S.mylar.unknown > 0 && nlmSay(`${Math.round(100 * S.mylar.unknown / (mylarTot || 1))}% of these metres can't say which mylar \u2014 the run names no glue reel, or the reel has no mylar recorded.`, { fontSize: 13.5, ...NLM.amber })), /* @__PURE__ */ React.createElement("div", { style: NLM.card, "data-nlm-cartons": true }, /* @__PURE__ */ React.createElement(NLMHead, { k: "mat", when, label: "Cartons and cases" }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 12, marginTop: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, nlmCap("Cartons"), nlmBig(nlmN(cartonsTot), "", 26), nlmCap(Object.entries(S.cartons).sort((a, b) => b[1] - a[1]).map(([id, v]) => `${matName(id)} ${nlmN(v)}`).join(" \xB7 ") || "none")), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, nlmCap("Cases out"), nlmBig(nlmN(casesTot), "", 26), nlmCap(Object.entries(S.cases).sort((a, b) => b[1] - a[1]).map(([id, v]) => `${matName(id).replace(/ box capacity/, "-box")} ${nlmN(v)}`).join(" \xB7 ") || "none"))), exceedMade > 0 && exceedCartons < exceedMade && nlmSay(`${nlmN(exceedMade)} Exceed boxes made ${kindWord}, ${exceedCartons ? `only ${nlmN(exceedCartons)}` : "no"} Exceed cartons taken off.`, { fontSize: 13.5, ...NLM.amber })), /* @__PURE__ */ React.createElement("div", { style: NLM.card, "data-nlm-opened": true }, /* @__PURE__ */ React.createElement(NLMHead, { k: "mat", when, label: "Opened" }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 } }, Object.entries(S.opened).length ? Object.entries(S.opened).sort((a, b) => b[1] - a[1]).map(([id, v]) => /* @__PURE__ */ React.createElement("span", { key: id, style: { fontSize: 13, fontWeight: 600, padding: "4px 10px", borderRadius: 8, background: NL.PANEL, color: NL.SUB } }, `${matName(id)} \xB7 ${nlmN(v)}`)) : nlmCap("Nothing opened.")), nlmCap("From the Opened buttons on Materials.", { marginTop: 8 })));
+      ), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, keys.length ? keys.map((k) => nlmRow(k, /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { style: { width: 9, height: 9, borderRadius: 3, background: NLM.tape[k], flex: "none" } }), /* @__PURE__ */ React.createElement("span", { style: { flex: 1 } }, k), /* @__PURE__ */ React.createElement("b", { style: { fontVariantNumeric: "tabular-nums" } }, nlmN(S.tape[k] * (1 + tapeInfo[k].waste)), " m"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, fontWeight: 600, padding: "3px 8px", borderRadius: 8, background: NL.PANEL, color: NL.SUB, marginLeft: 8 }, "data-nlm-rolls": true }, rollsOf(k, S.tape[k]).toFixed(1), " rolls")), { padding: "8px 0" })) : nlmCap(`No tape used ${kindWord}.`, { marginTop: 6 }))), /* @__PURE__ */ React.createElement("div", { style: NLM.card, "data-nlm-mylar": true }, /* @__PURE__ */ React.createElement(NLMHead, { k: "mat", when, label: "Mylar" }), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8 } }, nlmBig(nlmN(mylarTot), "m")), mylarTot > 0 && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", height: 12, borderRadius: 6, overflow: "hidden", margin: "12px 0 4px", background: "#EEF1F6" } }, mylarRows.map(([n, v, col]) => /* @__PURE__ */ React.createElement("i", { key: n, style: { display: "block", flex: v, background: col || "#C9CDD6", backgroundImage: col ? "none" : "repeating-linear-gradient(135deg,#fff 0 3px,transparent 3px 6px)" } }))), mylarRows.map(([n, v, col]) => nlmRow(n, /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { style: { width: 9, height: 9, borderRadius: 3, background: col || "#C9CDD6", flex: "none" } }), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, ...col ? {} : NLM.amber } }, n), /* @__PURE__ */ React.createElement("b", { style: { fontVariantNumeric: "tabular-nums" } }, nlmN(v), " m")), { padding: "8px 0" })), nlmCap("By the rule: Ultra SR 7mm 100 micron, any other 7mm 75, all 10mm and 12mm 75.", { marginTop: 8 })), S.totals.foundBoxes > 0 && /* @__PURE__ */ React.createElement("div", { style: NLM.card, "data-nlm-finds": true }, nlmSay(/* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("b", null, nlmN(S.totals.foundBoxes), " boxes"), " were found at the stock take ", kindWord, ". They count as made, but came from last year's materials, so nothing comes off for them."), { marginTop: 0 })), /* @__PURE__ */ React.createElement("div", { style: NLM.card, "data-nlm-cartons": true }, /* @__PURE__ */ React.createElement(NLMHead, { k: "mat", when, label: "Cartons and cases" }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 12, marginTop: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, nlmCap("Cartons"), nlmBig(nlmN(cartonsTot), "", 26), nlmCap(Object.entries(S.cartons).sort((a, b) => b[1] - a[1]).map(([id, v]) => `${matName(id)} ${nlmN(v)}`).join(" \xB7 ") || "none")), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, nlmCap("Cases out"), nlmBig(nlmN(casesTot), "", 26), nlmCap(Object.entries(S.cases).sort((a, b) => b[1] - a[1]).map(([id, v]) => `${matName(id).replace(/ box capacity/, "-box")} ${nlmN(v)}`).join(" \xB7 ") || "none"))), nlmCap("Exceed comes out of White cartons.", { marginTop: 8 })), /* @__PURE__ */ React.createElement("div", { style: NLM.card, "data-nlm-opened": true }, /* @__PURE__ */ React.createElement(NLMHead, { k: "mat", when, label: "Opened" }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 } }, Object.entries(S.opened).length ? Object.entries(S.opened).sort((a, b) => b[1] - a[1]).map(([id, v]) => /* @__PURE__ */ React.createElement("span", { key: id, style: { fontSize: 13, fontWeight: 600, padding: "4px 10px", borderRadius: 8, background: NL.PANEL, color: NL.SUB } }, `${matName(id)} \xB7 ${nlmN(v)}`)) : nlmCap("Nothing opened.")), nlmCap("From the Opened buttons on Materials.", { marginTop: 8 })));
     }
     if (page === "orders") {
       body = /* @__PURE__ */ React.createElement(React.Fragment, null, kind === "D" ? /* @__PURE__ */ React.createElement("div", { style: NLM.card, "data-nlm-total": true }, nlmCap("TOTAL", { fontWeight: 600 }), nlmBig(S.totals.newOrders, S.totals.newOrders === 1 ? "order" : "orders", 36), nlmCap(period.title)) : totalCard(String(S.totals.newOrders), S.totals.newOrders === 1 ? "order" : "orders", S.newOrderN, { sub: `${period.title} \xB7 \xA3${S.totals.newValue.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, avgUnit: "orders", dayLink: false }), highlights([
@@ -29870,9 +29898,11 @@ Plan it?`
         left -= q;
         moves.push({ ...movePlaced({ boxNumber: c, spec: name, qty: q, orderId, caseNum: r.caseNum, source: "bonding", sourceId: runId }), formId: form.id });
       }
+      const whiteId = boxTypeIdForName(data.materials && data.materials.length ? data.materials : DEFAULT_MATERIALS, "White");
       setData((prev) => {
         let d = { ...prev, bondingRuns: [...prev.bondingRuns || [], run] };
         d = recordMovements(d, moves);
+        if (whiteId) d = { ...d, ...recordMaterialMovement(d, whiteId, -n, "auto_box", runId, c) };
         return { ...d, ...appendLog(d, { action: "add", entity: "bondingRun", entityId: runId, summary: `Rubber: ${n} \xD7 ${name} (${metres} m) as ${c}${toOrder ? ` \u2014 ${toOrder} into ${orderId}` : ""}${toShelf ? ` \u2014 ${toShelf} to ${bay}` : ""}` }) };
       });
       setMsg({ bad: false, t: `Logged ${c}: ${n} \xD7 ${name}${toOrder ? ` \u2014 ${toOrder} into ${orderId}'s cases` : ""}${toShelf ? ` \u2014 ${toShelf} on the shelf at ${bay}` : ""}.` });
