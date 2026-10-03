@@ -1955,12 +1955,22 @@
     }
     for (const list of byForm.values()) list.sort((a, b) => a.box.localeCompare(b.box));
     const formOfBox = new Map(runs.map((r) => [up3(r.boxNumber), r.formId]));
+    const norm = (t) => String(t || "").toLowerCase().replace(/\s+/g, " ").replace(/\s*\(\d+m\)$/, "").trim();
+    const specOfPlaced = /* @__PURE__ */ new Map();
+    for (const m of data.movements || []) if (m && !m.deleted && m.kind === "placed" && m.orderId && m.boxNumber && m.spec && !formOfBox.has(up3(m.boxNumber))) specOfPlaced.set(m.orderId + "|" + up3(m.boxNumber), norm(m.spec));
+    const lineFormBySpec = (orderId, spec) => {
+      const l = (data.lineItems || []).find((x) => x && !x.deleted && x.orderId === orderId && x.formId && norm(x.description) === spec);
+      return l ? l.formId : null;
+    };
     const held = ledgerCaseContents(data.movements || []);
     const inCases = (orderId, formId) => {
       let t = 0;
       for (const [k, c] of held) {
         if (!k.startsWith(orderId + "|")) continue;
-        for (const [box, q] of Object.entries(c)) if (formOfBox.get(up3(box)) === formId) t += Number(q) || 0;
+        for (const [box, q] of Object.entries(c)) {
+          const f = formOfBox.get(up3(box)) || lineFormBySpec(orderId, specOfPlaced.get(orderId + "|" + up3(box)));
+          if (f === formId) t += Number(q) || 0;
+        }
       }
       return t;
     };
@@ -11900,7 +11910,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-03.5";
+  var APP_VERSION = "2026-10-03.7";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -24715,6 +24725,8 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.dim, marginTop: 8 } }, "Green = changed something in the last 15 minutes."));
   }
   var RELEASE_NOTES = [
+    ["2026-10-03.7", "Phone, the iPhone's way: each tab keeps its place, tap it again for its front page and again for the top; the back button names where it goes; swipe in from the left edge to go back; every sheet drags down to close; swipe an order left to Pick or Ship it; hold a size or a code for Copy and Find it in Stock; number fields bring up the number pad; a count on the app icon once you allow it."],
+    ["2026-10-03.6", "Pick no longer offers boxes to an order that is already fully packed \u2014 a box placed under a code later corrected on its run now counts towards the order."],
     ["2026-10-03.5", "Phone: the band's figures are tiles \u2014 equal, frosted, a hair of colour, the number counting up; tap one to see those orders or that stock; the chips below no longer repeat the counts."],
     ["2026-10-03.4", "Phone: the band keeps its margins on every screen, including the original Stock pages \u2014 nothing sits on the edge."],
     ["2026-10-03.3", "Phone: the two New-order buttons are gone from the Orders list; the + opens a sheet \u2014 Take a photo, Choose a file, Type it in."],
@@ -33898,7 +33910,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     if (d === 1) return { text: "Tomorrow", tone: "warn" };
     return { text: (/* @__PURE__ */ new Date(o.dueDate + "T12:00:00")).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }), tone: "plain" };
   }
-  function NLOrderCard({ data, o, onOpen, plan = null }) {
+  function NLOrderCard({ data, o, onOpen, plan = null, onPick = null, onShip = null }) {
     const rows = whatsLeftRows(data.lineItems || [], data.bondingRuns || [], o.id).filter((r) => !/profile tape|shim/i.test(r.spec || ""));
     const ordered = rows.reduce((t, r) => t + (Number(r.ordered) || 0), 0), packed = rows.reduce((t, r) => t + Math.min(Number(r.made) || 0, Number(r.ordered) || 0), 0);
     const pct = ordered ? Math.floor(100 * packed / ordered) : 0, done = ordered > 0 && packed >= ordered;
@@ -33912,35 +33924,88 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const dayShort = o.dueDate ? (/* @__PURE__ */ new Date(String(o.dueDate).slice(0, 10) + "T12:00:00")).toLocaleDateString("en-GB", { weekday: "short" }) : "";
     const [peek, setPeek] = useState(false);
     const pressRef = useRef(null);
+    const [dx, setDx] = useState(0);
+    const [open, setOpen] = useState(false);
+    const startRef = useRef(null);
+    const swipeAction = onShip && done ? ["Ship", () => onShip(o.id)] : onPick && nx && /^Pick/.test(nx) ? ["Pick", () => onPick(o.id)] : null;
     const down = () => {
       pressRef.current = setTimeout(() => {
         pressRef.current = null;
-        nlHaptic("landed");
-        setPeek(true);
+        if (!(startRef.current && startRef.current.moved)) {
+          nlHaptic("landed");
+          setPeek(true);
+        }
       }, 480);
     };
+    const tStart = (e) => {
+      const t = e.touches && e.touches[0];
+      if (t) startRef.current = { x: t.clientX, y: t.clientY, moved: false, dx: open ? -96 : 0 };
+    };
+    const tMove = (e) => {
+      const st = startRef.current, t = e.touches && e.touches[0];
+      if (!st || !t || !swipeAction) return;
+      const ddx = t.clientX - st.x, ddy = t.clientY - st.y;
+      if (!st.moved && Math.abs(ddx) > 10 && Math.abs(ddx) > Math.abs(ddy) * 1.5) {
+        st.moved = true;
+        if (pressRef.current) {
+          clearTimeout(pressRef.current);
+          pressRef.current = null;
+        }
+      }
+      if (st.moved) {
+        st.dx = Math.max(-120, Math.min(0, (open ? -96 : 0) + ddx));
+        setDx(st.dx);
+      }
+    };
+    const tEnd = () => {
+      const st = startRef.current;
+      if (st && st.moved) {
+        const go = st.dx < -60;
+        setOpen(go);
+        setDx(go ? -96 : 0);
+        if (go) nlHaptic();
+      }
+      setTimeout(() => {
+        startRef.current = null;
+      }, 0);
+    };
     const up3 = (e) => {
+      const swiped = startRef.current && startRef.current.moved;
       if (pressRef.current) {
         clearTimeout(pressRef.current);
         pressRef.current = null;
-        if (e && e.type !== "pointerleave" && e.type !== "pointercancel") {
+        if (!swiped && e && e.type !== "pointerleave" && e.type !== "pointercancel") {
+          if (open) {
+            setOpen(false);
+            setDx(0);
+            return;
+          }
           nlHaptic();
           onOpen();
         }
       }
     };
     const tone = done ? "green" : /late/.test(due.text) ? "red" : due.tone === "warn" ? "amber" : "plain";
-    return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { position: "relative", marginBottom: 10 } }, swipeAction && /* @__PURE__ */ React.createElement("button", { "data-nl-swipe-action": swipeAction[0], "aria-hidden": !open, tabIndex: open ? 0 : -1, onClick: () => {
+      nlHaptic("landed");
+      setOpen(false);
+      setDx(0);
+      swipeAction[1]();
+    }, style: { position: "absolute", top: 0, bottom: 0, right: 0, width: 110, borderRadius: NLT.R.card, border: 0, background: swipeAction[0] === "Ship" ? NL.OK : NL.NAVY, color: "#fff", fontFamily: NLT.FONT, fontSize: 15, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "flex-end", paddingRight: 20, opacity: dx < -8 ? 1 : 0, transition: "opacity 120ms" } }, swipeAction[0]), /* @__PURE__ */ React.createElement(
       "div",
       {
         "data-nl-order": o.id,
         role: "button",
         tabIndex: 0,
-        "aria-label": `${o.customer} ${o.id}, ${pct}% packed${nx ? `, next ${nx}` : ""}. Hold to peek at its cases.`,
+        "aria-label": `${o.customer} ${o.id}, ${pct}% packed${nx ? `, next ${nx}` : ""}. Hold to peek at its cases.${swipeAction ? ` Swipe left to ${swipeAction[0].toLowerCase()}.` : ""}`,
         onPointerDown: down,
         onPointerUp: up3,
         onPointerLeave: up3,
         onPointerCancel: up3,
+        onTouchStart: tStart,
+        onTouchMove: tMove,
+        onTouchEnd: tEnd,
+        onTouchCancel: tEnd,
         onContextMenu: (e) => e.preventDefault(),
         onKeyDown: (e) => {
           if (e.key === "Enter" || e.key === " ") {
@@ -33948,12 +34013,12 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
             onOpen();
           }
         },
-        style: { width: "100%", boxSizing: "border-box", textAlign: "left", border: 0, background: "#fff", borderRadius: NLT.R.card, boxShadow: NLT.SHADOW, display: "flex", gap: 14, alignItems: "center", padding: "14px 16px", marginBottom: 10, color: NL.INK, fontFamily: NLT.FONT, cursor: "pointer", userSelect: "none", WebkitUserSelect: "none", WebkitTouchCallout: "none" }
+        style: { position: "relative", touchAction: "pan-y", transform: `translateX(${dx}px)`, transition: startRef.current && startRef.current.moved ? "none" : "transform 260ms cubic-bezier(.2,.7,.2,1)", width: "100%", boxSizing: "border-box", textAlign: "left", border: 0, background: "#fff", borderRadius: NLT.R.card, boxShadow: NLT.SHADOW, display: "flex", gap: 14, alignItems: "center", padding: "14px 16px", marginBottom: 0, color: NL.INK, fontFamily: NLT.FONT, cursor: "pointer", userSelect: "none", WebkitUserSelect: "none", WebkitTouchCallout: "none" }
       },
       /* @__PURE__ */ React.createElement("span", { "data-nl-pct": pct, style: { flex: "0 0 60px", display: "flex", alignItems: "center" } }, /* @__PURE__ */ React.createElement(NLDial, { madePct, stockPct, ready, uid: String(o.id).replace(/[^A-Za-z0-9]/g, ""), size: 60 })),
       /* @__PURE__ */ React.createElement("span", { style: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 3 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", alignItems: "center", gap: 8 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 16, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, o.customer), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: NL.SUB, fontVariantNumeric: "tabular-nums", flex: "none" } }, o.id)), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13.5, color: NL.SUB, fontVariantNumeric: "tabular-nums" } }, packed.toLocaleString("en-GB"), " of ", ordered.toLocaleString("en-GB"), " packed", nCases ? ` \xB7 ${nCases} case${nCases === 1 ? "" : "s"}` : ""), /* @__PURE__ */ React.createElement("span", { style: { display: "flex", alignItems: "center", gap: 8, marginTop: 3, minWidth: 0 } }, /* @__PURE__ */ React.createElement(NLChip, { tone }, tag[0]), nx && /* @__PURE__ */ React.createElement("span", { "data-nl-nextline": true, style: { fontSize: 13, color: NL.SUB, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, "NEXT \xB7 ", nx))),
       /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 18, color: "#8A93A8", sw: 2 })
-    ), peek && /* @__PURE__ */ React.createElement(NLPeekSheet, { data, o, onClose: () => setPeek(false), onOpen: () => {
+    )), peek && /* @__PURE__ */ React.createElement(NLPeekSheet, { data, o, onClose: () => setPeek(false), onOpen: () => {
       setPeek(false);
       onOpen();
     } }));
@@ -34035,7 +34100,8 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const ok = nlMotionOK();
     return /* @__PURE__ */ React.createElement("div", { className: ok ? "nl-in" : "", style: { animationDelay: ok ? `${Math.min(i, 8) * 45}ms` : void 0, ...style } }, children);
   }
-  function NLHero({ title, sub, back = false, onBack, onSearch, alerts = [], onOpenAdmin, children, data = null, backAttrs = {} }) {
+  var NL_BACK_LABEL = { current: null };
+  function NLHero({ title, sub, back = false, onBack, onSearch, alerts = [], onOpenAdmin, children, data = null, backAttrs = {}, backLabel = null }) {
     const [bellOpen, setBellOpen] = useState(false);
     const me = (nlEmail() || String(currentActor() || "?")).trim().charAt(0).toUpperCase();
     const glass = { width: 44, height: 44, borderRadius: 22, border: "1px solid rgba(255,255,255,0.18)", background: "rgba(255,255,255,0.14)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", position: "relative" };
@@ -34051,10 +34117,13 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       } catch (e) {
       }
     }, []);
-    return /* @__PURE__ */ React.createElement("div", { ref: heroRef, "data-nl-hero": true, className: "no-print", style: { margin: `-8px ${-edge}px 0`, padding: "0 20px 64px", paddingTop: "calc(14px + env(safe-area-inset-top, 0px))", background: NLT.BAND, color: "#fff", position: "relative", overflow: "hidden", fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { position: "absolute", right: -70, top: -90, width: 260, height: 260, borderRadius: "50%", background: "rgba(255,255,255,0.06)" } }), /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { position: "absolute", right: 40, top: -150, width: 220, height: 220, borderRadius: "50%", background: "rgba(255,255,255,0.05)" } }), /* @__PURE__ */ React.createElement("div", { "data-nl-topbar": true, style: { display: "flex", justifyContent: "space-between", alignItems: "center", position: "relative", zIndex: 1 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", alignItems: "center", gap: 8 } }, back && /* @__PURE__ */ React.createElement("button", { "data-nl-back": true, ...backAttrs, onClick: () => {
-      nlHaptic();
-      onBack && onBack();
-    }, "aria-label": "Back", style: { ...glass, width: 40, height: 40, marginLeft: -6 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", transform: "rotate(180deg)" } }, /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 22, color: "#fff", sw: 2.2 }))), /* @__PURE__ */ React.createElement("span", { style: { background: "#fff", borderRadius: 12, padding: "6px 10px", display: "flex", alignItems: "center", boxShadow: "0 2px 8px rgba(0,0,0,0.12)" } }, /* @__PURE__ */ React.createElement("img", { src: "data:image/png;base64," + LOGO_B64, alt: "Matrix Engineering", style: { height: 28, display: "block" } }))), /* @__PURE__ */ React.createElement("span", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement("button", { "data-nl-bell": true, onClick: () => {
+    return /* @__PURE__ */ React.createElement("div", { ref: heroRef, "data-nl-hero": true, className: "no-print", style: { margin: `-8px ${-edge}px 0`, padding: "0 20px 64px", paddingTop: "calc(14px + env(safe-area-inset-top, 0px))", background: NLT.BAND, color: "#fff", position: "relative", overflow: "hidden", fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { position: "absolute", right: -70, top: -90, width: 260, height: 260, borderRadius: "50%", background: "rgba(255,255,255,0.06)" } }), /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { position: "absolute", right: 40, top: -150, width: 220, height: 220, borderRadius: "50%", background: "rgba(255,255,255,0.05)" } }), /* @__PURE__ */ React.createElement("div", { "data-nl-topbar": true, style: { display: "flex", justifyContent: "space-between", alignItems: "center", position: "relative", zIndex: 1 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", alignItems: "center", gap: 8 } }, back && (() => {
+      const lbl = backLabel || NL_BACK_LABEL.current;
+      return /* @__PURE__ */ React.createElement("button", { "data-nl-back": true, ...backAttrs, onClick: () => {
+        nlHaptic();
+        onBack && onBack();
+      }, "aria-label": lbl ? `Back to ${lbl}` : "Back", style: { ...glass, height: 40, minWidth: 40, width: lbl ? "auto" : 40, padding: lbl ? "0 14px 0 6px" : 0, marginLeft: -6, gap: 2, maxWidth: 170 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", transform: "rotate(180deg)", flex: "none" } }, /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 22, color: "#fff", sw: 2.2 })), lbl && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 14.5, fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, lbl));
+    })(), /* @__PURE__ */ React.createElement("span", { style: { background: "#fff", borderRadius: 12, padding: "6px 10px", display: "flex", alignItems: "center", boxShadow: "0 2px 8px rgba(0,0,0,0.12)" } }, /* @__PURE__ */ React.createElement("img", { src: "data:image/png;base64," + LOGO_B64, alt: "Matrix Engineering", style: { height: 28, display: "block" } }))), /* @__PURE__ */ React.createElement("span", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement("button", { "data-nl-bell": true, onClick: () => {
       nlHaptic();
       setBellOpen(true);
     }, "aria-label": alerts.length ? `${alerts.length} alerts` : "Alerts", style: glass }, /* @__PURE__ */ React.createElement(NLIcon, { name: "bell", size: 21, color: "#fff", sw: 1.8 }), alerts.length > 0 && /* @__PURE__ */ React.createElement("span", { "data-nl-bell-count": true, style: { position: "absolute", top: -2, right: -2, minWidth: 18, height: 18, borderRadius: 9, padding: "0 5px", boxSizing: "border-box", background: NL.RED, color: "#fff", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" } }, alerts.length)), /* @__PURE__ */ React.createElement("button", { onClick: onSearch, "aria-label": "Search everything", style: glass }, /* @__PURE__ */ React.createElement(NLIcon, { name: "search", size: 20, color: "#fff", sw: 1.9 })), /* @__PURE__ */ React.createElement("button", { "data-nl-me": true, onClick: onOpenAdmin, "aria-label": `${me} \u2014 account, help and the build v${APP_VERSION}`, style: { ...glass, border: 0, background: "linear-gradient(135deg,#D9482F,#F27B5B)", fontSize: 16, fontWeight: 600 } }, me))), bellOpen && ReactDOM.createPortal(/* @__PURE__ */ React.createElement("div", { "data-nl-alerts": true, style: { position: "fixed", inset: 0, zIndex: 1150, background: "rgba(0,0,0,0.3)" }, onClick: () => setBellOpen(false) }, /* @__PURE__ */ React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { position: "absolute", left: 0, right: 0, top: 0, background: "#fff", borderRadius: "0 0 24px 24px", padding: "calc(14px + env(safe-area-inset-top, 0px)) 16px 16px", fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 22, fontWeight: 600 } }, "Alerts"), /* @__PURE__ */ React.createElement("button", { onClick: () => setBellOpen(false), style: { border: 0, background: "none", fontSize: 16, fontWeight: 600, color: NL.NAVY, fontFamily: NLT.FONT } }, "Done")), alerts.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, color: NL.SUB, padding: "12px 0" } }, "Nothing needs you right now.") : alerts.map((a, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { padding: "12px 0", borderTop: i ? `1px solid ${NL.LINE}` : "none", fontSize: 15.5 } }, a)), alerts.length > 0 && /* @__PURE__ */ React.createElement("button", { onClick: () => {
@@ -34100,13 +34169,13 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
   function NLCard({ children, white = false, style = {}, ...rest }) {
     return /* @__PURE__ */ React.createElement("div", { ...rest, style: { background: white ? "#fff" : NL.PANEL, borderRadius: NLT.R.card, boxShadow: white ? NLT.SHADOW : "none", ...style } }, children);
   }
-  function NLRow({ lead, title, sub, right, onClick, first = false, mono = false }) {
+  function NLRow({ lead, title, sub, right, onClick, first = false, mono = false, hold = null }) {
     const inner = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", alignItems: "center", flex: "none" } }, lead), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 16, fontWeight: 600, color: NL.INK, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, title), sub && /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 13, color: NL.SUB, marginTop: 1, fontVariantNumeric: mono ? "tabular-nums" : void 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, sub)), right && /* @__PURE__ */ React.createElement("span", { style: { textAlign: "right", flex: "none" } }, right));
     const st = { width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "13px 16px", borderTop: first ? "none" : `1px solid ${NL.LINE}`, minHeight: 56, boxSizing: "border-box", background: "none", border: 0, textAlign: "left", fontFamily: NLT.FONT, borderTopStyle: first ? "none" : "solid", borderTopWidth: first ? 0 : 1, borderTopColor: NL.LINE };
-    return onClick ? /* @__PURE__ */ React.createElement("button", { onClick: () => {
+    return onClick ? /* @__PURE__ */ React.createElement("button", { "data-nl-hold": hold || void 0, onClick: () => {
       nlHaptic();
       onClick();
-    }, style: st }, inner) : /* @__PURE__ */ React.createElement("div", { style: st }, inner);
+    }, style: st }, inner) : /* @__PURE__ */ React.createElement("div", { "data-nl-hold": hold || void 0, style: st }, inner);
   }
   function NLSq({ name, tone = "navy", size = 38 }) {
     const bg = { navy: NLT.TINT.navy, amber: NLT.TINT.amber, red: NLT.TINT.red, green: NLT.TINT.green, white: "#fff" }[tone] || NLT.TINT.navy;
@@ -34140,7 +34209,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const tail = nextCust && nextLine ? ` Next: ${nextLine.charAt(0).toLowerCase() + nextLine.slice(1)} for ${nextCust}.` : "";
     return `${mood} ${head}${parts.length ? ` ${parts.join(", ")}.` : ""}${tail}`;
   }
-  function NLHome({ data, go, jumpToOrder, recent, openBox = null, setData = null, onRefresh = null, onSearch = null, syncAt = null, overnight = null }) {
+  function NLHome({ data, go, jumpToOrder, recent, openBox = null, setData = null, onRefresh = null, onSearch = null, syncAt = null, overnight = null, pickOrder = null }) {
     const photoOn = usePhotoReader();
     const [checkCase, setCheckCase] = useState(false);
     const h = (/* @__PURE__ */ new Date()).getHours();
@@ -34302,7 +34371,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     ))));
     return /* @__PURE__ */ React.createElement(PullToRefresh, { onRefresh }, /* @__PURE__ */ React.createElement("div", { "data-nl-home": true, style: { display: "flex", flexDirection: "column", fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement(NLHero, { title: `${hello}${name ? `, ${name}` : ""}`, sub: (/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }), onSearch, alerts: overnight ? overnight.alerts : [], onOpenAdmin: () => go("admin") }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { "data-nl-live": true, style: { display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.16)", border: "1px solid rgba(255,255,255,0.25)", borderRadius: 20, padding: "4px 10px 4px 8px", fontSize: 12, fontWeight: 500 } }, /* @__PURE__ */ React.createElement("i", { "aria-hidden": "true", className: "nl-pulse", style: { width: 8, height: 8, borderRadius: 4, background: "#5EE09A", boxShadow: "0 0 0 3px rgba(94,224,154,0.3)" } }), liveAt ? `Live \xB7 synced ${liveAt}` : "Live"), ranToday && /* @__PURE__ */ React.createElement("span", { style: { display: "inline-flex", alignItems: "center", background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 20, padding: "4px 10px", fontSize: 12, fontWeight: 500 } }, glued > 0 && bonded > 0 ? "Both lines ran today" : glued > 0 ? "Glue line ran today" : "Bonding ran today")), /* @__PURE__ */ React.createElement("div", { "data-nl-sentence": true, style: { marginTop: 14, fontSize: 15, lineHeight: 1.35, opacity: 0.95 } }, morning ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("b", null, "Overnight I checked ", runsAll.length.toLocaleString("en-GB"), " boxes, ", reelsAll.length, " reels and ", live.length, " orders."), " ", overnight.pending === 1 ? "One thing doesn't add up \u2014 I'd fix it like this. Yes or no?" : `${overnight.pending} things don't add up \u2014 I'd fix them like this. Yes or no?`) : sentence)), /* @__PURE__ */ React.createElement(NLOver, null, morning ? /* @__PURE__ */ React.createElement("div", { "data-nl-morning": true }, /* @__PURE__ */ React.createElement(OvernightMorning, { look: "cards" })) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(NLIn, { i: 0, style: { display: "flex", gap: 10 } }, tile("Glued today", gluedN.toLocaleString("en-GB"), "m", gPct, glueNeed > 0 ? `${glueNeed.toLocaleString("en-GB")} m still needed this week` : "nothing more needed this week", NL.NAVY, gluedBy, () => go("glueline"), "glued"), tile("Bonded today", bondedN.toLocaleString("en-GB"), "boxes", bPct, bondNeed > 0 ? `${bondNeed.toLocaleString("en-GB")} still needed this week` : "nothing more needed this week", NL.NAVY, bondedBy, () => go("bonding"), "bonded")), /* @__PURE__ */ React.createElement(NLIn, { i: 1, style: { display: "flex", gap: 10, marginTop: 10 } }, tile("Due this week", String(dueWeek.length), dueWeek.length === 1 ? "order" : "orders", dueWeek.length ? Math.round(100 * (dueWeek.length - late.length) / dueWeek.length) : 100, dueWeek.length ? `${dueWeek.length - late.length} on track \xB7 ${late.length} late` : "nothing due this week", late.length ? NL.AMBERTXT : NL.NAVY, null, () => go("dashboard"), "due"), tile("Ready to ship", String(ready.length), ready.length === 1 ? "order" : "orders", ready.length ? 100 : 0, ready.length ? ready.slice(0, 2).map((o) => o.customer.split(" ")[0]).join(" \xB7 ") : "none complete yet", NL.OK, null, () => go("dashboard"), "ready")))), morning && /* @__PURE__ */ React.createElement(NLIn, { i: 1, style: { display: "flex", gap: 10, marginTop: 12 } }, tile("Glued today", gluedN.toLocaleString("en-GB"), "m", gPct, `${glueNeed.toLocaleString("en-GB")} m still needed this week`, NL.NAVY, gluedBy, () => go("glueline"), "glued"), tile("Bonded today", bondedN.toLocaleString("en-GB"), "boxes", bPct, `${bondNeed.toLocaleString("en-GB")} still needed this week`, NL.NAVY, bondedBy, () => go("bonding"), "bonded")), first && nextLine && /* @__PURE__ */ React.createElement(NLIn, { i: 2 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, afternoon ? "What's left today" : "Your next move"), /* @__PURE__ */ React.createElement(NLCard, { white: true, "data-nl-nextmove": true, style: { padding: "14px 16px", display: "flex", gap: 12, alignItems: "center" } }, /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { width: 44, height: 44, borderRadius: 14, background: NL.NAVY, display: "flex", alignItems: "center", justifyContent: "center", flex: "none" } }, /* @__PURE__ */ React.createElement(NLIcon, { name: /^Pick|check/i.test(nextLine) ? "pick" : /bond/i.test(nextLine) ? "bonding" : "glueline", size: 22, color: "#fff", sw: 1.8 })), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 16, fontWeight: 600 } }, nextLine, " for ", first.customer), /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 13, color: NL.SUB } }, first.id, " \xB7 due ", dayOf(due(first)) || "later")), /* @__PURE__ */ React.createElement("button", { onClick: () => {
       nlHaptic();
-      if (/^Pick/i.test(nextLine)) go("pick");
+      if (/^Pick/i.test(nextLine)) pickOrder ? pickOrder(first.id) : go("pick");
       else jumpToOrder(first.id, first.stage);
     }, style: { height: 38, borderRadius: 19, border: 0, background: NL.NAVY, color: "#fff", fontFamily: NLT.FONT, fontSize: 14, fontWeight: 600, padding: "0 14px" } }, "Go"))), /* @__PURE__ */ React.createElement(NLIn, { i: 3 }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 12, overflowX: "auto", paddingBottom: 2 } }, photoOn && setData && qa("Check a case", "photo", () => setCheckCase(true), "check"), qa("New order", "dashboard", () => go("neworders"), "neworder"), qa("Log a reel", "glueline", () => go("glueline"), "reel"), qa("Find a box", "search", () => onSearch && onSearch(), "find"))), checkCase && /* @__PURE__ */ React.createElement(CheckACaseSheet, { data, setData, onClose: () => setCheckCase(false) }), afternoon && nextCard, /* @__PURE__ */ React.createElement(NLIn, { i: 4 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, "Needs you"), isAdminDevice() ? /* @__PURE__ */ React.createElement("div", { "data-nl-needs": true, style: { background: NLT.TINT.warm, borderRadius: NLT.R.card, padding: "4px 14px" } }, /* @__PURE__ */ React.createElement(NeedsYouToday, { data, jumpToDiscrepancies: () => go("stock"), look: "new", openBox, openOrder: jumpToOrder, empty: /* @__PURE__ */ React.createElement(NLAllGood, null) })) : /* @__PURE__ */ React.createElement(NLAllGood, null)), photoOn && setData && /* @__PURE__ */ React.createElement(NLIn, { i: 5 }, /* @__PURE__ */ React.createElement(WhatIDid, { data, setData })), /* @__PURE__ */ React.createElement(NLIn, { i: 6 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, "On the lines"), linesCard), !afternoon && /* @__PURE__ */ React.createElement(NLIn, { i: 7 }, nextCard), dueWeek.length > 0 && /* @__PURE__ */ React.createElement(NLIn, { i: 8 }, /* @__PURE__ */ React.createElement(NLEyebrow, { right: /* @__PURE__ */ React.createElement("span", { style: { letterSpacing: 0, textTransform: "none", fontWeight: 500 } }, dueWeek.length) }, "Due this week"), /* @__PURE__ */ React.createElement("div", null, dueWeek.slice(0, 4).map((o) => /* @__PURE__ */ React.createElement(NLOrderCard, { key: o.id, data, o, plan: plans.get(o.id) || null, onOpen: () => jumpToOrder(o.id, o.stage) })), dueWeek.length > 4 && /* @__PURE__ */ React.createElement("button", { onClick: () => go("dashboard"), style: { border: 0, background: "none", color: NL.NAVY, fontWeight: 600, fontSize: 14.5, padding: "10px 2px", fontFamily: NLT.FONT } }, "All ", dueWeek.length, " in Orders \u203A"))), /* @__PURE__ */ React.createElement("div", { style: { height: 24 } })));
   }
@@ -34347,7 +34416,12 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         nlHaptic();
         go(k);
       }, style: { minWidth: 0, textAlign: "left", display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 8, padding: "14px 12px 12px", border: 0, borderRadius: 16, background: NL.PANEL, color: NL.INK, fontFamily: NLT.FONT, lineHeight: 1.2, position: "relative" } }, /* @__PURE__ */ React.createElement(NLSq, { name: k, tone: "white" }), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15, fontWeight: 500 } }, n.label), sub && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, color: NL.SUB } }, sub), badge > 0 && /* @__PURE__ */ React.createElement("span", { style: { position: "absolute", top: 10, right: 10, minWidth: 20, height: 20, borderRadius: 10, background: NL.OR, color: "#fff", fontSize: 12, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 6px" } }, badge));
-    })))), /* @__PURE__ */ React.createElement(NLEyebrow, null, "This phone"), /* @__PURE__ */ React.createElement(NLCard, { style: { padding: "14px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", flexDirection: "column", gap: 2 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15.5, fontWeight: 600 } }, "New layout"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: NL.SUB } }, "Switch off to go back to the original on this phone \xB7 ", /* @__PURE__ */ React.createElement("span", { "data-nl-version": true }, "v", APP_VERSION))), /* @__PURE__ */ React.createElement("button", { "data-nl-off": true, onClick: () => setNewLayoutPref(false), style: { height: 38, padding: "0 14px", borderRadius: 10, border: `1px solid ${NL.LINE}`, background: "#fff", fontFamily: NLT.FONT, fontSize: 14, fontWeight: 600, color: NL.NAVY, whiteSpace: "nowrap" } }, "Use the original")), onBackup && /* @__PURE__ */ React.createElement(NLCard, { "data-nl-backup": true, style: { marginTop: 10, padding: "14px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", flexDirection: "column", gap: 2 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15.5, fontWeight: 600 } }, "Backup"), /* @__PURE__ */ React.createElement("span", { "data-nl-backup-age": true, style: { fontSize: 13, color: backupAge && backupAge.stale ? NL.AMBERTXT : NL.SUB } }, backupAge ? backupAge.label : "Everything on this phone, as a file")), /* @__PURE__ */ React.createElement("button", { "data-nl-backup-btn": true, onClick: onBackup, style: { height: 38, padding: "0 14px", borderRadius: 10, border: 0, background: NL.NAVY, fontFamily: NLT.FONT, fontSize: 14, fontWeight: 600, color: "#fff", whiteSpace: "nowrap" } }, "Download backup")), /* @__PURE__ */ React.createElement("div", { style: { height: 24 } }));
+    })))), /* @__PURE__ */ React.createElement(NLEyebrow, null, "This phone"), typeof navigator !== "undefined" && "setAppBadge" in navigator && typeof Notification !== "undefined" && Notification.permission !== "granted" && /* @__PURE__ */ React.createElement(NLCard, { "data-nl-badge-ask": true, style: { padding: "14px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 10 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", flexDirection: "column", gap: 2 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15.5, fontWeight: 600 } }, "A count on the app icon"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: NL.SUB } }, "How many things are waiting for you, on the home screen")), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+      try {
+        Notification.requestPermission().then(() => window.dispatchEvent(new Event("mx-pull-now")));
+      } catch (e) {
+      }
+    }, style: { height: 38, padding: "0 14px", borderRadius: 10, border: 0, background: NL.NAVY, fontFamily: NLT.FONT, fontSize: 14, fontWeight: 600, color: "#fff", whiteSpace: "nowrap" } }, "Turn on")), /* @__PURE__ */ React.createElement(NLCard, { style: { padding: "14px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", flexDirection: "column", gap: 2 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15.5, fontWeight: 600 } }, "New layout"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: NL.SUB } }, "Switch off to go back to the original on this phone \xB7 ", /* @__PURE__ */ React.createElement("span", { "data-nl-version": true }, "v", APP_VERSION))), /* @__PURE__ */ React.createElement("button", { "data-nl-off": true, onClick: () => setNewLayoutPref(false), style: { height: 38, padding: "0 14px", borderRadius: 10, border: `1px solid ${NL.LINE}`, background: "#fff", fontFamily: NLT.FONT, fontSize: 14, fontWeight: 600, color: NL.NAVY, whiteSpace: "nowrap" } }, "Use the original")), onBackup && /* @__PURE__ */ React.createElement(NLCard, { "data-nl-backup": true, style: { marginTop: 10, padding: "14px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", flexDirection: "column", gap: 2 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15.5, fontWeight: 600 } }, "Backup"), /* @__PURE__ */ React.createElement("span", { "data-nl-backup-age": true, style: { fontSize: 13, color: backupAge && backupAge.stale ? NL.AMBERTXT : NL.SUB } }, backupAge ? backupAge.label : "Everything on this phone, as a file")), /* @__PURE__ */ React.createElement("button", { "data-nl-backup-btn": true, onClick: onBackup, style: { height: 38, padding: "0 14px", borderRadius: 10, border: 0, background: NL.NAVY, fontFamily: NLT.FONT, fontSize: 14, fontWeight: 600, color: "#fff", whiteSpace: "nowrap" } }, "Download backup")), /* @__PURE__ */ React.createElement("div", { style: { height: 24 } }));
   }
   function NLPeekSheet({ data, o, onClose, onOpen }) {
     const rec = recordedByCase(data, o.id);
@@ -34375,7 +34449,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const t = parts.join(", then ");
     return t ? t.charAt(0).toUpperCase() + t.slice(1) : "";
   }
-  function NLOrders({ data, go, jumpToOrder, onRefresh = null, setData = null, onSearch = null, alerts = [] }) {
+  function NLOrders({ data, go, jumpToOrder, onRefresh = null, setData = null, onSearch = null, alerts = [], pickOrder = null, shipOrder = null }) {
     const orderPhotoOn = usePhotoReader();
     const [q, setQ] = useState("");
     const [chip, setChip] = useState("All");
@@ -34441,7 +34515,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         nlHaptic();
         jumpToOrder(o.id, o.stage);
       }, style: { width: "100%", boxSizing: "border-box", textAlign: "left", border: 0, background: "#fff", borderRadius: NLT.R.card, boxShadow: NLT.SHADOW, display: "flex", gap: 14, alignItems: "center", padding: "14px 16px", marginBottom: 10, color: NL.INK, fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement(NLSq, { name: "finish", tone: "green", size: 44 }), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 3 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", alignItems: "center", gap: 8 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 16, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, o.customer), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: NL.SUB, fontVariantNumeric: "tabular-nums", flex: "none" } }, o.id)), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13.5, color: NL.SUB, fontVariantNumeric: "tabular-nums" } }, items.length, " line", items.length === 1 ? "" : "s", " \xB7 ", n.toLocaleString("en-GB"), " items", cases ? ` \xB7 ${cases} case${cases === 1 ? "" : "s"}` : "", value ? ` \xB7 \xA3${value.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ""), /* @__PURE__ */ React.createElement("span", { style: { display: "flex", alignItems: "center", gap: 8, marginTop: 3 } }, /* @__PURE__ */ React.createElement(NLChip, { tone: "green" }, "SHIPPED"), when && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: NL.SUB } }, (/* @__PURE__ */ new Date(when + "T12:00:00")).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })))), /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 18, color: "#8A93A8", sw: 2 })));
-    }), /* @__PURE__ */ React.createElement("div", { style: { height: 24 } })), segOn === "live" && /* @__PURE__ */ React.createElement(React.Fragment, null, orderPhotoOn && setData && /* @__PURE__ */ React.createElement(OrderPhotoButtons, { data, setData, hidden: true }), /* @__PURE__ */ React.createElement("label", { style: { display: "flex", alignItems: "center", gap: 10, height: 46, marginTop: 12, padding: "0 14px", background: NL.PANEL, borderRadius: 14, color: NL.SUB } }, /* @__PURE__ */ React.createElement(NLIcon, { name: "search", size: 18, color: NL.SUB, sw: 1.8 }), /* @__PURE__ */ React.createElement("input", { "data-nl-order-search": true, value: q, onChange: (e) => setQ(e.target.value), placeholder: "Customer, WO or product", "aria-label": "Search orders", style: { border: 0, outline: "none", fontFamily: NLT.FONT, fontSize: 15.5, flex: 1, background: "transparent", color: NL.INK } })), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, overflowX: "auto", paddingBottom: 2, marginTop: 12 } }, ["All", "Late", "This week", "Ready to ship", "Strong tape"].map((c) => chipBtn(c, () => setChip(c), chip === c, null))), shown.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14.5, color: NL.SUB, padding: "14px 2px" } }, term ? `No live order matches "${q.trim()}".` : "Nothing here."), groups.map(([title, os, col], gi) => /* @__PURE__ */ React.createElement(NLIn, { key: title, i: gi }, /* @__PURE__ */ React.createElement(NLEyebrow, null, /* @__PURE__ */ React.createElement("span", { style: { color: col } }, title)), os.map((o) => /* @__PURE__ */ React.createElement(NLOrderCard, { key: o.id, data, o, plan: plans.get(o.id), onOpen: () => jumpToOrder(o.id, o.stage) }))))), newSheet && ReactDOM.createPortal(/* @__PURE__ */ React.createElement("div", { "data-nl-new-sheet": true, style: { position: "fixed", inset: 0, zIndex: 1150, background: "rgba(20,33,82,0.35)" }, onClick: () => setNewSheet(false) }, /* @__PURE__ */ React.createElement("div", { onClick: (e) => e.stopPropagation(), className: "nl-up", style: { position: "absolute", left: 0, right: 0, bottom: 0, background: "#fff", borderRadius: "28px 28px 0 0", boxShadow: "0 -12px 40px rgba(20,33,82,0.22)", padding: "10px 16px calc(24px + env(safe-area-inset-bottom, 0px))", fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement("div", { "aria-hidden": "true", style: { width: 40, height: 5, borderRadius: 3, background: NL.LINE, margin: "0 auto 14px" } }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 20, fontWeight: 600, margin: "0 4px 10px" } }, "New order"), /* @__PURE__ */ React.createElement(NLCard, null, orderPhotoOn && /* @__PURE__ */ React.createElement(NLRow, { first: true, lead: /* @__PURE__ */ React.createElement(NLSq, { name: "scan" }), title: "Take a photo", sub: "Of the order, the email or the paperwork \u2014 the app reads it", right: /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 18, color: "#8A93A8", sw: 2 }), onClick: () => {
+    }), /* @__PURE__ */ React.createElement("div", { style: { height: 24 } })), segOn === "live" && /* @__PURE__ */ React.createElement(React.Fragment, null, orderPhotoOn && setData && /* @__PURE__ */ React.createElement(OrderPhotoButtons, { data, setData, hidden: true }), /* @__PURE__ */ React.createElement("label", { style: { display: "flex", alignItems: "center", gap: 10, height: 46, marginTop: 12, padding: "0 14px", background: NL.PANEL, borderRadius: 14, color: NL.SUB } }, /* @__PURE__ */ React.createElement(NLIcon, { name: "search", size: 18, color: NL.SUB, sw: 1.8 }), /* @__PURE__ */ React.createElement("input", { "data-nl-order-search": true, value: q, onChange: (e) => setQ(e.target.value), placeholder: "Customer, WO or product", "aria-label": "Search orders", style: { border: 0, outline: "none", fontFamily: NLT.FONT, fontSize: 15.5, flex: 1, background: "transparent", color: NL.INK } })), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, overflowX: "auto", paddingBottom: 2, marginTop: 12 } }, ["All", "Late", "This week", "Ready to ship", "Strong tape"].map((c) => chipBtn(c, () => setChip(c), chip === c, null))), shown.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14.5, color: NL.SUB, padding: "14px 2px" } }, term ? `No live order matches "${q.trim()}".` : "Nothing here."), groups.map(([title, os, col], gi) => /* @__PURE__ */ React.createElement(NLIn, { key: title, i: gi }, /* @__PURE__ */ React.createElement(NLEyebrow, null, /* @__PURE__ */ React.createElement("span", { style: { color: col } }, title)), os.map((o) => /* @__PURE__ */ React.createElement(NLOrderCard, { key: o.id, data, o, plan: plans.get(o.id), onOpen: () => jumpToOrder(o.id, o.stage), onPick: pickOrder, onShip: shipOrder }))))), newSheet && ReactDOM.createPortal(/* @__PURE__ */ React.createElement("div", { "data-nl-new-sheet": true, style: { position: "fixed", inset: 0, zIndex: 1150, background: "rgba(20,33,82,0.35)" }, onClick: () => setNewSheet(false) }, /* @__PURE__ */ React.createElement("div", { onClick: (e) => e.stopPropagation(), className: "nl-up", style: { position: "absolute", left: 0, right: 0, bottom: 0, background: "#fff", borderRadius: "28px 28px 0 0", boxShadow: "0 -12px 40px rgba(20,33,82,0.22)", padding: "10px 16px calc(24px + env(safe-area-inset-bottom, 0px))", fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement("div", { "aria-hidden": "true", style: { width: 40, height: 5, borderRadius: 3, background: NL.LINE, margin: "0 auto 14px" } }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 20, fontWeight: 600, margin: "0 4px 10px" } }, "New order"), /* @__PURE__ */ React.createElement(NLCard, null, orderPhotoOn && /* @__PURE__ */ React.createElement(NLRow, { first: true, lead: /* @__PURE__ */ React.createElement(NLSq, { name: "scan" }), title: "Take a photo", sub: "Of the order, the email or the paperwork \u2014 the app reads it", right: /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 18, color: "#8A93A8", sw: 2 }), onClick: () => {
       setNewSheet(false);
       const el = document.querySelector('[data-order-photo-input="camera"]');
       el && el.click();
@@ -34494,9 +34568,9 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const t = Date.parse(String(iso || "").slice(0, 10) + "T12:00:00");
     return isFinite(t) ? Math.round((Date.now() - t) / 864e5) : null;
   }
-  function NLStock({ data, setData, go, openBox, openStockTab, onScan, onSearch, alerts = [], onRefresh = null }) {
+  function NLStock({ data, setData, go, openBox, openStockTab, onScan, onSearch, alerts = [], onRefresh = null, initialQ = null }) {
     const [tab, setTab] = useState("boxes");
-    const [q, setQ] = useState("");
+    const [q, setQ] = useState(initialQ || "");
     const [range, setRange] = useState("All");
     const [showAll, setShowAll] = useState(false);
     const term = q.trim().toLowerCase();
@@ -34616,13 +34690,14 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     }, "aria-label": "Scan a code", style: { width: 36, height: 36, borderRadius: 18, border: 0, background: "rgba(255,255,255,0.18)", display: "flex", alignItems: "center", justifyContent: "center" } }, /* @__PURE__ */ React.createElement(NLIcon, { name: "scan", size: 18, color: "#fff", sw: 1.8 }))), /* @__PURE__ */ React.createElement(NLBandStats, { items: [[unchecked.length, "unchecked", "amber", () => openStockTab("boxes")], [missing, "still missing", "red", () => openStockTab("boxes")], [disc, "don't add up", "amber", () => openStockTab("discrepancies")], [lowMats.length, lowMats.length === 1 ? "material low" : "materials low", lowMats.length ? "red" : "teal", () => {
       setTab("materials");
       setShowAll(false);
-    }]] })), /* @__PURE__ */ React.createElement(NLOver, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", background: "#fff", borderRadius: 12, padding: 3, boxShadow: NLT.SHADOW } }, seg("boxes", "Boxes"), seg("reels", "Reels"), seg("materials", "Materials"))), term && matHits.length > 0 && tab !== "materials" && /* @__PURE__ */ React.createElement(NLIn, { i: 0 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, "Materials matching"), /* @__PURE__ */ React.createElement(NLCard, null, matHits.slice(0, 3).map((m, i) => matRow(m, i, i === 0)))), tab === "boxes" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, overflowX: "auto", paddingBottom: 2, marginTop: 12 } }, NL_RANGES.map(chip)), codeHit && codeHit.length > 0 && /* @__PURE__ */ React.createElement(NLIn, { i: 0 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, "Codes"), /* @__PURE__ */ React.createElement(NLCard, null, codeHit.slice(0, 5).map((r, i) => /* @__PURE__ */ React.createElement(NLRow, { key: r.id, first: i === 0, lead: /* @__PURE__ */ React.createElement(NLDot, { spec: r.productSize }), title: r.boxNumber, mono: true, sub: `${r.productSize} \xB7 ${r.location || "no bay"} \xB7 ${r.date || ""}`, right: teal(r.available), onClick: () => openBox && openBox(r.boxNumber) })))), litBays.length > 0 && /* @__PURE__ */ React.createElement(NLIn, { i: 0 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, bayHit ? "" : "In these bays"), /* @__PURE__ */ React.createElement("div", { "data-nl-stock-bays": true, style: { display: "flex", gap: 8, flexWrap: "wrap" } }, litBays.map((b) => /* @__PURE__ */ React.createElement("button", { key: b, onClick: () => setQ(b), style: { height: 36, padding: "0 12px", borderRadius: 10, border: 0, background: NLT.TINT.navy, color: NL.NAVY, fontFamily: NLT.FONT, fontSize: 14, fontWeight: 600 } }, b)))), /* @__PURE__ */ React.createElement(NLIn, { i: 1 }, /* @__PURE__ */ React.createElement(NLEyebrow, { right: /* @__PURE__ */ React.createElement("span", { style: { letterSpacing: 0, textTransform: "none", fontWeight: 500 } }, bayHit ? `bay ${q.trim().toUpperCase()}` : range === "Viking" ? `${shelfForChip.reduce((t, r) => t + (Number(r.available) || 0), 0)} boxes` : "most first") }, range === "Viking" ? "In Viking cartons \xB7 by size" : "On the shelf \xB7 by size"), /* @__PURE__ */ React.createElement(NLCard, null, sizeList.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { padding: "14px 16px", fontSize: 14, color: NL.SUB } }, term ? `Nothing on the shelf matches "${q.trim()}".` : "Nothing on the shelf."), sizeList.slice(0, showAll ? 500 : 8).map((s, i) => {
+    }]] })), /* @__PURE__ */ React.createElement(NLOver, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", background: "#fff", borderRadius: 12, padding: 3, boxShadow: NLT.SHADOW } }, seg("boxes", "Boxes"), seg("reels", "Reels"), seg("materials", "Materials"))), term && matHits.length > 0 && tab !== "materials" && /* @__PURE__ */ React.createElement(NLIn, { i: 0 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, "Materials matching"), /* @__PURE__ */ React.createElement(NLCard, null, matHits.slice(0, 3).map((m, i) => matRow(m, i, i === 0)))), tab === "boxes" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, overflowX: "auto", paddingBottom: 2, marginTop: 12 } }, NL_RANGES.map(chip)), codeHit && codeHit.length > 0 && /* @__PURE__ */ React.createElement(NLIn, { i: 0 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, "Codes"), /* @__PURE__ */ React.createElement(NLCard, null, codeHit.slice(0, 5).map((r, i) => /* @__PURE__ */ React.createElement(NLRow, { key: r.id, hold: `code:${r.boxNumber}`, first: i === 0, lead: /* @__PURE__ */ React.createElement(NLDot, { spec: r.productSize }), title: r.boxNumber, mono: true, sub: `${r.productSize} \xB7 ${r.location || "no bay"} \xB7 ${r.date || ""}`, right: teal(r.available), onClick: () => openBox && openBox(r.boxNumber) })))), litBays.length > 0 && /* @__PURE__ */ React.createElement(NLIn, { i: 0 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, bayHit ? "" : "In these bays"), /* @__PURE__ */ React.createElement("div", { "data-nl-stock-bays": true, style: { display: "flex", gap: 8, flexWrap: "wrap" } }, litBays.map((b) => /* @__PURE__ */ React.createElement("button", { key: b, onClick: () => setQ(b), style: { height: 36, padding: "0 12px", borderRadius: 10, border: 0, background: NLT.TINT.navy, color: NL.NAVY, fontFamily: NLT.FONT, fontSize: 14, fontWeight: 600 } }, b)))), /* @__PURE__ */ React.createElement(NLIn, { i: 1 }, /* @__PURE__ */ React.createElement(NLEyebrow, { right: /* @__PURE__ */ React.createElement("span", { style: { letterSpacing: 0, textTransform: "none", fontWeight: 500 } }, bayHit ? `bay ${q.trim().toUpperCase()}` : range === "Viking" ? `${shelfForChip.reduce((t, r) => t + (Number(r.available) || 0), 0)} boxes` : "most first") }, range === "Viking" ? "In Viking cartons \xB7 by size" : "On the shelf \xB7 by size"), /* @__PURE__ */ React.createElement(NLCard, null, sizeList.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { padding: "14px 16px", fontSize: 14, color: NL.SUB } }, term ? `Nothing on the shelf matches "${q.trim()}".` : "Nothing on the shelf."), sizeList.slice(0, showAll ? 500 : 8).map((s, i) => {
       const days = nlAgeDays(s.oldest);
       const old = days != null && days > 365;
       return /* @__PURE__ */ React.createElement(
         NLRow,
         {
           key: s.spec,
+          hold: `size:${s.spec}`,
           first: i === 0,
           lead: /* @__PURE__ */ React.createElement(NLDot, { spec: s.spec }),
           title: s.spec.replace(/\s+(2-3pt|3-4pt|6pt)$/i, ""),
@@ -34727,7 +34802,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       if (!parts.length) parts.push(/* @__PURE__ */ React.createElement("span", { key: "d", style: { color: NL.OK, fontWeight: 600 } }, "all packed \u2713"));
       return parts.reduce((acc, x, i) => i ? [...acc, /* @__PURE__ */ React.createElement("span", { key: "sep" + i }, " \xB7 "), x] : [x], []);
     };
-    const lineRow = (l, i, first) => /* @__PURE__ */ React.createElement("div", { key: l.id, "data-nl-line": l.id, style: { padding: "14px 16px", borderTop: first ? 0 : `1px solid ${NL.LINE}` } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } }, /* @__PURE__ */ React.createElement(NLDot, { spec: l.spec }), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 15.5, fontWeight: 600, fontVariantNumeric: "tabular-nums", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, l.spec.replace(/\s*\(\d+m\)$/, "")), (l.ref || l.amendment) && /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 12.5, color: NL.SUB } }, [l.ref, l.amendment].filter(Boolean).join(" \xB7 "))), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 18, fontWeight: 600, fontVariantNumeric: "tabular-nums" } }, fmt(l.ordered))), /* @__PURE__ */ React.createElement(NLBar3, { packed: l.packed, shelf: l.shelf, make: l.make, total: l.ordered }), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6, fontSize: 12.5, color: NL.SUB } }, words3(l)));
+    const lineRow = (l, i, first) => /* @__PURE__ */ React.createElement("div", { key: l.id, "data-nl-line": l.id, "data-nl-hold": `size:${l.spec}`, style: { padding: "14px 16px", borderTop: first ? 0 : `1px solid ${NL.LINE}` } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } }, /* @__PURE__ */ React.createElement(NLDot, { spec: l.spec }), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 15.5, fontWeight: 600, fontVariantNumeric: "tabular-nums", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, l.spec.replace(/\s*\(\d+m\)$/, "")), (l.ref || l.amendment) && /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 12.5, color: NL.SUB } }, [l.ref, l.amendment].filter(Boolean).join(" \xB7 "))), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 18, fontWeight: 600, fontVariantNumeric: "tabular-nums" } }, fmt(l.ordered))), /* @__PURE__ */ React.createElement(NLBar3, { packed: l.packed, shelf: l.shelf, make: l.make, total: l.ordered }), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6, fontSize: 12.5, color: NL.SUB } }, words3(l)));
     const groups = [
       ["Pick from the shelf", NL.NAVY, boxLines.filter((l) => l.shelf > 0), (l) => `${fmt(l.shelf)} \xB7 ${l.picks.slice(0, 3).map((b) => `${b.boxNumber}${b.location ? ` (${b.location})` : ""}`).join(", ")}${l.picks.length > 3 ? ` +${l.picks.length - 3}` : ""}`, "Walk these \u2014 the pick sheet has the bays in order"],
       ["Bond from reels", NL.INK, boxLines.filter((l) => l.bond > 0), (l) => `${fmt(l.bond)} \xB7 ${l.bondReels.slice(0, 3).join(", ")}${l.bondReels.length > 3 ? ` +${l.bondReels.length - 3}` : ""}`, "Reels on the rack \u2014 bonding can start"],
@@ -34748,7 +34823,17 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const stored = (data.orderAcknowledgements || []).filter((a) => a && !a.deleted && a.orderId === o.id).sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))[0];
     const its = (data.lineItems || []).filter((l) => l && !l.deleted && l.orderId === o.id);
     const paper = (icon, title, state, action, onClick, tone) => /* @__PURE__ */ React.createElement(NLRow, { lead: /* @__PURE__ */ React.createElement(NLSq, { name: icon, tone: tone || "navy" }), title, sub: state, right: action ? /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: NL.NAVY } }, action) : /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 18, color: "#8A93A8", sw: 2 }), onClick });
-    return /* @__PURE__ */ React.createElement("div", { "data-nl-order-page": true, style: { display: "flex", flexDirection: "column", fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement("div", { "data-nl-order-hero": true }, /* @__PURE__ */ React.createElement(NLHero, { title: o.customer, sub: `${o.id}${o.boxType ? ` \xB7 ${o.boxType} cartons` : ""} \xB7 ${o.stage === "Shipped" ? `shipped ${dayStr(o.shippedDate)}` : done ? "ready to ship" : due.tone === "warn" ? `due ${due.text.toLowerCase()}` : `due ${due.text}`}`, back: true, onBack: () => go("dashboard"), backAttrs: { "data-nl-back-orders": true }, alerts, onOpenAdmin: () => go("admin") }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 16, alignItems: "center", marginTop: 18 } }, /* @__PURE__ */ React.createElement(NLRing, { pct, size: 96, stroke: 9, color: "#fff", track: "rgba(255,255,255,0.22)", label: `${pct}%`, lsize: 22, lcolor: "#fff" }), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 30, fontWeight: 600, fontVariantNumeric: "tabular-nums", letterSpacing: -0.8 } }, fmt(packed), " ", /* @__PURE__ */ React.createElement("span", { style: { fontSize: 16, fontWeight: 400, opacity: 0.85 } }, "of ", fmt(ordered), " packed")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, opacity: 0.85 } }, full, " of ", cases.length, " cases full", o.priority ? ` \xB7 priority ${o.priority}` : "", o.strongTape ? " \xB7 strong tape" : ""))))), /* @__PURE__ */ React.createElement(NLOver, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, background: "#fff", borderRadius: NLT.R.card, boxShadow: NLT.SHADOW, padding: 8 } }, stat3(shelf, "on the shelf", NL.NAVY), stat3(bondBoxes, "off reels"), stat3(glueBoxes + (make - bondBoxes - glueBoxes > 0 ? make - bondBoxes - glueBoxes : 0), "to make", NL.AMBERTXT))), next && /* @__PURE__ */ React.createElement(NLIn, { i: 0 }, /* @__PURE__ */ React.createElement("div", { style: { marginTop: 12, background: NL.PANEL, borderRadius: NLT.R.card, padding: "14px 16px" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: NL.SUB } }, "Packed"), done ? /* @__PURE__ */ React.createElement(NLChip, { tone: "green" }, "READY TO SHIP") : /* @__PURE__ */ React.createElement(NLChip, { tone: /late/.test(due.text) ? "red" : due.tone === "warn" ? "amber" : "plain" }, (/late/.test(due.text) ? due.text : `DUE ${due.text}`).toUpperCase())), /* @__PURE__ */ React.createElement("span", { style: { display: "block", height: 8, borderRadius: 4, background: NL.TRACK, overflow: "hidden", marginTop: 10 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block", width: `${pct}%`, height: 8, borderRadius: 4, background: done ? NL.OK : `linear-gradient(90deg, ${NL.NAVY}, #3D5BD9)`, transition: nlMotionOK() ? "width 700ms cubic-bezier(.2,.7,.2,1)" : "none" } })), /* @__PURE__ */ React.createElement("button", { "data-nl-next": true, onClick: () => {
+    const canShare = typeof navigator !== "undefined" && !!navigator.share;
+    const shareDoc = async (name, html) => {
+      try {
+        const file = new File([html], `${o.id} ${o.customer} \u2014 ${name}.html`.replace(/[\\/:*?"<>|]/g, " "), { type: "text/html" });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ files: [file], title: `${o.id} ${name}` });
+        else await navigator.share({ title: `${o.id} ${name}`, text: `${o.customer} \xB7 ${o.id} \xB7 ${name}` });
+      } catch (e) {
+      }
+    };
+    const ackHtml = () => stored ? stored.html : orderAckDoc(o, its, {});
+    return /* @__PURE__ */ React.createElement("div", { "data-nl-order-page": true, style: { display: "flex", flexDirection: "column", fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement("div", { "data-nl-order-hero": true }, /* @__PURE__ */ React.createElement(NLHero, { title: o.customer, sub: `${o.id}${o.boxType ? ` \xB7 ${o.boxType} cartons` : ""} \xB7 ${o.stage === "Shipped" ? `shipped ${dayStr(o.shippedDate)}` : done ? "ready to ship" : due.tone === "warn" ? `due ${due.text.toLowerCase()}` : `due ${due.text}`}`, back: true, onBack: () => go("dashboard"), backLabel: "Orders", backAttrs: { "data-nl-back-orders": true }, alerts, onOpenAdmin: () => go("admin") }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 16, alignItems: "center", marginTop: 18 } }, /* @__PURE__ */ React.createElement(NLRing, { pct, size: 96, stroke: 9, color: "#fff", track: "rgba(255,255,255,0.22)", label: `${pct}%`, lsize: 22, lcolor: "#fff" }), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 30, fontWeight: 600, fontVariantNumeric: "tabular-nums", letterSpacing: -0.8 } }, fmt(packed), " ", /* @__PURE__ */ React.createElement("span", { style: { fontSize: 16, fontWeight: 400, opacity: 0.85 } }, "of ", fmt(ordered), " packed")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, opacity: 0.85 } }, full, " of ", cases.length, " cases full", o.priority ? ` \xB7 priority ${o.priority}` : "", o.strongTape ? " \xB7 strong tape" : ""))))), /* @__PURE__ */ React.createElement(NLOver, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, background: "#fff", borderRadius: NLT.R.card, boxShadow: NLT.SHADOW, padding: 8 } }, stat3(shelf, "on the shelf", NL.NAVY), stat3(bondBoxes, "off reels"), stat3(glueBoxes + (make - bondBoxes - glueBoxes > 0 ? make - bondBoxes - glueBoxes : 0), "to make", NL.AMBERTXT))), next && /* @__PURE__ */ React.createElement(NLIn, { i: 0 }, /* @__PURE__ */ React.createElement("div", { style: { marginTop: 12, background: NL.PANEL, borderRadius: NLT.R.card, padding: "14px 16px" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: NL.SUB } }, "Packed"), done ? /* @__PURE__ */ React.createElement(NLChip, { tone: "green" }, "READY TO SHIP") : /* @__PURE__ */ React.createElement(NLChip, { tone: /late/.test(due.text) ? "red" : due.tone === "warn" ? "amber" : "plain" }, (/late/.test(due.text) ? due.text : `DUE ${due.text}`).toUpperCase())), /* @__PURE__ */ React.createElement("span", { style: { display: "block", height: 8, borderRadius: 4, background: NL.TRACK, overflow: "hidden", marginTop: 10 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block", width: `${pct}%`, height: 8, borderRadius: 4, background: done ? NL.OK : `linear-gradient(90deg, ${NL.NAVY}, #3D5BD9)`, transition: nlMotionOK() ? "width 700ms cubic-bezier(.2,.7,.2,1)" : "none" } })), /* @__PURE__ */ React.createElement("button", { "data-nl-next": true, onClick: () => {
       nlHaptic();
       next.go();
     }, style: { marginTop: 12, width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "14px 16px", borderRadius: 14, border: 0, background: NL.NAVY, color: "#fff", textAlign: "left", fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", flexDirection: "column", gap: 1 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, fontWeight: 700, letterSpacing: 1.2, color: "#AEB8DE" } }, "NEXT"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15.5, fontWeight: 600 } }, next.text)), /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 18, color: "#fff", sw: 2.2 })))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", background: NL.PANEL, borderRadius: 12, padding: 3, marginTop: 14 } }, segBtn("lines", "Lines", boxLines.length), segBtn("cases", "Cases", cases.length), segBtn("paperwork", "Paperwork")), seg === "lines" && /* @__PURE__ */ React.createElement(NLIn, { i: 1 }, /* @__PURE__ */ React.createElement(NLEyebrow, { right: /* @__PURE__ */ React.createElement("button", { "data-nl-bynext": true, onClick: () => {
@@ -34757,9 +34842,9 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     }, style: { border: 0, background: "none", padding: 0, font: "inherit", fontSize: 12.5, fontWeight: 600, color: NL.NAVY, letterSpacing: 0, textTransform: "none" } }, byNext ? "By line \u25BE" : "By what's next \u25BE") }, byNext ? "What's ordered \xB7 by what's next" : `What's ordered \xB7 ${boxLines.length} line${boxLines.length === 1 ? "" : "s"}`), !byNext && /* @__PURE__ */ React.createElement(React.Fragment, null, legend, /* @__PURE__ */ React.createElement(NLCard, null, boxLines.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { padding: "14px 16px", fontSize: 14, color: NL.SUB } }, "No box lines on this order."), boxLines.slice(0, showAll ? 999 : 12).map((l, i) => lineRow(l, i, i === 0)), boxLines.length > 12 && !showAll && /* @__PURE__ */ React.createElement("button", { onClick: () => setShowAll(true), style: { width: "100%", border: 0, borderTop: `1px solid ${NL.LINE}`, background: "none", padding: 12, fontFamily: NLT.FONT, fontSize: 14, fontWeight: 600, color: NL.NAVY } }, "All ", boxLines.length, " lines")), extras.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { margin: "10px 2px 0", fontSize: 13, color: NL.SUB } }, "Also on the order: ", extras.map((l) => `${l.ordered} \xD7 ${l.spec}`).join(" \xB7 "))), byNext && groups.map(([title, col, ls, sub, hint]) => /* @__PURE__ */ React.createElement("div", { key: title }, /* @__PURE__ */ React.createElement(NLEyebrow, null, /* @__PURE__ */ React.createElement("span", { style: { color: col } }, title, " \xB7 ", fmt(ls.reduce((t, l) => t + (title === "Packed" ? l.packed : title === "Pick from the shelf" ? l.shelf : title === "Bond from reels" ? l.bond : l.glue), 0)))), hint && /* @__PURE__ */ React.createElement("div", { style: { margin: "-6px 2px 8px", fontSize: 12.5, color: NL.SUB } }, hint), /* @__PURE__ */ React.createElement(NLCard, null, ls.map((l, i) => /* @__PURE__ */ React.createElement(NLRow, { key: l.id, first: i === 0, lead: /* @__PURE__ */ React.createElement(NLDot, { spec: l.spec }), title: l.spec.replace(/\s*\(\d+m\)$/, ""), mono: true, sub: sub(l), right: /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15, fontWeight: 600, fontVariantNumeric: "tabular-nums" } }, fmt(l.ordered)), onClick: () => l.make > 0 && setWhy(l) }))))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 14 } }, /* @__PURE__ */ React.createElement("button", { "data-nl-record": true, onClick: () => {
       nlHaptic();
       setRecord((v) => !v);
-    }, style: { flex: 1, height: 44, borderRadius: 22, border: 0, background: record ? NL.NAVY : NL.PANEL, color: record ? "#fff" : NL.INK, fontFamily: NLT.FONT, fontSize: 14.5, fontWeight: 600 } }, record ? "Hide the order record" : "Order record \xB7 extras, edit, notes")), amendments.length > 0 && !record && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10, fontSize: 13, color: NL.SUB } }, amendments.length, " amendment", amendments.length === 1 ? "" : "s", ": ", amendments.join(" \xB7 "), " \u2014 in the order record."), record && /* @__PURE__ */ React.createElement("div", { "data-nl-record-body": true, style: { marginTop: 12 } }, renderRecord && renderRecord())), seg === "cases" && /* @__PURE__ */ React.createElement(NLIn, { i: 1 }, /* @__PURE__ */ React.createElement("div", { "data-nl-cases": true }, /* @__PURE__ */ React.createElement(NLEyebrow, { right: /* @__PURE__ */ React.createElement("span", { style: { letterSpacing: 0, textTransform: "none", fontWeight: 500 } }, cases.filter((c) => Number(c.weight) > 0).length, " weighed") }, cases.length, " case", cases.length === 1 ? "" : "s", " \xB7 ", full, " full"), renderCases && renderCases())), seg === "paperwork" && /* @__PURE__ */ React.createElement(NLIn, { i: 1 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, "Documents"), /* @__PURE__ */ React.createElement(NLCard, null, paper("admin", "Acknowledgement", stored ? `Sent ${dayStr(stored.at)}${stored.openedAt ? ` \xB7 opened ${dayStr(stored.openedAt)}` : " \xB7 not opened yet"}` : "Not sent yet \u2014 print or send from the order record", "Print", () => {
+    }, style: { flex: 1, height: 44, borderRadius: 22, border: 0, background: record ? NL.NAVY : NL.PANEL, color: record ? "#fff" : NL.INK, fontFamily: NLT.FONT, fontSize: 14.5, fontWeight: 600 } }, record ? "Hide the order record" : "Order record \xB7 extras, edit, notes")), amendments.length > 0 && !record && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10, fontSize: 13, color: NL.SUB } }, amendments.length, " amendment", amendments.length === 1 ? "" : "s", ": ", amendments.join(" \xB7 "), " \u2014 in the order record."), record && /* @__PURE__ */ React.createElement("div", { "data-nl-record-body": true, style: { marginTop: 12 } }, renderRecord && renderRecord())), seg === "cases" && /* @__PURE__ */ React.createElement(NLIn, { i: 1 }, /* @__PURE__ */ React.createElement("div", { "data-nl-cases": true }, /* @__PURE__ */ React.createElement(NLEyebrow, { right: /* @__PURE__ */ React.createElement("span", { style: { letterSpacing: 0, textTransform: "none", fontWeight: 500 } }, cases.filter((c) => Number(c.weight) > 0).length, " weighed") }, cases.length, " case", cases.length === 1 ? "" : "s", " \xB7 ", full, " full"), renderCases && renderCases())), seg === "paperwork" && /* @__PURE__ */ React.createElement(NLIn, { i: 1 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, "Documents"), /* @__PURE__ */ React.createElement(NLCard, null, canShare && /* @__PURE__ */ React.createElement(NLRow, { first: true, lead: /* @__PURE__ */ React.createElement(NLSq, { name: "messages", tone: "white" }), title: "Send the acknowledgement", sub: "Mail, WhatsApp, AirDrop or Files", right: /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 18, color: "#8A93A8", sw: 2 }), onClick: () => shareDoc("acknowledgement", ackHtml()) }), paper("admin", "Acknowledgement", stored ? `Sent ${dayStr(stored.at)}${stored.openedAt ? ` \xB7 opened ${dayStr(stored.openedAt)}` : " \xB7 not opened yet"}` : "Not sent yet \u2014 print or send from the order record", "Print", () => {
       try {
-        printInFrame("ack-print-frame", stored ? stored.html : orderAckDoc(o, its, {}));
+        printInFrame("ack-print-frame", ackHtml());
       } catch (e) {
       }
     }), paper("pick", "Pick list", shelf > 0 ? `${fmt(shelf)} boxes to walk for, in bay order` : "Nothing to pick right now", shelf > 0 ? "Open" : null, () => onPick && onPick(o.id)), paper("packing", "Packing list", `${cases.length} cases \xB7 prints from Cases`, "Cases", () => pickSeg("cases")), paper("finish", "Shipping manifest", o.shippingManifest ? `Ready \xB7 ${o.stage === "Shipped" ? `shipped ${dayStr(o.shippedDate)}` : "not shipped yet"}` : done ? "Ready to make \u2014 Ship from Cases" : "Appears when every case is full", o.shippingManifest ? "Print" : null, () => {
@@ -34768,7 +34853,12 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         else pickSeg("cases");
       } catch (e) {
       }
-    }, o.shippingManifest ? "green" : "navy")), /* @__PURE__ */ React.createElement(NLEyebrow, null, "On the order"), /* @__PURE__ */ React.createElement(NLCard, null, /* @__PURE__ */ React.createElement(NLRow, { first: true, lead: /* @__PURE__ */ React.createElement(NLSq, { name: "customers" }), title: o.customer, sub: [o.reference ? `Their reference ${o.reference}` : null, o.address || null].filter(Boolean).join(" \xB7 ") || "No reference or address recorded", right: /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 18, color: "#8A93A8", sw: 2 }), onClick: () => go("customers") }), o.floorNote && /* @__PURE__ */ React.createElement(NLRow, { lead: /* @__PURE__ */ React.createElement(NLSq, { name: "bonding", tone: "amber" }), title: "Note to the floor", sub: o.floorNote }), o.notes && /* @__PURE__ */ React.createElement(NLRow, { lead: /* @__PURE__ */ React.createElement(NLSq, { name: "register", tone: "white" }), title: "Office notes", sub: String(o.notes).length > 140 ? String(o.notes).slice(0, 140) + "\u2026" : o.notes, onClick: () => {
+    }, o.shippingManifest ? "green" : "navy"), canShare && o.shippingManifest && /* @__PURE__ */ React.createElement(NLRow, { lead: /* @__PURE__ */ React.createElement(NLSq, { name: "messages", tone: "white" }), title: "Send the shipping manifest", sub: "To accounts, or the customer", right: /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 18, color: "#8A93A8", sw: 2 }), onClick: () => {
+      try {
+        shareDoc("shipping manifest", shippingManifestDoc(o));
+      } catch (e) {
+      }
+    } })), /* @__PURE__ */ React.createElement(NLEyebrow, null, "On the order"), /* @__PURE__ */ React.createElement(NLCard, null, /* @__PURE__ */ React.createElement(NLRow, { first: true, lead: /* @__PURE__ */ React.createElement(NLSq, { name: "customers" }), title: o.customer, sub: [o.reference ? `Their reference ${o.reference}` : null, o.address || null].filter(Boolean).join(" \xB7 ") || "No reference or address recorded", right: /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 18, color: "#8A93A8", sw: 2 }), onClick: () => go("customers") }), o.floorNote && /* @__PURE__ */ React.createElement(NLRow, { lead: /* @__PURE__ */ React.createElement(NLSq, { name: "bonding", tone: "amber" }), title: "Note to the floor", sub: o.floorNote }), o.notes && /* @__PURE__ */ React.createElement(NLRow, { lead: /* @__PURE__ */ React.createElement(NLSq, { name: "register", tone: "white" }), title: "Office notes", sub: String(o.notes).length > 140 ? String(o.notes).slice(0, 140) + "\u2026" : o.notes, onClick: () => {
       pickSeg("lines");
       setRecord(true);
     } })), /* @__PURE__ */ React.createElement(NLEyebrow, null, "Its history"), /* @__PURE__ */ React.createElement(NLCard, null, timeline.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { padding: "14px 16px", fontSize: 14, color: NL.SUB } }, "Nothing recorded yet."), timeline.map(([when, what], i) => /* @__PURE__ */ React.createElement(NLRow, { key: i, first: i === 0, lead: /* @__PURE__ */ React.createElement("span", { style: { width: 10, height: 10, borderRadius: 5, background: i === timeline.length - 1 ? NL.NAVY : NL.LINE, display: "inline-block", margin: "0 15px" } }), title: what, sub: when ? dayStr(when) : "" })))), why && ReactDOM.createPortal(/* @__PURE__ */ React.createElement("div", { "data-nl-why-sheet": true, style: { position: "fixed", inset: 0, zIndex: 1150, background: "rgba(20,33,82,0.35)" }, onClick: () => setWhy(null) }, /* @__PURE__ */ React.createElement("div", { onClick: (e) => e.stopPropagation(), className: "nl-up", style: { position: "absolute", left: 0, right: 0, bottom: 0, background: "#fff", borderRadius: "28px 28px 0 0", boxShadow: "0 -12px 40px rgba(20,33,82,0.22)", padding: "10px 20px calc(24px + env(safe-area-inset-bottom, 0px))", fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement("div", { "aria-hidden": "true", style: { width: 40, height: 5, borderRadius: 3, background: NL.LINE, margin: "0 auto 14px" } }), /* @__PURE__ */ React.createElement(NLChip, { tone: "amber" }, fmt(why.make), " TO MAKE"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 20, fontWeight: 600, margin: "10px 0 6px", fontVariantNumeric: "tabular-nums" } }, why.spec.replace(/\s*\(\d+m\)$/, "")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: NL.SUB, marginBottom: 12 } }, fmt(why.ordered), " ordered \xB7 ", fmt(why.packed), " packed \xB7 ", fmt(why.shelf), " on the shelf"), why.why.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, lineHeight: 1.5 } }, "The planner hasn't placed this yet \u2014 it will once a reel of this size is on the rack or a run is booked to the order.") : why.why.map((w, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { display: "flex", gap: 10, padding: "10px 0", borderTop: i ? `1px solid ${NL.LINE}` : 0, fontSize: 15, lineHeight: 1.45 } }, /* @__PURE__ */ React.createElement("span", { style: { width: 8, height: 8, borderRadius: 4, background: NL.AMBERTXT, marginTop: 7, flex: "none" } }), /* @__PURE__ */ React.createElement("span", null, w))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 14 } }, why.bondReels.length > 0 && /* @__PURE__ */ React.createElement("button", { onClick: () => {
@@ -35506,6 +35596,148 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       };
     }, [newLayout]);
     const [nlTabHidden, setNlTabHidden] = useState(false);
+    const canGoBackRef = useRef(false);
+    const [nlHold, setNlHold] = useState(null);
+    const [nlStockQ, setNlStockQ] = useState(null);
+    useEffect(() => {
+      if (!newLayout) return;
+      let edge = null, sheet = null, holdT = null, holdAt = null;
+      const main = () => document.querySelector("main.app-main");
+      const onStart = (e) => {
+        const t = e.touches && e.touches[0];
+        if (!t) return;
+        const panel = e.target.closest && e.target.closest(".nl-up");
+        if (panel) {
+          const scroller = panel.scrollTop || 0;
+          sheet = { panel, y: t.clientY, dy: 0, ok: scroller <= 0 };
+          panel.style.animation = "none";
+          return;
+        }
+        if (t.clientX < 22 && canGoBackRef.current && !document.querySelector("[data-nl-search], [data-scan-overlay]")) {
+          edge = { x: t.clientX, y: t.clientY, dx: 0, on: false, depth: window.history.state && window.history.state.depth || 0 };
+          return;
+        }
+        const h = e.target.closest && e.target.closest("[data-nl-hold]");
+        if (h) {
+          holdAt = { x: t.clientX, y: t.clientY };
+          holdT = setTimeout(() => {
+            holdT = null;
+            nlHaptic("landed");
+            setNlHold(h.getAttribute("data-nl-hold"));
+          }, 520);
+        }
+      };
+      const onMove = (e) => {
+        const t = e.touches && e.touches[0];
+        if (!t) return;
+        if (holdT && holdAt && (Math.abs(t.clientX - holdAt.x) > 8 || Math.abs(t.clientY - holdAt.y) > 8)) {
+          clearTimeout(holdT);
+          holdT = null;
+        }
+        if (sheet && sheet.ok) {
+          sheet.dy = t.clientY - sheet.y;
+          const d = sheet.dy > 0 ? sheet.dy : sheet.dy * 0.22;
+          if (Math.abs(sheet.dy) > 4) {
+            sheet.panel.style.transition = "none";
+            sheet.panel.style.transform = `translateY(${d}px)`;
+            if (sheet.dy > 0 && e.cancelable) e.preventDefault();
+          }
+          return;
+        }
+        if (edge) {
+          edge.dx = t.clientX - edge.x;
+          const ady = Math.abs(t.clientY - edge.y);
+          if (!edge.on && edge.dx > 12 && edge.dx > ady) edge.on = true;
+          if (edge.on) {
+            if (e.cancelable) e.preventDefault();
+            const m = main();
+            if (m) {
+              m.style.transition = "none";
+              m.style.transform = `translateX(${Math.max(0, edge.dx)}px)`;
+              m.style.boxShadow = "-12px 0 24px rgba(20,33,82,0.12)";
+            }
+          }
+        }
+      };
+      const onEnd = () => {
+        if (holdT) {
+          clearTimeout(holdT);
+          holdT = null;
+        }
+        if (sheet) {
+          const { panel, dy } = sheet;
+          sheet = null;
+          panel.style.transition = "transform 260ms cubic-bezier(.2,.7,.2,1)";
+          if (dy > 110) {
+            panel.style.transform = "translateY(110%)";
+            setTimeout(() => {
+              const bd = panel.parentElement;
+              if (bd) bd.click();
+            }, 200);
+          } else panel.style.transform = "translateY(0)";
+          return;
+        }
+        if (edge) {
+          const { dx, on } = edge;
+          edge = null;
+          const m = main();
+          if (!m) return;
+          if (on && dx > 90) {
+            const d0 = window.history.state && window.history.state.depth || 0;
+            m.style.transition = "transform 200ms ease-out";
+            m.style.transform = `translateX(${window.innerWidth}px)`;
+            setTimeout(() => {
+              const d1 = window.history.state && window.history.state.depth || 0;
+              if (d1 === d0) window.history.back();
+              m.style.transition = "none";
+              m.style.transform = "";
+              m.style.boxShadow = "";
+            }, 190);
+          } else {
+            m.style.transition = "transform 220ms cubic-bezier(.2,.7,.2,1)";
+            m.style.transform = "";
+            setTimeout(() => {
+              m.style.boxShadow = "";
+            }, 220);
+          }
+        }
+      };
+      document.addEventListener("touchstart", onStart, { passive: true });
+      document.addEventListener("touchmove", onMove, { passive: false });
+      document.addEventListener("touchend", onEnd, { passive: true });
+      document.addEventListener("touchcancel", onEnd, { passive: true });
+      let raf = null;
+      const pads = () => {
+        raf = null;
+        document.querySelectorAll('input[type="number"]:not([inputmode])').forEach((x) => {
+          x.setAttribute("inputmode", "decimal");
+          x.setAttribute("enterkeyhint", "done");
+        });
+      };
+      const mo = new MutationObserver(() => {
+        if (!raf) raf = requestAnimationFrame(pads);
+      });
+      mo.observe(document.body, { childList: true, subtree: true });
+      pads();
+      return () => {
+        document.removeEventListener("touchstart", onStart);
+        document.removeEventListener("touchmove", onMove);
+        document.removeEventListener("touchend", onEnd);
+        document.removeEventListener("touchcancel", onEnd);
+        mo.disconnect();
+        if (raf) cancelAnimationFrame(raf);
+      };
+    }, [newLayout]);
+    useEffect(() => {
+      if (!newLayout || !("setAppBadge" in navigator)) return;
+      try {
+        if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+        const n = /^chris@creasingmatrix\.com$/i.test(nlEmail()) ? adminAlertItems(data).length : 0;
+        (n > 0 ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(() => {
+        });
+      } catch (e) {
+      }
+    }, [newLayout, data]);
     const [nlCompact, setNlCompact] = useState(false);
     useEffect(() => {
       if (!newLayout) {
@@ -35612,10 +35844,88 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const [pickTarget, setPickTarget] = useState(null);
     const [shipTarget, setShipTarget] = useState(null);
     const [canGoBack, setCanGoBack] = useState(false);
+    canGoBackRef.current = canGoBack;
+    const pickChosenRef = useRef(false);
+    const openPickFor = (id) => {
+      pickChosenRef.current = true;
+      setPickTarget(id);
+      navigateTo("pick");
+    };
+    const nlLabelOf = (v) => {
+      if (v === "home") return "Today";
+      if (v === "dashboard") return "Orders";
+      if (v === "everything") return "More";
+      if (v === "stock") return "Stock";
+      if (v === "orders" && searchJump && searchJump.orderId) {
+        const o = (data.orders || []).find((x) => x && x.id === searchJump.orderId);
+        return o ? o.customer : "Order";
+      }
+      if (v === "pick") return "Pick";
+      const b = nlBandFor(v, data);
+      return b ? b[0] : null;
+    };
+    const [nlBackFrom, setNlBackFrom] = useState(null);
+    NL_BACK_LABEL.current = canGoBack ? nlBackFrom : null;
+    const nlTabMem = useRef({});
+    useEffect(() => {
+      if (newLayout) nlTabMem.current[nlTabFor(view)] = { view, stockTab, searchJump, pickTarget };
+    }, [newLayout, view, stockTab, searchJump, pickTarget]);
+    const nlTabPress = (k) => {
+      const cur = nlTabFor(view);
+      if (k === cur) {
+        const atRoot = view === k && !(k === "stock" && (stockTab || searchJump && searchJump.view === "stock"));
+        if (atRoot) {
+          try {
+            window.scrollTo({ top: 0, behavior: nlMotionOK() ? "smooth" : "auto" });
+          } catch (e) {
+            window.scrollTo(0, 0);
+          }
+          return;
+        }
+        if (k === "stock") {
+          setStockTab(null);
+          setSearchJump(null);
+        }
+        if (k === "dashboard") {
+          setSearchJump(null);
+          setPickTarget(null);
+        }
+        nlTabMem.current[k] = { view: k, stockTab: null, searchJump: null, pickTarget: null };
+        navigateTo(k);
+        try {
+          window.scrollTo(0, 0);
+        } catch (e) {
+        }
+        return;
+      }
+      const m = nlTabMem.current[k];
+      if (m && m.view && m.view !== k) {
+        setSearchJump(m.searchJump || null);
+        setStockTab(m.stockTab || null);
+        if (m.view === "pick") {
+          pickChosenRef.current = !!m.pickTarget;
+          setPickTarget(m.pickTarget || null);
+        }
+        navigateTo(m.view);
+        return;
+      }
+      if (m) {
+        setStockTab(m.stockTab || null);
+        if (k === "stock") setSearchJump(m.searchJump && m.searchJump.view === "stock" ? m.searchJump : null);
+      } else if (k === "stock") {
+        setStockTab(null);
+        setSearchJump(null);
+      }
+      navigateTo(k);
+    };
     const navigateTo = (nextView) => {
+      if (nextView === "pick" && !pickChosenRef.current) setPickTarget(null);
+      pickChosenRef.current = false;
       if (nextView === view) return;
       const nextDepth = (window.history.state && window.history.state.depth || 0) + 1;
-      window.history.pushState({ view: nextView, depth: nextDepth }, "");
+      const fromLabel = nlLabelOf(view);
+      setNlBackFrom(fromLabel);
+      window.history.pushState({ view: nextView, depth: nextDepth, from: fromLabel }, "");
       setView(nextView);
       setCanGoBack(true);
     };
@@ -35626,6 +35936,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       window.history.replaceState({ view: "dashboard", depth: 0 }, "");
       const onPopState = (e) => {
         const state = e.state || { view: "dashboard", depth: 0 };
+        setNlBackFrom(state.from || null);
         setView(state.view || "dashboard");
         setCanGoBack((state.depth || 0) > 0);
         const grp = groupForView(state.view);
@@ -36758,9 +37069,9 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     }, []);
     const views = {
       stocktake: /* @__PURE__ */ React.createElement(StockTakeView, { data, setData }),
-      home: /* @__PURE__ */ React.createElement(NLHome, { data, go: navigateTo, jumpToOrder, recent: nlRecent, openBox: (code) => jumpToSearchResult({ type: "box", value: code }), setData, onRefresh: refreshFromCloud, onSearch: () => setNlSearch(true), syncAt: lastSyncedAt, overnight: { pending: nlOvernightPending, alerts: /^chris@creasingmatrix\.com$/i.test(nlEmail()) ? adminAlertItems(data) : [] } }),
+      home: /* @__PURE__ */ React.createElement(NLHome, { data, go: navigateTo, jumpToOrder, pickOrder: (id) => openPickFor(id), recent: nlRecent, openBox: (code) => jumpToSearchResult({ type: "box", value: code }), setData, onRefresh: refreshFromCloud, onSearch: () => setNlSearch(true), syncAt: lastSyncedAt, overnight: { pending: nlOvernightPending, alerts: /^chris@creasingmatrix\.com$/i.test(nlEmail()) ? adminAlertItems(data) : [] } }),
       everything: /* @__PURE__ */ React.createElement(NLEverything, { data, go: navigateTo, onBackup: handleBackup, backupAge, onSearch: () => setNlSearch(true), recent: nlRecent, alerts: /^chris@creasingmatrix\.com$/i.test(nlEmail()) ? adminAlertItems(data) : [] }),
-      dashboard: newLayout ? /* @__PURE__ */ React.createElement(NLOrders, { data, go: navigateTo, jumpToOrder, onRefresh: refreshFromCloud, setData, onSearch: () => setNlSearch(true), alerts: /^chris@creasingmatrix\.com$/i.test(nlEmail()) ? adminAlertItems(data) : [] }) : /* @__PURE__ */ React.createElement(Dashboard, { data, jumpToOrder, goTo: (v) => {
+      dashboard: newLayout ? /* @__PURE__ */ React.createElement(NLOrders, { data, go: navigateTo, jumpToOrder, pickOrder: (id) => openPickFor(id), shipOrder: (id) => jumpToPacking(id), onRefresh: refreshFromCloud, setData, onSearch: () => setNlSearch(true), alerts: /^chris@creasingmatrix\.com$/i.test(nlEmail()) ? adminAlertItems(data) : [] }) : /* @__PURE__ */ React.createElement(Dashboard, { data, jumpToOrder, goTo: (v) => {
         navigateTo(v);
         setOpenGroup(groupForView(v));
       } }),
@@ -36792,10 +37103,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           orderId: searchJump.orderId,
           go: navigateTo,
           jumpToPacking,
-          onPick: (id) => {
-            setPickTarget(id);
-            navigateTo("pick");
-          },
+          onPick: (id) => openPickFor(id),
           alerts: /^chris@creasingmatrix\.com$/i.test(nlEmail()) ? adminAlertItems(data) : [],
           renderRecord: () => /* @__PURE__ */ React.createElement(OrdersView, { data, setData, initialExpandedId: searchJump.orderId, jumpToPacking, onBackToOrders: () => navigateTo("dashboard"), autoShip: shipTarget, onShipStarted: () => setShipTarget(null), nlMode: true }),
           renderCases: () => /* @__PURE__ */ React.createElement(PackingListScreen, { data, setData, packJump: { orderId: searchJump.orderId, highlightBoxes: null, at: 0 }, onPick: (id) => {
@@ -36829,6 +37137,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           nlMode: newLayout
         }
       )) : /* @__PURE__ */ React.createElement(PickLauncher, { data, onPick: (id) => setPickTarget(id) }),
+      /* (pickTarget cleared on arrival when nobody chose an order — see navigateTo) */
       packing: /* @__PURE__ */ React.createElement(
         PackingListScreen,
         {
@@ -36853,7 +37162,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       gluelineschedule: /* @__PURE__ */ React.createElement(GlueLineScheduleView, { data, setData }),
       bonding: /* @__PURE__ */ React.createElement(BondingLineView, { data, setData, jumpToPacking }),
       eva: /* @__PURE__ */ React.createElement(EvaLineView, { data, setData }),
-      stock: newLayout && !stockTab && !(searchJump?.view === "stock" && searchJump.query) ? /* @__PURE__ */ React.createElement(NLStock, { data, setData, go: navigateTo, openBox: (code) => jumpToSearchResult({ type: "box", value: code }), openStockTab: (t, query) => {
+      stock: newLayout && !stockTab && !(searchJump?.view === "stock" && searchJump.query) ? /* @__PURE__ */ React.createElement(NLStock, { key: nlStockQ ? nlStockQ.at : "nlstock", initialQ: nlStockQ ? nlStockQ.q : null, data, setData, go: navigateTo, openBox: (code) => jumpToSearchResult({ type: "box", value: code }), openStockTab: (t, query) => {
         setStockTab(t);
         if (query) setSearchJump({ view: "stock", query });
       }, onScan: () => {
@@ -36888,6 +37197,8 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         .nl-band main.app-main > h2:first-of-type, .nl-band main.app-main > div:first-child > h2:first-child { display: none !important; }
         @keyframes nlIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
         .nl-on .nl-pulse { animation: nlPulse 2.4s ease-in-out infinite; }
+        .nl-up > div[aria-hidden="true"]:first-child { background: #C8102E !important; opacity: .8; }   /* every sheet's handle: a small brand-red bar */
+        .nl-up { will-change: transform; }
         .nl-pulse-once { animation: nlPulseOnce 900ms ease-out 400ms 1 both; } @keyframes nlPulseOnce { 0% { box-shadow: 0 0 0 0 rgba(255,138,138,0.55); } 100% { box-shadow: 0 0 0 14px rgba(255,138,138,0); } }
         @media (prefers-reduced-motion: reduce) { .nl-pulse-once { animation: none !important; } }
         .nl-scanline { animation: nlScan 2.2s ease-in-out infinite; } @keyframes nlScan { 0%, 100% { transform: translateY(-40px); } 50% { transform: translateY(40px); } }
@@ -37005,7 +37316,26 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         alerts: /^chris@creasingmatrix\.com$/i.test(nlEmail()) ? adminAlertItems(data) : [],
         onOpenAdmin: () => navigateTo("admin")
       }
-    ), newLayout && nlSearch && ReactDOM.createPortal(/* @__PURE__ */ React.createElement("div", { className: "no-print", "data-nl-search": true, style: { position: "fixed", inset: 0, zIndex: 1150, background: "#fff", overflowY: "auto", padding: "calc(12px + env(safe-area-inset-top, 0px)) 16px 24px" } }, /* @__PURE__ */ React.createElement(GlobalSearch, { data, look: "new", onCancel: () => setNlSearch(false), onJump: (r) => {
+    ), newLayout && nlHold && ReactDOM.createPortal(/* @__PURE__ */ React.createElement("div", { "data-nl-hold-menu": true, style: { position: "fixed", inset: 0, zIndex: 1160, background: "rgba(20,33,82,0.35)" }, onClick: () => setNlHold(null) }, /* @__PURE__ */ React.createElement("div", { onClick: (e) => e.stopPropagation(), className: "nl-up", style: { position: "absolute", left: 0, right: 0, bottom: 0, background: "#fff", borderRadius: "28px 28px 0 0", padding: "10px 16px calc(24px + env(safe-area-inset-bottom, 0px))", fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement("div", { "aria-hidden": "true", style: { width: 40, height: 5, borderRadius: 3, background: NL.LINE, margin: "0 auto 14px" } }), (() => {
+      const [kind, ...rest] = String(nlHold).split(":");
+      const value = rest.join(":");
+      return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, fontWeight: 600, letterSpacing: 1.4, textTransform: "uppercase", color: NL.SUB, margin: "0 4px" } }, kind === "code" ? "Box or reel code" : "Size"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 20, fontWeight: 600, margin: "4px 4px 12px", fontVariantNumeric: "tabular-nums" } }, value), /* @__PURE__ */ React.createElement(NLCard, null, /* @__PURE__ */ React.createElement(NLRow, { first: true, lead: /* @__PURE__ */ React.createElement(NLSq, { name: "stock" }), title: kind === "code" ? "Where it is and where it's been" : "Find it in Stock", sub: kind === "code" ? "Its bay, its case, its history" : "Every code of this size, by bay", onClick: () => {
+        setNlHold(null);
+        if (kind === "code") jumpToSearchResult({ type: "box", value });
+        else {
+          setStockTab(null);
+          setSearchJump(null);
+          setNlStockQ({ q: value.replace(/\s+(2-3pt|3-4pt|6pt)$/i, ""), at: Date.now() });
+          navigateTo("stock");
+        }
+      } }), /* @__PURE__ */ React.createElement(NLRow, { lead: /* @__PURE__ */ React.createElement(NLSq, { name: "register", tone: "white" }), title: "Copy", sub: value, onClick: () => {
+        try {
+          navigator.clipboard.writeText(value);
+        } catch (e) {
+        }
+        setNlHold(null);
+      } })));
+    })())), document.body), newLayout && nlSearch && ReactDOM.createPortal(/* @__PURE__ */ React.createElement("div", { className: "no-print", "data-nl-search": true, style: { position: "fixed", inset: 0, zIndex: 1150, background: "#fff", overflowY: "auto", padding: "calc(12px + env(safe-area-inset-top, 0px)) 16px 24px" } }, /* @__PURE__ */ React.createElement(GlobalSearch, { data, look: "new", onCancel: () => setNlSearch(false), onJump: (r) => {
       setNlSearch(false);
       jumpToSearchResult(r);
     } })), document.body), !newLayout && /* @__PURE__ */ React.createElement("div", { className: "mobile-header no-print", style: { position: "relative" } }, /* @__PURE__ */ React.createElement(
@@ -37211,13 +37541,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       const syncLive = ["connected", "saving", "refreshing"].includes(syncStatus) && !testMode;
       const syncedAgo = lastSyncedAt ? formatAgo(lastSyncedAt) : null;
       return /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: syncLive ? ORANGE : RED, color: "#fff", borderRadius: 5, fontWeight: 700, fontSize: 13, letterSpacing: 0.3 } }, "\u26A0 THIS DEVICE CAN NO LONGER KEEP ITS OWN COPY \u2014 its storage is full.", syncLive ? /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 500, display: "block", marginTop: 4 } }, "Cloud Sync is live", syncedAgo ? ` (last saved ${syncedAgo})` : "", ", so what you enter is still being saved to the cloud. The risk is closing or reloading the app before a save goes out \u2014 there is no local copy to fall back on. Keep going, but don't close the app, and get the storage cleared when you can.") : /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 500, display: "block", marginTop: 4 } }, "Cloud Sync is NOT carrying this work either, so nothing you type here is being saved anywhere. Connect Cloud Sync before entering anything further."));
-    })(), testMode && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: ORANGE, color: "#fff", borderRadius: 5, fontWeight: 700, fontSize: 13, letterSpacing: 0.3 } }, "\u26A0 TEST MODE \u2014 this is practice data only. Nothing here is real, and none of it will sync to the live system."), staleOnServer && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: "#FFF4E0", border: `1px solid ${AMBER}`, borderRadius: 5, color: INK, fontSize: 13 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, marginBottom: 2 } }, "The update can't finish \u2014 index.html hasn't been published"), "This device asked the server for ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, staleWanted), " and got", " ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, APP_VERSION), " back. That isn't a cache on this device \u2014 it's a fresh address the server answered with the old file. ", /* @__PURE__ */ React.createElement("b", null, "version.txt was pushed to the site but index.html wasn't"), ", so every device keeps being told there's an update it can never get. Push index.html and this clears itself."), updateReady && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5 flex flex-wrap items-center gap-3", style: { background: "#EEF1FA", border: `1px solid ${NAVY}`, borderRadius: 5, color: NAVY, fontSize: 13 } }, /* @__PURE__ */ React.createElement("span", { style: { flex: "1 1 260px" } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 700 } }, "New version available"), " \u2014 this device is on ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, APP_VERSION), ", latest is ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, updateLatest), ". Updating reloads the page, so finish anything you're part-way through typing first. Saved work is safe."), /* @__PURE__ */ React.createElement("button", { onClick: applyUpdate, className: "shrink-0 px-3", style: { height: 34, background: NAVY, color: "#fff", border: "none", borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: "pointer" } }, "Update now"), /* @__PURE__ */ React.createElement("button", { onClick: snoozeUpdate, className: "shrink-0 px-3", style: { height: 34, background: "none", color: NAVY, border: `1px solid ${NAVY}`, borderRadius: 6, fontSize: 13, cursor: "pointer" } }, "Later")), /* @__PURE__ */ React.createElement(ScreenErrorBoundary, { viewKey: view, key: view }, screenAllowed(view) ? views[view] : /* @__PURE__ */ React.createElement(ScreenOff, null)), newLayout && /* @__PURE__ */ React.createElement("div", { style: { height: 96 }, "aria-hidden": "true" })), newLayout && !scanOpen && ReactDOM.createPortal(/* @__PURE__ */ React.createElement(NLTabBar, { view, go: (k) => {
-      if (k === "stock") {
-        setStockTab(null);
-        setSearchJump(null);
-      }
-      navigateTo(k);
-    }, hidden: nlTabHidden, onScan: () => {
+    })(), testMode && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: ORANGE, color: "#fff", borderRadius: 5, fontWeight: 700, fontSize: 13, letterSpacing: 0.3 } }, "\u26A0 TEST MODE \u2014 this is practice data only. Nothing here is real, and none of it will sync to the live system."), staleOnServer && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5", style: { background: "#FFF4E0", border: `1px solid ${AMBER}`, borderRadius: 5, color: INK, fontSize: 13 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, marginBottom: 2 } }, "The update can't finish \u2014 index.html hasn't been published"), "This device asked the server for ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, staleWanted), " and got", " ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, APP_VERSION), " back. That isn't a cache on this device \u2014 it's a fresh address the server answered with the old file. ", /* @__PURE__ */ React.createElement("b", null, "version.txt was pushed to the site but index.html wasn't"), ", so every device keeps being told there's an update it can never get. Push index.html and this clears itself."), updateReady && /* @__PURE__ */ React.createElement("div", { className: "no-print mb-5 px-4 py-2.5 flex flex-wrap items-center gap-3", style: { background: "#EEF1FA", border: `1px solid ${NAVY}`, borderRadius: 5, color: NAVY, fontSize: 13 } }, /* @__PURE__ */ React.createElement("span", { style: { flex: "1 1 260px" } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 700 } }, "New version available"), " \u2014 this device is on ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, APP_VERSION), ", latest is ", /* @__PURE__ */ React.createElement(Mono, { style: { fontSize: 12 } }, updateLatest), ". Updating reloads the page, so finish anything you're part-way through typing first. Saved work is safe."), /* @__PURE__ */ React.createElement("button", { onClick: applyUpdate, className: "shrink-0 px-3", style: { height: 34, background: NAVY, color: "#fff", border: "none", borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: "pointer" } }, "Update now"), /* @__PURE__ */ React.createElement("button", { onClick: snoozeUpdate, className: "shrink-0 px-3", style: { height: 34, background: "none", color: NAVY, border: `1px solid ${NAVY}`, borderRadius: 6, fontSize: 13, cursor: "pointer" } }, "Later")), /* @__PURE__ */ React.createElement(ScreenErrorBoundary, { viewKey: view, key: view }, screenAllowed(view) ? views[view] : /* @__PURE__ */ React.createElement(ScreenOff, null)), newLayout && /* @__PURE__ */ React.createElement("div", { style: { height: 96 }, "aria-hidden": "true" })), newLayout && !scanOpen && ReactDOM.createPortal(/* @__PURE__ */ React.createElement(NLTabBar, { view, go: nlTabPress, hidden: nlTabHidden, onScan: () => {
       setScanNotice(null);
       setScanOpen(true);
     } }), document.body)), toast && /* @__PURE__ */ React.createElement("div", { className: "fixed bottom-5 right-5 px-4 py-2 rounded text-sm text-white shadow-lg", style: { background: NAVY } }, toast));
