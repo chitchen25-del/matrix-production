@@ -8278,6 +8278,52 @@ ${line}` : line;
   <div class="bc">${bars}</div>
 </body></html>`;
   }
+  var LABEL_W_MM = 76;
+  var LABEL_H_MM = 25;
+  function defaultLabelItems(tpl) {
+    const t = tpl || {};
+    if (t.layout === "std") {
+      const parts = [["left", 21], ["middle", 43], ["right", 60]].filter(([k]) => String(t[k] || "").trim());
+      return [
+        { id: "line1", kind: "text", text: t.line1 || "", x: 38.5, y: 1.3, size: Number(t.size1) || 13, bold: true, font: "serif" },
+        ...parts.map(([k, x]) => ({ id: k, kind: "text", text: t[k], x: parts.length === 2 && k === "middle" ? 52 : parts.length === 2 && k === "left" ? 25 : x, y: 6.5, size: Number(t.size2) || 13, bold: true, font: "serif" })),
+        { id: "barcode", kind: "barcode", x: 38.5, y: 11.6, h: 6.5, module: 0.375 },
+        ...String(t.under || "").trim() ? [{ id: "under", kind: "text", text: t.under, x: 38.5, y: 18.5, size: 8.5, bold: true, font: "sans" }] : []
+      ];
+    }
+    const metal = t.layout === "kenMetal";
+    return [
+      { id: "line1", kind: "text", text: t.line1 || "", x: 38.5, y: 1.1, size: Number(t.size1) || 16, bold: !metal, font: metal ? "sans" : "serif" },
+      { id: "line2", kind: "text", text: t.line2 || "", x: 38.5, y: 6.6, size: Number(t.size2) || 15, bold: true, font: metal ? "sans" : "serif" },
+      { id: "barcode", kind: "barcode", x: 25, y: 12.6, h: 5.5, module: 0.25 },
+      ...String(t.under || "").trim() ? [{ id: "under", kind: "text", text: t.under, x: 25, y: 18.6, size: 8.5, bold: true, font: "sans" }] : [],
+      { id: "code", kind: "text", text: "{code}", x: 58, y: 13.2, size: Number(t.sizeCode) || 12.5, bold: !metal, font: metal ? "sans" : "serif" }
+    ];
+  }
+  function labelItemsFor(rows, tplId, productName) {
+    const own = cfgOf(rows, `size:${String(productName || "").trim()}`);
+    if (own && Array.isArray(own.items) && own.items.length) return { items: own.items, from: "size" };
+    const range = cfgOf(rows, tplId);
+    if (range && Array.isArray(range.items) && range.items.length) return { items: range.items, from: "range" };
+    return { items: null, from: null };
+  }
+  function itemText(it, f) {
+    return it.literal ? String(it.text || "") : fillLine(it.text, f);
+  }
+  function labelItemsInner(items, f) {
+    return (items || []).map((it) => {
+      if (it.kind === "barcode") return `<div style="position:absolute;left:${it.x}mm;top:${it.y}mm;transform:translateX(-50%);line-height:0">${code128Svg(f.code || " ", { moduleMm: it.module || 0.375, heightMm: it.h || 6.5 })}</div>`;
+      const fam = it.font === "sans" ? "Arial,Helvetica,sans-serif" : "'Times New Roman','Liberation Serif',Times,serif";
+      return `<div style="position:absolute;left:${it.x}mm;top:${it.y}mm;transform:translateX(-50%);white-space:nowrap;font-family:${fam};font-weight:${it.bold ? 700 : 400};font-size:${it.size}pt;line-height:1.1">${esc(itemText(it, f))}</div>`;
+    }).join("");
+  }
+  function labelItemsDoc(items, f, count = 1) {
+    const n = Math.max(1, Math.min(500, Math.round(Number(count) || 1)));
+    const lab = `<div style="position:relative;width:${LABEL_W_MM}mm;height:${LABEL_H_MM}mm;overflow:hidden;background:#fff;color:#000">${labelItemsInner(items, f)}</div>`;
+    return `<!DOCTYPE html><html><head><style>@page { size: ${LABEL_W_MM}mm ${LABEL_H_MM}mm; margin: 0; } html, body { margin: 0; padding: 0; }
+    .page { width: ${LABEL_W_MM}mm; height: ${LABEL_H_MM}mm; overflow: hidden; page-break-after: always; break-after: page; } .page:last-child { page-break-after: auto; break-after: auto; }
+  </style></head><body>${Array.from({ length: n }, () => `<div class="page">${lab}</div>`).join("")}</body></html>`;
+  }
 
   // mx_scan.js
   var P128 = CODE128_WIDTHS.map((w) => [...w].map(Number));
@@ -12805,7 +12851,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-04.43";
+  var APP_VERSION = "2026-10-04.44";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -15330,7 +15376,8 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     const n = Math.max(0, Math.round(Number(count) || 0));
     const doPrint = () => {
       if (n <= 0) return;
-      printLabelDoc(boxLabelDoc(tpl, fields, n, over));
+      const its = labelItemsFor(data.labelTemplates || [], tid, productName).items;
+      printLabelDoc(its && !Object.keys(over || {}).length ? labelItemsDoc(its, fields, n) : boxLabelDoc(tpl, fields, n, over));
       onPrinted && onPrinted(n);
     };
     return /* @__PURE__ */ React.createElement("div", { "data-print-labels": true, style: { position: "fixed", inset: 0, background: "rgba(20,26,40,.45)", zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", padding: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { width: "min(560px, 100%)", background: "#fff", borderRadius: 8, boxShadow: "0 8px 30px rgba(0,0,0,.25)", padding: "16px 18px", maxHeight: "95vh", overflowY: "auto" } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, fontSize: 17 } }, title || `Print labels \u2014 ${code}`), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED, marginBottom: 10 } }, productName, " \xB7 ", tpl.name, printedSoFar ? ` \xB7 ${printedSoFar} printed so far` : ""), /* @__PURE__ */ React.createElement(LabelPreview, { tpl, fields, over }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 items-center flex-wrap", style: { margin: "12px 0 6px", fontSize: 14 } }, /* @__PURE__ */ React.createElement("b", null, "How many"), /* @__PURE__ */ React.createElement(
@@ -15366,6 +15413,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
   ];
   var LS_INK = { ultra: "#C8102E" };
   var LS_CODE_RX = /^[A-L]\d{5}[A-Z]{2}[A-Z0-9]{1,2}S?$/;
+  var lsTb = { flex: "none", height: 32, padding: "0 10px", borderRadius: 8, border: "1px solid #DDE2EA", background: "#fff", fontSize: 13.5, fontFamily: "inherit", color: "#1C2437" };
   function lsShrink(root) {
     if (!root) return;
     for (const e of root.querySelectorAll(".fit")) {
@@ -15377,6 +15425,86 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
         n++;
       }
     }
+  }
+  function LabelCanvas({ items, f, scale, ink, editable, sel, setSel, editing, setEditing, change, begin }) {
+    const pxmm = 3.7795 * scale;
+    const startDrag = (e, it, mode) => {
+      if (!editable || editing === it.id) return;
+      e.stopPropagation();
+      setSel(it.id);
+      const x0 = e.clientX, y0 = e.clientY, ox = it.x, oy = it.y, os = it.size, oh = it.h;
+      let moved = false;
+      const mv = (ev) => {
+        const dx = (ev.clientX - x0) / pxmm, dy = (ev.clientY - y0) / pxmm;
+        if (!moved) {
+          if (Math.abs(dx) + Math.abs(dy) < 0.3) return;
+          moved = true;
+          begin();
+        }
+        if (mode === "move") change(it.id, { x: Math.round(Math.max(0, Math.min(LABEL_W_MM, ox + dx)) * 10) / 10, y: Math.round(Math.max(0, Math.min(LABEL_H_MM - 2, oy + dy)) * 10) / 10 });
+        else if (it.kind === "barcode") change(it.id, { h: Math.round(Math.max(3, Math.min(14, oh + dy)) * 10) / 10 });
+        else change(it.id, { size: Math.round(Math.max(5, Math.min(30, os + dx * 0.9)) * 2) / 2 });
+      };
+      const up3 = () => {
+        window.removeEventListener("pointermove", mv);
+        window.removeEventListener("pointerup", up3);
+      };
+      window.addEventListener("pointermove", mv);
+      window.addEventListener("pointerup", up3);
+    };
+    return /* @__PURE__ */ React.createElement(
+      "div",
+      {
+        "data-lc": true,
+        style: { position: "relative", width: `${LABEL_W_MM}mm`, height: `${LABEL_H_MM}mm`, background: "#fff", color: ink, overflow: "hidden", transform: `scale(${scale})`, transformOrigin: "0 0" },
+        onPointerDown: () => editable && setSel(null)
+      },
+      /* @__PURE__ */ React.createElement("style", null, "[data-lc] svg rect{fill:currentColor}"),
+      items.map((it) => {
+        const on = editable && sel === it.id;
+        const base = { position: "absolute", left: `${it.x}mm`, top: `${it.y}mm`, transform: "translateX(-50%)", userSelect: "none", outline: editable ? on ? "0.3mm solid #2F5BD3" : "0.15mm dashed rgba(27,43,107,.35)" : "none", cursor: editable ? "move" : "default", touchAction: "none" };
+        const handle = on ? /* @__PURE__ */ React.createElement("span", { "data-lc-handle": true, onPointerDown: (e) => startDrag(e, it, "size"), style: { position: "absolute", right: "-1mm", bottom: "-1mm", width: "1.8mm", height: "1.8mm", background: "#2F5BD3", border: "0.3mm solid #fff", cursor: "nwse-resize" } }) : null;
+        if (it.kind === "barcode") return /* @__PURE__ */ React.createElement("div", { key: it.id, "data-lc-item": it.id, onPointerDown: (e) => startDrag(e, it, "move"), style: { ...base, lineHeight: 0 } }, /* @__PURE__ */ React.createElement("span", { dangerouslySetInnerHTML: { __html: code128Svg(f.code || " ", { moduleMm: it.module || 0.375, heightMm: it.h || 6.5 }).replace(/fill="#000"|fill="black"/g, 'fill="currentColor"') } }), handle);
+        const fam = it.font === "sans" ? "Arial,Helvetica,sans-serif" : "'Times New Roman','Liberation Serif',Times,serif";
+        const txt = itemText(it, f);
+        return /* @__PURE__ */ React.createElement(
+          "div",
+          {
+            key: it.id,
+            "data-lc-item": it.id,
+            onPointerDown: (e) => startDrag(e, it, "move"),
+            onDoubleClick: () => editable && setEditing(it.id),
+            style: { ...base, whiteSpace: "nowrap", fontFamily: fam, fontWeight: it.bold ? 700 : 400, fontSize: `${it.size}pt`, lineHeight: 1.1, color: it.kind === "text" && it.font === "sans" && it.id === "under" ? "#111" : void 0 }
+          },
+          editing === it.id ? /* @__PURE__ */ React.createElement(
+            "input",
+            {
+              "data-lc-input": true,
+              autoFocus: true,
+              defaultValue: txt,
+              onPointerDown: (e) => e.stopPropagation(),
+              onBlur: (e) => {
+                const v = e.target.value;
+                setEditing(null);
+                if (v !== txt) {
+                  begin();
+                  change(it.id, { text: v, literal: true });
+                }
+              },
+              onKeyDown: (e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+                if (e.key === "Escape") {
+                  e.currentTarget.value = txt;
+                  e.currentTarget.blur();
+                }
+              },
+              style: { font: "inherit", width: `${Math.max(4, txt.length + 2)}ch`, border: 0, outline: "none", padding: 0, background: "rgba(47,91,211,.08)", color: "inherit", textAlign: "center" }
+            }
+          ) : txt,
+          handle
+        );
+      })
+    );
   }
   function LabelsHome({ data, setData }) {
     const [tab, setTab] = useState("print");
@@ -15425,6 +15553,83 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     const clean = String(code || "").trim().toUpperCase();
     const other = clean ? runs.find((r) => String(r.boxNumber).toUpperCase() === clean && r.productSize !== size) : null;
     const odd = clean && !LS_CODE_RX.test(clean);
+    const saved = size ? labelItemsFor(data.labelTemplates || [], tplId, size) : { items: null, from: null };
+    const [edit, setEdit] = useState(false);
+    const [draft, setDraft] = useState(null);
+    const [hist, setHist] = useState([]);
+    const [sel, setSel] = useState(null);
+    const [editing, setEditing] = useState(null);
+    const [once, setOnce] = useState(null);
+    const [keepFor, setKeepFor] = useState("print");
+    useEffect(() => {
+      setEdit(false);
+      setDraft(null);
+      setHist([]);
+      setSel(null);
+      setEditing(null);
+      setOnce(null);
+    }, [size]);
+    const items = edit ? draft : once || saved.items;
+    const startEdit = () => {
+      setDraft(JSON.parse(JSON.stringify(once || saved.items || defaultLabelItems(tpl))));
+      setHist([]);
+      setEdit(true);
+      setKeepFor(saved.from || "print");
+    };
+    const begin = () => setHist((h) => [...h.slice(-30), JSON.stringify(draft)]);
+    const change = (id, patch) => setDraft((d) => (d || []).map((x) => x.id === id ? { ...x, ...patch } : x));
+    const undoEdit = () => setHist((h) => {
+      if (!h.length) return h;
+      setDraft(JSON.parse(h[h.length - 1]));
+      return h.slice(0, -1);
+    });
+    const selItem = (draft || []).find((x) => x.id === sel) || null;
+    const upsertTpl = (id, name, config, summary) => setData && setData((prev) => {
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const had = (prev.labelTemplates || []).find((r) => r.id === id);
+      const row = { ...had || {}, id, name, config, deleted: false, updatedAt: now };
+      const next = { ...prev, labelTemplates: had ? prev.labelTemplates.map((r) => r.id === id ? row : r) : [...prev.labelTemplates || [], row] };
+      return { ...next, ...appendLog(next, { action: "label_template", entity: "labelTemplate", entityId: id, summary, before: had ? had.config : null, after: config }) };
+    });
+    const rangeName = (range || "").trim();
+    const saveEdit = () => {
+      nlHaptic && nlHaptic();
+      const it = draft;
+      if (keepFor === "print") {
+        setOnce(it);
+        setMsg("Changed for this print only \u2014 the next one prints as normal.");
+      } else if (keepFor === "size") {
+        upsertTpl(`size:${size}`, size, { items: it }, `Label for ${size} changed (its own layout)`);
+        setOnce(null);
+        setMsg(`Saved \u2014 every ${size} label prints like this now.`);
+      } else {
+        const cur = (data.labelTemplates || []).find((r) => r.id === tplId && !r.deleted);
+        upsertTpl(tplId, cur && cur.name || tpl.name, { ...cur && cur.config || {}, items: it }, `Label layout for ${tpl.name} changed`);
+        setOnce(null);
+        setMsg(`Saved \u2014 every ${tpl.usedFor || rangeName} label prints like this now.`);
+      }
+      setEdit(false);
+      setDraft(null);
+      setSel(null);
+    };
+    const backToNormal = () => {
+      if (!window.confirm("Put this label back to how it normally prints?")) return;
+      nlHaptic && nlHaptic();
+      if (saved.from === "size") setData((prev) => {
+        const next = { ...prev, labelTemplates: (prev.labelTemplates || []).map((r) => r.id === `size:${size}` ? { ...r, deleted: true, updatedAt: (/* @__PURE__ */ new Date()).toISOString() } : r) };
+        return { ...next, ...appendLog(next, { action: "label_template", entity: "labelTemplate", entityId: `size:${size}`, summary: `Label for ${size} back to normal` }) };
+      });
+      else if (saved.from === "range") {
+        const cur = (data.labelTemplates || []).find((r) => r.id === tplId && !r.deleted);
+        const { items: _drop, ...rest } = cur && cur.config || {};
+        upsertTpl(tplId, cur && cur.name || tpl.name, rest, `Label layout for ${tpl.name} back to normal`);
+      }
+      setOnce(null);
+      setEdit(false);
+      setDraft(null);
+      setSel(null);
+      setMsg("Back to normal.");
+    };
     const ref = React.useRef(null);
     const boxRef = React.useRef(null);
     const [boxW, setBoxW] = useState(600);
@@ -15444,7 +15649,9 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       if (!size || !clean) return;
       if (other && !window.confirm(`${clean} is already on ${other.productSize}. Print it on ${size} anyway?`)) return;
       nlHaptic && nlHaptic();
-      printLabelDoc(boxLabelDoc(tpl, { ...f, code: clean }, count));
+      const its = once || saved.items;
+      printLabelDoc(its ? labelItemsDoc(its, { ...f, code: clean }, count) : boxLabelDoc(tpl, { ...f, code: clean }, count));
+      if (once) setOnce(null);
       if (setData) setData((prev) => ({ ...prev, ...appendLog(prev, { action: "box_labels_printed", entity: "bondingRun", entityId: clean, summary: `Box labels printed: ${count} \xD7 ${clean} \u2014 ${size}` }) }));
       setMsg(`Sent ${count} label${count === 1 ? "" : "s"} for ${clean} to the printer. Recorded.`);
     };
@@ -15454,7 +15661,32 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     return /* @__PURE__ */ React.createElement("div", { "data-ls": true, style: { fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: wide ? "220px 260px minmax(0, 1fr)" : "1fr", gap: 12, alignItems: "start" } }, /* @__PURE__ */ React.createElement("div", { style: pane, "data-ls-ranges": true }, /* @__PURE__ */ React.createElement("div", { style: head }, "RANGES"), ranges.map(([name, xs]) => /* @__PURE__ */ React.createElement("button", { key: name, "data-ls-range": name, onClick: () => {
       setRange(name);
       setQ("");
-    }, style: { display: "flex", width: "100%", justifyContent: "space-between", padding: "9px 12px", border: 0, borderRadius: 9, marginTop: 2, background: name === range ? NL.NAVY : "transparent", color: name === range ? "#fff" : NL.INK, fontFamily: NLT.FONT, fontSize: 15, fontWeight: name === range ? 600 : 500, textAlign: "left" } }, /* @__PURE__ */ React.createElement("span", null, name === range ? "\u25BE " : "\u25B8 ", name), /* @__PURE__ */ React.createElement("span", { style: { opacity: 0.6 } }, xs.length)))), /* @__PURE__ */ React.createElement("div", { style: { ...pane, background: "#F8F9FC", maxHeight: wide ? 620 : 320, overflowY: "auto" }, "data-ls-sizes": true }, /* @__PURE__ */ React.createElement("div", { style: head }, String(range).toUpperCase(), " \xB7 SIZES"), /* @__PURE__ */ React.createElement("input", { "data-ls-search": true, value: q, onChange: (e) => setQ(e.target.value), placeholder: "type a size\u2026", style: { width: "100%", boxSizing: "border-box", height: 38, borderRadius: 9, border: "1px solid #DDE2EA", padding: "0 10px", fontSize: 15, fontFamily: NLT.FONT, marginBottom: 6 } }), sizes.map((n) => /* @__PURE__ */ React.createElement("button", { key: n, "data-ls-size": n, onClick: () => open(n), style: { display: "block", width: "100%", textAlign: "left", padding: "8px 10px", border: 0, borderRadius: 7, background: n === size ? "#DCE5FA" : "transparent", color: n === size ? NL.NAVY : "#3B4660", fontWeight: n === size ? 700 : 500, fontFamily: NLT.FONT, fontSize: 14 } }, n)), !sizes.length && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: NL.SUB, padding: 8 } }, "No size matches.")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 12, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { ref: boxRef, style: { ...pane, minHeight: 230, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "repeating-linear-gradient(0deg,#E7EAF0 0 1px,transparent 1px 24px),repeating-linear-gradient(90deg,#E7EAF0 0 1px,#F3F5F9 1px 24px)" } }, size ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("style", null, BOX_LABEL_CSS + ".lsl .lab{color:inherit}.lsl .lab svg rect{fill:currentColor}"), /* @__PURE__ */ React.createElement("div", { style: { width: 290 * scale, height: 96 * scale, position: "relative", margin: "14px 0" } }, /* @__PURE__ */ React.createElement(
+    }, style: { display: "flex", width: "100%", justifyContent: "space-between", padding: "9px 12px", border: 0, borderRadius: 9, marginTop: 2, background: name === range ? NL.NAVY : "transparent", color: name === range ? "#fff" : NL.INK, fontFamily: NLT.FONT, fontSize: 15, fontWeight: name === range ? 600 : 500, textAlign: "left" } }, /* @__PURE__ */ React.createElement("span", null, name === range ? "\u25BE " : "\u25B8 ", name), /* @__PURE__ */ React.createElement("span", { style: { opacity: 0.6 } }, xs.length)))), /* @__PURE__ */ React.createElement("div", { style: { ...pane, background: "#F8F9FC", maxHeight: wide ? 620 : 320, overflowY: "auto" }, "data-ls-sizes": true }, /* @__PURE__ */ React.createElement("div", { style: head }, String(range).toUpperCase(), " \xB7 SIZES"), /* @__PURE__ */ React.createElement("input", { "data-ls-search": true, value: q, onChange: (e) => setQ(e.target.value), placeholder: "type a size\u2026", style: { width: "100%", boxSizing: "border-box", height: 38, borderRadius: 9, border: "1px solid #DDE2EA", padding: "0 10px", fontSize: 15, fontFamily: NLT.FONT, marginBottom: 6 } }), sizes.map((n) => /* @__PURE__ */ React.createElement("button", { key: n, "data-ls-size": n, onClick: () => open(n), style: { display: "block", width: "100%", textAlign: "left", padding: "8px 10px", border: 0, borderRadius: 7, background: n === size ? "#DCE5FA" : "transparent", color: n === size ? NL.NAVY : "#3B4660", fontWeight: n === size ? 700 : 500, fontFamily: NLT.FONT, fontSize: 14 } }, n)), !sizes.length && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: NL.SUB, padding: 8 } }, "No size matches.")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 12, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { ref: boxRef, style: { ...pane, minHeight: 230, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "repeating-linear-gradient(0deg,#E7EAF0 0 1px,transparent 1px 24px),repeating-linear-gradient(90deg,#E7EAF0 0 1px,#F3F5F9 1px 24px)" } }, size ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("style", null, BOX_LABEL_CSS + ".lsl .lab{color:inherit}.lsl .lab svg rect{fill:currentColor}"), edit && /* @__PURE__ */ React.createElement("div", { "data-ls-toolbar": true, style: { display: "flex", flexWrap: "nowrap", overflowX: "auto", height: 40, gap: 6, alignItems: "center", alignSelf: "stretch", fontSize: 13.5, marginBottom: 6 } }, /* @__PURE__ */ React.createElement("b", { style: { marginRight: 4, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: "none" } }, selItem ? selItem.kind === "barcode" ? "Barcode" : `\u201C${itemText(selItem, { ...f, code: clean })}\u201D` : "Pick a word"), selItem && selItem.kind === "text" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { "data-ls-smaller": true, onClick: () => {
+      begin();
+      change(sel, { size: Math.max(5, selItem.size - 0.5) });
+    }, style: lsTb }, "A\u2212"), /* @__PURE__ */ React.createElement("span", null, selItem.size, "pt"), /* @__PURE__ */ React.createElement("button", { "data-ls-bigger": true, onClick: () => {
+      begin();
+      change(sel, { size: Math.min(30, selItem.size + 0.5) });
+    }, style: lsTb }, "A+"), /* @__PURE__ */ React.createElement("button", { "data-ls-bold": true, onClick: () => {
+      begin();
+      change(sel, { bold: !selItem.bold });
+    }, style: { ...lsTb, fontWeight: 700, background: selItem.bold ? "#DCE5FA" : "#fff" } }, "B"), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+      begin();
+      change(sel, { font: selItem.font === "sans" ? "serif" : "sans" });
+    }, style: lsTb }, selItem.font === "sans" ? "Arial" : "Times"), selItem.literal && /* @__PURE__ */ React.createElement("button", { "data-ls-refill": true, onClick: () => {
+      begin();
+      const d0 = defaultLabelItems(tpl).find((x) => x.id === sel);
+      change(sel, { literal: false, text: d0 ? d0.text : selItem.text });
+    }, style: lsTb }, "Fill in by itself again"), /* @__PURE__ */ React.createElement("button", { "data-ls-remove": true, onClick: () => {
+      begin();
+      setDraft((d) => d.filter((x) => x.id !== sel));
+      setSel(null);
+    }, style: lsTb }, "Remove")), /* @__PURE__ */ React.createElement("span", { style: { marginLeft: "auto" } }), /* @__PURE__ */ React.createElement("button", { "data-ls-addtext": true, onClick: () => {
+      begin();
+      const id = `t${Date.now()}`;
+      setDraft((d) => [...d, { id, kind: "text", text: "TEXT", literal: true, x: 38, y: 9, size: 11, bold: true, font: "serif" }]);
+      setSel(id);
+    }, style: lsTb }, "+ Add text"), /* @__PURE__ */ React.createElement("button", { "data-ls-undo": true, disabled: !hist.length, onClick: undoEdit, style: lsTb }, "Undo")), /* @__PURE__ */ React.createElement("div", { style: { width: 290 * scale, height: 96 * scale, position: "relative", margin: "14px 0" } }, items ? /* @__PURE__ */ React.createElement("div", { "data-ls-label": true, style: { position: "absolute", left: 0, top: 0, boxShadow: "0 2px 10px rgba(0,0,0,.15)", width: 290 * scale, height: 96 * scale } }, /* @__PURE__ */ React.createElement(LabelCanvas, { items, f: { ...f, code: clean || " " }, scale, ink: LS_INK[tplId] || "#1B2A8C", editable: edit, sel, setSel, editing, setEditing, change, begin })) : /* @__PURE__ */ React.createElement(
       "div",
       {
         className: "lsl",
@@ -15463,7 +15695,11 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
         style: { position: "absolute", left: 0, top: 0, transform: `scale(${scale})`, transformOrigin: "0 0", color: LS_INK[tplId] || "#1B2A8C", background: "#fff", borderRadius: 6, boxShadow: "0 2px 10px rgba(0,0,0,.15)" },
         dangerouslySetInnerHTML: { __html: `<div class="lab">${boxLabelInner(tpl, { ...f, code: clean || " " })}</div>` }
       }
-    )), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: NL.SUB, textAlign: "center", marginTop: 4 } }, "Exactly as it prints \xB7 the barcode reads ", /* @__PURE__ */ React.createElement("b", { style: { color: NL.INK }, "data-ls-reads": true }, clean || "\u2014"))) : /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, color: NL.SUB, textAlign: "center", padding: 30 } }, "Pick a range, then open a size.")), /* @__PURE__ */ React.createElement("div", { style: { ...pane, display: "grid", gridTemplateColumns: wide ? "1.3fr 1fr 1fr" : "1fr", gap: 14, alignItems: "end" }, "data-ls-side": true }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: head }, "BOX CODE"), /* @__PURE__ */ React.createElement(
+    )), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: NL.SUB, textAlign: "center", marginTop: 4 } }, edit ? /* @__PURE__ */ React.createElement(React.Fragment, null, "Double-click a word to type over it \xB7 drag to move \xB7 the blue corner makes it bigger or smaller \xB7 the barcode reads ", /* @__PURE__ */ React.createElement("b", { style: { color: NL.INK }, "data-ls-reads": true }, clean || "\u2014")) : /* @__PURE__ */ React.createElement(React.Fragment, null, "Exactly as it prints \xB7 the barcode reads ", /* @__PURE__ */ React.createElement("b", { style: { color: NL.INK }, "data-ls-reads": true }, clean || "\u2014"), once ? " \xB7 changed for this print" : saved.from === "size" ? " \xB7 this size's own layout" : saved.from === "range" ? " \xB7 the range's changed layout" : "")), !edit ? /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 10 } }, /* @__PURE__ */ React.createElement("button", { "data-ls-edit": true, onClick: startEdit, style: { ...lsTb, height: 40, padding: "0 16px", fontSize: 14.5 } }, "Change the label"), (saved.from || once) && /* @__PURE__ */ React.createElement("button", { "data-ls-normal": true, onClick: backToNormal, style: { ...lsTb, height: 40, padding: "0 16px", fontSize: 14.5 } }, "Back to normal")) : /* @__PURE__ */ React.createElement("div", { "data-ls-keep": true, style: { alignSelf: "stretch", marginTop: 10, display: "grid", gridTemplateColumns: wide ? "1fr 1fr 1fr auto auto" : "1fr", gap: 8, alignItems: "stretch" } }, [["print", "Just this print", "the next one prints as normal"], ["size", `Every ${size}`, "like saving the size's own file"], ["range", `Every ${tpl.usedFor || rangeName} label`, "the whole range's layout"]].map(([k, t, sub]) => /* @__PURE__ */ React.createElement("button", { key: k, "data-ls-keepfor": k, "aria-pressed": keepFor === k, onClick: () => setKeepFor(k), style: { textAlign: "left", padding: "8px 10px", borderRadius: 10, border: keepFor === k ? `2px solid ${NL.NAVY}` : "1px solid #DDE2EA", background: "#fff", fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 13.5 } }, t), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: NL.SUB } }, sub))), /* @__PURE__ */ React.createElement("button", { "data-ls-cancel": true, onClick: () => {
+      setEdit(false);
+      setDraft(null);
+      setSel(null);
+    }, style: { ...lsTb, height: "auto", padding: "0 14px" } }, "Cancel"), /* @__PURE__ */ React.createElement("button", { "data-ls-save": true, onClick: saveEdit, style: { height: "auto", minHeight: 44, padding: "0 18px", borderRadius: 10, border: 0, background: NL.NAVY, color: "#fff", fontWeight: 700, fontFamily: NLT.FONT } }, "Done"))) : /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, color: NL.SUB, textAlign: "center", padding: 30 } }, "Pick a range, then open a size.")), /* @__PURE__ */ React.createElement("div", { style: { ...pane, display: "grid", gridTemplateColumns: wide ? "1.3fr 1fr 1fr" : "1fr", gap: 14, alignItems: "end" }, "data-ls-side": true }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: head }, "BOX CODE"), /* @__PURE__ */ React.createElement(
       "input",
       {
         "data-ls-code": true,
