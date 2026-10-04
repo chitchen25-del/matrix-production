@@ -3703,21 +3703,81 @@
     const sizeReady = /* @__PURE__ */ new Map();
     const queue = [...steps], placed = [];
     let prevStep = current && current.size ? { size: current.size, width: current.width, label: current.label } : null;
+    const campaignDays = cfg.glueOrder === "batch";
+    const urgentSet = new Set(cfg.__urgent || []);
+    const liveById = new Map(live.map((o) => [o.id, o]));
+    const urgencyOf = (x) => {
+      let best = Infinity;
+      for (const id of [...x.orders, ...(x.joined || []).map((j) => j.orderId)]) {
+        const o = liveById.get(id);
+        if (!o) continue;
+        const due = o.dueDate ? Math.floor((/* @__PURE__ */ new Date(`${o.dueDate}T12:00:00`)).getTime() / 864e5) : 99999;
+        const k = (urgentSet.has(id) ? 0 : 1) * 1e10 + (Number(o.priority) || 99) * 1e6 + due;
+        if (k < best) best = k;
+      }
+      return best;
+    };
+    let dayKey = null, dayWidth = null, daySwitches = 0;
+    const firstSizes = new Set(tweaks.filter((t) => t.kind === "first").map((t) => t.size));
+    const afterRef = new Map(tweaks.filter((t) => t.kind === "after" && t.refSize).map((t) => [t.size, t.refSize]));
+    const pickIndex = () => {
+      const ok = queue.map((x, i) => [x, i]).filter(([x]) => (!notBefore.has(x.size) || glueClock >= notBefore.get(x.size)) && !(campaignDays && afterRef.has(x.size) && queue.some((q) => q.size === afterRef.get(x.size))));
+      if (!ok.length) return -1;
+      if (!campaignDays) return ok[0][1];
+      const first = ok.find(([x]) => firstSizes.has(x.size));
+      if (first) return first[1];
+      const after = ok.find(([x]) => afterRef.has(x.size) && prevStep && prevStep.size === afterRef.get(x.size));
+      if (after) return after[1];
+      const k = localDateKey(nextWorkMoment(glueClock, glueCal));
+      const mostUrgentWidth = () => {
+        const best = Math.min(...ok.map(([x]) => urgencyOf(x)));
+        if (rules.widthFirst && best >= 1e10 && ok.some(([x]) => x.width === rules.widthFirst)) return rules.widthFirst;
+        const tied = ok.filter(([x]) => urgencyOf(x) === best).map(([x]) => x.width);
+        return tied.includes(prevStep && prevStep.width) ? prevStep.width : tied[0];
+      };
+      if (k !== dayKey) {
+        dayKey = k;
+        dayWidth = mostUrgentWidth();
+        daySwitches = 0;
+      }
+      let cand = ok.filter(([x]) => x.width === dayWidth);
+      const isUrgentX = (x) => urgencyOf(x) < 1e10;
+      if (!cand.length) {
+        if (daySwitches >= 1) return -2;
+        dayWidth = mostUrgentWidth();
+        daySwitches++;
+        cand = ok.filter(([x]) => x.width === dayWidth);
+      } else if (daySwitches < 1 && !cand.some(([x]) => isUrgentX(x)) && ok.some(([x]) => isUrgentX(x))) {
+        dayWidth = ok.find(([x]) => isUrgentX(x))[0].width;
+        daySwitches++;
+        cand = ok.filter(([x]) => x.width === dayWidth);
+      }
+      const band = (x) => Math.floor(urgencyOf(x) / 1e10) * 2 + (urgencyOf(x) % 1e10 >= 99 * 1e6 ? 1 : 0);
+      const topBand = Math.min(...cand.map(([x]) => band(x)));
+      cand = cand.filter(([x]) => band(x) === topBand);
+      const sameDie = cand.filter(([x]) => prevStep && x.die === prevStep.die);
+      const pool = sameDie.length ? sameDie : (() => {
+        const best = Math.min(...cand.map(([x]) => urgencyOf(x)));
+        const d = cand.find(([x]) => urgencyOf(x) === best)[0].die;
+        return cand.filter(([x]) => x.die === d);
+      })();
+      const h = prevStep ? glueHeightKey(prevStep.label) : null;
+      pool.sort(([a], [b]) => (rules.sameHeight ? (glueHeightKey(a.label) === h ? 0 : 1) - (glueHeightKey(b.label) === h ? 0 : 1) : 0) || urgencyOf(a) - urgencyOf(b) || String(a.size).localeCompare(String(b.size)));
+      return pool[0][1];
+    };
     while (queue.length) {
-      const i = queue.findIndex((x) => !notBefore.has(x.size) || glueClock >= notBefore.get(x.size));
+      const i = pickIndex();
+      if (i === -2) {
+        glueClock = nextWorkingMorning(nextWorkMoment(glueClock, glueCal), glueCal);
+        continue;
+      }
       if (i < 0) {
         const t = Math.min(...queue.map((x) => notBefore.get(x.size).getTime()));
         glueClock = nextWorkMoment(new Date(Math.max(glueClock.getTime(), t)), glueCal);
         continue;
       }
-      const s = queue.splice(i, 1)[0];
-      placed.push(s);
-      if (notBefore.has(s.size)) {
-        s.tweaked = s.tweaked || "notbefore";
-        s.notBefore = notBefore.get(s.size);
-      }
+      const s = queue[i];
       s.change = glueChangeBetween(prevStep, s);
-      prevStep = s;
       if (s.change) {
         const t0 = nextWorkMoment(glueClock, glueCal);
         const h = hoursOn(glueCal, t0);
@@ -3728,9 +3788,18 @@
           if (close - t0 < 2 * 36e5 && t0.getTime() + needH * 36e5 > close.getTime()) {
             glueClock = nextWorkingMorning(t0, glueCal);
             s.lateInDay = true;
+            continue;
           }
         }
       }
+      queue.splice(i, 1);
+      placed.push(s);
+      if (notBefore.has(s.size)) {
+        s.tweaked = s.tweaked || "notbefore";
+        s.notBefore = notBefore.get(s.size);
+      }
+      if (s.lateInDay && !(new Date(glueClock).getHours() === Math.floor((hoursOn(glueCal, nextWorkMoment(glueClock, glueCal)) || [8])[0]) && new Date(glueClock).getMinutes() === 0)) s.lateInDay = false;
+      prevStep = s;
       const ch = s.change === "width" ? cfg.widthChangeMin / 60 : s.change === "size" ? cfg.sizeChangeMin / 60 : s.change === "samepvc" ? rules.samePvcMin / 60 : 0;
       changeHours += ch;
       s.changeMinutes = Math.round(ch * 60);
@@ -12713,7 +12782,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-04.33";
+  var APP_VERSION = "2026-10-04.34";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
