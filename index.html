@@ -12866,7 +12866,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-04.61";
+  var APP_VERSION = "2026-10-04.62";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -14578,7 +14578,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
           setBusy(true);
           const r = await readLabelsFromFile(f);
           setBusy(false);
-          onDone(r);
+          onDone(r, f);
         }
       }
     ), /* @__PURE__ */ React.createElement(
@@ -14782,6 +14782,177 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       children
     );
   }
+  var CASE_PHOTO_KEEP_DAYS = 90;
+  function casePhotoShrink(file, maxPx, quality) {
+    return new Promise((resolve) => {
+      try {
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+          try {
+            const k = Math.min(1, maxPx / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
+            const c = document.createElement("canvas");
+            c.width = Math.max(1, Math.round(img.naturalWidth * k));
+            c.height = Math.max(1, Math.round(img.naturalHeight * k));
+            c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+            URL.revokeObjectURL(url);
+            c.toBlob((b) => resolve(b), "image/jpeg", quality);
+          } catch (e) {
+            resolve(null);
+          }
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(url);
+          resolve(null);
+        };
+        img.src = url;
+      } catch (e) {
+        resolve(null);
+      }
+    });
+  }
+  function casePhotoSummary(res) {
+    if (!res || res.error) return { error: res ? String(res.error) : "no result" };
+    const codes = {};
+    for (const l of res.labels || []) {
+      const c = String(l.code || "").toUpperCase();
+      if (c) codes[c] = (codes[c] || 0) + 1;
+    }
+    return { labels: (res.labels || []).length, codes, unreadable: Number(res.unreadable) || 0 };
+  }
+  async function saveCasePhoto({ file, orderId, caseNum, source, result }) {
+    if (!file || !orderId) return null;
+    const row = { order_id: orderId, case_num: Number(caseNum) || null, source, result: casePhotoSummary(result), taken_by: nlEmail() || currentActor() || null };
+    try {
+      if (typeof window !== "undefined" && typeof window.__saveCasePhotoFn === "function") return await window.__saveCasePhotoFn({ ...row, file });
+    } catch (e) {
+      return null;
+    }
+    const c = EVENT_CLIENT;
+    if (!c || !c.storage) return null;
+    try {
+      const [big, thumb] = await Promise.all([casePhotoShrink(file, 1600, 0.72), casePhotoShrink(file, 320, 0.7)]);
+      if (!big) return null;
+      const stem = `${orderId}/case-${Number(caseNum) || 0}/${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      const up3 = await c.storage.from("case-photos").upload(`${stem}.jpg`, big, { contentType: "image/jpeg", upsert: false });
+      if (up3.error) {
+        reportAppEvent({ kind: "error", message: `case photo upload: ${up3.error.message}` });
+        return null;
+      }
+      let thumbPath = null;
+      if (thumb) {
+        const t = await c.storage.from("case-photos").upload(`${stem}-thumb.jpg`, thumb, { contentType: "image/jpeg", upsert: false });
+        if (!t.error) thumbPath = `${stem}-thumb.jpg`;
+      }
+      const ins = await c.from("case_photos").insert({ ...row, path: `${stem}.jpg`, thumb_path: thumbPath, bytes: big.size }).select("id").single();
+      if (ins.error) {
+        reportAppEvent({ kind: "error", message: `case photo record: ${ins.error.message}` });
+        return null;
+      }
+      try {
+        window.dispatchEvent(new CustomEvent("mx-case-photo", { detail: { orderId } }));
+      } catch (e) {
+      }
+      return ins.data;
+    } catch (e) {
+      return null;
+    }
+  }
+  function casePhotoOrdersToClear(orders, now) {
+    const cut = now - CASE_PHOTO_KEEP_DAYS * 864e5;
+    return (orders || []).filter((o) => o && (o.stage === "Shipped" && o.shippedDate && Date.parse(`${String(o.shippedDate).slice(0, 10)}T12:00:00`) < cut || (o.deleted || o.stage === "Cancelled") && Date.parse(o.deletedAt || o.updatedAt || 0) < cut)).map((o) => o.id);
+  }
+  async function casePhotoCleanup(data) {
+    const c = EVENT_CLIENT;
+    if (!c || !c.storage || !isAdminLogin()) return;
+    try {
+      const last = localStorage.getItem("mxCasePhotoSweep");
+      if (last && Date.now() - Number(last) < 20 * 3600 * 1e3) return;
+      localStorage.setItem("mxCasePhotoSweep", String(Date.now()));
+    } catch (e) {
+    }
+    const gone = new Set(casePhotoOrdersToClear(data.orders, Date.now()));
+    if (!gone.size) return;
+    try {
+      const { data: rows } = await c.from("case_photos").select("id,order_id,path,thumb_path").eq("deleted", false).in("order_id", [...gone]).limit(500);
+      if (!rows || !rows.length) return;
+      const paths = rows.flatMap((r) => [r.path, r.thumb_path].filter(Boolean));
+      const rm = await c.storage.from("case-photos").remove(paths);
+      if (rm.error) return;
+      await c.from("case_photos").update({ deleted: true, deleted_at: (/* @__PURE__ */ new Date()).toISOString(), updated_at: (/* @__PURE__ */ new Date()).toISOString() }).in("id", rows.map((r) => r.id));
+      reportAppEvent({ kind: "info", message: `case photos cleared: ${rows.length} from ${new Set(rows.map((r) => r.order_id)).size} orders shipped over ${CASE_PHOTO_KEEP_DAYS} days ago` });
+    } catch (e) {
+    }
+  }
+  function CasePhotos({ orderId, data = null }) {
+    const [rows, setRows] = useState(null);
+    const [urls, setUrls] = useState({});
+    const [big, setBig] = useState(null);
+    const [tick, setTick] = useState(0);
+    useEffect(() => {
+      const f = (e) => {
+        if (!e.detail || e.detail.orderId === orderId) setTick((t) => t + 1);
+      };
+      window.addEventListener("mx-case-photo", f);
+      return () => window.removeEventListener("mx-case-photo", f);
+    }, [orderId]);
+    useEffect(() => {
+      let live = true;
+      (async () => {
+        try {
+          if (typeof window !== "undefined" && typeof window.__listCasePhotosFn === "function") {
+            const r2 = await window.__listCasePhotosFn(orderId);
+            if (live) {
+              setRows(r2.rows || []);
+              setUrls(r2.urls || {});
+            }
+            return;
+          }
+          const c = EVENT_CLIENT;
+          if (!c || !c.storage) {
+            if (live) setRows([]);
+            return;
+          }
+          const { data: r } = await c.from("case_photos").select("*").eq("order_id", orderId).eq("deleted", false).order("case_num", { ascending: true }).order("taken_at", { ascending: false }).limit(300);
+          const list = r || [];
+          if (!live) return;
+          setRows(list);
+          const want = list.map((x) => x.thumb_path || x.path).filter(Boolean);
+          if (want.length) {
+            const s = await c.storage.from("case-photos").createSignedUrls(want, 3600);
+            const m = {};
+            for (const x of s.data || []) if (x.signedUrl) m[x.path] = x.signedUrl;
+            if (live) setUrls(m);
+          }
+        } catch (e) {
+          if (live) setRows([]);
+        }
+      })();
+      return () => {
+        live = false;
+      };
+    }, [orderId, tick]);
+    const openBig = async (row) => {
+      try {
+        if (typeof window.__listCasePhotosFn === "function") {
+          setBig({ row, url: urls[row.path] || urls[row.thumb_path] });
+          return;
+        }
+        const s = await EVENT_CLIENT.storage.from("case-photos").createSignedUrl(row.path, 3600);
+        setBig({ row, url: s.data && s.data.signedUrl });
+      } catch (e) {
+      }
+    };
+    if (!rows || !rows.length) return null;
+    const shipped = data ? (data.orders || []).find((o) => o && o.id === orderId) : null;
+    const clears = shipped && shipped.stage === "Shipped" && shipped.shippedDate ? new Date(Date.parse(`${String(shipped.shippedDate).slice(0, 10)}T12:00:00`) + CASE_PHOTO_KEEP_DAYS * 864e5).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : null;
+    const when = (t) => new Date(t).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+    return /* @__PURE__ */ React.createElement("div", { "data-case-photos": true, style: { margin: "14px 0", fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 8, margin: "0 4px 8px" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, fontWeight: 700, letterSpacing: 1.2, color: NL.SUB } }, "PHOTOS OF THE CASES \xB7 ", rows.length), /* @__PURE__ */ React.createElement("span", { style: { marginLeft: "auto", fontSize: 12, color: NL.SUB } }, clears ? `kept until ${clears}` : "kept for 3 months after it ships")), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 10 } }, rows.map((r) => {
+      const res = r.result || {};
+      const u = urls[r.thumb_path] || urls[r.path];
+      return /* @__PURE__ */ React.createElement("button", { key: r.id, type: "button", "data-case-photo": r.id, onClick: () => openBig(r), style: { border: 0, padding: 0, background: "#fff", borderRadius: 14, overflow: "hidden", textAlign: "left", cursor: "pointer", boxShadow: "0 1px 2px rgba(27,43,107,.06), 0 6px 16px rgba(27,43,107,.07)", fontFamily: "inherit" } }, /* @__PURE__ */ React.createElement("div", { style: { height: 96, background: "#E7EBF5", backgroundImage: u ? `url(${u})` : "none", backgroundSize: "cover", backgroundPosition: "center" } }), /* @__PURE__ */ React.createElement("div", { style: { padding: "7px 9px" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: NL.INK } }, "Case ", r.case_num ?? "\u2014"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: res.error || !res.labels ? "#B3261E" : NL.SUB } }, res.error ? "couldn't be read" : res.labels ? `${res.labels} label${res.labels === 1 ? "" : "s"} read` : "no labels read"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: NL.FAINT } }, when(r.taken_at), r.taken_by ? ` \xB7 ${String(r.taken_by).split("@")[0]}` : "")));
+    })), big && ReactDOM.createPortal(/* @__PURE__ */ React.createElement("div", { "data-case-photo-big": true, onClick: () => setBig(null), style: { position: "fixed", inset: 0, zIndex: 1200, background: "rgba(10,14,30,.88)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 16 } }, big.url ? /* @__PURE__ */ React.createElement("img", { src: big.url, alt: `Case ${big.row.case_num}`, style: { maxWidth: "100%", maxHeight: "80vh", borderRadius: 12 } }) : /* @__PURE__ */ React.createElement("div", { style: { color: "#fff" } }, "Loading\u2026"), /* @__PURE__ */ React.createElement("div", { style: { color: "#fff", marginTop: 10, fontSize: 14, textAlign: "center" } }, /* @__PURE__ */ React.createElement("b", null, orderId, " \xB7 case ", big.row.case_num), " \xB7 ", when(big.row.taken_at), big.row.taken_by ? ` \xB7 ${String(big.row.taken_by).split("@")[0]}` : "", big.row.result && big.row.result.codes && Object.keys(big.row.result.codes).length ? /* @__PURE__ */ React.createElement("div", { style: { opacity: 0.8, fontSize: 12.5, marginTop: 4 } }, Object.entries(big.row.result.codes).map(([c, n]) => `${c} \xD7 ${n}`).join(" \xB7 ")) : null)), document.body));
+  }
   function OrderPhotoCheck({ order, data, setData, onClose }) {
     const cases = useMemo(() => Object.keys(recordedByCase(data, order.id)).map(Number).sort((a, b) => a - b), [order.id]);
     const [at, setAt] = useState(0);
@@ -14796,7 +14967,10 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       if (!f) return;
       const n = cn;
       setReads((r) => ({ ...r, [n]: "reading" }));
-      readLabelsFromFile(f).then((res) => setReads((r) => ({ ...r, [n]: res })));
+      readLabelsFromFile(f).then((res) => {
+        setReads((r) => ({ ...r, [n]: res }));
+        saveCasePhoto({ file: f, orderId: order.id, caseNum: n, source: "order-check", result: res });
+      });
       const nextIdx = cases.findIndex((c, i) => i > at && !reads[c]);
       if (nextIdx >= 0) setAt(nextIdx);
       else if (at < cases.length - 1) setAt(at + 1);
@@ -14925,9 +15099,10 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       }, style: { flex: 1, minHeight: 44, borderRadius: 10, border: "1px solid #C5CBD8", padding: "0 10px", fontSize: 15 } }, !orderId && /* @__PURE__ */ React.createElement("option", { value: "" }, "Which order's case?"), live.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.id, value: o.id }, o.id, " \xB7 ", o.customer))), /* @__PURE__ */ React.createElement("input", { "data-check-case": true, inputMode: "numeric", value: caseNum, onChange: (e) => {
         setCaseNum(e.target.value.replace(/[^0-9]/g, ""));
         setResult(null);
-      }, "aria-label": "Case number", style: { width: 70, minHeight: 44, borderRadius: 10, border: "1px solid #C5CBD8", textAlign: "center", fontSize: 17, fontWeight: 600 } })), !order && /* @__PURE__ */ React.createElement("div", { "data-check-choose": true, style: { color: INK_MUTED, fontSize: 14, marginBottom: 10 } }, "Pick the order and the case number on the case's label first."), order && !rec && /* @__PURE__ */ React.createElement("div", { style: { color: RED, fontWeight: 600, marginBottom: 10 } }, orderId, " has no case ", caseNum, "."), order && rec && !Object.keys(rec).length && /* @__PURE__ */ React.createElement("div", { "data-check-empty": true, style: { color: "#8A4B00", fontWeight: 600, marginBottom: 10 } }, "Nothing is recorded in ", orderId, " case ", caseNum, " yet \u2014 anything in the photo will show as not recorded."), order && rec && /* @__PURE__ */ React.createElement(LabelPhotoButton, { name: "anycase", label: `\u{1F4F7} Photo of case ${caseNum}`, style: { width: "100%" }, onDone: (r) => {
+      }, "aria-label": "Case number", style: { width: 70, minHeight: 44, borderRadius: 10, border: "1px solid #C5CBD8", textAlign: "center", fontSize: 17, fontWeight: 600 } })), !order && /* @__PURE__ */ React.createElement("div", { "data-check-choose": true, style: { color: INK_MUTED, fontSize: 14, marginBottom: 10 } }, "Pick the order and the case number on the case's label first."), order && !rec && /* @__PURE__ */ React.createElement("div", { style: { color: RED, fontWeight: 600, marginBottom: 10 } }, orderId, " has no case ", caseNum, "."), order && rec && !Object.keys(rec).length && /* @__PURE__ */ React.createElement("div", { "data-check-empty": true, style: { color: "#8A4B00", fontWeight: 600, marginBottom: 10 } }, "Nothing is recorded in ", orderId, " case ", caseNum, " yet \u2014 anything in the photo will show as not recorded."), order && rec && /* @__PURE__ */ React.createElement(LabelPhotoButton, { name: "anycase", label: `\u{1F4F7} Photo of case ${caseNum}`, style: { width: "100%" }, onDone: (r, f) => {
         setResult(r);
         setMsg(null);
+        saveCasePhoto({ file: f, orderId, caseNum, source: "case-check", result: r });
       } }), result && rec && /* @__PURE__ */ React.createElement(CaseCheckResult, { result, contributions, known, onClose: () => setResult(null), onFix, caseNum: Number(caseNum), data, orderId }), msg && /* @__PURE__ */ React.createElement("div", { "data-check-msg": true, style: { marginTop: 8, fontWeight: 600, color: msg.bad ? RED : "#1E7F3C" } }, msg.t))),
       document.body
     );
@@ -23042,7 +23217,7 @@ This changes the order quantities. It is recorded in the change log and can be r
         style: { border: `1px solid ${!showGrid ? NAVY : BORDER}`, background: !showGrid ? NAVY : "#fff", color: !showGrid ? "#fff" : INK }
       },
       "Full list"
-    ), tooMany && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, allCases.length, " cases", showGrid ? "" : " \u2014 the map is a tap away", ".")), photoCheck && /* @__PURE__ */ React.createElement(OrderPhotoCheck, { order, data, setData, onClose: () => setPhotoCheck(false) }), showGrid && /* @__PURE__ */ React.createElement(
+    ), tooMany && /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: INK_MUTED } }, allCases.length, " cases", showGrid ? "" : " \u2014 the map is a tap away", ".")), photoCheck && /* @__PURE__ */ React.createElement(OrderPhotoCheck, { order, data, setData, onClose: () => setPhotoCheck(false) }), /* @__PURE__ */ React.createElement(CasePhotos, { orderId: order.id, data }), showGrid && /* @__PURE__ */ React.createElement(
       CaseGrid,
       {
         cases: allCases,
@@ -39761,6 +39936,9 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     }, []);
     const sidebarSyncRef = useRef(null);
     const dataRef = useRef(storedData);
+    useEffect(() => {
+      if (lastSyncedAt) casePhotoCleanup(dataRef.current || {});
+    }, [lastSyncedAt]);
     useEffect(() => {
       dataRef.current = storedData;
     }, [storedData]);
