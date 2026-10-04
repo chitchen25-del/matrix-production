@@ -3369,6 +3369,61 @@
     const noJoin = new Set(opts.noJoin || []);
     const rules = opts.rules || { sameHeight: true, nojoinRanges: /* @__PURE__ */ new Set(), widthFirst: null, sameDie: false };
     if (current && current.label) onLine.h = hKey({ label: current.label });
+    if (opts.campaign) {
+      const urgent = new Set(opts.urgent || []);
+      const firstOf = /* @__PURE__ */ new Map();
+      for (const x of [...demand].sort((a, b) => a.tier - b.tier)) if (!firstOf.has(x.size)) firstOf.set(x.size, x.tier);
+      const items = [...firstOf.entries()].map(([size, tier]) => {
+        const x = demand.find((d) => d.size === size && d.tier === tier);
+        const e = byTierSize.get(`${tier}|${size}`);
+        return { size, label: x.label, width: x.width, gap: x.gap, die: x.die, need: e.need, boxes: e.boxes, orders: e.orders.slice(), tier };
+      });
+      const isUrgent = (it) => tiers.some((t) => {
+        const e = byTierSize.get(`${t}|${it.size}`);
+        return e && (t < 99 || e.orders.some((o) => urgent.has(o)));
+      });
+      const wRank = (w) => rules.widthFirst && w === rules.widthFirst ? -2 : w === (current && current.width) ? -1 : widthRank[w] ?? 9;
+      const order = (xs) => {
+        const out = [];
+        let lineW = rules.widthFirst || onLine.width, lineDie = null, lineH = onLine.h;
+        const left = [...xs];
+        while (left.length) {
+          left.sort((a, b) => (a.width === lineW ? -3 : wRank(a.width)) - (b.width === lineW ? -3 : wRank(b.width)) || (a.die === lineDie ? 0 : 1) - (b.die === lineDie ? 0 : 1) || String(a.die || "").localeCompare(String(b.die || "")) || (rules.sameHeight ? (hKey(a) === lineH ? 0 : 1) - (hKey(b) === lineH ? 0 : 1) || hOf(a) - hOf(b) : 0) || (a.gap ?? 99) - (b.gap ?? 99) || String(a.size).localeCompare(String(b.size)));
+          const it = left.shift();
+          out.push(it);
+          lineW = it.width;
+          lineDie = it.die;
+          lineH = hKey(it);
+        }
+        return out;
+      };
+      const seq = [...order(items.filter(isUrgent)), ...order(items.filter((it) => !isUrgent(it)))];
+      for (const it of seq) {
+        const step = { ...it, metres: it.need, joined: [], change: null };
+        for (const later of tiers.filter((t) => t > it.tier)) {
+          const k = `${later}|${it.size}`, e = byTierSize.get(k);
+          if (!e || covered.has(k)) continue;
+          if (noJoin.has(it.size) || rules.nojoinRanges && rules.nojoinRanges.has(glueRangeOf(it.label))) {
+            continue;
+          }
+          step.metres += e.need;
+          step.boxes += e.boxes;
+          covered.set(k, step);
+          for (const o of e.orders) step.joined.push({ orderId: o, tier: later });
+        }
+        steps.push(step);
+        for (const later of tiers.filter((t) => t > it.tier)) {
+          const k = `${later}|${it.size}`, e = byTierSize.get(k);
+          if (e && !covered.has(k)) {
+            const apart = { ...it, need: e.need, metres: e.need, boxes: e.boxes, orders: e.orders.slice(), tier: later, joined: [], change: null };
+            steps.push(apart);
+            covered.set(k, apart);
+          }
+        }
+        onLine = { size: it.size, width: it.width, h: hKey(it) };
+      }
+      return { steps, covered };
+    }
     for (const tier of tiers) {
       const bySize = /* @__PURE__ */ new Map();
       for (const x of demand.filter((d) => d.tier === tier)) {
@@ -3501,14 +3556,22 @@
     const baseReady = new Map(base.orders.map((o) => [o.orderId, o.ready]));
     const tight = (r2) => r2.orders.filter((o) => o.dueDate && o.ready > baseReady.get(o.orderId) && localDateKey(o.ready) >= o.dueDate);
     const forced = new Set(scheduleTweaksOf(data).filter((t) => t.kind === "join").map((t) => t.size));
-    let noJoin = [], r = finishOnce(data, now, P, cfg, noJoin), guard = 0;
-    while (tight(r).length && guard++ < 40) {
+    let noJoin = [], urgent = [], r = finishOnce(data, now, P, cfg, noJoin), guard = 0;
+    while (tight(r).length && guard++ < 12) {
+      const add = tight(r).map((o) => o.orderId).filter((id) => !urgent.includes(id));
+      if (!add.length) break;
+      urgent = [...urgent, ...add];
+      r = finishOnce(data, now, P, { ...cfg, __urgent: urgent }, noJoin);
+    }
+    r.urgent = urgent;
+    while (tight(r).length && guard++ < 52) {
       const victims = new Set(tight(r).map((o) => o.orderId));
       const by = Math.max(...r.orders.filter((o) => victims.has(o.orderId)).map((o) => o.finish ? new Date(o.finish).getTime() : 0));
       const st = r.glueSteps.find((s) => s.joined && s.joined.length && !noJoin.includes(s.size) && !forced.has(s.size) && new Date(s.start).getTime() < by) || r.glueSteps.find((s) => s.joined && s.joined.length && !noJoin.includes(s.size) && !forced.has(s.size));
       if (!st) break;
       noJoin = [...noJoin, st.size];
-      r = finishOnce(data, now, P, cfg, noJoin);
+      r = finishOnce(data, now, P, { ...cfg, __urgent: urgent }, noJoin);
+      r.urgent = urgent;
     }
     const labelOf = /* @__PURE__ */ new Map();
     for (const s of [...base.glueSteps, ...r.glueSteps]) if (!labelOf.has(s.size)) labelOf.set(s.size, s.label);
@@ -3614,7 +3677,9 @@
       joinMinutes: cfg.joinMinutes,
       rateOf: glueRateOf,
       noJoin: [...noJoin, ...tweaks.filter((t) => t.kind === "nojoin").map((t) => t.size)],
-      rules
+      rules,
+      campaign: cfg.glueOrder === "batch",
+      urgent: cfg.__urgent || []
     });
     for (const t of tweaks) {
       if (t.kind !== "first" && t.kind !== "after") continue;
@@ -3653,6 +3718,19 @@
       }
       s.change = glueChangeBetween(prevStep, s);
       prevStep = s;
+      if (s.change) {
+        const t0 = nextWorkMoment(glueClock, glueCal);
+        const h = hoursOn(glueCal, t0);
+        if (h) {
+          const close = new Date(t0);
+          close.setHours(Math.floor(h[1]), Math.round(h[1] % 1 * 60), 0, 0);
+          const needH = (s.change === "width" ? cfg.widthChangeMin : s.change === "size" ? cfg.sizeChangeMin : rules.samePvcMin) / 60 + s.metres / glueRateOf(s.size);
+          if (close - t0 < 2 * 36e5 && t0.getTime() + needH * 36e5 > close.getTime()) {
+            glueClock = nextWorkingMorning(t0, glueCal);
+            s.lateInDay = true;
+          }
+        }
+      }
       const ch = s.change === "width" ? cfg.widthChangeMin / 60 : s.change === "size" ? cfg.sizeChangeMin / 60 : s.change === "samepvc" ? rules.samePvcMin / 60 : 0;
       changeHours += ch;
       s.changeMinutes = Math.round(ch * 60);
@@ -12635,7 +12713,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-04.32";
+  var APP_VERSION = "2026-10-04.33";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
