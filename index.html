@@ -944,7 +944,31 @@
     }).sort((a, b) => String(a.displayName).localeCompare(String(b.displayName)));
     return { status: candidates.length ? "candidates" : "none", candidates, typed: typedRaw };
   }
-  function resolveOrderLine(data, text) {
+  function orderLineWording(text) {
+    let t = String(text || "");
+    t = t.replace(/\boff[\s-]*cent(?:re|er|red|ered)\b/gi, " O/S ");
+    t = t.replace(/\bphoenix\s*(?:plus|\+)(?=\s|$|\d)/gi, "PX Plus").replace(/\bpx\s*(?:\+|-\s*plus\b|plus\b)/gi, "PX Plus").replace(/\bPXPlus\b/gi, "PX Plus");
+    t = t.replace(/\b(?:plastic|creasing|matrix|matrices|extrusions?|cent(?:re|er|red|ered))\b/gi, " ");
+    t = t.replace(/\b([236])\s*-\s*([346])\b(?!\s*pt)/g, "$1-$2pt");
+    if (!/\d\s*[xX×]\s*\d/.test(t) && !/\d\s*mm\b/i.test(t) && !/#\d/.test(t)) t = t.replace(/(^|\s)(\d{1,2}\.\d{1,2})(?=\s|$)/, "$1$2mm");
+    const two = (x) => {
+      const n = Number(x);
+      return Number.isFinite(n) && n < 100 ? n.toFixed(2) : x;
+    };
+    t = t.replace(/(\d+(?:\.\d+)?)\s*[xX×]\s*(\d+(?:\.\d+)?)(?:\s*mm)?(?![\d.])/g, (m, a, b) => `${two(a)} x ${two(b)}mm`);
+    return t.replace(/\s+/g, " ").trim();
+  }
+  function resolveOrderLine(data, text, _cleaned = false) {
+    if (!_cleaned) {
+      const clean = orderLineWording(text);
+      const asIs = resolveOrderLine(data, text, true);
+      if (clean && clean !== String(text || "").replace(/\s+/g, " ").trim()) {
+        const again = resolveOrderLine(data, clean, true);
+        if (again && again.status === "exact") return asIs && asIs.status === "exact" && asIs.product === again.product ? asIs : { ...again, inferred: again.inferred || "wording", typed: text };
+        if (again && again.status === "candidates" && !(asIs && asIs.status === "candidates")) return { ...again, typed: text };
+      }
+      return asIs;
+    }
     const first = resolveProduct(data, text);
     if (first && first.status === "exact") return first;
     const products = (data && data.products || []).filter((p) => !p.deleted);
@@ -959,13 +983,17 @@
       }
     }
     const res = resolveProduct(data, raw);
-    const candidates = res && res.candidates || [];
     const q = productParts(raw);
     const famWords = raw.replace(/[\d].*$/, "").trim().toUpperCase();
+    const nameFam = (p) => String(p.displayName || "").replace(/\s*\d.*$/, "").replace(/\s*#.*$/, "").trim().toUpperCase();
+    const kenOffer = /^SPEEDY CREASE\b/.test(famWords) && q.gos != null ? products.filter((p) => p && p.family === "Ken" && nameFam(p) === famWords.replace(/\s+/g, " ") && Number(p.gos) === q.gos && (q.thickness == null || p.thickness == null || Number(p.thickness) === q.thickness)) : [];
+    const candidates = [...res && res.candidates || [], ...kenOffer.filter((p) => !(res && res.candidates || []).includes(p))];
     if (q.variant == null && candidates.length) {
       const typedFam = famWords.replace(/\s+/g, " ").trim();
       const noPtRange = (fam) => !(data && data.products || []).some((x) => x && !x.deleted && x.family === fam && x.pt);
-      const plain = candidates.filter((p) => !p.variant && (q.pt == null || p.pt === q.pt || p.pt == null && noPtRange(p.family)) && typedFam && String(p.family || "").toUpperCase() === typedFam.split(" ").slice(0, String(p.family || "").split(" ").length).join(" ") && (!p.colour || typedFam.includes(String(p.colour).toUpperCase()) || candidates.filter((c) => !c.variant && c.family === p.family).length === 1));
+      const plain = candidates.filter((p) => !p.variant && (q.pt == null || p.pt === q.pt || p.pt == null && noPtRange(p.family)) && typedFam && (p.family === "Ken" ? nameFam(p) === typedFam : String(p.family || "").toUpperCase() === typedFam.split(" ").slice(0, String(p.family || "").split(" ").length).join(" ")) && (!p.colour || typedFam.includes(String(p.colour).toUpperCase()) || candidates.filter((c) => !c.variant && c.family === p.family).length === 1));
+      const whole = plain.filter((p) => String(p.family || "").toUpperCase() === typedFam);
+      if (plain.length > 1 && whole.length === 1) return { status: "exact", product: whole[0], candidates: [], inferred: "plain", typed: text };
       if (plain.length === 1) return { status: "exact", product: plain[0], candidates: [], inferred: "plain", typed: text };
     }
     return res;
@@ -12940,7 +12968,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-05.81";
+  var APP_VERSION = "2026-10-05.82";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -17155,7 +17183,10 @@ Return ONLY the JSON, no other text, no markdown code fences:
   ]
 }
 
-Product ranges we use: PX Plus, PX, Smart Formes, Ultra SR, Exceed, Phoenix XL.
+Product ranges we use: PX Plus, PX, Smart Formes, Speedy Crease, Speedy Crease Metal, Ultra SR, Exceed, Phoenix XL.
+Phoenix Plus, Phoenix+ and PX+ are PX Plus. Ken / KEN PX is Speedy Crease; Ken or KEN SR with a # number and a colour is
+Speedy Crease Metal. Words that describe the material rather than the product \u2014 plastic, creasing matrix, extrusion,
+centred \u2014 are not part of the product's name: leave them out.
 
 For each line item's "description", you MUST pick exactly ONE of the two options below \u2014 never both:
   (a) If it clearly matches a known product and size, write it in OUR standard format only
