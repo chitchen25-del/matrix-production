@@ -9136,7 +9136,6 @@ ${line}` : line;
     }
     return pallets.map((p) => ({ ...p, dims: p.dims || (order.palletDims || {})[p.label] || null }));
   }
-  var CASE_TARE_KG = 0.65;
   function shippingManifestDoc(order) {
     const m = order && order.shippingManifest;
     if (!m) return null;
@@ -9166,7 +9165,8 @@ ${line}` : line;
     const chunks = [];
     for (let i = 0; i < n; i += perSheet) chunks.push(m.caseRows.slice(i, i + perSheet));
     if (!chunks.length) chunks.push([]);
-    const rowH = n <= 14 ? 7.6 : n <= 20 ? 5.2 : 3.2;
+    const fitRows = Math.min(n, perSheet) + 1, spareMm = 186 - 34 - 16 - 36 - 18;
+    const rowH = Math.max(2.6, Math.min(n <= 14 ? 7.6 : n <= 20 ? 5.2 : 4.2, spareMm / fitRows));
     const d1 = (v) => {
       const x = Number(v);
       return Number.isInteger(x) ? x.toFixed(1) : String(x);
@@ -9188,6 +9188,12 @@ ${line}` : line;
       for (const pn of cols) out[pn] = bySize[sizeOnly(pn)].length > 1 ? sizeOnly(pn) + tailOf(pn) : sizeOnly(pn);
       return out;
     };
+    const tareShare = /* @__PURE__ */ new Map();
+    for (const p of pallets) {
+      const cs = (p.cases || []).filter((cn) => m.caseRows.some((c) => String(c.caseNum) === String(cn) && Number(c.weight) > 0));
+      const each = cs.length ? (Number(p.tare) || 0) / cs.length : 0;
+      for (const cn of cs) tareShare.set(String(cn), each);
+    }
     const grand = Object.fromEntries(products.map((pn) => [pn, 0]));
     let weightTotal = 0, totalQty = 0;
     const sheets = chunks.map((rows, si) => {
@@ -9197,7 +9203,7 @@ ${line}` : line;
       const colW = Math.max(3, Math.floor((wide ? 81 : 75) / Math.max(1, cols.length)));
       const headOf = (pn) => wide ? esc2(names[pn]).replace(/ x /, " x<br>") : esc2(names[pn]);
       const sub = Object.fromEntries(cols.map((pn) => [pn, 0]));
-      let subW = 0, subN = 0;
+      let subW = 0, subN = 0, subG = 0;
       const body = rows.map((c) => {
         const byProduct = {};
         for (const r of c.contributions || []) {
@@ -9211,9 +9217,11 @@ ${line}` : line;
         const w = Number(c.weight) || 0;
         subW += w;
         weightTotal += w;
-        const net = w ? Math.max(0, w - CASE_TARE_KG) : 0;
-        subN += net;
-        return `<tr><td class="cn">${esc2(c.caseNum)}</td>${cols.map((pn) => `<td class="q${byProduct[pn] ? " has" : ""}">${byProduct[pn] ? esc2(byProduct[pn]) : ""}</td>`).join("")}<td class="wt">${w ? n2(w) : ""}</td><td class="wt">${w ? n2(net) : ""}</td></tr>`;
+        const share = w ? tareShare.get(String(c.caseNum)) || 0 : 0;
+        const gross = w + share;
+        subN += w;
+        subG += gross;
+        return `<tr><td class="cn">${esc2(c.caseNum)}</td>${cols.map((pn) => `<td class="q${byProduct[pn] ? " has" : ""}">${byProduct[pn] ? esc2(byProduct[pn]) : ""}</td>`).join("")}<td class="wt">${w ? n2(gross) : ""}</td><td class="wt">${w ? n2(w) : ""}</td></tr>`;
       }).join("");
       const first = rows[0] ? rows[0].caseNum : "", last = rows.length ? rows[rows.length - 1].caseNum : "";
       return `<div class="sheet${si < chunks.length - 1 ? " brk" : ""}">
@@ -9221,7 +9229,7 @@ ${line}` : line;
       <table class="sm${wide ? " wide" : ""}${vwide ? " vwide" : ""}">
         <colgroup><col style="width:${wide ? 5 : 7}%">${cols.map(() => `<col style="width:${colW}%">`).join("")}<col style="width:${wide ? 7 : 9}%"><col style="width:${wide ? 7 : 9}%"></colgroup>
         <thead><tr><th class="cn">Case</th>${cols.map((pn) => `<th>${headOf(pn)}</th>`).join("")}<th class="wt">${wide ? "Gross kg" : "Gross kg"}</th><th class="wt">${wide ? "Net kg" : "Net kg"}</th></tr></thead>
-        <tbody>${body}<tr class="tot"><td class="cn">${chunks.length > 1 ? "Sheet" : "Total"}</td>${cols.map((pn) => `<td>${sub[pn] || ""}</td>`).join("")}<td class="wt">${n2(subW)}</td><td class="wt">${n2(subN)}</td></tr></tbody>
+        <tbody>${body}<tr class="tot"><td class="cn">${chunks.length > 1 ? "Sheet" : "Total"}</td>${cols.map((pn) => `<td>${sub[pn] || ""}</td>`).join("")}<td class="wt">${n2(subG)}</td><td class="wt">${n2(subN)}</td></tr></tbody>
       </table>
     </div>`;
     }).join("");
@@ -9247,11 +9255,12 @@ ${line}` : line;
     @page { size: A4 landscape; margin: 12mm; }
     body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color:#000; }
     .lh { display:flex; justify-content:space-between; align-items:flex-start; }
-    .lh img { width:42mm; height:auto; display:block; }
+    .lh img { width:36mm; height:auto; display:block; flex:none; }
+    .lh { gap:6mm; }
     .lh .addr { text-align:right; font-size:8pt; line-height:1.15; }
     .lh .addr b { font-size:10pt; }
     .lh .addr .gap { display:block; height:1.5mm; }
-    .billto { display:flex; justify-content:space-between; align-items:flex-end; gap:8mm; margin-top:2mm; font-size:9pt; line-height:1.2; }
+    .billto { flex:1; display:flex; justify-content:space-between; align-items:flex-start; gap:6mm; font-size:8pt; line-height:1.15; }
     .billto .k { font-size:8pt; color:#444; }
     .billto .bt b { font-size:10pt; }
     .billto .facts { display:flex; gap:7mm; text-align:left; }
@@ -9270,16 +9279,18 @@ ${line}` : line;
     .sheet.brk { break-after:page; page-break-after:always; }
     .cont { font-size:9pt; color:#333; margin:0 0 2mm; }
     table.sm th.cn, table.sm th.wt { font-size:8pt; text-transform:uppercase; }
-    table.sm td { text-align:center; font-size:${rowH < 4.5 ? "8.5pt" : rowH < 6 ? "9.5pt" : "10.5pt"}; padding:0 .3mm; height:${rowH}mm; line-height:1.1; vertical-align:middle; }
+    table.sm td { text-align:center; font-size:${rowH < 3.3 ? "7pt" : rowH < 4.5 ? "8.5pt" : rowH < 6 ? "9.5pt" : "10.5pt"}; padding:0 .3mm; height:${rowH}mm; line-height:${rowH < 3.3 ? 1 : 1.1}; vertical-align:middle; }
     table.sm td.cn { font-weight:700; }
     table.sm td.q.has { font-weight:700; }
     table.sm td.wt { font-variant-numeric:tabular-nums; }
     table.sm tr.tot td { border-top:1.5pt solid #000; font-weight:700; background:#F2F2EF; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
     table.sm thead { display:table-header-group; }
     .pal { margin-top:2.5mm; font-size:9.5pt; line-height:1.3; }
-    table.pi { border-collapse:collapse; width:62%; margin:3mm 0 2mm; font-size:11pt; break-inside:avoid; page-break-inside:avoid; }
-    table.pi th, table.pi td { border:.9pt solid #000; padding:1mm 2.5mm; text-align:left; font-weight:400; }
-    table.pi th { text-align:center; font-size:11.5pt; text-transform:none; letter-spacing:0; background:#fff; color:#000; }
+    .pirow { display:flex; align-items:flex-start; gap:6mm; margin-top:2mm; break-inside:avoid; page-break-inside:avoid; }
+    .pirow .what { flex:1; margin:1mm 0 0; }
+    table.pi { border-collapse:collapse; width:52%; flex:none; font-size:9pt; }
+    table.pi th, table.pi td { border:.8pt solid #000; padding:.45mm 2mm; text-align:left; font-weight:400; line-height:1.15; }
+    table.pi th { text-align:center; font-size:9.5pt; text-transform:none; letter-spacing:0; background:#fff; color:#000; }
     table.pi td:first-child { width:50%; }
     .pal h2 { font-size:11pt; font-weight:700; margin:0 0 1.5mm; text-transform:none; letter-spacing:0; border:0; padding:0; }
     .pal p { margin:1.2mm 0; }
@@ -9289,14 +9300,14 @@ ${line}` : line;
   </style></head><body>
     <div class="lh">
       <img src="data:image/png;base64,${LOGO_B64}" alt="Matrix Engineering">
-      <div class="addr"><b>Matrix Engineering Limited</b><br>Unit 7A, Parkway<br>Balthane Industrial Estate<br>IM9 2AQ<br><span class="gap"></span>CRN: 123380C<br>VAT: 003213350<br>accounts@creasingmatrix.com<br>1624822960</div>
-    </div>
-    <div class="billto" data-manifest-billto>
-      <div class="bt"><div class="k">Bill to</div><b>${esc2(order.customer || "")}</b>${billLines.map((l) => `<br>${esc2(l)}`).join("")}</div>
-      <div class="facts">
-        ${invoiceNo ? `<div><div class="k">Invoice number</div><div class="v">${esc2(invoiceNo)}</div></div>` : ""}
-        ${order.reference ? `<div><div class="k">Reference</div><div class="v">${esc2(order.reference)}</div></div>` : ""}
+      <div class="billto" data-manifest-billto>
+        <div class="bt"><div class="k">Bill to</div><b>${esc2(order.customer || "")}</b>${billLines.map((l) => `<br>${esc2(l)}`).join("")}</div>
+        <div class="facts">
+          ${invoiceNo ? `<div><div class="k">Invoice number</div><div class="v">${esc2(invoiceNo)}</div></div>` : ""}
+          ${order.reference ? `<div><div class="k">Reference</div><div class="v">${esc2(order.reference)}</div></div>` : ""}
+        </div>
       </div>
+      <div class="addr"><b>Matrix Engineering Limited</b><br>Unit 7A, Parkway<br>Balthane Industrial Estate<br>IM9 2AQ<br><span class="gap"></span>CRN: 123380C<br>VAT: 003213350<br>accounts@creasingmatrix.com<br>1624822960</div>
     </div>
     <div class="title">
       <h1>Shipping manifest &mdash; ${esc2(order.customer || "")}</h1>
@@ -9306,7 +9317,7 @@ ${line}` : line;
     <div class="pal">
       ${summaryLine}
       ${pallets.length > 1 ? `<h2>Pallets</h2>${palletText}` : ""}
-      <table class="pi" data-pallet-info>
+      <div class="pirow"><table class="pi" data-pallet-info>
         <tr><th colspan="2">Pallet Information</th></tr>
         <tr><td>Total number of Cases</td><td>${m.caseRows.length}</td></tr>
         <tr><td>Total number of boxes</td><td>${totalQty}</td></tr>
@@ -9315,7 +9326,7 @@ ${line}` : line;
         <tr><td>Gross weight</td><td>${n2(grossTotal)}kg</td></tr>
         <tr><td>Pallet Dimensions</td><td>${dimsCell}</td></tr>
       </table>
-      <p>All the above items are creasing matrix &mdash; plastic extrusions, used in the folding carton industry.</p>
+      <p class="what">All the above items are creasing matrix &mdash; plastic extrusions, used in the folding carton industry.</p></div>
     </div>
   </body></html>`;
     return html;
@@ -12913,7 +12924,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-05.72";
+  var APP_VERSION = "2026-10-05.74";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
