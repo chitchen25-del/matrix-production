@@ -12940,7 +12940,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-05.79";
+  var APP_VERSION = "2026-10-05.80";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -18010,6 +18010,99 @@ ${recent}` : null });
     }
     return out;
   }
+  function addLineToOrderData(prevData, orderId, newLi, opts = {}) {
+    const extrasLabel = !!opts.extras;
+    const description = opts.description || newLi.description;
+    const lineDesc = newLi.description;
+    const withLine = { ...prevData, lineItems: [...prevData.lineItems, { ...newLi, formId: newLi.formId || formIdForLine(prevData, newLi) }] };
+    const { plannable } = plannableLines(prevData, [newLi]);
+    if (!plannable.length) {
+      return { ...withLine, ...appendLog(prevData, {
+        action: "add",
+        entity: "lineItem",
+        entityId: newLi.id,
+        summary: `Added "${description}" to ${orderId} \u2014 NO case planned: ${plannableLines(prevData, [newLi]).excluded[0].why}`
+      }) };
+    }
+    const ordRow = (prevData.orders || []).find((o) => o.id === orderId) || {};
+    const anyPacked = (prevData.movements || []).some((m) => m && !m.deleted && m.orderId === orderId && m.caseNum != null && (m.kind === "placed" || m.kind === "unplaced"));
+    const hasAmendment = (prevData.lineItems || []).some((l) => l && !l.deleted && l.orderId === orderId && l.amendmentLabel);
+    if (!extrasLabel && !anyPacked && !hasAmendment) {
+      const allLines = [...(prevData.lineItems || []).filter((l) => l && !l.deleted && l.orderId === orderId && !l.amendmentLabel), newLi];
+      const whole = plannableLines(prevData, allLines).plannable;
+      const stampW = (/* @__PURE__ */ new Date()).toISOString();
+      const fresh = planRowsForNewOrder(orderId, whole, { startingCaseNum: Number(ordRow.startingCaseNum) || 0, actor: currentActor(), data: prevData });
+      const retired = (prevData.cases || []).map((c) => c && !c.deleted && c.orderId === orderId ? { ...c, deleted: true, deletedAt: stampW, updatedAt: stampW } : c);
+      return {
+        ...withLine,
+        cases: [...retired, ...fresh],
+        ...appendLog(prevData, {
+          action: "packing_planned",
+          entity: "order",
+          entityId: orderId,
+          summary: `Added "${description}" to ${orderId} \u2014 nothing packed yet, so the whole order was planned again: ${fresh.length} case${fresh.length === 1 ? "" : "s"}`
+        })
+      };
+    }
+    const used = (prevData.cases || []).filter((c) => !c.deleted && c.orderId === orderId).map((c) => Number(c.caseNum));
+    const startAt = used.length ? Math.max(...used) : Number(ordRow.startingCaseNum) || 0;
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    let remaining = Number(newLi.qty) || 0;
+    const topUps = /* @__PURE__ */ new Map();
+    if (plannable.length === 1 && remaining > 0) {
+      const liveCases = (prevData.cases || []).filter((c) => c && !c.deleted && c.orderId === orderId).sort((x, y) => Number(x.caseNum) - Number(y.caseNum));
+      const packed = new Set((prevData.movements || []).filter((m) => m && !m.deleted && m.orderId === orderId && m.caseNum != null && (m.kind === "placed" || m.kind === "unplaced")).map((m) => Number(m.caseNum)));
+      const tail = [];
+      for (let i = liveCases.length - 1; i >= 0; i--) {
+        if (packed.has(Number(liveCases[i].caseNum))) break;
+        tail.unshift(liveCases[i]);
+      }
+      const rangeOf = (s) => String(s || "").replace(/\s*\d.*$/, "").trim().toUpperCase();
+      const reel = isReelSpec(lineDesc);
+      for (const c of tail) {
+        if (remaining <= 0) break;
+        const plan = casePlanned(c);
+        const keys = Object.keys(plan);
+        const exceedLine = /exceed/i.test(lineDesc);
+        if (!keys.length || isReelCase(c) !== reel || keys.some((k) => isReelSpec(k) !== reel || !exceedLine && !/exceed/i.test(k) && rangeOf(k) !== rangeOf(lineDesc))) continue;
+        const cap = reel ? 10 : CASE_MAX_SIZE_DEFAULT;
+        const had = Object.values(plan).reduce((s, q) => s + (Number(q) || 0), 0);
+        const room = cap - had;
+        if (room <= 0) continue;
+        const n = Math.min(room, remaining);
+        const total = had + n;
+        const size = reel ? 10 : (BOX_CASE_SIZES || []).slice().sort((x, y) => x - y).find((z) => z >= total) || CASE_MAX_SIZE_DEFAULT;
+        topUps.set(c.id, { planned: { ...plan, [lineDesc]: (Number(plan[lineDesc]) || 0) + n }, maxSize: size });
+        remaining -= n;
+      }
+    }
+    const rows = remaining > 0 ? planRowsForNewOrder(orderId, topUps.size ? plannable.map((l) => ({ ...l, qty: remaining })) : plannable, { startingCaseNum: startAt, actor: currentActor(), data: prevData }) : [];
+    const casesNow = (prevData.cases || []).map((c) => topUps.has(c.id) ? { ...c, ...topUps.get(c.id), updatedAt: stamp } : c);
+    if (rows.length === 1 && Number(opts.lastCaseSize) > 0 && !isReelCase(rows[0])) {
+      const need = Object.values(casePlanned(rows[0])).reduce((t, q) => t + (Number(q) || 0), 0);
+      if (Number(opts.lastCaseSize) >= need) rows[0] = { ...rows[0], maxSize: Number(opts.lastCaseSize) };
+    }
+    if (!rows.length) return {
+      ...withLine,
+      cases: casesNow,
+      ...appendLog(prevData, {
+        action: "packing_planned",
+        entity: "order",
+        entityId: orderId,
+        summary: `Added "${description}" to ${orderId} \u2014 planned into the room in case ${[...topUps.keys()].map((id) => (casesNow.find((c) => c.id === id) || {}).caseNum).join(" and ")}`
+      })
+    };
+    return {
+      ...withLine,
+      cases: [...casesNow, ...rows],
+      ...appendLog(prevData, {
+        action: "packing_planned",
+        entity: "order",
+        entityId: orderId,
+        summary: `Added "${description}" to ${orderId} \u2014 ${rows.length} case${rows.length === 1 ? "" : "s"} appended (${rows[0].caseNum}\u2013${rows[rows.length - 1].caseNum})`
+      })
+    };
+  }
   function applyRowsWithLog(prevData, key, updater, entity, labelOf) {
     const prevRows = prevData[key] || [];
     const nextRows = typeof updater === "function" ? updater(prevRows) : updater;
@@ -18789,91 +18882,7 @@ ${k.flag}`);
         unitPrice: Number(newLine.unitPrice || 0),
         ...extrasLabel ? { amendmentLabel: extrasLabel } : {}
       };
-      setData((prevData) => {
-        const withLine = { ...prevData, lineItems: [...prevData.lineItems, { ...newLi, formId: formIdForLine(prevData, newLi) }] };
-        const { plannable } = plannableLines(prevData, [newLi]);
-        if (!plannable.length) {
-          return { ...withLine, ...appendLog(prevData, {
-            action: "add",
-            entity: "lineItem",
-            entityId: newLi.id,
-            summary: `Added "${description}" to ${orderId} \u2014 NO case planned: ${plannableLines(prevData, [newLi]).excluded[0].why}`
-          }) };
-        }
-        const ordRow = (prevData.orders || []).find((o) => o.id === orderId) || {};
-        const anyPacked = (prevData.movements || []).some((m) => m && !m.deleted && m.orderId === orderId && m.caseNum != null && (m.kind === "placed" || m.kind === "unplaced"));
-        if (!extrasLabel && !anyPacked) {
-          const allLines = [...(prevData.lineItems || []).filter((l) => l && !l.deleted && l.orderId === orderId && !l.amendmentLabel), newLi];
-          const whole = plannableLines(prevData, allLines).plannable;
-          const stampW = (/* @__PURE__ */ new Date()).toISOString();
-          const fresh = planRowsForNewOrder(orderId, whole, { startingCaseNum: Number(ordRow.startingCaseNum) || 0, actor: currentActor(), data: prevData });
-          const retired = (prevData.cases || []).map((c) => c && !c.deleted && c.orderId === orderId ? { ...c, deleted: true, deletedAt: stampW, updatedAt: stampW } : c);
-          return {
-            ...withLine,
-            cases: [...retired, ...fresh],
-            ...appendLog(prevData, {
-              action: "packing_planned",
-              entity: "order",
-              entityId: orderId,
-              summary: `Added "${description}" to ${orderId} \u2014 nothing packed yet, so the whole order was planned again: ${fresh.length} case${fresh.length === 1 ? "" : "s"}`
-            })
-          };
-        }
-        const used = (prevData.cases || []).filter((c) => !c.deleted && c.orderId === orderId).map((c) => Number(c.caseNum));
-        const startAt = used.length ? Math.max(...used) : Number(ordRow.startingCaseNum) || 0;
-        const stamp = (/* @__PURE__ */ new Date()).toISOString();
-        let remaining = Number(newLi.qty) || 0;
-        const topUps = /* @__PURE__ */ new Map();
-        if (plannable.length === 1 && remaining > 0) {
-          const liveCases = (prevData.cases || []).filter((c) => c && !c.deleted && c.orderId === orderId).sort((x, y) => Number(x.caseNum) - Number(y.caseNum));
-          const packed = new Set((prevData.movements || []).filter((m) => m && !m.deleted && m.orderId === orderId && m.caseNum != null && (m.kind === "placed" || m.kind === "unplaced")).map((m) => Number(m.caseNum)));
-          const tail = [];
-          for (let i = liveCases.length - 1; i >= 0; i--) {
-            if (packed.has(Number(liveCases[i].caseNum))) break;
-            tail.unshift(liveCases[i]);
-          }
-          const rangeOf = (s) => String(s || "").replace(/\s*\d.*$/, "").trim().toUpperCase();
-          const reel = isReelSpec(lineDesc);
-          for (const c of tail) {
-            if (remaining <= 0) break;
-            const plan = casePlanned(c);
-            const keys = Object.keys(plan);
-            const exceedLine = /exceed/i.test(lineDesc);
-            if (!keys.length || isReelCase(c) !== reel || keys.some((k) => isReelSpec(k) !== reel || !exceedLine && !/exceed/i.test(k) && rangeOf(k) !== rangeOf(lineDesc))) continue;
-            const cap = reel ? 10 : CASE_MAX_SIZE_DEFAULT;
-            const had = Object.values(plan).reduce((s, q) => s + (Number(q) || 0), 0);
-            const room = cap - had;
-            if (room <= 0) continue;
-            const n = Math.min(room, remaining);
-            const total = had + n;
-            const size = reel ? 10 : (BOX_CASE_SIZES || []).slice().sort((x, y) => x - y).find((z) => z >= total) || CASE_MAX_SIZE_DEFAULT;
-            topUps.set(c.id, { planned: { ...plan, [lineDesc]: (Number(plan[lineDesc]) || 0) + n }, maxSize: size });
-            remaining -= n;
-          }
-        }
-        const rows = remaining > 0 ? planRowsForNewOrder(orderId, topUps.size ? plannable.map((l) => ({ ...l, qty: remaining })) : plannable, { startingCaseNum: startAt, actor: currentActor(), data: prevData }) : [];
-        const casesNow = (prevData.cases || []).map((c) => topUps.has(c.id) ? { ...c, ...topUps.get(c.id), updatedAt: stamp } : c);
-        if (!rows.length) return {
-          ...withLine,
-          cases: casesNow,
-          ...appendLog(prevData, {
-            action: "packing_planned",
-            entity: "order",
-            entityId: orderId,
-            summary: `Added "${description}" to ${orderId} \u2014 planned into the room in case ${[...topUps.keys()].map((id) => (casesNow.find((c) => c.id === id) || {}).caseNum).join(" and ")}`
-          })
-        };
-        return {
-          ...withLine,
-          cases: [...casesNow, ...rows],
-          ...appendLog(prevData, {
-            action: "packing_planned",
-            entity: "order",
-            entityId: orderId,
-            summary: `Added "${description}" to ${orderId} \u2014 ${rows.length} case${rows.length === 1 ? "" : "s"} appended (${rows[0].caseNum}\u2013${rows[rows.length - 1].caseNum})`
-          })
-        };
-      });
+      setData((prevData) => addLineToOrderData(prevData, orderId, newLi, { extras: !!extrasLabel, description }));
       setNewLine({ range: newLine.range, size: "", pt: "", packType: newLine.packType, amount: "", qty: "", unitPrice: "" });
     };
     const removeLineItemDirect = (id) => {
@@ -20016,7 +20025,7 @@ Everything else was booked.`);
         }
       )), !extrasLabel ? /* @__PURE__ */ React.createElement("div", { className: "mb-3" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setExtrasLabel(
         `Amendment ${(/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}`
-      ) }, "\u2795 Add extras to this order")) : /* @__PURE__ */ React.createElement("div", { className: "mb-3 p-2.5 rounded", style: { background: "#FFF6F2", border: `1px solid ${ORANGE}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement("span", { className: "text-sm", style: { fontWeight: 600, color: ORANGE } }, "Adding extras \u2014 these append as ", extrasLabel), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setExtrasLabel(null) }, "Done adding extras")), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, "Nothing already on the order changes. Plan the extra cases from the packing screen when you're finished.")), (extrasLabel || lineEditMode) && /* @__PURE__ */ React.createElement("div", { "data-add-line-form": true, className: "flex flex-wrap gap-2 items-end" }, /* @__PURE__ */ React.createElement("div", { style: { width: 140 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Range"), /* @__PURE__ */ React.createElement(Select, { value: newLine.range, onChange: (e) => setNewLine({ ...newLine, range: e.target.value, size: "" }) }, Object.keys(PRODUCT_RANGES).map((r) => /* @__PURE__ */ React.createElement("option", { key: r, value: r }, r)), /* @__PURE__ */ React.createElement("option", { value: "Custom" }, "Custom / other"))), /* @__PURE__ */ React.createElement("div", { className: "flex-1 min-w-[200px]" }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Size"), newLine.range === "Custom" ? /* @__PURE__ */ React.createElement(
+      ) }, "\u2795 Add extras to this order")) : /* @__PURE__ */ React.createElement("div", { className: "mb-3 p-2.5 rounded", style: { background: "#FFF6F2", border: `1px solid ${ORANGE}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement("span", { className: "text-sm", style: { fontWeight: 600, color: ORANGE } }, "Adding extras \u2014 these append as ", extrasLabel), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setExtrasLabel(null) }, "Done adding extras")), /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, "Nothing already on the order changes. Each line you add gets its cases straight away, on the end.")), (extrasLabel || lineEditMode) && /* @__PURE__ */ React.createElement("div", { "data-add-line-form": true, className: "flex flex-wrap gap-2 items-end" }, /* @__PURE__ */ React.createElement("div", { style: { width: 140 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Range"), /* @__PURE__ */ React.createElement(Select, { value: newLine.range, onChange: (e) => setNewLine({ ...newLine, range: e.target.value, size: "" }) }, Object.keys(PRODUCT_RANGES).map((r) => /* @__PURE__ */ React.createElement("option", { key: r, value: r }, r)), /* @__PURE__ */ React.createElement("option", { value: "Custom" }, "Custom / other"))), /* @__PURE__ */ React.createElement("div", { className: "flex-1 min-w-[200px]" }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Size"), newLine.range === "Custom" ? /* @__PURE__ */ React.createElement(
         TextInput,
         {
           placeholder: "Type the full product description",
@@ -38562,6 +38571,187 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const w = (n) => total > 0 ? `${Math.max(0, Math.min(100, 100 * n / total))}%` : "0%";
     return /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { display: "flex", height: 5, borderRadius: 3, overflow: "hidden", background: NLT.TINT.navy, marginTop: 0 } }, /* @__PURE__ */ React.createElement("i", { style: { width: w(packed), background: NL.OK, display: "block" } }), /* @__PURE__ */ React.createElement("i", { style: { width: w(shelf), background: NL.NAVY, display: "block" } }), /* @__PURE__ */ React.createElement("i", { style: { width: w(make), background: NL.AMBERTXT, display: "block" } }));
   }
+  var NLA_RANGES = ["PX Plus", "PX", "Smart Formes", "Speedy Crease", "Speedy Crease Metal", "Ultra SR", "Phoenix XL", "Exceed", "Profile Tape"];
+  var nlaWords = (s) => String(s || "").toLowerCase().replace(/×/g, " x ").replace(/(\d)\s*x\s*(\d)/g, "$1 x $2").replace(/(\d)mm\b/g, "$1 ").split(/\s+/).filter((w) => w && w !== "x");
+  function nlaMatches(name, q) {
+    const n = String(name || "").toLowerCase().replace(/(\d)mm\b/g, "$1 ");
+    const nums = (n.match(/\d+(\.\d+)?/g) || []).map(Number);
+    const ws = n.split(/\s+/).filter(Boolean);
+    const qs = nlaWords(q);
+    if (!qs.length) return false;
+    return qs.every((t) => /^\d/.test(t) ? nums.some((v) => v === Number(t)) : ws.some((w) => w.startsWith(t) || w.replace(/\//g, "").startsWith(t.replace(/\//g, ""))));
+  }
+  var nlaBase = (d) => String(d || "").replace(/\s*\((\d+(\.\d+)?)m\)\s*$/i, "").replace(/\s+REEL\b/i, "").trim();
+  function nlaCatalogue(data) {
+    const prods = (data.products || []).filter((p) => p && !p.deleted && p.active !== false && p.displayName);
+    const formsBy = /* @__PURE__ */ new Map();
+    for (const f of data.productForms || []) {
+      if (!f || f.deleted || f.active === false) continue;
+      if (!formsBy.has(f.productId)) formsBy.set(f.productId, []);
+      formsBy.get(f.productId).push(f);
+    }
+    const byName = new Map(prods.map((p) => [p.displayName, p]));
+    const out = /* @__PURE__ */ new Map();
+    for (const p of prods) {
+      const fs = formsBy.get(p.id) || [];
+      if (!fs.length) continue;
+      const tw = p.displayName.match(/^(.*\dmm)\s+(\d+(?:\.\d+)?)m$/);
+      const base = tw && byName.has(tw[1]) ? tw[1] : p.displayName;
+      if (!out.has(base)) out.set(base, { name: base, forms: [] });
+      for (const f of fs) out.get(base).forms.push({ id: f.id, form: String(f.form || "Box"), metres: Number(f.metres) || null, productName: p.displayName });
+    }
+    for (const e of out.values()) e.forms.sort((a, b) => (a.form === "Reel") - (b.form === "Reel") || (a.metres || 0) - (b.metres || 0));
+    return [...out.values()];
+  }
+  var nlaFormLabel = (f) => f.metres ? `${f.form} ${f.metres} m` : f.form;
+  function NLAddToOrder({ data, setData, order, onClose, onAdded }) {
+    const o = order;
+    const cat = useMemo(() => nlaCatalogue(data), [data.products, data.productForms]);
+    const lines = (data.lineItems || []).filter((l) => l && !l.deleted && l.orderId === o.id && !isDelivery(l.description));
+    const entryFor = (desc) => {
+      const b = nlaBase(desc);
+      return cat.find((e) => e.name === b || e.forms.some((f) => f.productName === b)) || null;
+    };
+    const onOrder = [];
+    for (const l of lines) {
+      const e = entryFor(l.description);
+      if (e && !onOrder.includes(e)) onOrder.push(e);
+    }
+    const rangesHere = NLA_RANGES.filter((r) => cat.some((e) => e.name.startsWith(r + " ")));
+    const famOf2 = (n) => NLA_RANGES.filter((r) => n.startsWith(r + " ")).sort((a, b) => b.length - a.length)[0] || n.split(" ")[0];
+    const orderFams = new Set(lines.map((l) => famOf2(l.description)));
+    const [q, setQ] = useState("");
+    const [entry, setEntry] = useState(null);
+    const [fi, setFi] = useState(0);
+    const [qty, setQty] = useState(10);
+    const [price, setPrice] = useState("");
+    const [priceWhy, setPriceWhy] = useState("");
+    const [caseSize, setCaseSize] = useState(null);
+    const results = useMemo(() => {
+      if (!q.trim()) return [];
+      return cat.filter((e) => nlaMatches(e.name, q)).sort((a, b) => orderFams.has(famOf2(b.name)) - orderFams.has(famOf2(a.name)) || a.name.localeCompare(b.name, "en", { numeric: true })).slice(0, 40);
+    }, [q, cat]);
+    const choose = (e, k = 0) => {
+      nlHaptic();
+      setEntry(e);
+      setFi(k);
+      setCaseSize(null);
+      const same = lines.find((l) => entryFor(l.description) === e);
+      if (same) {
+        setQty(Number(same.qty) >= 20 ? 20 : Math.max(1, Number(same.qty) || 10));
+        setPrice(Number(same.unitPrice) > 0 ? Number(same.unitPrice).toFixed(2) : "");
+        setPriceWhy(Number(same.unitPrice) > 0 ? "Same as the line already on this order" : "No price on the line already on this order");
+        return;
+      }
+      setQty(10);
+      const fam = famOf2(e.name);
+      const prices = lines.filter((l) => famOf2(l.description) === fam && Number(l.unitPrice) > 0).map((l) => Number(l.unitPrice));
+      if (prices.length) {
+        const count = /* @__PURE__ */ new Map();
+        prices.forEach((x) => count.set(x, (count.get(x) || 0) + 1));
+        const best = [...count.entries()].sort((a, b) => b[1] - a[1])[0][0];
+        setPrice(best.toFixed(2));
+        setPriceWhy(`Same as the other ${fam} lines on this order`);
+      } else {
+        setPrice("");
+        setPriceWhy(`Not on ${o.customer}'s order before \u2014 type it, or leave it at \xA30`);
+      }
+    };
+    const form = entry ? entry.forms[fi] || entry.forms[0] : null;
+    const isReel = !!form && /reel/i.test(form.form);
+    const qtyN = Math.max(0, Math.round(Number(qty) || 0));
+    const anyPacked = (data.movements || []).some((m) => m && !m.deleted && m.orderId === o.id && m.caseNum != null && (m.kind === "placed" || m.kind === "unplaced"));
+    const hasAmendment = (data.lineItems || []).some((l) => l && !l.deleted && l.orderId === o.id && l.amendmentLabel);
+    const extras = anyPacked || hasAmendment;
+    const label = `Amendment ${(/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}`;
+    const named = useMemo(() => {
+      if (!form) return null;
+      let desc = isReel ? nameForForm(data, form.id) || `${form.productName} REEL` : form.productName, formId = form.id, kNote = null;
+      try {
+        if (isKPinCustomer(data, o.customer)) {
+          const k = kPinEquivalent(data, desc);
+          if (k && k.description && k.description !== desc) {
+            kNote = `${o.customer} is made on K pins \u2014 this goes on as ${k.description}.`;
+            desc = k.description;
+            formId = null;
+          } else if (k && k.flag) kNote = `${o.customer} is made on K pins \u2014 check: ${k.flag}`;
+        }
+      } catch (e) {
+      }
+      return { desc, formId, kNote };
+    }, [form && form.id, o.customer, data.products]);
+    const newLi = named ? { id: "li-preview", orderId: o.id, description: named.desc, qty: qtyN, unitPrice: Number(String(price).replace(",", ".")) || 0, ...named.formId ? { formId: named.formId } : {}, ...extras ? { amendmentLabel: label } : {} } : null;
+    const where = useMemo(() => {
+      if (!newLi || !qtyN) return null;
+      const before = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === o.id);
+      let after;
+      try {
+        after = (addLineToOrderData(data, o.id, newLi, { extras, description: newLi.description, lastCaseSize: caseSize }).cases || []).filter((c) => c && !c.deleted && c.orderId === o.id);
+      } catch (e) {
+        return { text: "Couldn't work out the cases for this \u2014 it will still be added.", added: [] };
+      }
+      const beforeIds = new Set(before.map((c) => c.id)), afterIds = new Set(after.map((c) => c.id));
+      const retired = before.filter((c) => !afterIds.has(c.id));
+      const added = after.filter((c) => !beforeIds.has(c.id)).sort((a, b) => Number(a.caseNum) - Number(b.caseNum));
+      const topped = after.filter((c) => beforeIds.has(c.id) && JSON.stringify(casePlanned(c)) !== JSON.stringify(casePlanned(before.find((b) => b.id === c.id))));
+      const holds = after.filter((c) => Number(casePlanned(c)[newLi.description]) > 0).map((c) => Number(c.caseNum)).sort((a, b) => a - b);
+      const inCases = holds.length ? ` It goes in case${holds.length === 1 ? "" : "s"} ${holds.length > 2 ? `${holds[0]}\u2013${holds[holds.length - 1]}` : holds.join(" and ")}.` : "";
+      if (!extras && holds.length) return { text: `Nothing's packed on this order yet, so it's planned in with the rest \u2014 ${after.length} case${after.length === 1 ? "" : "s"}, no amendment needed.${inCases}`, added: [] };
+      if (!added.length && !topped.length) return { text: "This goes with the order but outside the cases \u2014 the case plan doesn't change.", added: [] };
+      const parts = [];
+      if (topped.length) parts.push(`fills the room in case ${topped.map((c) => c.caseNum).join(" and ")}`);
+      if (added.length) parts.push(added.length === 1 ? `starts case ${added[0].caseNum}` : `starts cases ${added[0].caseNum}\u2013${added[added.length - 1].caseNum}`);
+      const lead = extras ? `${anyPacked ? "Some of this order is already packed" : "This order already has an amendment"}, so this goes on the end as ${label} \u2014 nothing already packed changes. It ` : "It ";
+      return { text: lead + parts.join(", then ") + ".", added };
+    }, [data, newLi && newLi.description, newLi && newLi.qty, caseSize, extras]);
+    const oneNew = where && where.added.length === 1 && !isReelCase(where.added[0]) ? where.added[0] : null;
+    const need = oneNew ? Object.values(casePlanned(oneNew)).reduce((t, x) => t + (Number(x) || 0), 0) : 0;
+    const cartonNow = oneNew ? Number(oneNew.maxSize) || CASE_MAX_SIZE_DEFAULT : null;
+    const add = () => {
+      if (!newLi || !qtyN) return;
+      nlHaptic("landed");
+      const li = { ...newLi, id: uid("li") };
+      const beforeCases = (data.cases || []).filter((c) => c && c.orderId === o.id).map((c) => ({ ...c }));
+      setData((prev) => addLineToOrderData(prev, o.id, li, { extras, description: li.description, lastCaseSize: caseSize }));
+      onAdded && onAdded({ lineId: li.id, desc: li.description, qty: qtyN, beforeCases, where: where ? where.text : "" });
+    };
+    const head = { fontSize: 12, fontWeight: 700, letterSpacing: 1, color: NL.SUB, margin: "0 2px 8px" };
+    const chipBtn = (on) => ({ height: 40, minWidth: 48, padding: "0 12px", borderRadius: 12, border: on ? `2px solid ${NL.NAVY}` : `1px solid ${NL.LINE}`, background: on ? "#E7EBF5" : "#fff", color: NL.INK, fontSize: 15, fontWeight: 700, fontFamily: NLT.FONT });
+    return ReactDOM.createPortal(/* @__PURE__ */ React.createElement("div", { "data-nl-add-sheet": true, style: { position: "fixed", inset: 0, zIndex: 1150, background: "rgba(20,33,82,0.35)" }, onClick: onClose }, /* @__PURE__ */ React.createElement("div", { onClick: (e) => e.stopPropagation(), className: "nl-up", style: { position: "absolute", left: 0, right: 0, bottom: 0, top: "max(44px, env(safe-area-inset-top, 0px))", maxWidth: 640, margin: "0 auto", background: "#fff", borderRadius: "22px 22px 0 0", boxShadow: "0 -12px 40px rgba(20,33,82,0.22)", display: "flex", flexDirection: "column", fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement("div", { "aria-hidden": "true", style: { width: 40, height: 5, borderRadius: 3, background: "#D3D8E2", margin: "8px auto 4px", flex: "none" } }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, padding: "4px 12px 8px", flex: "none" } }, entry ? /* @__PURE__ */ React.createElement("button", { "data-nla-back": true, onClick: () => {
+      nlHaptic();
+      setEntry(null);
+    }, style: { height: 40, padding: "0 8px", border: 0, background: "none", color: NL.NAVY, fontSize: 16, fontWeight: 600, fontFamily: NLT.FONT } }, "\u2039 Back") : /* @__PURE__ */ React.createElement("span", { style: { width: 8 } }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, fontSize: 17, fontWeight: 700, textAlign: entry ? "center" : "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, "Add to ", o.customer), /* @__PURE__ */ React.createElement("button", { "data-nla-cancel": true, onClick: onClose, style: { height: 40, padding: "0 8px", border: 0, background: "none", color: NL.NAVY, fontSize: 16, fontWeight: 600, fontFamily: NLT.FONT } }, "Cancel")), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch", padding: "0 16px calc(20px + env(safe-area-inset-bottom, 0px))" } }, !entry && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("label", { style: { display: "flex", alignItems: "center", gap: 10, height: 52, borderRadius: 14, background: NL.PANEL, padding: "0 14px", border: `2px solid ${NL.NAVY}` } }, /* @__PURE__ */ React.createElement(NLIcon, { name: "search", size: 18, color: NL.SUB }), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        "data-nla-search": true,
+        autoFocus: true,
+        value: q,
+        onChange: (e) => setQ(e.target.value),
+        placeholder: "Size or product \u2014 e.g. 0.5 x 1.5, exceed 7 x 5",
+        "aria-label": "Size or product",
+        style: { flex: 1, minWidth: 0, border: 0, background: "transparent", fontSize: 16, fontFamily: NLT.FONT, color: NL.INK, outline: "none", boxShadow: "none", padding: 0 }
+      }
+    )), !q.trim() && /* @__PURE__ */ React.createElement(React.Fragment, null, onOrder.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { ...head, marginTop: 16 } }, "MORE OF WHAT'S ON THIS ORDER"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 8 } }, onOrder.map((e) => /* @__PURE__ */ React.createElement("button", { key: e.name, "data-nla-again": e.name, onClick: () => choose(e), style: { height: 42, padding: "0 12px", borderRadius: 12, border: `1px solid ${NL.LINE}`, background: "#fff", display: "flex", alignItems: "center", gap: 7, fontSize: 14.5, fontWeight: 600, fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement(NLDot, { spec: e.name }), e.name.replace(/^(PX Plus|Smart Formes|Speedy Crease|Ultra SR|Exceed|PX)\s+/, "").replace(/mm\b/, "").replace(/(\d)\.(\d)0\b/g, "$1.$2"))))), /* @__PURE__ */ React.createElement("div", { style: { ...head, marginTop: 18 } }, "SOMETHING ELSE"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 8 } }, rangesHere.map((r) => /* @__PURE__ */ React.createElement("button", { key: r, "data-nla-range": r, onClick: () => {
+      nlHaptic();
+      setQ(r);
+    }, style: { height: 42, padding: "0 14px", borderRadius: 21, border: 0, background: "#E7EBF5", color: NL.NAVY, fontSize: 14.5, fontWeight: 600, fontFamily: NLT.FONT } }, r)))), !!q.trim() && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: NL.SUB, margin: "0 2px 4px" } }, results.length ? `${results.length === 40 ? "40+" : results.length} in the catalogue \u2014 tap one, or tap how it's sold` : ""), results.map((e) => /* @__PURE__ */ React.createElement("div", { key: e.name, "data-nla-result": e.name, style: { padding: "10px 2px 12px", borderBottom: `1px solid ${NL.LINE}` } }, /* @__PURE__ */ React.createElement("button", { onClick: () => choose(e), style: { display: "flex", alignItems: "center", gap: 10, width: "100%", border: 0, background: "none", padding: 0, textAlign: "left", fontFamily: NLT.FONT, fontSize: 16, fontWeight: 600, color: NL.INK } }, /* @__PURE__ */ React.createElement(NLDot, { spec: e.name }), e.name), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", margin: "8px 0 0 28px" } }, e.forms.map((f, k) => /* @__PURE__ */ React.createElement("button", { key: f.id, "data-nla-form": `${e.name}|${nlaFormLabel(f)}`, onClick: () => choose(e, k), style: { height: 36, padding: "0 12px", borderRadius: 10, border: "1px solid #C9D3EA", background: "#F6F8FD", color: NL.NAVY, fontSize: 14, fontWeight: 600, fontFamily: NLT.FONT } }, nlaFormLabel(f)))))), !results.length && /* @__PURE__ */ React.createElement("div", { "data-nla-none": true, style: { fontSize: 15, color: NL.SUB, lineHeight: 1.5, padding: "12px 2px" } }, "Nothing in the catalogue matches \u201C", q.trim(), "\u201D. Check the size \u2014 a size we don't make yet is added in Products first."))), entry && form && /* @__PURE__ */ React.createElement("div", { "data-nla-details": true, style: { display: "flex", flexDirection: "column", gap: 16, paddingTop: 4 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } }, /* @__PURE__ */ React.createElement(NLDot, { spec: entry.name }), /* @__PURE__ */ React.createElement("span", { "data-nla-name": true, style: { fontSize: 20, fontWeight: 700, letterSpacing: -0.2 } }, entry.name)), entry.forms.length > 1 ? /* @__PURE__ */ React.createElement("div", { role: "group", "aria-label": "How it's sold", style: { display: "flex", background: NL.PANEL, borderRadius: 12, padding: 3, marginTop: -6 } }, entry.forms.map((f, k) => /* @__PURE__ */ React.createElement("button", { key: f.id, "data-nla-pickform": nlaFormLabel(f), "aria-pressed": k === fi, onClick: () => {
+      nlHaptic();
+      setFi(k);
+      setCaseSize(null);
+    }, style: { flex: 1, height: 40, borderRadius: 10, border: 0, background: k === fi ? "#fff" : "transparent", color: k === fi ? NL.NAVY : NL.SUB, fontWeight: 600, fontSize: 15, fontFamily: NLT.FONT, boxShadow: k === fi ? "0 1px 3px rgba(27,43,107,.18)" : "none" } }, nlaFormLabel(f)))) : /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: NL.SUB, marginTop: -8 } }, nlaFormLabel(form), " \u2014 the only way it's sold"), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: head }, "HOW MANY ", isReel ? "REELS" : /roll/i.test(form.form) ? "ROLLS" : "BOXES"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12 } }, /* @__PURE__ */ React.createElement("button", { "data-nla-less": true, "aria-label": "One fewer", onClick: () => {
+      nlHaptic();
+      setQty(Math.max(1, qtyN - 1));
+    }, style: { width: 52, height: 52, borderRadius: 26, border: 0, background: "#E4E8F0", fontSize: 24, color: NL.INK } }, "\u2212"), /* @__PURE__ */ React.createElement("input", { "data-nla-qty": true, inputMode: "numeric", value: qty, onChange: (e) => setQty(e.target.value.replace(/\D/g, "").slice(0, 5)), "aria-label": "How many", style: { width: 96, height: 56, boxSizing: "border-box", borderRadius: 14, border: `2px solid ${NL.NAVY}`, textAlign: "center", fontSize: 28, fontWeight: 700, fontFamily: NLT.FONT, color: NL.INK } }), /* @__PURE__ */ React.createElement("button", { "data-nla-more": true, "aria-label": "One more", onClick: () => {
+      nlHaptic();
+      setQty(qtyN + 1);
+    }, style: { width: 52, height: 52, borderRadius: 26, border: 0, background: "#E4E8F0", fontSize: 24, color: NL.INK } }, "+")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 10 } }, [5, 10, 20, 40, 80].map((n) => /* @__PURE__ */ React.createElement("button", { key: n, "data-nla-quick": n, onClick: () => {
+      nlHaptic();
+      setQty(n);
+    }, style: { ...chipBtn(qtyN === n), flex: 1 } }, n)))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { htmlFor: "nla-price", style: { ...head, display: "block" } }, "PRICE EACH"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", height: 50, borderRadius: 12, border: `1px solid ${NL.LINE}`, padding: "0 12px", width: 132, boxSizing: "border-box" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 18, color: NL.SUB } }, "\xA3"), /* @__PURE__ */ React.createElement("input", { id: "nla-price", "data-nla-price": true, inputMode: "decimal", value: price, onChange: (e) => setPrice(e.target.value.replace(/[^\d.,]/g, "")), placeholder: "0.00", style: { width: 90, border: 0, outline: "none", fontSize: 20, fontWeight: 700, fontFamily: NLT.FONT, color: NL.INK, paddingLeft: 6 } })), /* @__PURE__ */ React.createElement("div", { "data-nla-price-why": true, style: { flex: 1, fontSize: 13, color: NL.SUB, lineHeight: 1.35 } }, priceWhy))), named && named.kNote && /* @__PURE__ */ React.createElement("div", { "data-nla-kpin": true, style: { fontSize: 14, fontWeight: 600, color: NL.AMBERTXT, background: "#FFF6EC", border: "1px solid #F3D3AE", borderRadius: 12, padding: "10px 12px" } }, named.kNote), /* @__PURE__ */ React.createElement("div", { "data-nla-where": true, style: { background: "#F6F8FD", border: "1px solid #DCE3F2", borderRadius: 14, padding: "12px 14px" } }, /* @__PURE__ */ React.createElement("div", { style: { ...head, margin: "0 0 6px" } }, "WHERE IT GOES"), /* @__PURE__ */ React.createElement("div", { "data-nla-where-text": true, style: { fontSize: 15, lineHeight: 1.45 } }, where ? where.text : "Say how many first."), oneNew && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 10, alignItems: "center", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: NL.SUB } }, "Case ", oneNew.caseNum, " is a carton of"), (BOX_CASE_SIZES || []).slice().sort((a, b) => b - a).filter((n) => n >= need).map((n) => /* @__PURE__ */ React.createElement("button", { key: n, "data-nla-carton": n, "aria-pressed": n === cartonNow, onClick: () => {
+      nlHaptic();
+      setCaseSize(n);
+    }, style: chipBtn(n === cartonNow) }, n)))), /* @__PURE__ */ React.createElement("button", { "data-nla-add": true, disabled: !qtyN, onClick: add, style: { height: 58, borderRadius: 14, border: 0, background: qtyN ? NL.RED : "#C5CBD6", color: "#fff", fontSize: 18, fontWeight: 700, fontFamily: NLT.FONT } }, "Add ", qtyN, " to the order"))))), document.body);
+  }
   function NLOrderPage({ data, setData, orderId, go, jumpToPacking, onPick, renderRecord, renderCases, alerts = [], onBack = null }) {
     const o = (data.orders || []).find((x) => x && x.id === orderId);
     const [seg, setSeg] = useState(() => {
@@ -38583,6 +38773,37 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const [why, setWhy] = useState(null);
     const [showAll, setShowAll] = useState(false);
     const [record, setRecord] = useState(false);
+    const [adding, setAdding] = useState(false);
+    const [justAdded, setJustAdded] = useState(null);
+    useEffect(() => {
+      if (!justAdded) return;
+      const t = setTimeout(() => setJustAdded(null), 15e3);
+      return () => clearTimeout(t);
+    }, [justAdded]);
+    const undoAdd = () => {
+      const a = justAdded;
+      if (!a) return;
+      nlHaptic();
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const was = new Set(a.beforeCases.map((c) => c.id));
+      setData((prev) => {
+        const theirs = (prev.cases || []).filter((c) => c && c.orderId === orderId);
+        const made = [];
+        const seen = /* @__PURE__ */ new Set();
+        for (const c of theirs) {
+          if (was.has(c.id) || seen.has(c.id)) continue;
+          seen.add(c.id);
+          made.push({ ...c, deleted: true, deletedAt: now, updatedAt: now });
+        }
+        const next2 = {
+          ...prev,
+          lineItems: (prev.lineItems || []).map((l) => l && l.id === a.lineId ? { ...l, deleted: true, deletedAt: now, updatedAt: now } : l),
+          cases: [...(prev.cases || []).filter((c) => !c || c.orderId !== orderId), ...a.beforeCases.map((c) => ({ ...c, updatedAt: now })), ...made]
+        };
+        return { ...next2, ...appendLog(next2, { action: "undo", entity: "lineItem", entityId: a.lineId, summary: `Undid adding ${a.qty} \xD7 ${a.desc} to ${orderId} \u2014 the line and the cases are back as they were` }) };
+      });
+      setJustAdded(null);
+    };
     const plan = useMemo(() => {
       try {
         return orderMakePlan(data).get(orderId) || { shelfItems: [], checkItems: [], bondingItems: [], tomorrowItems: [], glueItems: [], otherItems: [] };
@@ -38665,7 +38886,14 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     return /* @__PURE__ */ React.createElement("div", { "data-nl-order-page": true, style: { display: "flex", flexDirection: "column", fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement("div", { "data-nl-order-hero": true }, /* @__PURE__ */ React.createElement(NLHero, { title: o.customer, sub: `${o.id}${o.boxType ? ` \xB7 ${o.boxType} cartons` : ""} \xB7 ${o.stage === "Shipped" ? `shipped ${dayStr(o.shippedDate)}` : done ? "ready to ship" : due.tone === "warn" ? `due ${due.text.toLowerCase()}` : `due ${due.text}`}`, back: true, onBack: () => onBack ? onBack() : go("dashboard"), backLabel: onBack ? null : "Orders", backAttrs: { "data-nl-back-orders": true }, alerts, onOpenAdmin: () => go("admin") }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 16, alignItems: "center", marginTop: 18 } }, /* @__PURE__ */ React.createElement(NLRing, { pct, size: 96, stroke: 9, color: "#fff", track: "rgba(255,255,255,0.22)", label: `${pct}%`, lsize: 22, lcolor: "#fff" }), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 30, fontWeight: 600, fontVariantNumeric: "tabular-nums", letterSpacing: -0.8 } }, fmt(packed), " ", /* @__PURE__ */ React.createElement("span", { style: { fontSize: 16, fontWeight: 400, opacity: 0.85 } }, "of ", fmt(ordered), " packed")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, opacity: 0.85 } }, full, " of ", cases.length, " cases full", o.priority ? ` \xB7 priority ${o.priority}` : "", o.strongTape ? " \xB7 strong tape" : ""))))), /* @__PURE__ */ React.createElement(NLOver, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, background: "#fff", borderRadius: NLT.R.card, boxShadow: NLT.SHADOW, padding: 8 } }, stat3(shelf, "on the shelf", NL.NAVY), stat3(bondBoxes, "off reels"), stat3(glueBoxes + (make - bondBoxes - glueBoxes > 0 ? make - bondBoxes - glueBoxes : 0), "to make", NL.AMBERTXT))), next && /* @__PURE__ */ React.createElement(NLIn, { i: 0 }, /* @__PURE__ */ React.createElement("div", { style: { marginTop: 12, background: NL.PANEL, borderRadius: NLT.R.card, padding: "14px 16px" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: NL.SUB } }, "Packed"), done ? /* @__PURE__ */ React.createElement(NLChip, { tone: "green" }, "READY TO SHIP") : /* @__PURE__ */ React.createElement(NLChip, { tone: /late/.test(due.text) ? "red" : due.tone === "warn" ? "amber" : "plain" }, (/late/.test(due.text) ? due.text : `DUE ${due.text}`).toUpperCase())), /* @__PURE__ */ React.createElement("span", { style: { display: "block", height: 8, borderRadius: 4, background: NL.TRACK, overflow: "hidden", marginTop: 10 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block", width: `${pct}%`, height: 8, borderRadius: 4, background: done ? NL.OK : `linear-gradient(90deg, ${NL.NAVY}, #3D5BD9)`, transition: nlMotionOK() ? "width 700ms cubic-bezier(.2,.7,.2,1)" : "none" } })), /* @__PURE__ */ React.createElement("button", { "data-nl-next": true, onClick: () => {
       nlHaptic();
       next.go();
-    }, style: { marginTop: 12, width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "14px 16px", borderRadius: 14, border: 0, background: NL.NAVY, color: "#fff", textAlign: "left", fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", flexDirection: "column", gap: 1 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, fontWeight: 700, letterSpacing: 1.2, color: "#AEB8DE" } }, "NEXT"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15.5, fontWeight: 600 } }, next.text)), /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 18, color: "#fff", sw: 2.2 })))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", background: NL.PANEL, borderRadius: 12, padding: 3, marginTop: 14 } }, segBtn("lines", "Lines", boxLines.length), segBtn("cases", "Cases", cases.length), segBtn("paperwork", "Paperwork")), seg === "lines" && /* @__PURE__ */ React.createElement(NLIn, { i: 1 }, /* @__PURE__ */ React.createElement(NLEyebrow, { right: /* @__PURE__ */ React.createElement("button", { "data-nl-bynext": true, onClick: () => {
+    }, style: { marginTop: 12, width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "14px 16px", borderRadius: 14, border: 0, background: NL.NAVY, color: "#fff", textAlign: "left", fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", flexDirection: "column", gap: 1 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, fontWeight: 700, letterSpacing: 1.2, color: "#AEB8DE" } }, "NEXT"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15.5, fontWeight: 600 } }, next.text)), /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 18, color: "#fff", sw: 2.2 })))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", background: NL.PANEL, borderRadius: 12, padding: 3, marginTop: 14 } }, segBtn("lines", "Lines", boxLines.length), segBtn("cases", "Cases", cases.length), segBtn("paperwork", "Paperwork")), seg === "lines" && /* @__PURE__ */ React.createElement(NLIn, { i: 1 }, o.stage !== "Shipped" && o.stage !== "Cancelled" && !o.deleted && setData && /* @__PURE__ */ React.createElement("button", { "data-nl-add": true, onClick: () => {
+      nlHaptic();
+      setJustAdded(null);
+      setAdding(true);
+    }, style: { width: "100%", height: 52, marginTop: 12, borderRadius: 14, border: 0, background: NL.NAVY, color: "#fff", fontSize: 17, fontWeight: 700, fontFamily: NLT.FONT, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 } }, /* @__PURE__ */ React.createElement("svg", { width: "18", height: "18", viewBox: "0 0 18 18", fill: "none", stroke: "currentColor", strokeWidth: "2.4", strokeLinecap: "round", "aria-hidden": "true" }, /* @__PURE__ */ React.createElement("path", { d: "M9 3v12M3 9h12" })), "Add to this order"), adding && /* @__PURE__ */ React.createElement(NLAddToOrder, { data, setData, order: o, onClose: () => setAdding(false), onAdded: (a) => {
+      setAdding(false);
+      setJustAdded(a);
+    } }), justAdded && ReactDOM.createPortal(/* @__PURE__ */ React.createElement("div", { "data-nl-added-toast": true, style: { position: "fixed", left: 12, right: 12, bottom: "calc(92px + env(safe-area-inset-bottom, 0px))", zIndex: 1140, maxWidth: 560, margin: "0 auto", background: NL.INK, color: "#fff", borderRadius: 14, padding: "12px 14px", display: "flex", alignItems: "center", gap: 12, boxShadow: "0 8px 24px rgba(27,43,107,.3)", fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1, fontSize: 14, lineHeight: 1.35 } }, /* @__PURE__ */ React.createElement("b", null, "Added ", justAdded.qty, " \xD7 ", justAdded.desc), justAdded.where ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("span", { style: { opacity: 0.8 } }, justAdded.where)) : null), /* @__PURE__ */ React.createElement("button", { "data-nl-added-undo": true, onClick: undoAdd, style: { height: 40, padding: "0 14px", borderRadius: 10, border: 0, background: "rgba(255,255,255,.16)", color: "#fff", fontWeight: 700, fontSize: 15, fontFamily: NLT.FONT } }, "Undo")), document.body), /* @__PURE__ */ React.createElement(NLEyebrow, { right: /* @__PURE__ */ React.createElement("button", { "data-nl-bynext": true, onClick: () => {
       nlHaptic();
       setByNext((v) => !v);
     }, style: { border: 0, background: "none", padding: 0, font: "inherit", fontSize: 12.5, fontWeight: 600, color: NL.NAVY, letterSpacing: 0, textTransform: "none" } }, byNext ? "By line \u25BE" : "By what's next \u25BE") }, byNext ? "What's ordered \xB7 by what's next" : `What's ordered \xB7 ${boxLines.length} line${boxLines.length === 1 ? "" : "s"}`), !byNext && /* @__PURE__ */ React.createElement(React.Fragment, null, legend, /* @__PURE__ */ React.createElement(NLCard, null, boxLines.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { padding: "14px 16px", fontSize: 14, color: NL.SUB } }, "No box lines on this order."), boxLines.slice(0, showAll ? 999 : 12).map((l, i) => lineRow(l, i, i === 0)), boxLines.length > 12 && !showAll && /* @__PURE__ */ React.createElement("button", { onClick: () => setShowAll(true), style: { width: "100%", border: 0, borderTop: `1px solid ${NL.LINE}`, background: "none", padding: 12, fontFamily: NLT.FONT, fontSize: 14, fontWeight: 600, color: NL.NAVY } }, "All ", boxLines.length, " lines")), extras.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { margin: "10px 2px 0", fontSize: 13, color: NL.SUB } }, "Also on the order: ", extras.map((l) => `${l.ordered} \xD7 ${l.spec}`).join(" \xB7 "))), byNext && groups.map(([title, col, ls, sub, hint]) => /* @__PURE__ */ React.createElement("div", { key: title }, /* @__PURE__ */ React.createElement(NLEyebrow, null, /* @__PURE__ */ React.createElement("span", { style: { color: col } }, title, " \xB7 ", fmt(ls.reduce((t, l) => t + (title === "Packed" ? l.packed : title === "Pick from the shelf" ? l.shelf : title === "Bond from reels" ? l.bond : l.glue), 0)))), hint && /* @__PURE__ */ React.createElement("div", { style: { margin: "-6px 2px 8px", fontSize: 12.5, color: NL.SUB } }, hint), /* @__PURE__ */ React.createElement(NLCard, null, ls.map((l, i) => /* @__PURE__ */ React.createElement(NLRow, { key: l.id, first: i === 0, lead: /* @__PURE__ */ React.createElement(NLDot, { spec: l.spec }), title: l.spec.replace(/\s*\(\d+m\)$/, ""), mono: true, sub: sub(l), right: /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15, fontWeight: 600, fontVariantNumeric: "tabular-nums" } }, fmt(l.ordered)), onClick: () => l.make > 0 && setWhy(l) }))))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 14 } }, /* @__PURE__ */ React.createElement("button", { "data-nl-record": true, onClick: () => {
