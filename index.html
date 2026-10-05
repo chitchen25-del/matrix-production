@@ -12873,7 +12873,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-05.68";
+  var APP_VERSION = "2026-10-05.69";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -29937,10 +29937,89 @@ Plan it?`
       );
     }), !reels.length && /* @__PURE__ */ React.createElement("div", { style: { ...NP.sub, padding: "12px 0" } }, "No extruded reels waiting.")), reels.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { ...NP.card, position: "sticky", bottom: "calc(96px + env(safe-area-inset-bottom, 0px))" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, fontWeight: 600 } }, seen.size, " of ", reels.length, " seen on the rack"), /* @__PURE__ */ React.createElement("button", { "data-np-extstock-clear": true, disabled: seen.size === reels.length, onClick: clearAll, style: { ...NP.btn(seen.size < reels.length), width: "100%", marginTop: 10, height: 48 } }, seen.size === reels.length ? "Every reel is on the rack" : `Mark the ${reels.length - seen.size} not ticked as used up`)));
   }
+  function nlShortReels(data) {
+    const runs = (data.bondingRuns || []).filter((r) => r && !r.deleted);
+    const open = (data.issues || []).filter((i) => i && !i.deleted && !i.resolvedAt && i.kind === "count_discrepancy");
+    const byCode = /* @__PURE__ */ new Map();
+    for (const i of open) {
+      const code = String(i.boxNumber || (String(i.summary || "").match(/\b(PBL[A-L]\d{5})\b/) || [])[1] || "").toUpperCase();
+      if (!/^PBL/.test(code)) continue;
+      (byCode.get(code) || byCode.set(code, []).get(code)).push(i);
+    }
+    const out = [];
+    for (const [code, issues] of byCode) {
+      const b = (data.glueLineBatches || []).find((x) => x && !x.deleted && String(x.batchNumber || "").toUpperCase() === code);
+      if (!b || b.cleared !== "Yes") continue;
+      const left = Math.round(Number(b.meterage || 0) - batchMeterageUsed(runs, b.batchNumber));
+      if (left <= 0) continue;
+      out.push({ code, reel: b, left, issues, raised: issues.map((i) => i.raisedAt).sort()[0] });
+    }
+    return out.sort((a, b) => !a.reel.productSize - !b.reel.productSize || String(a.reel.productSize || "").localeCompare(String(b.reel.productSize || ""), "en", { numeric: true }) || a.code.localeCompare(b.code));
+  }
+  function NLShortReels({ data, setData, onBack }) {
+    const reels = useMemo(() => nlShortReels(data), [data.glueLineBatches, data.bondingRuns, data.issues]);
+    const [ans, setAns] = useState({});
+    const [done, setDone] = useState(null);
+    const answered = reels.filter((r) => ans[r.code]);
+    const found = answered.filter((r) => ans[r.code] === "yes"), gone = answered.filter((r) => ans[r.code] === "no");
+    const complete = () => {
+      if (!answered.length || !setData) return;
+      nlHaptic && nlHaptic();
+      const at = (/* @__PURE__ */ new Date()).toISOString(), day = at.slice(0, 10), who = currentActor();
+      const yes = new Set(found.map((r) => r.code)), no = new Set(gone.map((r) => r.code));
+      const snapReels = answered.filter((r) => yes.has(r.code)).map((r) => ({ ...r.reel })), snapIssues = answered.flatMap((r) => r.issues.map((i) => ({ ...i })));
+      const issueIds = new Map(answered.flatMap((r) => r.issues.map((i) => [i.id, r.code])));
+      setData((prev) => {
+        const d = {
+          ...prev,
+          glueLineBatches: (prev.glueLineBatches || []).map((b) => b && yes.has(String(b.batchNumber || "").toUpperCase()) ? { ...b, cleared: "No", updatedAt: at, comments: `${b.comments ? b.comments + " | " : ""}Back on the rack ${day}: found at a check after being cleared short` } : b),
+          issues: (prev.issues || []).map((i) => {
+            const code = i && issueIds.get(i.id);
+            if (!code) return i;
+            const r = answered.find((x) => x.code === code);
+            return { ...i, resolvedAt: at, resolvedBy: who, updatedAt: at, resolution: yes.has(code) ? `Found on the rack at a check (${day}) \u2014 back in stock, ${r.left} m` : `Historical \u2014 not on the rack at a check (${day}); written off` };
+          })
+        };
+        return { ...d, ...appendLog(d, {
+          action: "edit",
+          entity: "glueLineBatch",
+          entityId: "short reels",
+          summary: `Reels cleared short, checked on the rack: ${found.length} found and back in stock${found.length ? ` (${found.map((r) => r.code).join(", ")})` : ""}; ${gone.length} not there, written off${gone.length ? ` (${gone.map((r) => r.code).join(", ")})` : ""}`
+        }) };
+      });
+      setDone({ found: found.map((r) => r.code), gone: gone.map((r) => r.code), snapReels, snapIssues });
+      setAns({});
+    };
+    const undo = () => {
+      if (!done || !setData) return;
+      const at = (/* @__PURE__ */ new Date()).toISOString();
+      const rb = new Map(done.snapReels.map((r) => [r.id, r])), ib = new Map(done.snapIssues.map((i) => [i.id, i]));
+      setData((prev) => {
+        const d = {
+          ...prev,
+          glueLineBatches: (prev.glueLineBatches || []).map((b) => b && rb.has(b.id) ? { ...rb.get(b.id), updatedAt: at } : b),
+          issues: (prev.issues || []).map((i) => i && ib.has(i.id) ? { ...ib.get(i.id), updatedAt: at } : i)
+        };
+        return { ...d, ...appendLog(d, { action: "edit", entity: "glueLineBatch", entityId: "short reels", summary: `Short reel check undone: ${[...done.found, ...done.gone].join(", ")} as they were` }) };
+      });
+      setDone(null);
+    };
+    const pick2 = (code, v) => {
+      nlHaptic && nlHaptic();
+      setAns((a) => ({ ...a, [code]: a[code] === v ? void 0 : v }));
+    };
+    const tog = (on, colour) => ({ height: 38, padding: "0 12px", borderRadius: 10, border: on ? 0 : "1px solid #D5DBE5", background: on ? colour : "#fff", color: on ? "#fff" : NL.INK, fontSize: 14, fontWeight: 600, fontFamily: NLT.FONT, whiteSpace: "nowrap" });
+    return /* @__PURE__ */ React.createElement("div", { "data-np-shortreels": true, style: { fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("div", { style: NP.card }, /* @__PURE__ */ React.createElement("div", { style: NP.h }, "Reels cleared short \xB7 ", reels.length), /* @__PURE__ */ React.createElement("div", { style: { ...NP.sub, marginTop: 4 } }, "Marked used up, but the boxes don't account for all their metres \u2014 some may still be on the rack. Tap what you find, then Complete."), onBack && /* @__PURE__ */ React.createElement("button", { "data-np-shortreels-back": true, onClick: onBack, style: { ...NP.btn(false), width: "100%", marginTop: 12, height: 42 } }, "Back to the glue reels")), done && /* @__PURE__ */ React.createElement("div", { "data-np-shortreels-done": true, style: { ...NP.card, background: "#E3F3E8", display: "flex", alignItems: "center", gap: 10 } }, /* @__PURE__ */ React.createElement("span", { style: { flex: 1 } }, /* @__PURE__ */ React.createElement("b", null, done.found.length, " back on the rack, ", done.gone.length, " written off."), " ", /* @__PURE__ */ React.createElement("span", { style: NP.sub }, "Logged in Activity.")), /* @__PURE__ */ React.createElement("button", { "data-np-shortreels-undo": true, onClick: undo, style: { ...NP.btn(false), height: 38, fontSize: 14 } }, "Undo")), /* @__PURE__ */ React.createElement("div", { style: { ...NP.card, padding: "4px 16px" } }, reels.map((r, i) => {
+      const a = ans[r.code];
+      return /* @__PURE__ */ React.createElement("div", { key: r.code, "data-np-shortreel": r.code, style: { display: "flex", alignItems: "center", gap: 10, padding: "12px 0", borderTop: i ? "1px solid #EEF1F6" : 0, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(MatrixFace, { spec: r.reel.productSize, w: 30 }), /* @__PURE__ */ React.createElement("span", { style: { flex: "1 1 150px", minWidth: 0 } }, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 15.5 } }, r.code), " ", /* @__PURE__ */ React.createElement("span", { style: { fontSize: 14 } }, "\xB7 ", r.reel.productSize ? npShortSize(r.reel.productSize) : "size not recorded"), /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 13, color: NL.SUB } }, r.left.toLocaleString("en-GB"), " m unaccounted", r.reel.date ? ` \xB7 glued ${(/* @__PURE__ */ new Date(`${String(r.reel.date).slice(0, 10)}T12:00:00`)).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}` : "")), /* @__PURE__ */ React.createElement("span", { style: { display: "flex", gap: 6 } }, /* @__PURE__ */ React.createElement("button", { "data-np-shortreel-yes": r.code, "aria-pressed": a === "yes", onClick: () => pick2(r.code, "yes"), style: tog(a === "yes", "#1F7A4D") }, "On the rack"), /* @__PURE__ */ React.createElement("button", { "data-np-shortreel-no": r.code, "aria-pressed": a === "no", onClick: () => pick2(r.code, "no"), style: tog(a === "no", "#B42318") }, "Not there")));
+    }), !reels.length && /* @__PURE__ */ React.createElement("div", { style: { ...NP.sub, padding: "12px 0" } }, "No reels cleared short are waiting to be checked.")), reels.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { ...NP.card, position: "sticky", bottom: "calc(96px + env(safe-area-inset-bottom, 0px))" } }, /* @__PURE__ */ React.createElement("div", { "data-np-shortreels-count": true, style: { fontSize: 15, fontWeight: 600 } }, found.length, " on the rack \xB7 ", gone.length, " not there \xB7 ", reels.length - answered.length, " not checked yet"), /* @__PURE__ */ React.createElement("button", { "data-np-shortreels-complete": true, disabled: !answered.length, onClick: complete, style: { ...NP.btn(answered.length > 0), width: "100%", marginTop: 10, height: 48 } }, answered.length ? `Complete \u2014 keep ${found.length}, write off ${gone.length}` : "Tap On the rack or Not there"), answered.length > 0 && answered.length < reels.length && /* @__PURE__ */ React.createElement("div", { style: { ...NP.sub, marginTop: 6 } }, "Ones you haven't checked stay on this list for next time.")));
+  }
   function NLGlueStock({ data, setData }) {
     const [width, setWidth] = useState("all");
     const [seen, setSeen] = useState(() => /* @__PURE__ */ new Set());
     const [last, setLast] = useState(null);
+    const [shortOpen, setShortOpen] = useState(false);
+    const shortCount = useMemo(() => nlShortReels(data).length, [data.glueLineBatches, data.bondingRuns, data.issues]);
     const today = /* @__PURE__ */ new Date();
     const bonded = useMemo(() => new Set((data.bondingRuns || []).filter((r) => r && !r.deleted).map((r) => String(r.baselineBatchCode || "").toUpperCase())), [data.bondingRuns]);
     const all = useMemo(() => (data.glueLineBatches || []).filter((b) => b && !b.deleted && b.cleared !== "Yes" && b.batchNumber).map((b) => {
@@ -29980,7 +30059,11 @@ Plan it?`
       <h1>Glue reels \u2014 stock check${width === "all" ? "" : ` \xB7 ${esc2(width)}`}</h1><p>${reels.length} reels, ${tot.toLocaleString("en-GB")} m on the system, printed ${esc2((/* @__PURE__ */ new Date()).toLocaleString("en-GB"))}. Bold: open three weeks, nothing bonded from it.</p>
       <table><tr><th>Reel</th><th>Size</th><th>Metres left</th><th>Glued</th><th>On the rack</th></tr>${reels.map((b) => `<tr${b.idle ? ' class="idle"' : ""}><td>${esc2(b.batchNumber)}</td><td>${esc2(b.productSize)}</td><td>${b.left} m</td><td>${b.date ? esc2((/* @__PURE__ */ new Date(`${String(b.date).slice(0, 10)}T12:00:00`)).toLocaleDateString("en-GB", { day: "numeric", month: "short" })) + ` (${b.age} d)` : "?"}</td><td>\u2610</td></tr>`).join("")}</table></body></html>`);
     };
-    return /* @__PURE__ */ React.createElement("div", { "data-np-gluestock": true, style: { fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("div", { style: NP.card }, /* @__PURE__ */ React.createElement("div", { style: NP.h }, reels.length, " reels \xB7 ", tot.toLocaleString("en-GB"), " m"), /* @__PURE__ */ React.createElement("div", { style: { ...NP.sub, marginTop: 4 } }, "What the app thinks is on the glue reel rack, oldest first.", idle ? /* @__PURE__ */ React.createElement(React.Fragment, null, " ", /* @__PURE__ */ React.createElement("b", { style: { color: "#9A4A06" } }, idle, " open three weeks with nothing bonded"), " \u2014 likely gone.") : null), /* @__PURE__ */ React.createElement("button", { "data-np-gluestock-print": true, onClick: print, style: { ...NP.btn(false), width: "100%", marginTop: 12, height: 46 } }, "Print the list to walk the rack")), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 12 } }, nlsSeg(width, (w) => {
+    if (shortOpen) return /* @__PURE__ */ React.createElement(NLShortReels, { data, setData, onBack: () => setShortOpen(false) });
+    return /* @__PURE__ */ React.createElement("div", { "data-np-gluestock": true, style: { fontFamily: NLT.FONT } }, shortCount > 0 && /* @__PURE__ */ React.createElement("button", { "data-np-shortreels-go": true, onClick: () => {
+      nlHaptic && nlHaptic();
+      setShortOpen(true);
+    }, style: { ...NP.card, display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left", border: "1px solid #F1C9A5", background: "#FFF6EE", font: "inherit", color: NL.INK } }, /* @__PURE__ */ React.createElement("span", { style: NP.dot("#B45309") }), /* @__PURE__ */ React.createElement("span", { style: { flex: 1 } }, /* @__PURE__ */ React.createElement("b", null, shortCount, " reel", shortCount === 1 ? "" : "s", " cleared short"), /* @__PURE__ */ React.createElement("span", { style: { display: "block", ...NP.sub } }, "Marked used up with metres unaccounted \u2014 check the rack, keep or write off")), /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { fontSize: 20, color: NL.SUB } }, "\u203A")), /* @__PURE__ */ React.createElement("div", { style: NP.card }, /* @__PURE__ */ React.createElement("div", { style: NP.h }, reels.length, " reels \xB7 ", tot.toLocaleString("en-GB"), " m"), /* @__PURE__ */ React.createElement("div", { style: { ...NP.sub, marginTop: 4 } }, "What the app thinks is on the glue reel rack, oldest first.", idle ? /* @__PURE__ */ React.createElement(React.Fragment, null, " ", /* @__PURE__ */ React.createElement("b", { style: { color: "#9A4A06" } }, idle, " open three weeks with nothing bonded"), " \u2014 likely gone.") : null), /* @__PURE__ */ React.createElement("button", { "data-np-gluestock-print": true, onClick: print, style: { ...NP.btn(false), width: "100%", marginTop: 12, height: 46 } }, "Print the list to walk the rack")), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 12 } }, nlsSeg(width, (w) => {
       setWidth(w);
       setSeen(/* @__PURE__ */ new Set());
     }, [["all", "All"], ["7mm", "7mm"], ["10mm", "10mm"], ["12mm", "12mm"]], "data-np-gluewidth")), last && /* @__PURE__ */ React.createElement("div", { style: { ...NP.card, background: "#E3F3E8", display: "flex", alignItems: "center", gap: 10 }, "data-np-gluestock-done": true }, /* @__PURE__ */ React.createElement("span", { style: { flex: 1 } }, /* @__PURE__ */ React.createElement("b", null, last.length, " cleared."), " ", /* @__PURE__ */ React.createElement("span", { style: NP.sub }, "Logged in Activity.")), /* @__PURE__ */ React.createElement("button", { "data-np-gluestock-undo": true, onClick: undo, style: { ...NP.btn(false), height: 38, fontSize: 14 } }, "Undo")), /* @__PURE__ */ React.createElement("div", { style: { ...NP.card, padding: "4px 16px" } }, reels.map((b, i) => {
