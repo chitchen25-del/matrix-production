@@ -2771,15 +2771,17 @@
     const colour = ((text.match(/\b(mauve|silver|buff|violet|navy|white|sky|lime|yellow|rose|slate|green|brown|red|black|blue|orange|cream|grey|gold|cloud|maroon|bronze|burgundy)\b/i) || [])[1] || "").toLowerCase() || null;
     const narrow = /\bnarrow\b/i.test(text);
     const fam = family.toLowerCase();
+    const metal = /speedy crease metal/i.test(text) || /speedy crease metal/i.test(String(product && product.displayName || "")) || (isKenPin(text) || fam === "ken" || fam.startsWith("speedy")) && /#\s*\d/.test(text);
     let lists;
-    if (isKenPin(text) || fam === "ken" || fam.startsWith("speedy")) lists = ["ken"];
+    if (metal) lists = ["scmetal", "ken"];
+    else if (isKenPin(text) || fam === "ken" || fam.startsWith("speedy")) lists = ["ken"];
     else if (/phoenix xl|exceed|profi/.test(fam)) lists = [];
     else if (double || base.includes("double")) lists = ["doubles"];
     else if (isOffCentre(text) || narrow || base.includes("off-centre")) lists = ["offcentre"];
     else if (isMini(text) || base.includes("mini")) lists = ["mini"];
-    else if (fam === "ultra sr") lists = ["mini", "standard"];
+    else if (fam === "ultra sr") lists = ["ultrasr", "mini", "standard"];
     else lists = ["standard"];
-    return { lists, thickness, gos, double, colour, narrow, ultra: fam === "ultra sr" || /speedy crease metal/i.test(text) };
+    return { lists, thickness, gos, double, colour, narrow, ultra: fam === "ultra sr" || metal };
   }
   function toolingRowsFor(place, tooling) {
     if (!place) return [];
@@ -2789,7 +2791,7 @@
       const kenPart = (r) => list !== "ken" ? true : place.ultra ? String(r.id).startsWith("ken-mini-") : !String(r.id).startsWith("ken-mini-");
       const exact = shaped.filter(({ r, s }) => kenPart(r) && s.thickness != null && s.thickness === place.thickness && s.gos === place.gos && (s.double || null) === (place.double || null) && s.narrow === place.narrow);
       if (exact.length) return exact.map((x) => ({ list, row: x.r }));
-      if (place.ultra && place.colour && (list === "mini" || list === "ken")) {
+      if (place.ultra && place.colour && (list === "mini" || list === "ken" || list === "ultrasr" || list === "scmetal")) {
         const byColour = shaped.filter(({ r, s }) => kenPart(r) && s.colours.includes(place.colour));
         if (byColour.length) return byColour.map((x) => ({ list, row: x.r }));
       }
@@ -2863,7 +2865,7 @@
       const place = toolingPlaceFor(data, e.productSize);
       if (!place || !place.lists.length || toolingRowsFor(place, tooling).length) continue;
       if (place.thickness == null || place.gos == null) continue;
-      const list = place.lists[place.lists.length - 1] === "standard" && place.lists.includes("mini") ? "mini" : place.lists[0];
+      const list = place.lists.includes("ultrasr") ? "ultrasr" : place.lists[0];
       const f = (n) => Number(n).toFixed(2);
       const size = `${f(place.thickness)} x ${f(place.gos)}${place.double ? " " + place.double : ""}${place.narrow ? " N" : list === "offcentre" ? " O/S" : ""}`;
       const bucket = out[list] ||= /* @__PURE__ */ new Map();
@@ -9442,6 +9444,8 @@ ${line}` : line;
       String(r.id).startsWith("ken-mini-") ? "Ultra SR / Speedy Crease Metal tooling" : null
     ].filter(Boolean).join(" \xB7 ")
   }));
+  var TOOLING_LISTS = ["standard", "mini", "offcentre", "doubles", "ken", "ultrasr", "scmetal"];
+  var emptyTooling = () => Object.fromEntries(TOOLING_LISTS.map((k) => [k, []]));
   var DEFAULT_PRODUCTION_RATES = [
     { id: "bonding", line: "bonding", metersPerMin: 20 },
     { id: "glue", line: "glue", metersPerMin: 11 }
@@ -9467,7 +9471,7 @@ ${line}` : line;
     movements: [],
     reservations: [],
     issues: [],
-    tooling: { ...DEFAULT_TOOLING, ken: KEN_TOOLING },
+    tooling: { ...DEFAULT_TOOLING, ken: KEN_TOOLING, ultrasr: [], scmetal: [] },
     ncrs: [],
     customSizes: [],
     productionRates: DEFAULT_PRODUCTION_RATES,
@@ -9488,12 +9492,12 @@ ${line}` : line;
     // labels asked for on any device, printed on the PC switched on as the print station (25 Sep 2026)
   };
   function normalizeTooling(t) {
-    if (!t) return DEFAULT_TOOLING;
-    if (t.offcentre) return t;
+    if (!t) return { ...DEFAULT_TOOLING, ken: KEN_TOOLING, ultrasr: [], scmetal: [] };
+    if (t.offcentre) return t.ultrasr && t.scmetal ? t : { ...t, ultrasr: t.ultrasr || [], scmetal: t.scmetal || [] };
     const combined = t.doubles || [];
     const doubles = combined.filter((r) => /D[\d.]+$/.test(r.size || ""));
     const offcentre = combined.filter((r) => !/D[\d.]+$/.test(r.size || ""));
-    return { standard: t.standard || DEFAULT_TOOLING.standard, mini: t.mini || DEFAULT_TOOLING.mini, doubles, offcentre, ken: t.ken || KEN_TOOLING };
+    return { standard: t.standard || DEFAULT_TOOLING.standard, mini: t.mini || DEFAULT_TOOLING.mini, doubles, offcentre, ken: t.ken || KEN_TOOLING, ultrasr: t.ultrasr || [], scmetal: t.scmetal || [] };
   }
   function dedupeProductForms(forms) {
     const rows = Array.isArray(forms) ? forms : [];
@@ -9947,18 +9951,18 @@ ${line}` : line;
     return { extrusion1: out1, extrusion2: out2 };
   }
   function syncToolingToRows(data) {
-    const t = data.tooling || { standard: [], mini: [], offcentre: [], doubles: [], ken: [] };
+    const t = data.tooling || emptyTooling();
     const cols = { screwSpeed: "screw_speed", haulOff: "haul_off" };
     const stripDerived = (r) => {
       const { lastPinUsed, lastScrewSpeedUsed, lastHaulOffUsed, lastBaseHeight, ...clean } = r;
       return clean;
     };
     const tag = (rows, cat) => (rows || []).map((r) => ({ ...syncToSnakeRow(stripDerived(r), cols), category: cat }));
-    return [...tag(t.standard, "standard"), ...tag(t.mini, "mini"), ...tag(t.offcentre, "offcentre"), ...tag(t.doubles, "doubles"), ...tag(t.ken, "ken")];
+    return TOOLING_LISTS.flatMap((k) => tag(t[k], k));
   }
   function syncToolingFromRows(rows) {
     const cols = { screwSpeed: "screw_speed", haulOff: "haul_off" };
-    const out = { standard: [], mini: [], offcentre: [], doubles: [], ken: [] };
+    const out = emptyTooling();
     for (const row of rows) {
       const { category, ...rest } = row;
       if (out[category]) out[category].push(syncToCamelRow(rest, cols));
@@ -10418,13 +10422,7 @@ ${line}` : line;
     for (const key of Object.keys(SYNC_TABLES)) out[key] = stampRowsChanged(prevData[key], nextData[key]);
     out.extrusion1 = stampRowsChanged(prevData.extrusion1, nextData.extrusion1);
     out.extrusion2 = stampRowsChanged(prevData.extrusion2, nextData.extrusion2);
-    out.tooling = {
-      standard: stampRowsChanged(prevData.tooling?.standard, nextData.tooling?.standard),
-      mini: stampRowsChanged(prevData.tooling?.mini, nextData.tooling?.mini),
-      offcentre: stampRowsChanged(prevData.tooling?.offcentre, nextData.tooling?.offcentre),
-      doubles: stampRowsChanged(prevData.tooling?.doubles, nextData.tooling?.doubles),
-      ken: stampRowsChanged(prevData.tooling?.ken, nextData.tooling?.ken)
-    };
+    out.tooling = Object.fromEntries(TOOLING_LISTS.map((k) => [k, stampRowsChanged(prevData.tooling?.[k], nextData.tooling?.[k])]));
     return out;
   }
   function dataToTables(data) {
@@ -12870,7 +12868,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-05.63";
+  var APP_VERSION = "2026-10-05.64";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -31117,7 +31115,11 @@ Plan it?`
       { key: "mini", label: "Mini Matrix Centre" },
       { key: "offcentre", label: "Off Centre" },
       { key: "doubles", label: "Doubles" },
-      { key: "ken", label: "Ken (K pins)" }
+      { key: "ken", label: "Ken (K pins)" },
+      /* (Chris, 5 Oct 2026) the MINI MATRIX CENTRE sheet as the Ultra SR tooling, and the same pins with a K in front as
+         Speedy Crease Metal — Ultra SR and Speedy Crease Metal extrusions now fill in "last used" on these two lists */
+      { key: "ultrasr", label: "Ultra SR" },
+      { key: "scmetal", label: "Speedy Crease Metal" }
     ];
     return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Extrusion tooling", subtitle: "Reference sizes and tooling. The pin, screw speed, haul off and base height last used are pulled in automatically from every extrusion \u2014 Extruder 1, Extruder 2 and Direct reels on the glue line \u2014 onto the list the product belongs to, and shown in red if they don't match your reference values. Add new sizes any time." }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-5 flex-wrap" }, subTabs.map((t) => /* @__PURE__ */ React.createElement(
       "button",
@@ -31134,7 +31136,7 @@ Plan it?`
       t.label,
       " ",
       /* @__PURE__ */ React.createElement("span", { style: { opacity: 0.7 } }, "(", (tooling[t.key] || []).length, ")")
-    ))), subTab === "standard" && /* @__PURE__ */ React.createElement(ToolingCategorySection, { title: "Standard Centre", rows: tooling.standard, setRows: (r) => setCategory("standard", r), lastRunFor, unplaced: unplacedByList.standard || [] }), subTab === "mini" && /* @__PURE__ */ React.createElement(ToolingCategorySection, { title: "Mini Matrix Centre", rows: tooling.mini, setRows: (r) => setCategory("mini", r), lastRunFor, unplaced: unplacedByList.mini || [] }), subTab === "offcentre" && /* @__PURE__ */ React.createElement(ToolingCategorySection, { title: "Off Centre", rows: tooling.offcentre, setRows: (r) => setCategory("offcentre", r), lastRunFor, unplaced: unplacedByList.offcentre || [] }), subTab === "doubles" && /* @__PURE__ */ React.createElement(ToolingCategorySection, { title: "Doubles", rows: tooling.doubles, setRows: (r) => setCategory("doubles", r), lastRunFor, unplaced: unplacedByList.doubles || [] }), subTab === "ken" && /* @__PURE__ */ React.createElement(ToolingCategorySection, { title: "Ken (K pins)", rows: tooling.ken, setRows: (r) => setCategory("ken", r), lastRunFor, unplaced: unplacedByList.ken || [] }));
+    ))), subTab === "standard" && /* @__PURE__ */ React.createElement(ToolingCategorySection, { title: "Standard Centre", rows: tooling.standard, setRows: (r) => setCategory("standard", r), lastRunFor, unplaced: unplacedByList.standard || [] }), subTab === "mini" && /* @__PURE__ */ React.createElement(ToolingCategorySection, { title: "Mini Matrix Centre", rows: tooling.mini, setRows: (r) => setCategory("mini", r), lastRunFor, unplaced: unplacedByList.mini || [] }), subTab === "offcentre" && /* @__PURE__ */ React.createElement(ToolingCategorySection, { title: "Off Centre", rows: tooling.offcentre, setRows: (r) => setCategory("offcentre", r), lastRunFor, unplaced: unplacedByList.offcentre || [] }), subTab === "doubles" && /* @__PURE__ */ React.createElement(ToolingCategorySection, { title: "Doubles", rows: tooling.doubles, setRows: (r) => setCategory("doubles", r), lastRunFor, unplaced: unplacedByList.doubles || [] }), subTab === "ken" && /* @__PURE__ */ React.createElement(ToolingCategorySection, { title: "Ken (K pins)", rows: tooling.ken, setRows: (r) => setCategory("ken", r), lastRunFor, unplaced: unplacedByList.ken || [] }), subTab === "ultrasr" && /* @__PURE__ */ React.createElement(ToolingCategorySection, { title: "Ultra SR", rows: tooling.ultrasr, setRows: (r) => setCategory("ultrasr", r), lastRunFor, unplaced: unplacedByList.ultrasr || [] }), subTab === "scmetal" && /* @__PURE__ */ React.createElement(ToolingCategorySection, { title: "Speedy Crease Metal", rows: tooling.scmetal, setRows: (r) => setCategory("scmetal", r), lastRunFor, unplaced: unplacedByList.scmetal || [] }));
   }
   function useSortableRows(rows, defaultCol, defaultDir = "asc") {
     const [sortBy, setSortBy] = useState(defaultCol);
@@ -40097,10 +40099,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         data.customSizes,
         data.extrusion1,
         data.extrusion2,
-        data.tooling?.standard,
-        data.tooling?.mini,
-        data.tooling?.offcentre,
-        data.tooling?.doubles
+        ...TOOLING_LISTS.map((k) => data.tooling?.[k])
       ];
       return arrays.some((arr) => (arr || []).some((r) => r.id === id));
     }
@@ -40348,19 +40347,10 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       }
       merged.extrusion1 = mergeById(currentData.extrusion1, remote.extrusion1, pending);
       merged.extrusion2 = mergeById(currentData.extrusion2, remote.extrusion2, pending);
-      merged.tooling = {
-        standard: mergeById(currentData.tooling?.standard, remote.tooling?.standard, pending),
-        mini: mergeById(currentData.tooling?.mini, remote.tooling?.mini, pending),
-        offcentre: mergeById(currentData.tooling?.offcentre, remote.tooling?.offcentre, pending),
-        doubles: mergeById(currentData.tooling?.doubles, remote.tooling?.doubles, pending),
-        // Until the server has ever seen a Ken row, remote.tooling.ken is empty
-        // and mergeById(local, []) keeps local — so the defaults survive the
-        // first sync and only start round-tripping once someone edits one.
-        ken: mergeById(currentData.tooling?.ken, remote.tooling?.ken, pending)
-      };
+      merged.tooling = Object.fromEntries(TOOLING_LISTS.map((k) => [k, mergeById(currentData.tooling?.[k], remote.tooling?.[k], pending)]));
       merged.productForms = dedupeProductForms(merged.productForms);
       const T = currentData.tooling;
-      if (T && Object.keys(T).length === 5 && ["standard", "mini", "offcentre", "doubles", "ken"].every((k) => merged.tooling[k] === T[k])) merged.tooling = T;
+      if (T && Object.keys(T).length === TOOLING_LISTS.length && TOOLING_LISTS.every((k) => merged.tooling[k] === T[k])) merged.tooling = T;
       if (Object.keys(merged).length === Object.keys(currentData).length && Object.keys(merged).every((k) => merged[k] === currentData[k])) return currentData;
       return merged;
     };
