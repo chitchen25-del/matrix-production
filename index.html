@@ -626,6 +626,10 @@
     if (CATALOGUE.products === (products || CATALOGUE.products) && CATALOGUE.productForms === (productForms || CATALOGUE.productForms) && CATALOGUE.productAliases === al && products && productForms) return;
     CATALOGUE = { products: products || [], productForms: productForms || [], productAliases: al };
   }
+  var CUSTOMERS = [];
+  function setCustomers(list) {
+    CUSTOMERS = Array.isArray(list) ? list : [];
+  }
   var ORDER_RULES = /* @__PURE__ */ new Map();
   function setOrderRules(map) {
     ORDER_RULES = map instanceof Map ? map : /* @__PURE__ */ new Map();
@@ -9229,6 +9233,15 @@ ${line}` : line;
       const has = Number(d.h) > 0 && Number(d.w) > 0 && Number(d.d) > 0;
       return `<p><b>Pallet ${esc2(p.label)}</b> &mdash; cases ${esc2(caseRangeLabel(p.cases))}. ${has ? `Pallet dimensions ${esc2(d.w)} &times; ${esc2(d.d)} &times; ${esc2(d.h)} cm.` : `<span class="p-flag">Pallet dimensions not measured.</span>`} Net weight ${n2(p.goods)} kg, gross weight ${n2(p.gross)} kg.</p>`;
     }).join("") : `<p>Not shipped on a pallet. Goods weight ${n2(goodsTotal)} kg.</p>`;
+    const cust = (CUSTOMERS || []).find((c) => c && !c.deleted && (c.id === order.customerId || c.id === order.customer || String(c.companyName || "").trim().toLowerCase() === String(order.customer || "").trim().toLowerCase()));
+    const billLines = String(order.address || cust && cust.address || "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+    if (cust && cust.contactEmail && !billLines.some((l) => l.toLowerCase() === String(cust.contactEmail).trim().toLowerCase())) billLines.push(String(cust.contactEmail).trim());
+    const invoiceNo = m.invoiceNumber && String(m.invoiceNumber).trim() || ((String(order.notes || "").match(/\bINV-\d{3,}\b/) || [])[0] || "");
+    const dimOf = (p) => {
+      const d = p.dims || {};
+      return Number(d.h) > 0 && Number(d.w) > 0 && Number(d.d) > 0 ? `${esc2(d.w)} x ${esc2(d.d)} x ${esc2(d.h)}cm` : `<span class="p-flag">not measured</span>`;
+    };
+    const dimsCell = !pallets.length ? "Not shipped on a pallet" : pallets.length === 1 ? dimOf(pallets[0]) : pallets.map((p) => `Pallet ${esc2(p.label)}: ${dimOf(p)}`).join("<br>");
     const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Shipping manifest ${esc2(order.id)}</title>
   <style>${PAPER_CSS}
     @page { size: A4 landscape; margin: 12mm; }
@@ -9237,6 +9250,12 @@ ${line}` : line;
     .lh img { width:42mm; height:auto; display:block; }
     .lh .addr { text-align:right; font-size:8pt; line-height:1.15; }
     .lh .addr b { font-size:10pt; }
+    .lh .addr .gap { display:block; height:1.5mm; }
+    .billto { display:flex; justify-content:space-between; align-items:flex-end; gap:8mm; margin-top:2mm; font-size:9pt; line-height:1.2; }
+    .billto .k { font-size:8pt; color:#444; }
+    .billto .bt b { font-size:10pt; }
+    .billto .facts { display:flex; gap:7mm; text-align:left; }
+    .billto .facts .v { font-size:11pt; font-weight:700; }
     .title { display:flex; justify-content:space-between; align-items:baseline; margin-top:3mm; border-bottom:1.5pt solid #000; padding-bottom:1mm; }
     .title h1 { font-size:14pt; font-weight:700; margin:0; letter-spacing:0; text-transform:none; }
     .title .ref { font-size:10pt; }
@@ -9258,6 +9277,10 @@ ${line}` : line;
     table.sm tr.tot td { border-top:1.5pt solid #000; font-weight:700; background:#F2F2EF; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
     table.sm thead { display:table-header-group; }
     .pal { margin-top:2.5mm; font-size:9.5pt; line-height:1.3; }
+    table.pi { border-collapse:collapse; width:62%; margin:3mm 0 2mm; font-size:11pt; break-inside:avoid; page-break-inside:avoid; }
+    table.pi th, table.pi td { border:.9pt solid #000; padding:1mm 2.5mm; text-align:left; font-weight:400; }
+    table.pi th { text-align:center; font-size:11.5pt; text-transform:none; letter-spacing:0; background:#fff; color:#000; }
+    table.pi td:first-child { width:50%; }
     .pal h2 { font-size:11pt; font-weight:700; margin:0 0 1.5mm; text-transform:none; letter-spacing:0; border:0; padding:0; }
     .pal p { margin:1.2mm 0; }
     table.sm tr { break-inside:avoid; page-break-inside:avoid; }
@@ -9266,7 +9289,14 @@ ${line}` : line;
   </style></head><body>
     <div class="lh">
       <img src="data:image/png;base64,${LOGO_B64}" alt="Matrix Engineering">
-      <div class="addr"><b>Matrix Engineering Ltd</b><br>Unit 7a, Parkway,<br>Balthane Industrial Estate,<br>Ballasalla<br>Isle of Man<br>IM9 2AQ<br>Tel +44 (0)1624 822960<br>www.creasingmatrix.com<br>sales@creasingmatrix.com</div>
+      <div class="addr"><b>Matrix Engineering Limited</b><br>Unit 7A, Parkway<br>Balthane Industrial Estate<br>IM9 2AQ<br><span class="gap"></span>CRN: 123380C<br>VAT: 003213350<br>accounts@creasingmatrix.com<br>1624822960</div>
+    </div>
+    <div class="billto" data-manifest-billto>
+      <div class="bt"><div class="k">Bill to</div><b>${esc2(order.customer || "")}</b>${billLines.map((l) => `<br>${esc2(l)}`).join("")}</div>
+      <div class="facts">
+        ${invoiceNo ? `<div><div class="k">Invoice number</div><div class="v">${esc2(invoiceNo)}</div></div>` : ""}
+        ${order.reference ? `<div><div class="k">Reference</div><div class="v">${esc2(order.reference)}</div></div>` : ""}
+      </div>
     </div>
     <div class="title">
       <h1>Shipping manifest &mdash; ${esc2(order.customer || "")}</h1>
@@ -9275,10 +9305,17 @@ ${line}` : line;
     ${gridRows}
     <div class="pal">
       ${summaryLine}
-      <h2>Pallet information</h2>
-      ${palletText}
-      <p>Total number of cases ${m.caseRows.length}. Total number of boxes ${totalQty}. Net weight ${n2(goodsTotal)} kg. Gross weight ${n2(grossTotal)} kg. Net of the cases (650 g each) ${n2(m.caseRows.reduce((t, c) => t + (Number(c.weight) > 0 ? Math.max(0, Number(c.weight) - CASE_TARE_KG) : 0), 0))} kg.</p>
-      <p>All the above items are creasing matrix &mdash; plastic extrusions, used in the folding carton industry. <b>HS Code 3921 1200 90.</b></p>
+      ${pallets.length > 1 ? `<h2>Pallets</h2>${palletText}` : ""}
+      <table class="pi" data-pallet-info>
+        <tr><th colspan="2">Pallet Information</th></tr>
+        <tr><td>Total number of Cases</td><td>${m.caseRows.length}</td></tr>
+        <tr><td>Total number of boxes</td><td>${totalQty}</td></tr>
+        <tr><td>HS Code</td><td>3921 1200 90</td></tr>
+        <tr><td>Net weight</td><td>${n2(goodsTotal)}kg</td></tr>
+        <tr><td>Gross weight</td><td>${n2(grossTotal)}kg</td></tr>
+        <tr><td>Pallet Dimensions</td><td>${dimsCell}</td></tr>
+      </table>
+      <p>All the above items are creasing matrix &mdash; plastic extrusions, used in the folding carton industry.</p>
     </div>
   </body></html>`;
     return html;
@@ -12876,7 +12913,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-05.70";
+  var APP_VERSION = "2026-10-05.72";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -39238,6 +39275,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     setCatalogue(storedData.products || [], storedData.productForms || [], storedData.productAliases || []);
     const orderRules = useMemo(() => orderRulesMap({ orders: storedData.orders, customers: storedData.customers }), [storedData.orders, storedData.customers]);
     setOrderRules(orderRules);
+    setCustomers(storedData.customers || []);
     refreshActorAndDevice();
     setLedgerCaseHoldings(ledgerCases, storedData.orders || []);
     setBoxMaterials(storedData.materials);
