@@ -3389,6 +3389,18 @@
     }
     return [...groups.entries()].filter(([k, g]) => g.count >= LEARN_AFTER && !decided.has(k)).map(([, g]) => ({ kind: g.kind, attr: g.attr, count: g.count, labels: g.labels.slice(0, 4) }));
   }
+  function glueListOrdersFor(data, sizeKey, day) {
+    const k = glueReelPool(sizeKey || "");
+    const d = String(day || "").slice(0, 10);
+    if (!k || !d) return null;
+    const back = /* @__PURE__ */ new Date(`${d}T12:00:00`);
+    back.setDate(back.getDate() - 14);
+    const from = localDateKey(back);
+    const rows = scheduleTweaksOf(data).filter((t) => t.kind === "daylist" && t.size === k && Array.isArray(t.orderIds) && t.orderIds.length && String(t.day).slice(0, 10) <= d && String(t.day).slice(0, 10) >= from).sort((a, b) => String(b.day).localeCompare(String(a.day)));
+    const ids = [];
+    for (const t of rows) for (const id of t.orderIds) if (!ids.includes(String(id))) ids.push(String(id));
+    return ids.length ? ids : null;
+  }
   function scheduleTweaksOf(data) {
     return (data.scheduleTweaks || []).filter((t) => t && !t.deleted && t.kind && t.size).map((t) => ({ ...t, size: glueReelPool(t.size), refSize: t.refSize ? glueReelPool(t.refSize) : t.refSize })).sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
   }
@@ -3534,8 +3546,9 @@
       if (left) {
         const k = poolSize(b.sizeKey);
         reelLeft.set(k, (reelLeft.get(k) || 0) + left);
+        const forOrders = Array.isArray(b.forOrders) && b.forOrders.length ? b.forOrders.map(String) : b.assignedOrderId ? [String(b.assignedOrderId)] : null;
         if (!reelLots.has(k)) reelLots.set(k, []);
-        reelLots.get(k).push({ left, offAt: glueReelOffAt(b), code: b.batchNumber || "" });
+        reelLots.get(k).push({ left, offAt: glueReelOffAt(b), code: b.batchNumber || "", forOrders });
       }
     }
     for (const lots of reelLots.values()) lots.sort((a, b) => (a.offAt ? a.offAt.getTime() : 0) - (b.offAt ? b.offAt.getTime() : 0));
@@ -3636,7 +3649,8 @@
     const { forms, prods, bondByForm, bondMph, current } = P;
     const glueRateOf = (size) => P.glueBySize.get(size) || P.glueMph;
     const shelf = new Map(P.shelf), reelLeft = new Map(P.reelLeft);
-    const lots = new Map([...P.reelLots || /* @__PURE__ */ new Map()].map(([k, xs]) => [k, xs.map((x) => ({ ...x }))]));
+    const liveIds0 = new Set((data.orders || []).filter((o) => o && !o.deleted && o.stage !== "Shipped").map((o) => o.id));
+    const lots = new Map([...P.reelLots || /* @__PURE__ */ new Map()].map(([k, xs]) => [k, xs.map((x) => ({ ...x, forOrders: x.forOrders && x.forOrders.some((id) => liveIds0.has(id)) ? x.forOrders : null }))]));
     const inCases = (orderId, formId) => P.inCaseByOrderForm.get(`${orderId}|${formId}`) || 0;
     const tierOf = (o) => Number(o.priority) || 99;
     const live = (data.orders || []).filter((o) => o && !o.deleted && o.stage !== "Shipped" && o.stage !== "Cancelled").sort((a, b) => tierOf(a) - tierOf(b) || String(a.dueDate || "9999").localeCompare(String(b.dueDate || "9999")) || a.id.localeCompare(b.id));
@@ -3673,12 +3687,13 @@
         bondHours += hours;
         const size = p && glueSizeOfProduct(p);
         const reel = need * metresEach * over;
-        const onHand = size ? reelLeft.get(size) || 0 : 0, use = Math.min(reel, onHand);
-        if (use) reelLeft.set(size, onHand - use);
+        const mayUse = size ? [...(lots.get(size) || []).filter((l) => l.forOrders && l.forOrders.includes(o.id)), ...(lots.get(size) || []).filter((l) => !l.forOrders)] : [];
+        const onHand = mayUse.reduce((t, l) => t + Math.max(0, l.left), 0), use = Math.min(reel, onHand);
+        if (use) reelLeft.set(size, Math.max(0, (reelLeft.get(size) || 0) - use));
         let lastOff = null;
         {
           let want = use;
-          for (const lot of lots.get(size) || []) {
+          for (const lot of mayUse) {
             if (want <= 1e-9) break;
             if (lot.left <= 1e-9) continue;
             const t = Math.min(want, lot.left);
@@ -3722,7 +3737,54 @@
         bondHours
       });
     });
-    const tweaks = scheduleTweaksOf(data), rules = scheduleRulesOf(data);
+    for (const [size, xs] of lots) {
+      let spare = xs.filter((l) => l.forOrders).reduce((t, l) => t + Math.max(0, l.left), 0);
+      if (spare <= 1e-9) continue;
+      for (const x of demand) {
+        if (spare <= 1e-9) break;
+        if (x.size !== size) continue;
+        const t = Math.min(spare, x.metres);
+        x.metres -= t;
+        spare -= t;
+      }
+      for (let i = demand.length - 1; i >= 0; i--) if (demand[i].size === size && demand[i].metres <= 1e-6) demand.splice(i, 1);
+    }
+    const glueDemand = demand.map((x) => ({ ...x }));
+    const listSteps = [];
+    {
+      const todayKey = localDateKey(nextWorkMoment(now, glueCal));
+      const rowsL = scheduleTweaksOf(data).filter((t) => t.kind === "daylist" && t.day && Array.isArray(t.orderIds) && t.orderIds.length).map((t) => {
+        const day = String(t.day).slice(0, 10);
+        return { ...t, day, eff: day < todayKey ? todayKey : day };
+      }).sort((a, b) => a.eff.localeCompare(b.eff) || a.day.localeCompare(b.day) || (Number(a.pos) || 0) - (Number(b.pos) || 0));
+      for (const t of rowsL) {
+        const mine = demand.filter((x) => x.size === t.size && t.orderIds.includes(x.orderId));
+        if (!mine.length) continue;
+        for (const x of mine) demand.splice(demand.indexOf(x), 1);
+        const m = mine.reduce((a, x) => a + x.metres, 0);
+        listSteps.push({
+          size: t.size,
+          label: mine[0].label,
+          width: mine[0].width,
+          gap: mine[0].gap,
+          die: mine[0].die,
+          need: m,
+          metres: m,
+          boxes: mine.reduce((a, x) => a + (Number(x.boxes) || 0), 0),
+          orders: [...new Set(mine.map((x) => x.orderId))],
+          joined: [],
+          tier: Math.min(...mine.map((x) => x.tier)),
+          listId: t.id,
+          listDay: t.day,
+          listEff: t.eff,
+          listPos: Number(t.pos) || 0,
+          listCarry: t.carry !== false,
+          rolledOver: t.eff !== t.day,
+          tweaked: "daylist"
+        });
+      }
+    }
+    const tweaks = scheduleTweaksOf(data).filter((t) => t.kind !== "daylist"), rules = scheduleRulesOf(data);
     const { steps, covered } = glueLineSequence(demand, current, {
       glueOrder: cfg.glueOrder === "batch" ? "size_once" : cfg.glueOrder,
       joinMinutes: cfg.joinMinutes,
@@ -3756,7 +3818,8 @@
     const notBefore = new Map(tweaks.filter((t) => t.kind === "notbefore" && t.day).map((t) => [t.size, /* @__PURE__ */ new Date(`${String(t.day).slice(0, 10)}T00:00:00`)]));
     let glueClock = nextWorkMoment(now, glueCal), changeHours = 0;
     const sizeReady = /* @__PURE__ */ new Map();
-    const queue = [...steps], placed = [];
+    const listReady = /* @__PURE__ */ new Map();
+    const queue = [...listSteps, ...steps], placed = [];
     let prevStep = current && current.size ? { size: current.size, width: current.width, label: current.label } : null;
     const campaignDays = cfg.glueOrder === "batch";
     const urgentSet = new Set(cfg.__urgent || []);
@@ -3775,8 +3838,22 @@
     let dayKey = null, dayWidth = null, daySwitches = 0;
     const firstSizes = new Set(tweaks.filter((t) => t.kind === "first").map((t) => t.size));
     const afterRef = new Map(tweaks.filter((t) => t.kind === "after" && t.refSize).map((t) => [t.size, t.refSize]));
+    const listStartOf = (eff) => {
+      const t = nextWorkMoment(/* @__PURE__ */ new Date(`${eff}T00:00:00`), glueCal), n = nextWorkMoment(now, glueCal);
+      return t > n ? t : n;
+    };
+    let listWait = null;
     const pickIndex = () => {
-      const ok = queue.map((x, i) => [x, i]).filter(([x]) => (!notBefore.has(x.size) || glueClock >= notBefore.get(x.size)) && !(campaignDays && afterRef.has(x.size) && queue.some((q) => q.size === afterRef.get(x.size))));
+      listWait = null;
+      const nextList = queue.findIndex((x) => x.listEff);
+      if (nextList >= 0 && queue[nextList].listEff <= localDateKey(nextWorkMoment(glueClock, glueCal))) return nextList;
+      const listAt = nextList >= 0 ? listStartOf(queue[nextList].listEff) : null;
+      const fits = (x) => !listAt || addWorkHours(nextWorkMoment(glueClock, glueCal), Math.max(cfg.widthChangeMin, cfg.sizeChangeMin) / 60 + x.metres / glueRateOf(x.size), glueCal) <= listAt;
+      if (listAt && !queue.some((x) => !x.listEff && fits(x) && (!notBefore.has(x.size) || glueClock >= notBefore.get(x.size)))) {
+        listWait = listAt;
+        return -3;
+      }
+      const ok = queue.map((x, i) => [x, i]).filter(([x]) => !x.listEff && (!listAt || fits(x)) && (!notBefore.has(x.size) || glueClock >= notBefore.get(x.size)) && !(campaignDays && afterRef.has(x.size) && queue.some((q) => q.size === afterRef.get(x.size))));
       if (!ok.length) return -1;
       if (!campaignDays) return ok[0][1];
       const first = ok.find(([x]) => firstSizes.has(x.size));
@@ -3824,12 +3901,16 @@
     };
     while (queue.length) {
       const i = pickIndex();
+      if (i === -3) {
+        glueClock = listWait;
+        continue;
+      }
       if (i === -2) {
         glueClock = nextWorkingMorning(nextWorkMoment(glueClock, glueCal), glueCal);
         continue;
       }
       if (i < 0) {
-        const t = Math.min(...queue.map((x) => notBefore.get(x.size).getTime()));
+        const t = Math.min(...queue.filter((x) => notBefore.has(x.size)).map((x) => notBefore.get(x.size).getTime()));
         glueClock = nextWorkMoment(new Date(Math.max(glueClock.getTime(), t)), glueCal);
         continue;
       }
@@ -3866,7 +3947,10 @@
       s.end = addWorkHours(s.start, s.hours, glueCal);
       glueClock = s.end;
       s.bondableAt = glueUsableFrom(s.end, bondCal);
-      sizeReady.set(`${s.tier}|${s.size}`, s.end);
+      if (s.listEff) {
+        for (const id of s.orders) listReady.set(`${id}|${s.size}`, s.end);
+        if (!s.listCarry && !queue.some((x) => x.listEff === s.listEff)) glueClock = nextWorkingMorning(nextWorkMoment(glueClock, glueCal), glueCal);
+      } else sizeReady.set(`${s.tier}|${s.size}`, s.end);
     }
     steps.splice(0, steps.length, ...placed);
     for (const [key, step] of covered) sizeReady.set(key, step.end);
@@ -3879,7 +3963,13 @@
         j.ready = u && u > n0 ? u : n0;
         continue;
       }
-      const end = sizeReady.get(`${orderTier.get(j.orderId)}|${j.size}`);
+      const end = listReady.get(`${j.orderId}|${j.size}`) || sizeReady.get(`${orderTier.get(j.orderId)}|${j.size}`);
+      if (!end) {
+        const n0 = nextWorkMoment(now, bondCal);
+        j.ready = n0;
+        j.size = null;
+        continue;
+      }
       j.glueOff = end;
       j.ready = glueUsableFrom(end, bondCal);
       if (!glueDone.has(j.orderId) || glueDone.get(j.orderId) < end) glueDone.set(j.orderId, end);
@@ -3926,7 +4016,8 @@
       bondJobs: bondJobs.filter((j) => j.start).sort((a, b) => a.start - b.start),
       heldBack: [],
       tweaks: tweaks.filter((t) => !t.synthetic),
-      rules
+      rules,
+      glueDemand
     };
   }
   function addWorkingDays(t, n, cal = WORK_HOURS) {
@@ -9841,7 +9932,8 @@ ${line}` : line;
       glueBatch: "glue_batch",
       weightPer5m: "weight_per_5m",
       runtimeHrs: "runtime_hrs",
-      sizeKey: "size_key"
+      sizeKey: "size_key",
+      forOrders: "for_orders"
     } },
     stockPicks: { table: "stock_picks", cols: { boxNumber: "box_number", productSpec: "product_spec", qtyPicked: "qty_picked", datePicked: "date_picked", pickedFor: "picked_for" } },
     otherStock: { table: "other_stock", cols: { productSpec: "product_spec", boxNumber: "box_number", dateAdded: "date_added" } },
@@ -9917,7 +10009,7 @@ ${line}` : line;
     /* THE SCHEDULE'S TWEAKS (Chris, 3 Oct 2026: "easily and readily tweak the schedule to fit how we want to work") —
        one row per change to the glue line plan, shared by every device; removed ones stay as tombstones so the plan
        can learn from what was changed (piece 3). */
-    scheduleTweaks: { table: "schedule_tweaks", cols: { refSize: "ref_size", refLabel: "ref_label", createdAt: "created_at", createdBy: "created_by", deletedAt: "deleted_at" } },
+    scheduleTweaks: { table: "schedule_tweaks", cols: { refSize: "ref_size", refLabel: "ref_label", createdAt: "created_at", createdBy: "created_by", deletedAt: "deleted_at", orderIds: "order_ids" } },
     /* THE SCHEDULE'S RULES (piece 3, 4 Oct 2026) — what the plan follows and what it has learned; on / off / declined. */
     scheduleRules: { table: "schedule_rules", cols: { createdAt: "created_at", decidedAt: "decided_at", deletedAt: "deleted_at" } },
     /* BOX LABELS BY THE APP (Chris, 23 Sep 2026). Templates and base-word rules as edited on the Labels
@@ -12968,7 +13060,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-05.82";
+  var APP_VERSION = "2026-10-06.85";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -27614,7 +27706,9 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
     const today = adminTodayISO();
     const changesToday = (data.changeLog || []).filter((e) => String(e.at || "").slice(0, 10) === today).length;
     const gluedToday = (data.glueLineBatches || []).filter((b) => b && !b.deleted && String(b.date || "") === today).reduce((t, b) => t + (Number(b.meterage) || 0), 0);
-    const bondedToday = (data.bondingRuns || []).filter((r) => r && !r.deleted && String(r.date || "") === today).reduce((t, r) => t + (Number(r.amountMade) || 0), 0);
+    const isReelRunA = (r) => String(r.packageType || "") === "Reel" || /\bREEL\b/i.test(String(r.productSize || ""));
+    const bondedToday = (data.bondingRuns || []).filter((r) => r && !r.deleted && String(r.date || "") === today && !isReelRunA(r)).reduce((t, r) => t + (Number(r.amountMade) || 0), 0);
+    const bondedReelsToday = (data.bondingRuns || []).filter((r) => r && !r.deleted && String(r.date || "") === today && isReelRunA(r)).reduce((t, r) => t + (Number(r.amountMade) || 0), 0);
     const waitingLabels = (data.printJobs || []).filter((j) => j && !j.deleted && j.status === "waiting" && Date.now() - Date.parse(j.requestedAt || 0) > 10 * 6e4);
     const refused = Object.entries(typeof window !== "undefined" && window.__mxRefusedReasons || {});
     const openIssues2 = (data.issues || []).filter((i) => i && !i.deleted && !i.resolvedAt);
@@ -27694,7 +27788,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
       if (SOON_TEXT[section]) return /* @__PURE__ */ React.createElement("div", { style: card }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: P.head } }, "Coming in the next builds"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, marginTop: 6 } }, SOON_TEXT[section]));
       return null;
     };
-    return /* @__PURE__ */ React.createElement("div", { "data-admin-room": theme, "data-admin-section": section || "home", style: { background: deskAdmin && theme === "light" ? "transparent" : P.bg, color: P.ink, borderRadius: 14, padding: deskAdmin && theme === "light" ? 0 : 14, display: "grid", gap: deskAdmin ? 16 : 12 } }, !(deskAdmin && !section) && head, !section ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: deskAdmin ? "repeat(4, minmax(0, 1fr))" : "repeat(auto-fit, minmax(120px, 1fr))", gap: deskAdmin ? 14 : 8 } }, [[changesToday, "changes today"], [`${gluedToday.toLocaleString("en-GB")} m`, "glued today"], [bondedToday, "boxes bonded today"], [toLook, "to look at"]].map(([v, l], i) => /* @__PURE__ */ React.createElement("div", { key: l, "data-admin-figure": true, style: deskAdmin ? { ...card, padding: "16px 18px", borderRadius: 18 } : card }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: deskAdmin ? 30 : 22, fontWeight: deskAdmin ? 700 : 600, color: i === 3 && toLook ? P.warn : P.head } }, v), /* @__PURE__ */ React.createElement("div", { style: { fontSize: deskAdmin ? 13 : 11.5, color: P.dim } }, l)))), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: deskAdmin ? "repeat(4, minmax(0, 1fr))" : "repeat(auto-fit, minmax(150px, 1fr))", gap: deskAdmin ? 14 : 8 } }, ADMIN_SECTIONS.map((s) => /* @__PURE__ */ React.createElement("button", { key: s.key, "data-admin-tile": s.key, onClick: () => setSection(s.key), style: { ...card, textAlign: "left", cursor: "pointer", padding: deskAdmin ? "16px 18px" : "10px 12px", ...deskAdmin ? { borderRadius: 18, minHeight: 86, display: "flex", flexDirection: "column", justifyContent: "space-between" } : {} } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: deskAdmin ? 16 : 14, fontWeight: 600, color: P.head } }, s.title, s.soon && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 10, color: P.newInk, background: P.newBg, borderRadius: 8, padding: "0 6px", marginLeft: 6 } }, "SOON")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: deskAdmin ? 13 : 12, color: s.key === "health" && toLook ? P.warn : P.dim } }, subOf(s)))))) : sectionBody());
+    return /* @__PURE__ */ React.createElement("div", { "data-admin-room": theme, "data-admin-section": section || "home", style: { background: deskAdmin && theme === "light" ? "transparent" : P.bg, color: P.ink, borderRadius: 14, padding: deskAdmin && theme === "light" ? 0 : 14, display: "grid", gap: deskAdmin ? 16 : 12 } }, !(deskAdmin && !section) && head, !section ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: deskAdmin ? "repeat(4, minmax(0, 1fr))" : "repeat(auto-fit, minmax(120px, 1fr))", gap: deskAdmin ? 14 : 8 } }, [[changesToday, "changes today"], [`${gluedToday.toLocaleString("en-GB")} m`, "glued today"], [bondedToday, "boxes bonded today"], ...bondedReelsToday ? [[bondedReelsToday, "reels bonded today"]] : [], [toLook, "to look at"]].map(([v, l], i) => /* @__PURE__ */ React.createElement("div", { key: l, "data-admin-figure": true, style: deskAdmin ? { ...card, padding: "16px 18px", borderRadius: 18 } : card }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: deskAdmin ? 30 : 22, fontWeight: deskAdmin ? 700 : 600, color: i === 3 && toLook ? P.warn : P.head } }, v), /* @__PURE__ */ React.createElement("div", { style: { fontSize: deskAdmin ? 13 : 11.5, color: P.dim } }, l)))), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: deskAdmin ? "repeat(4, minmax(0, 1fr))" : "repeat(auto-fit, minmax(150px, 1fr))", gap: deskAdmin ? 14 : 8 } }, ADMIN_SECTIONS.map((s) => /* @__PURE__ */ React.createElement("button", { key: s.key, "data-admin-tile": s.key, onClick: () => setSection(s.key), style: { ...card, textAlign: "left", cursor: "pointer", padding: deskAdmin ? "16px 18px" : "10px 12px", ...deskAdmin ? { borderRadius: 18, minHeight: 86, display: "flex", flexDirection: "column", justifyContent: "space-between" } : {} } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: deskAdmin ? 16 : 14, fontWeight: 600, color: P.head } }, s.title, s.soon && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 10, color: P.newInk, background: P.newBg, borderRadius: 8, padding: "0 6px", marginLeft: 6 } }, "SOON")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: deskAdmin ? 13 : 12, color: s.key === "health" && toLook ? P.warn : P.dim } }, subOf(s)))))) : sectionBody());
   }
   function FixIcon({ name, color }) {
     const d = {
@@ -30681,6 +30775,257 @@ Plan it?`
       return /* @__PURE__ */ React.createElement("div", { key: o.id, "data-np-prio": o.id, style: { display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderTop: "1px solid #EEF1F6" } }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 15.5 } }, nlsShort(o.customer)), /* @__PURE__ */ React.createElement("div", { style: NP.sub }, o.id, o.dueDate ? ` \xB7 due ${nlsDay(`${o.dueDate}T12:00:00`)}` : " \xB7 no due date")), /* @__PURE__ */ React.createElement("button", { "aria-label": `Raise ${o.id}`, "data-np-prio-up": o.id, onClick: () => st(p == null ? 9 : Math.max(1, p - 1)), style: { width: 38, height: 38, borderRadius: 19, border: 0, background: "#E4E8F0", fontSize: 18, fontWeight: 700 } }, "\u2191"), /* @__PURE__ */ React.createElement("b", { style: { minWidth: 48, textAlign: "center", fontSize: 15 } }, p == null ? "none" : `P${p}`), /* @__PURE__ */ React.createElement("button", { "aria-label": `Lower ${o.id}`, "data-np-prio-down": o.id, onClick: () => st(p == null ? null : p >= 9 ? null : p + 1), style: { width: 38, height: 38, borderRadius: 19, border: 0, background: "#E4E8F0", fontSize: 18, fontWeight: 700 } }, "\u2193"));
     }), /* @__PURE__ */ React.createElement("div", { style: { ...NP.sub, marginTop: 6 } }, 'P1 goes first. "none" goes after every order with a priority.')), "prio"), sec("How the glue line is planned", choice("glueOrder", [["batch", "Batch like the floor", "each size once for every order \u2014 but never to an order's cost"], ["size_once", "Each size once, whatever", "fewest set-ups; later orders can hold up urgent ones"], ["join", "Join when it's quick", "add a later order's metres only if it takes under the time below"], ["priority", "Priority first", "every priority's sizes on their own"]]), "mode"), d.glueOrder === "join" && /* @__PURE__ */ React.createElement("div", { style: { ...NP.card, marginTop: 8 } }, stepper("joinMinutes", "Join if it adds no more than", null, 5, 0, 240, " min")), sec("Grouping on the glue line", /* @__PURE__ */ React.createElement(React.Fragment, null, toggle("sameHeight", "The same height back to back", "the same PVC \u2014 the change is nearly free"), toggle("sameDie", "The same die back to back"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 600, marginTop: 14 } }, "Never batch across orders"), chipsRow([["PX Plus", "PX Plus"], ["Speedy Crease", "Speedy Crease"], ["Speedy Crease Metal", "SC Metal"], ["Ultra SR", "Ultra SR"]], (v) => d.nojoin.includes(v), (v) => set("nojoin", d.nojoin.includes(v) ? d.nojoin.filter((x) => x !== v) : [...d.nojoin, v]), "data-np-nj")), "group"), sec("Changeovers", /* @__PURE__ */ React.createElement(React.Fragment, null, stepper("sizeChangeMin", "Size change", "a new height", 1, 0, 240, " min"), stepper("samePvcMin", "Size change, same height", null, 1, 0, 240, " min"), stepper("widthChangeMin", "Width change", null, 1, 0, 240, " min")), "change"), sec("Extrusion", /* @__PURE__ */ React.createElement(React.Fragment, null, choice("extrusionMode", [["day_before", "The day before \u2014 same day only to keep a date", "as you like it, unless an order would get tight"], ["strict", "Always the day before", "even if an order gets tight"], ["same_day", "Same day is fine", "don't wait for extrusion"]]), stepper("reelAgeDays", "Flag extruded reels after", "a warning, never a rule", 1, 1, 60, " days")), "ext"), sec("Making and packing", /* @__PURE__ */ React.createElement(React.Fragment, null, stepper("overmakePct", "Make extra", "on top of what's ordered", 1, 0, 100, "%"), stepper("packingDays", "Packing time", "working days after the last box", 1, 0, 20, " d")), "make"), sec("Saturdays", /* @__PURE__ */ React.createElement(React.Fragment, null, stepper("saturdayGlueHours", "Glue line on Saturday", null, 1, 0, 12, " h"), stepper("saturdayBondHours", "Bonding on Saturday", null, 1, 0, 12, " h")), "sat"), sec("Line speeds", /* @__PURE__ */ React.createElement(React.Fragment, null, stepper("glueMpm", "Glue line", null, 0.5, 1, 60, " m/min"), stepper("bondMpm", "Bonding", null, 0.5, 1, 60, " m/min")), "speed"), sec("Line down", /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { ...NP.sub, marginTop: 4 } }, "Saved straight away."), /* @__PURE__ */ React.createElement(LineDownPanel, { data, setData })), "down"), changed && /* @__PURE__ */ React.createElement("div", { "data-np-preview": true, style: { position: "fixed", left: "50%", transform: "translateX(-50%)", width: "min(836px, calc(100% - 24px))", boxSizing: "border-box", bottom: "calc(96px + env(safe-area-inset-bottom, 0px))", zIndex: 40, background: "#fff", borderRadius: 20, boxShadow: "0 -6px 30px rgba(20,33,82,0.25)", padding: "14px 16px", fontFamily: NLT.FONT } }, preview ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, fontSize: 15.5, color: newlyLate.length ? "#B3261E" : NL.INK } }, newlyLate.length ? `${newlyLate.map((o) => nlsShort(o.customer)).join(", ")} would be late` : moved.length ? "Nothing goes late" : "No order's date moves"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, lineHeight: 1.45, maxHeight: 72, overflowY: "auto" } }, moved.map(({ o, was }) => /* @__PURE__ */ React.createElement("div", { key: o.orderId }, nlsShort(o.customer), ": ", nlsDay(was.ready), " \u2192 ", /* @__PURE__ */ React.createElement("b", null, nlsDay(o.ready))))), /* @__PURE__ */ React.createElement("div", { style: NP.sub }, preview.glueSteps.length, " set-ups (", plan.glueSteps.length, " now) \xB7 glue line clear ", nlsDay(preview.glueFree))) : /* @__PURE__ */ React.createElement("div", { style: NP.sub }, "Working it out\u2026"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 10 } }, /* @__PURE__ */ React.createElement("button", { "data-np-reset": true, onClick: () => setD(base), style: { ...NP.btn(false), flex: 1, height: 46 } }, "Reset"), /* @__PURE__ */ React.createElement("button", { "data-np-apply": true, onClick: apply, style: { ...NP.btn(true), flex: 1.4, height: 46 } }, "Apply"))));
   }
+  function NLGlueList({ data, setData, plan, now, days, startDay, onClose }) {
+    const today = localDateKey(nextWorkMoment(now, WORK_HOURS));
+    const saved = scheduleTweaksOf(data).filter((t) => t.kind === "daylist" && t.day);
+    const fromSaved = (d) => saved.filter((t) => String(t.day).slice(0, 10) === d).sort((a, b) => (Number(a.pos) || 0) - (Number(b.pos) || 0)).map((t) => ({ size: t.size, label: t.label, orders: Array.isArray(t.orderIds) ? [...t.orderIds] : [] }));
+    const [day, setDay] = useState(days.includes(startDay) ? startDay : days[0]);
+    const [draft, setDraft] = useState({});
+    const [carryD, setCarryD] = useState({});
+    const [screen, setScreen] = useState("day");
+    const [die, setDie] = useState(null);
+    const [picks, setPicks] = useState({});
+    const [msg, setMsg] = useState(null);
+    const listOf = (d) => draft[d] || fromSaved(d);
+    const savedCarry = (d) => {
+      const t = saved.find((x) => String(x.day).slice(0, 10) === d);
+      return t ? t.carry !== false : true;
+    };
+    const carry = carryD[day] != null ? carryD[day] : savedCarry(day);
+    const dirty = draft[day] != null || carryD[day] != null;
+    const demand = plan.glueDemand || [];
+    const byDie = useMemo(() => {
+      const m = /* @__PURE__ */ new Map();
+      for (const x of demand) {
+        if (!x.die || !(x.metres > 0)) continue;
+        if (!m.has(x.die)) m.set(x.die, /* @__PURE__ */ new Map());
+        const sz = m.get(x.die);
+        if (!sz.has(x.size)) sz.set(x.size, { size: x.size, label: x.label, width: x.width, orders: /* @__PURE__ */ new Map() });
+        const s = sz.get(x.size);
+        s.orders.set(x.orderId, (s.orders.get(x.orderId) || 0) + x.metres);
+      }
+      return m;
+    }, [demand]);
+    const dieOrder = ALL_GLUE_DIES.map((d) => d.label);
+    const widthOf = (d) => /^12/.test(d) ? "12mm" : /^10/.test(d) ? "10mm" : /O\/S/.test(d) ? "7mm O/S" : "7mm";
+    const sizeRow = (size) => {
+      for (const sz of byDie.values()) if (sz.has(size)) return sz.get(size);
+      return null;
+    };
+    const dieOfSize = (size) => {
+      for (const [d, sz] of byDie) if (sz.has(size)) return d;
+      return null;
+    };
+    const custName = (id) => {
+      const o = (data.orders || []).find((x) => x.id === id);
+      return o ? String(o.customer || "").replace(/\s+(Manufacturing Company|GmbH|SAS|Ltd|Limited|Inc)\b.*$/i, "").replace(/^Insumos Graficos\s+/i, "") : "";
+    };
+    const metresOf = (it) => {
+      const s = sizeRow(it.size);
+      return s ? it.orders.reduce((t, id) => t + (s.orders.get(id) || 0), 0) : 0;
+    };
+    const totM = plan.glueSteps.reduce((t, s) => t + (s.metres || 0), 0), totH = plan.glueSteps.reduce((t, s) => t + (s.hours || 0), 0);
+    const rate = totH > 0 ? totM / totH : 677;
+    const fmtH = (h) => {
+      const mins = Math.round(h * 60);
+      const hh = Math.floor(mins / 60), mm = mins % 60;
+      return hh ? `${hh} h ${String(mm).padStart(2, "0")}` : `${mm} min`;
+    };
+    const dayHours = (d) => {
+      const h = WORK_HOURS[(/* @__PURE__ */ new Date(`${d}T12:00:00`)).getDay()];
+      return h ? h[1] - h[0] : 0;
+    };
+    const dayName = (d, long = false) => (/* @__PURE__ */ new Date(`${d}T12:00:00`)).toLocaleDateString("en-GB", long ? { weekday: "long", day: "numeric", month: "long" } : { weekday: "long" });
+    const list = listOf(day);
+    const setList = (l) => {
+      setDraft((prev) => ({ ...prev, [day]: l }));
+      setMsg(null);
+    };
+    let prevDie = null, hours = 0;
+    const rows = list.map((it, i) => {
+      const m = metresOf(it), d = dieOfSize(it.size);
+      const change = prevDie === d ? 5 : 20;
+      prevDie = d;
+      const h = m / rate + change / 60;
+      hours += h;
+      return { it, i, m, d, h, change };
+    });
+    const onOtherDay = (size, id) => days.find((d) => d !== day && listOf(d).some((it) => it.size === size && it.orders.includes(id)));
+    const rolled = day === today ? plan.glueSteps.filter((s) => s.listId && s.rolledOver) : [];
+    const draftRows = (d, l, c) => l.map((it, pos) => ({ id: `draft-${d}-${pos}`, kind: "daylist", size: it.size, label: it.label, day: d, orderIds: it.orders, pos, carry: c, createdAt: (/* @__PURE__ */ new Date()).toISOString(), deleted: false }));
+    const preview = useMemo(() => {
+      if (!dirty) return null;
+      try {
+        const others = (data.scheduleTweaks || []).filter((t) => !(t && t.kind === "daylist" && String(t.day).slice(0, 10) === day));
+        return orderFinishDates({ ...data, scheduleTweaks: [...others, ...draftRows(day, list, carry)] }, now);
+      } catch (e) {
+        return null;
+      }
+    }, [dirty, JSON.stringify(list), carry, day]);
+    const moves = preview ? preview.orders.map((o) => ({ o, was: plan.orders.find((x) => x.orderId === o.orderId) })).filter((x) => x.was && localDateKey(new Date(x.o.ready)) !== localDateKey(new Date(x.was.ready))) : [];
+    const fmtD = (t) => new Date(t).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+    const save = () => {
+      if (!setData || !dirty) return;
+      nlHaptic("landed");
+      const stamp = (/* @__PURE__ */ new Date()).toISOString();
+      const fresh = list.filter((it) => it.orders.length).map((it, pos) => ({
+        id: uid("tw"),
+        kind: "daylist",
+        size: it.size,
+        label: it.label,
+        refSize: null,
+        refLabel: null,
+        day,
+        note: null,
+        orderIds: it.orders,
+        pos,
+        carry,
+        createdAt: stamp,
+        deleted: false
+      }));
+      setData((prev) => {
+        const next = { ...prev, scheduleTweaks: [...(prev.scheduleTweaks || []).map((t) => t && !t.deleted && t.kind === "daylist" && String(t.day).slice(0, 10) === day ? { ...t, deleted: true, deletedAt: stamp, updatedAt: stamp } : t), ...fresh] };
+        return { ...next, ...appendLog(next, {
+          action: "glue_list_saved",
+          entity: "scheduleTweak",
+          entityId: day,
+          summary: fresh.length ? `Glue list for ${dayName(day, true)}: ${fresh.map((f) => `${f.label} (${f.orderIds.join(", ")})`).join("; ")}${carry ? "" : " \u2014 nothing else that day"}` : `Glue list for ${dayName(day, true)} cleared`
+        }) };
+      });
+      setDraft((prev) => {
+        const n = { ...prev };
+        delete n[day];
+        return n;
+      });
+      setCarryD((prev) => {
+        const n = { ...prev };
+        delete n[day];
+        return n;
+      });
+      setMsg(fresh.length ? `Saved. The plan runs this list at the top of ${day === today ? "today" : dayName(day)}; anything not glued by the end of the day moves to the top of the next working day.` : "Cleared \u2014 the plan runs the day as it is.");
+    };
+    const removeRolled = (s) => {
+      if (!setData) return;
+      nlHaptic();
+      const stamp = (/* @__PURE__ */ new Date()).toISOString();
+      setData((prev) => ({ ...prev, scheduleTweaks: (prev.scheduleTweaks || []).map((t) => t && t.id === s.listId ? { ...t, deleted: true, deletedAt: stamp, updatedAt: stamp } : t) }));
+    };
+    const head = { fontSize: 12, fontWeight: 700, letterSpacing: 1, color: NL.SUB };
+    const card = { background: "#fff", border: `1px solid ${NL.LINE}`, borderRadius: 16 };
+    const smallBtn = (c = NL.NAVY) => ({ width: 36, height: 32, borderRadius: 8, border: `1px solid ${NL.LINE}`, background: "#fff", color: c, fontSize: 13, fontFamily: NLT.FONT });
+    const dieSizes = die && byDie.has(die) ? [...byDie.get(die).values()].sort((a, b) => a.label.localeCompare(b.label, "en", { numeric: true })) : [];
+    const pickedSizes = dieSizes.filter((s) => picks[s.size] && picks[s.size].length);
+    const pickedM = pickedSizes.reduce((t, s) => t + picks[s.size].reduce((a, id) => a + (s.orders.get(id) || 0), 0), 0);
+    const pickedH = pickedM / rate + (pickedSizes.length ? 20 / 60 + (pickedSizes.length - 1) * 5 / 60 : 0);
+    const openDie = (d) => {
+      nlHaptic();
+      setDie(d);
+      setPicks(Object.fromEntries(list.filter((it) => dieOfSize(it.size) === d).map((it) => [it.size, [...it.orders]])));
+      setScreen("sizes");
+    };
+    const addPicked = () => {
+      if (!pickedSizes.length) return;
+      nlHaptic();
+      const keep = list.filter((it) => dieOfSize(it.size) !== die);
+      const kept = list.filter((it) => dieOfSize(it.size) === die && picks[it.size] && picks[it.size].length).map((it) => ({ ...it, orders: picks[it.size] }));
+      const added = pickedSizes.filter((s) => !kept.some((k) => k.size === s.size)).map((s) => ({ size: s.size, label: s.label, orders: picks[s.size] }));
+      const firstAt = list.findIndex((it) => dieOfSize(it.size) === die);
+      const merged = firstAt < 0 ? [...keep, ...kept, ...added] : [...keep.slice(0, firstAt), ...kept, ...added, ...keep.slice(firstAt)];
+      setList(merged);
+      setScreen("day");
+    };
+    const title = screen === "day" ? dayName(day, true) : screen === "dies" ? "Pick a die" : `${die} \u2014 what to make`;
+    return ReactDOM.createPortal(/* @__PURE__ */ React.createElement("div", { "data-glist": true, style: { position: "fixed", inset: 0, zIndex: 1150, background: NL.PANEL, display: "flex", flexDirection: "column", fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement("div", { style: { background: NL.NAVY, color: "#fff", padding: "calc(12px + env(safe-area-inset-top, 0px)) 16px 14px", flex: "none" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, maxWidth: 640, margin: "0 auto" } }, /* @__PURE__ */ React.createElement("button", { "data-glist-back": true, onClick: () => {
+      nlHaptic();
+      if (screen === "sizes") setScreen("dies");
+      else if (screen === "dies") setScreen("day");
+      else onClose();
+    }, style: { height: 36, padding: "0 12px", borderRadius: 18, border: 0, background: "rgba(255,255,255,.14)", color: "#fff", fontSize: 14, fontWeight: 600, fontFamily: NLT.FONT } }, screen === "day" ? "\u2039 Plan" : "\u2039 Back"), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, textAlign: "right", fontSize: 13.5, opacity: 0.8 } }, "Glue line \xB7 my list")), /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 640, margin: "0 auto" } }, /* @__PURE__ */ React.createElement("div", { "data-glist-title": true, style: { fontSize: 24, fontWeight: 700, marginTop: 10, letterSpacing: -0.3 } }, title), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, opacity: 0.8, marginTop: 2 } }, screen === "day" ? "Your own make list for the day" : `For ${dayName(day, true)}`), screen === "day" && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, marginTop: 12 } }, days.map((d) => {
+      const on = d === day, c = listOf(d).length;
+      return /* @__PURE__ */ React.createElement("button", { key: d, "data-glist-day": d, "aria-pressed": on, onClick: () => {
+        nlHaptic();
+        setDay(d);
+        setMsg(null);
+      }, style: { flex: 1, minHeight: 62, borderRadius: 12, border: 0, background: on ? "#fff" : "rgba(255,255,255,.12)", color: on ? NL.NAVY : "#fff", padding: "4px 0", fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 11.5, fontWeight: 600, opacity: 0.8 } }, d === today ? "Today" : (/* @__PURE__ */ new Date(`${d}T12:00:00`)).toLocaleDateString("en-GB", { weekday: "short" })), /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 17, fontWeight: 700 } }, (/* @__PURE__ */ new Date(`${d}T12:00:00`)).getDate()), /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 10.5, fontWeight: 600, minHeight: 13 } }, c ? `${c} on list` : ""));
+    })))), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch" } }, /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 640, margin: "0 auto", padding: "12px 14px 24px", display: "flex", flexDirection: "column", gap: 10 } }, screen === "day" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { ...card, padding: "12px 14px" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline" } }, /* @__PURE__ */ React.createElement("span", { style: head }, "YOUR LIST"), /* @__PURE__ */ React.createElement("span", { "data-glist-hours": true, style: { fontSize: 13.5, fontWeight: 600, color: hours > dayHours(day) ? NL.AMBERTXT : NL.OK } }, fmtH(hours), " of ", dayHours(day), " h")), /* @__PURE__ */ React.createElement("div", { style: { height: 8, borderRadius: 4, background: NL.TRACK, marginTop: 8, overflow: "hidden" } }, /* @__PURE__ */ React.createElement("div", { style: { height: 8, width: `${Math.min(100, Math.round(hours / Math.max(1, dayHours(day)) * 100))}%`, background: hours > dayHours(day) ? NL.AMBERTXT : NL.OK, borderRadius: 4 } })), hours > dayHours(day) && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: NL.AMBERTXT, marginTop: 6 } }, "More than the day holds \u2014 what doesn't get glued moves to the top of the next working day.")), rolled.length > 0 && /* @__PURE__ */ React.createElement("div", { "data-glist-rolled": true, style: { ...card, padding: "10px 12px", border: "1px solid #F3D3AE", background: "#FFF9F2" } }, /* @__PURE__ */ React.createElement("div", { style: { ...head, color: NL.AMBERTXT, marginBottom: 6 } }, "STILL TO GLUE FROM AN EARLIER LIST \u2014 FIRST TODAY"), rolled.map((s) => /* @__PURE__ */ React.createElement("div", { key: s.listId, style: { display: "flex", alignItems: "center", gap: 8, padding: "4px 0" } }, /* @__PURE__ */ React.createElement("span", { style: { flex: 1, fontSize: 14.5 } }, /* @__PURE__ */ React.createElement("b", null, s.label), " \xB7 ", Math.round(s.metres).toLocaleString("en-GB"), " m \xB7 ", s.orders.map((id) => `${id} ${custName(id)}`).join(", "), " ", /* @__PURE__ */ React.createElement("span", { style: { color: NL.SUB } }, "(from ", dayName(s.listDay), ")")), /* @__PURE__ */ React.createElement("button", { "data-glist-rolled-remove": s.listId, "aria-label": "Take off the list", onClick: () => removeRolled(s), style: smallBtn("#9A2A1C") }, "\u2715")))), !rows.length && /* @__PURE__ */ React.createElement("div", { style: { ...card, border: "1px dashed #C9D3EA", padding: "18px 16px", fontSize: 15, lineHeight: 1.45, color: "#3A4458" } }, "Nothing on your list for ", day === today ? "today" : dayName(day), " \u2014 the plan runs the day as it is. Add from a die to make your own."), rows.map(({ it, i, m, d, h, change }) => /* @__PURE__ */ React.createElement("div", { key: it.size, "data-glist-item": it.label, style: { ...card, padding: "10px 10px 10px 12px", display: "flex", gap: 10, alignItems: "flex-start" } }, /* @__PURE__ */ React.createElement("div", { style: { width: 26, height: 26, borderRadius: 13, background: "#E7EBF5", color: NL.NAVY, fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flex: "none", marginTop: 2 } }, i + 1), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15.5, fontWeight: 600 } }, it.label), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: NL.SUB, marginTop: 2 } }, d || "no die", " \xB7 ", Math.round(m).toLocaleString("en-GB"), " m \xB7 ", fmtH(h), change === 20 ? " \xB7 die change" : ""), m === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: NL.OK, marginTop: 2 } }, "Nothing left to glue for these orders."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 5, marginTop: 6 } }, it.orders.map((id) => /* @__PURE__ */ React.createElement("span", { key: id, style: { fontSize: 12, fontWeight: 600, color: NL.NAVY, background: "#EEF2FA", borderRadius: 8, padding: "3px 7px" } }, id, " ", custName(id))))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4, flex: "none" } }, /* @__PURE__ */ React.createElement("button", { "data-glist-up": it.label, "aria-label": "Move up", disabled: i === 0, onClick: () => {
+      nlHaptic();
+      const l = [...list];
+      [l[i - 1], l[i]] = [l[i], l[i - 1]];
+      setList(l);
+    }, style: smallBtn() }, "\u25B2"), /* @__PURE__ */ React.createElement("button", { "data-glist-down": it.label, "aria-label": "Move down", disabled: i === list.length - 1, onClick: () => {
+      nlHaptic();
+      const l = [...list];
+      [l[i + 1], l[i]] = [l[i], l[i + 1]];
+      setList(l);
+    }, style: smallBtn() }, "\u25BC"), /* @__PURE__ */ React.createElement("button", { "data-glist-remove": it.label, "aria-label": "Take off the list", onClick: () => {
+      nlHaptic();
+      setList(list.filter((_, k) => k !== i));
+    }, style: smallBtn("#9A2A1C") }, "\u2715")))), /* @__PURE__ */ React.createElement("button", { "data-glist-add": true, onClick: () => {
+      nlHaptic();
+      setScreen("dies");
+    }, style: { height: 50, borderRadius: 14, border: "2px dashed #9FB0D8", background: "#F6F8FD", color: NL.NAVY, fontSize: 16, fontWeight: 700, fontFamily: NLT.FONT } }, "+ Add from a die"), /* @__PURE__ */ React.createElement("button", { "data-glist-carry": true, "aria-pressed": carry, onClick: () => {
+      nlHaptic();
+      setCarryD((prev) => ({ ...prev, [day]: !carry }));
+      setMsg(null);
+    }, style: { ...card, display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", textAlign: "left", fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement("span", { style: { flex: 1 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 14.5, fontWeight: 600 } }, "When my list is done, carry on with the plan"), /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 12.5, color: NL.SUB, marginTop: 2 } }, carry ? "Spare time after your list goes to the most urgent glue work" : "Only your list runs this day \u2014 nothing else is added")), /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { width: 46, height: 28, borderRadius: 14, background: carry ? NL.OK : "#C5CBD6", position: "relative", flex: "none" } }, /* @__PURE__ */ React.createElement("span", { style: { position: "absolute", top: 3, left: carry ? 21 : 3, width: 22, height: 22, borderRadius: 11, background: "#fff", boxShadow: "0 1px 2px rgba(0,0,0,.25)" } }))), dirty && /* @__PURE__ */ React.createElement("div", { "data-glist-moves": true, style: { ...card, padding: "12px 14px" } }, /* @__PURE__ */ React.createElement("div", { style: { ...head, marginBottom: 6 } }, "WHAT IT DOES TO READY DATES"), !preview ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: NL.SUB } }, "Working it out\u2026") : !moves.length ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: NL.SUB } }, "No order's ready date moves.") : moves.map(({ o, was }) => {
+      const later = new Date(o.ready) > new Date(was.ready);
+      return /* @__PURE__ */ React.createElement("div", { key: o.orderId, "data-glist-move": o.orderId, style: { fontSize: 14, padding: "3px 0", color: later ? NL.AMBERTXT : NL.OK } }, /* @__PURE__ */ React.createElement("b", null, o.orderId, " ", custName(o.orderId)), " ready ", fmtD(o.ready), " ", /* @__PURE__ */ React.createElement("span", { style: { color: NL.SUB } }, "(was ", fmtD(was.ready), ")"), o.late && !was.late ? " \u2014 late for its due date" : "");
+    })), msg && /* @__PURE__ */ React.createElement("div", { "data-glist-msg": true, style: { fontSize: 13.5, fontWeight: 600, color: NL.OK, lineHeight: 1.4 } }, msg), /* @__PURE__ */ React.createElement("button", { "data-glist-save": true, disabled: !dirty, onClick: save, style: { height: 54, borderRadius: 14, border: 0, background: dirty ? NL.RED : "#C5CBD6", color: "#fff", fontSize: 17, fontWeight: 700, fontFamily: NLT.FONT } }, dirty ? list.length ? `Save ${day === today ? "today" : dayName(day)}'s list` : `Clear ${day === today ? "today" : dayName(day)}'s list` : "Saved")), screen === "dies" && ["7mm", "7mm O/S", "10mm", "12mm"].map((w) => {
+      const ds = dieOrder.filter((d) => byDie.has(d) && widthOf(d) === w);
+      if (!ds.length) return null;
+      return /* @__PURE__ */ React.createElement("div", { key: w }, /* @__PURE__ */ React.createElement("div", { style: { ...head, margin: "6px 4px 6px" } }, w.toUpperCase()), /* @__PURE__ */ React.createElement("div", { style: { ...card, overflow: "hidden" } }, ds.map((d, k) => {
+        const sz = [...byDie.get(d).values()];
+        const tot = sz.reduce((t, s) => t + [...s.orders.values()].reduce((a, b) => a + b, 0), 0);
+        const n = list.filter((it) => dieOfSize(it.size) === d).length;
+        return /* @__PURE__ */ React.createElement("button", { key: d, "data-glist-die": d, onClick: () => openDie(d), style: { display: "flex", width: "100%", alignItems: "center", gap: 10, padding: "12px 14px", border: 0, borderTop: k ? `1px solid ${NL.LINE}` : 0, background: "#fff", textAlign: "left", color: NL.INK, fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "'Geist Mono', Menlo, monospace", fontSize: 15, fontWeight: 700, width: 104, flex: "none" } }, d), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, fontSize: 13.5, color: NL.SUB } }, sz.length, " size", sz.length === 1 ? "" : "s", " \xB7 ", Math.round(tot).toLocaleString("en-GB"), " m waiting"), n > 0 && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, fontWeight: 700, color: NL.OK } }, n, " on list"), /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { color: NL.FAINT, fontSize: 18 } }, "\u203A"));
+      })));
+    }), screen === "dies" && byDie.size === 0 && /* @__PURE__ */ React.createElement("div", { style: { ...card, padding: 16, fontSize: 15, color: NL.SUB } }, "Nothing is waiting for the glue line."), screen === "sizes" && /* @__PURE__ */ React.createElement(React.Fragment, null, dieSizes.map((s) => {
+      const ids = picks[s.size] || [], on = ids.length > 0;
+      const all = [...s.orders.entries()];
+      const tot = all.reduce((t, [, m2]) => t + m2, 0);
+      const m = ids.reduce((t, id) => t + (s.orders.get(id) || 0), 0);
+      const left = all.filter(([id]) => !ids.includes(id));
+      return /* @__PURE__ */ React.createElement("div", { key: s.size, "data-glist-size": s.label, style: { ...card, padding: 12, border: on ? `2px solid ${NL.NAVY}` : `1px solid ${NL.LINE}` } }, /* @__PURE__ */ React.createElement("button", { "data-glist-size-tick": s.label, "aria-pressed": on, onClick: () => {
+        nlHaptic();
+        setPicks((prev) => {
+          const n = { ...prev };
+          if (on) delete n[s.size];
+          else n[s.size] = all.map(([id]) => id);
+          return n;
+        });
+      }, style: { display: "flex", width: "100%", alignItems: "center", gap: 10, border: 0, background: "none", padding: 0, textAlign: "left", color: NL.INK, fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { width: 24, height: 24, borderRadius: 7, border: on ? 0 : "2px solid #C5CBD6", background: on ? NL.NAVY : "#fff", color: "#fff", fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flex: "none" } }, on ? "\u2713" : ""), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, fontSize: 15.5, fontWeight: 600 } }, s.label), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: NL.SUB } }, on && Math.round(m) !== Math.round(tot) ? `${Math.round(m).toLocaleString("en-GB")} of ${Math.round(tot).toLocaleString("en-GB")} m` : `${Math.round(tot).toLocaleString("en-GB")} m`)), on && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 6, margin: "10px 0 0 34px" } }, all.map(([id, om]) => {
+        const oon = ids.includes(id);
+        const other = onOtherDay(s.size, id);
+        return /* @__PURE__ */ React.createElement(
+          "button",
+          {
+            key: id,
+            "data-glist-order": `${s.label}|${id}`,
+            "aria-pressed": oon,
+            onClick: () => {
+              nlHaptic();
+              setPicks((prev) => {
+                const cur = prev[s.size] || [];
+                const nx = oon ? cur.filter((x) => x !== id) : [...cur, id];
+                const n = { ...prev };
+                if (nx.length) n[s.size] = nx;
+                else delete n[s.size];
+                return n;
+              });
+            },
+            style: { minHeight: 36, padding: "4px 10px", borderRadius: 10, fontSize: 13, fontWeight: 600, fontFamily: NLT.FONT, border: oon ? `2px solid ${NL.NAVY}` : "1px dashed #B9C2D6", background: oon ? "#E7EBF5" : "#fff", color: oon ? NL.NAVY : NL.SUB, textAlign: "left" }
+          },
+          id,
+          " ",
+          custName(id),
+          " \xB7 ",
+          Math.round(om).toLocaleString("en-GB"),
+          " m",
+          other ? /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 11.5, fontWeight: 500, color: NL.AMBERTXT } }, "also on ", dayName(other), "'s list") : null
+        );
+      })), left.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: NL.SUB, margin: "8px 0 0 34px" } }, left.map(([id]) => `${id} ${custName(id)}`).join(", "), " stays in the plan for later")));
+    }), /* @__PURE__ */ React.createElement("button", { "data-glist-add-picked": true, disabled: !pickedSizes.length, onClick: addPicked, style: { height: 54, borderRadius: 14, border: 0, background: pickedSizes.length ? NL.NAVY : "#C5CBD6", color: "#fff", fontSize: 16.5, fontWeight: 700, fontFamily: NLT.FONT } }, pickedSizes.length ? `Put ${pickedSizes.length} size${pickedSizes.length === 1 ? "" : "s"} on the list \xB7 ${Math.round(pickedM).toLocaleString("en-GB")} m \xB7 about ${fmtH(pickedH)}` : "Tick a size to add it"))))), document.body);
+  }
   function NLSchedule({ data, setData, initialTab = "orders", initialLine = "all" }) {
     const now = usePlanClock();
     const r = useMemo(() => orderFinishDates(data, now), [data, now]);
@@ -30706,6 +31051,7 @@ Plan it?`
     }
     const [day, setDay] = useState(days[0]);
     const today = localDateKey(now);
+    const [glist, setGlist] = useState(null);
     const eva = useMemo(() => {
       try {
         return evaOutlook({ evaRuns: data.evaRuns || [], bondingRuns: data.bondingRuns || [], bondJobs: r.bondJobs || [], today, days: 6 });
@@ -30789,13 +31135,18 @@ Plan it?`
     const blk = { display: "flex", gap: 10, alignItems: "flex-start", padding: "9px 10px", borderRadius: 12, background: "#F6F8FB", marginTop: 6 };
     const tcol = { fontSize: 12, color: NL.SUB, width: 46, flex: "none", paddingTop: 2, fontVariantNumeric: "tabular-nums" };
     const dayStart = /* @__PURE__ */ new Date(`${day}T08:00:00`);
-    const glueCard = /* @__PURE__ */ React.createElement("div", { style: NLS.card, "data-nls-glue": true }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, color: "#2F5BD3", fontWeight: 600, fontSize: 15 } }, /* @__PURE__ */ React.createElement(NLMIcon, { k: "glue", color: "#2F5BD3" }), /* @__PURE__ */ React.createElement("span", null, "Glue line \xB7 ", (/* @__PURE__ */ new Date(`${day}T12:00:00`)).toLocaleDateString("en-GB", { weekday: "long" })), /* @__PURE__ */ React.createElement("span", { style: { marginLeft: "auto", fontSize: 12.5, color: NL.SUB, fontWeight: 500 } }, steps.length, " size", steps.length === 1 ? "" : "s", " \xB7 ", Math.round(steps.reduce((t, s) => t + s.metres, 0)).toLocaleString("en-GB"), " m")), day === days[0] && r.current && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: NL.SUB, marginTop: 6 } }, "On the line last: ", r.current.label), steps.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: NL.SUB, marginTop: 8 } }, "Nothing planned on the glue line."), steps.map((s, i) => {
+    const glueListSheet = glist ? /* @__PURE__ */ React.createElement(NLGlueList, { data, setData, plan: r, now, days, startDay: glist, onClose: () => setGlist(null) }) : null;
+    const glueCard = /* @__PURE__ */ React.createElement("div", { style: NLS.card, "data-nls-glue": true }, glueListSheet, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, color: "#2F5BD3", fontWeight: 600, fontSize: 15 } }, /* @__PURE__ */ React.createElement(NLMIcon, { k: "glue", color: "#2F5BD3" }), /* @__PURE__ */ React.createElement("span", null, "Glue line \xB7 ", (/* @__PURE__ */ new Date(`${day}T12:00:00`)).toLocaleDateString("en-GB", { weekday: "long" })), /* @__PURE__ */ React.createElement("span", { style: { marginLeft: "auto", fontSize: 12.5, color: NL.SUB, fontWeight: 500 } }, steps.length, " size", steps.length === 1 ? "" : "s", " \xB7 ", Math.round(steps.reduce((t, s) => t + s.metres, 0)).toLocaleString("en-GB"), " m")), day === days[0] && r.current && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: NL.SUB, marginTop: 6 } }, "On the line last: ", r.current.label), setData && /* @__PURE__ */ React.createElement("button", { "data-nls-mylist": day, onClick: () => {
+      nlHaptic();
+      setGlist(day);
+    }, style: { width: "100%", height: 44, marginTop: 10, borderRadius: 12, border: "1px solid #C9D3EA", background: "#F6F8FD", color: NL.NAVY, fontSize: 15, fontWeight: 700, fontFamily: NLT.FONT } }, steps.some((s) => s.listId) ? `My list for ${day === today ? "today" : (/* @__PURE__ */ new Date(`${day}T12:00:00`)).toLocaleDateString("en-GB", { weekday: "long" })} \u2014 change it` : `Make my own list for ${day === today ? "today" : (/* @__PURE__ */ new Date(`${day}T12:00:00`)).toLocaleDateString("en-GB", { weekday: "long" })}`), steps.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: NL.SUB, marginTop: 8 } }, "Nothing planned on the glue line."), steps.map((s, i) => {
       const ords = [...s.orders, ...(s.joined || []).map((j) => j.orderId)];
       const st = new Date(s.start);
       return /* @__PURE__ */ React.createElement(React.Fragment, { key: s.size + i }, i > 0 || localDateKey(st) === day ? chg(s) : null, /* @__PURE__ */ React.createElement("button", { style: { ...blk, width: "100%", border: 0, textAlign: "left", font: "inherit", color: NL.INK, ...s.tweaked ? { boxShadow: "inset 0 0 0 2px #1B2B6B", background: "#fff" } : {} }, "data-nls-step": s.size, onClick: () => {
         nlHaptic();
-        setSheet(s);
-      } }, /* @__PURE__ */ React.createElement("span", { style: tcol }, st < dayStart ? "cont." : nlsTime(st)), /* @__PURE__ */ React.createElement(MatrixFace, { spec: s.label, w: 34 }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14.5, fontWeight: 600, lineHeight: 1.25 } }, s.label), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: NL.SUB } }, Math.round(s.metres).toLocaleString("en-GB"), " m", s.die ? ` \xB7 die ${s.die}` : "", " \xB7 bondable ", nlsWhen(s.bondableAt, day)), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 4, marginTop: 5 } }, ords.map((o) => /* @__PURE__ */ React.createElement("span", { key: o, style: NLS.oc }, short(o))), ords.length > 1 && /* @__PURE__ */ React.createElement("span", { style: { ...NLS.oc, background: "#E3F3E8", color: "#1F7A4D" } }, ords.length, " orders, one set-up"), s.tweaked && /* @__PURE__ */ React.createElement("span", { "data-nls-tweaked": true, style: { ...NLS.oc, background: NL.NAVY, color: "#fff" } }, "changed by you"), s.extrusion && /* @__PURE__ */ React.createElement("span", { style: { ...NLS.oc, background: "#FDF0DC", color: "#9A4A06" } }, s.extrusion.sameDay ? "extruded the same day" : `extruded ${(/* @__PURE__ */ new Date(`${s.extrusion.extrudeOn}T12:00:00`)).toLocaleDateString("en-GB", { weekday: "short" })}`)))));
+        if (s.listId) setGlist(day);
+        else setSheet(s);
+      } }, /* @__PURE__ */ React.createElement("span", { style: tcol }, st < dayStart ? "cont." : nlsTime(st)), /* @__PURE__ */ React.createElement(MatrixFace, { spec: s.label, w: 34 }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14.5, fontWeight: 600, lineHeight: 1.25 } }, s.label), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: NL.SUB } }, Math.round(s.metres).toLocaleString("en-GB"), " m", s.die ? ` \xB7 die ${s.die}` : "", " \xB7 bondable ", nlsWhen(s.bondableAt, day)), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 4, marginTop: 5 } }, ords.map((o) => /* @__PURE__ */ React.createElement("span", { key: o, style: NLS.oc }, short(o))), ords.length > 1 && /* @__PURE__ */ React.createElement("span", { style: { ...NLS.oc, background: "#E3F3E8", color: "#1F7A4D" } }, ords.length, " orders, one set-up"), s.tweaked && /* @__PURE__ */ React.createElement("span", { "data-nls-tweaked": true, style: { ...NLS.oc, background: NL.NAVY, color: "#fff" } }, s.listId ? s.rolledOver ? `your list \xB7 from ${(/* @__PURE__ */ new Date(`${s.listDay}T12:00:00`)).toLocaleDateString("en-GB", { weekday: "long" })}` : "your list" : "changed by you"), s.extrusion && /* @__PURE__ */ React.createElement("span", { style: { ...NLS.oc, background: "#FDF0DC", color: "#9A4A06" } }, s.extrusion.sameDay ? "extruded the same day" : `extruded ${(/* @__PURE__ */ new Date(`${s.extrusion.extrudeOn}T12:00:00`)).toLocaleDateString("en-GB", { weekday: "short" })}`)))));
     }), steps.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: NL.SUB, marginTop: 10 } }, "Tap a size to change where it runs."));
     const evaDay = eva && eva.days.find((d) => d.date === day);
     const nextDay = days[days.indexOf(day) + 1];
@@ -36120,6 +36471,39 @@ ${doneBays.size} of ${withStock.length} bays are done. The next count starts a n
       setMetres(String(nr.metres));
     }, style: { ...inp, width: "100%" } }, ["", "O/S", "D3", "D4", "D5", "MINI"].map((x) => /* @__PURE__ */ React.createElement("option", { key: x, value: x }, x || "none")))), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED } }, "Thickness (mm)", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("input", { "data-nc-thick": true, value: thick, onChange: (e) => setThick(e.target.value), inputMode: "decimal", style: { ...inp, width: "100%" } })), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED } }, "Gap (mm)", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("input", { "data-nc-gap": true, value: gap, onChange: (e) => setGap(e.target.value), inputMode: "decimal", style: { ...inp, width: "100%" } })), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED } }, "Pt", /* @__PURE__ */ React.createElement("br", null), /* @__PURE__ */ React.createElement("select", { "data-nc-pt": true, value: pt, onChange: (e) => setPt(e.target.value), style: { ...inp, width: "100%" } }, ["2-3pt", "3-4pt", "6pt"].map((x) => /* @__PURE__ */ React.createElement("option", { key: x }, x)))), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12.5, color: INK_MUTED } }, "Box length (m)", /* @__PURE__ */ React.createElement("br", null), rule.fixed ? /* @__PURE__ */ React.createElement("div", { "data-nc-metres-rule": true, style: { ...inp, display: "flex", alignItems: "center", background: "#f4f6fa", color: INK } }, rule.metres, " m ", /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 12, marginLeft: 6 } }, "\u2014 ", rule.why)) : /* @__PURE__ */ React.createElement("input", { "data-nc-metres": true, value: metres, onChange: (e) => setMetres(e.target.value), inputMode: "decimal", style: { ...inp, width: "100%" } }))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: INK_MUTED, marginTop: 8 } }, "Added with your name and flagged for Chris to check. ", ["PX Plus", "Smart Formes", "Speedy Crease"].includes(range) ? "PX Plus, Smart Formes and Speedy Crease are added together, as every size is." : ""), err && /* @__PURE__ */ React.createElement("div", { style: { color: RED, fontSize: 13.5, marginTop: 8 } }, err), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: onCancel }, "Cancel"), /* @__PURE__ */ React.createElement(Button, { variant: "accent", "data-nc-add": true, onClick: add }, "Add to catalogue and save"))));
   }
+  function GlueListToday({ data }) {
+    const now = /* @__PURE__ */ new Date();
+    const today = localDateKey(nextWorkMoment(now, WORK_HOURS));
+    const rows = (data.scheduleTweaks || []).filter((t) => t && !t.deleted && t.kind === "daylist" && t.day && String(t.day).slice(0, 10) <= today && Array.isArray(t.orderIds) && t.orderIds.length);
+    const plan = useMemo(
+      () => {
+        if (!rows.length) return null;
+        try {
+          return orderFinishDates(data, now);
+        } catch (e) {
+          return null;
+        }
+      },
+      [rows.length, data.scheduleTweaks, data.glueLineBatches, data.lineItems, data.orders, data.cases, data.movements]
+    );
+    if (!rows.length || !plan) return null;
+    const steps = new Map(plan.glueSteps.filter((s) => s.listId).map((s) => [s.listId, s]));
+    const mine = rows.filter((t) => String(t.day).slice(0, 10) === today || steps.has(t.id)).sort((a, b) => String(a.day).localeCompare(String(b.day)) || (Number(a.pos) || 0) - (Number(b.pos) || 0));
+    if (!mine.length) return null;
+    let nextShown = false;
+    const who = (id) => {
+      const o = (data.orders || []).find((x) => x.id === id);
+      return `${id}${o ? ` ${String(o.customer || "").split(" ")[0]}` : ""}`;
+    };
+    return /* @__PURE__ */ React.createElement("div", { "data-glue-today-list": true, style: { background: "#fff", border: "2px solid #1B2B6B", borderRadius: 10, padding: "12px 14px", marginBottom: 16 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, fontWeight: 700, letterSpacing: 1, color: "#5E6A82", marginBottom: 8 } }, "TODAY'S GLUE LIST"), mine.map((t, i) => {
+      const s = steps.get(t.id);
+      const done = !s;
+      const next = !done && !nextShown;
+      if (next) nextShown = true;
+      const rolled = String(t.day).slice(0, 10) < today;
+      return /* @__PURE__ */ React.createElement("div", { key: t.id, "data-glue-list-item": t.label, "data-glue-list-done": done ? "yes" : "no", style: { display: "flex", alignItems: "flex-start", gap: 10, padding: "8px 0", borderTop: i ? "1px solid #E2E6EE" : 0, opacity: done ? 0.6 : 1 } }, /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { width: 24, height: 24, borderRadius: 12, flex: "none", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, background: done ? "#1E7F3C" : next ? "#1B2B6B" : "#E7EBF5", color: done || next ? "#fff" : "#1B2B6B" } }, done ? "\u2713" : i + 1), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 15, fontWeight: 600, textDecoration: done ? "line-through" : "none" } }, t.label, next ? /* @__PURE__ */ React.createElement("span", { style: { marginLeft: 8, fontSize: 11.5, fontWeight: 700, color: "#fff", background: "#1B2B6B", borderRadius: 6, padding: "2px 6px" } }, "NEXT") : null), /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 13, color: "#5E6A82", marginTop: 2 } }, done ? "Glued" : `${Math.round(s.metres).toLocaleString("en-GB")} m to glue${s.die ? ` \xB7 die ${s.die}` : ""}`, " \xB7 for ", t.orderIds.map(who).join(", "), rolled ? ` \xB7 from ${(/* @__PURE__ */ new Date(`${String(t.day).slice(0, 10)}T12:00:00`)).toLocaleDateString("en-GB", { weekday: "long" })}'s list` : "")));
+    }));
+  }
   function GlueLineView({ data, setData }) {
     const rows = (data.glueLineBatches || []).map((b) => glueSettingsFor(b, data.glueRuns));
     const todayStr = daysAgoLocal(0);
@@ -36514,7 +36898,12 @@ ${doneBays.size} of ${withStock.length} bays are done. The next count starts a n
         timeOfDay: stampedAt,
         runtimeHrs,
         startedAt: null,
-        endedAt: (/* @__PURE__ */ new Date()).toISOString()
+        endedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        /* kept for today's list (My glue list, piece 2) */
+        ...(() => {
+          const k = glueListOrdersFor(data, glueSizeKey(data, openRun.productSize), theDate);
+          return k ? { forOrders: k } : {};
+        })()
       };
       if (reelSaveLockRef.current.code === code && Date.now() - reelSaveLockRef.current.at < 8e3) return;
       reelSaveLockRef.current = { code, at: Date.now() };
@@ -36556,13 +36945,15 @@ ${doneBays.size} of ${withStock.length} bays are done. The next count starts a n
       const stampedAt = nowHHMM();
       const nowIso = (/* @__PURE__ */ new Date()).toISOString();
       const runtimeHrs = deriveRuntimeHours(stampedAt, rowFromForm.date, rows);
+      const keptFor = rowFromForm.assignedOrderId ? null : glueListOrdersFor(data, glueSizeKey(data, openRun ? openRun.productSize : rowFromForm.productSize), rowFromForm.date || todayISO());
       const newRow = {
         id: uid("gb"),
         ...rowFromForm,
         timeOfDay: stampedAt,
         runtimeHrs,
         endedAt: nowIso,
-        ...openRun ? { runId: openRun.id } : {}
+        ...openRun ? { runId: openRun.id } : {},
+        ...keptFor ? { forOrders: keptFor } : {}
       };
       const lockCode = String(newRow.batchNumber || "").trim().toUpperCase();
       if (lockCode && reelSaveLockRef.current.code === lockCode && Date.now() - reelSaveLockRef.current.at < 8e3) return;
@@ -36731,7 +37122,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         spellCheck: "false",
         style: { flex: "1 1 200px", maxWidth: 320, minWidth: 0, height: 34, fontSize: 14, border: `1px solid ${BORDER}`, borderRadius: 999, padding: "0 14px", background: "#fff" }
       }
-    ), searching && /* @__PURE__ */ React.createElement("span", { style: { alignSelf: "center", fontSize: 13, color: INK_MUTED } }, rows.filter(matchesQuery).length, " reel", rows.filter(matchesQuery).length === 1 ? "" : "s", " match")), /* @__PURE__ */ React.createElement("div", { className: "no-print" }, /* @__PURE__ */ React.createElement("datalist", { id: listId }, (PRODUCT_RANGES[form.range] || []).map((s) => /* @__PURE__ */ React.createElement("option", { key: s, value: s }))), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5" }, /* @__PURE__ */ React.createElement(
+    ), searching && /* @__PURE__ */ React.createElement("span", { style: { alignSelf: "center", fontSize: 13, color: INK_MUTED } }, rows.filter(matchesQuery).length, " reel", rows.filter(matchesQuery).length === 1 ? "" : "s", " match")), /* @__PURE__ */ React.createElement("div", { className: "no-print" }, /* @__PURE__ */ React.createElement("datalist", { id: listId }, (PRODUCT_RANGES[form.range] || []).map((s) => /* @__PURE__ */ React.createElement("option", { key: s, value: s }))), /* @__PURE__ */ React.createElement(GlueListToday, { data }), /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5" }, /* @__PURE__ */ React.createElement(
       "button",
       {
         className: "phone-collapsible-toggle w-full text-left mb-1",
@@ -36739,7 +37130,14 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         style: { background: addOpen ? "none" : ORANGE, color: addOpen ? INK_MUTED : "#fff", border: addOpen ? `1px solid ${BORDER}` : "none", borderRadius: 5, padding: "10px 12px", fontSize: 13, fontWeight: 600, cursor: "pointer" }
       },
       addOpen ? "\u25BE Hide entry form" : "+ Log a new reel"
-    ), /* @__PURE__ */ React.createElement("div", { className: "phone-collapsible" + (addOpen ? " open" : "") }, glueShareNote && /* @__PURE__ */ React.createElement("div", { "data-glue-shared": true, style: { fontSize: 13, color: INK_MUTED, marginBottom: 6 } }, "\u21BB ", glueShareNote), /* @__PURE__ */ React.createElement(GlueNeedBanner, { data, spec: openRun ? openRun.productSize : String(form.size || "").trim() ? buildSpec(form) : "", metres: form.meterage }), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(
+    ), /* @__PURE__ */ React.createElement("div", { className: "phone-collapsible" + (addOpen ? " open" : "") }, (() => {
+      const spec = openRun ? openRun.productSize : String(form.size || "").trim() ? buildSpec(form) : "";
+      const k = spec ? glueListOrdersFor(data, glueSizeKey(data, spec), form.date || todayISO()) : null;
+      return k && !form.assignedOrderId ? /* @__PURE__ */ React.createElement("div", { "data-glue-forlist": true, style: { fontSize: 13.5, fontWeight: 600, color: "#1B2B6B", background: "#EEF2FA", borderRadius: 6, padding: "8px 10px", marginBottom: 6 } }, "On today's glue list \u2014 this reel is kept for ", k.map((id) => {
+        const o = (data.orders || []).find((x) => x.id === id);
+        return `${id}${o ? ` ${o.customer}` : ""}`;
+      }).join(", ")) : null;
+    })(), glueShareNote && /* @__PURE__ */ React.createElement("div", { "data-glue-shared": true, style: { fontSize: 13, color: INK_MUTED, marginBottom: 6 } }, "\u21BB ", glueShareNote), /* @__PURE__ */ React.createElement(GlueNeedBanner, { data, spec: openRun ? openRun.productSize : String(form.size || "").trim() ? buildSpec(form) : "", metres: form.meterage }), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(
       GlueEntrySteps,
       {
         data,
@@ -37939,10 +38337,12 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const reelsAll = (data.glueLineBatches || []).filter((g) => g && !g.deleted), runsAll = (data.bondingRuns || []).filter((r) => r && !r.deleted && !r.packingOnly && !r._synth && r.boxNumber);
     const reels = reelsAll.filter((g) => g.date === today).sort((x, y) => tkey(y).localeCompare(tkey(x)));
     const runs = runsAll.filter((r) => r.date === today).sort((x, y) => tkey(y).localeCompare(tkey(x)));
-    const glued = reels.reduce((t, g) => t + (Number(g.meterage) || 0), 0), bonded = runs.reduce((t, r) => t + (Number(r.amountMade) || 0), 0);
+    const reelRun = (r) => String(r.packageType || "") === "Reel" || /\bREEL\b/i.test(String(r.productSize || ""));
+    const glued = reels.reduce((t, g) => t + (Number(g.meterage) || 0), 0), bonded = runs.filter((r) => !reelRun(r)).reduce((t, r) => t + (Number(r.amountMade) || 0), 0);
+    const bondedReels = runs.filter(reelRun).reduce((t, r) => t + (Number(r.amountMade) || 0), 0);
     const days = nlLastDays(5);
     const gluedBy = days.map((d) => reelsAll.filter((g) => g.date === d).reduce((t, g) => t + (Number(g.meterage) || 0), 0));
-    const bondedBy = days.map((d) => runsAll.filter((r) => r.date === d).reduce((t, r) => t + (Number(r.amountMade) || 0), 0));
+    const bondedBy = days.map((d) => runsAll.filter((r) => r.date === d && !reelRun(r)).reduce((t, r) => t + (Number(r.amountMade) || 0), 0));
     const plans = useMemo(() => {
       try {
         return orderMakePlan(data);
@@ -37971,7 +38371,14 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       const pl = plans.get(o.id);
       return t + (pl && pl[key] || []).reduce((s, it) => s + (Number(it[f]) || 0), 0);
     }, 0);
-    const glueNeed = sumPlan(dueWeek, "glueItems", "metersNeeded"), bondNeed = sumPlan(dueWeek, "bondingItems", "needed") + sumPlan(dueWeek, "tomorrowItems", "needed");
+    const sumPlanIf = (os, key, f, keep) => os.reduce((t, o) => {
+      const pl = plans.get(o.id);
+      return t + (pl && pl[key] || []).filter((it) => keep(/\bREEL\b/i.test(String(it.spec || "")))).reduce((s, it) => s + (Number(it[f]) || 0), 0);
+    }, 0);
+    const glueNeed = sumPlan(dueWeek, "glueItems", "metersNeeded"), bondNeed = sumPlanIf(dueWeek, "bondingItems", "needed", (r) => !r) + sumPlanIf(dueWeek, "tomorrowItems", "needed", (r) => !r);
+    const reelNeed = sumPlanIf(dueWeek, "bondingItems", "needed", (r) => r) + sumPlanIf(dueWeek, "tomorrowItems", "needed", (r) => r);
+    const bondSub = bondNeed > 0 || reelNeed > 0 ? [bondNeed ? `${bondNeed.toLocaleString("en-GB")} box${bondNeed === 1 ? "" : "es"}` : "", reelNeed ? `${reelNeed.toLocaleString("en-GB")} reel${reelNeed === 1 ? "" : "s"}` : ""].filter(Boolean).join(" + ") + " still needed this week" : "nothing more needed this week";
+    const reelsChip = bondedReels > 0 ? /* @__PURE__ */ React.createElement("span", { "data-nl-bonded-reels": true, style: { fontSize: 13.5, color: NL.SUB, whiteSpace: "nowrap" } }, "+ ", /* @__PURE__ */ React.createElement("b", { style: { color: NL.INK, fontWeight: 600 } }, bondedReels.toLocaleString("en-GB")), " reel", bondedReels === 1 ? "" : "s") : null;
     const dow = (/* @__PURE__ */ new Date()).getDay();
     const daysLeft = dow === 0 || dow === 6 ? 5 : Math.max(1, 6 - dow);
     const glueTarget = Math.round((glued + glueNeed) / daysLeft), bondTarget = Math.round((bonded + bondNeed) / daysLeft);
@@ -38026,7 +38433,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       }
       for (const r of runs) {
         const k = "b|" + short(r.productSize) + "|" + (r.workNumber || "");
-        const e = m.get(k) || { kind: "BOND", spec: short(r.productSize), n: 0, boxes: 0, codes: [], t: "", to: r.workNumber && byId.get(r.workNumber) ? cust(r.workNumber) : "shelf" };
+        const e = m.get(k) || { kind: "BOND", spec: short(r.productSize), n: 0, boxes: 0, reel: reelRun(r), codes: [], t: "", to: r.workNumber && byId.get(r.workNumber) ? cust(r.workNumber) : "shelf" };
         e.n++;
         e.boxes += Number(r.amountMade) || 0;
         e.codes.push(r.boxNumber);
@@ -38043,11 +38450,11 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       return b.startsWith(p) ? `${a}\u2013${b.slice(-2)}` : `${u.length} codes`;
     };
     const liveAt = syncAt ? new Date(syncAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : null;
-    const ranToday = glued > 0 || bonded > 0;
-    const tile = (label, big, unit, pct, sub, color, vals, onClick, k, target = null, legend = null) => /* @__PURE__ */ React.createElement("button", { key: k, "data-nl-tile": k, "aria-label": `${label}: ${big} ${unit}${target ? ` ${target}` : ""}, ${pct} percent. ${sub}`, onClick: () => {
+    const ranToday = glued > 0 || bonded > 0 || bondedReels > 0;
+    const tile = (label, big, unit, pct, sub, color, vals, onClick, k, target = null, legend = null, after = null, afterText = "") => /* @__PURE__ */ React.createElement("button", { key: k, "data-nl-tile": k, "aria-label": `${label}: ${big} ${unit}${afterText ? ` and ${afterText}` : ""}${target ? ` ${target}` : ""}, ${pct} percent. ${sub}`, onClick: () => {
       nlHaptic();
       onClick && onClick();
-    }, style: { flex: 1, minWidth: 0, textAlign: "left", border: 0, background: "#fff", borderRadius: NLT.R.card, boxShadow: NLT.SHADOW, padding: "12px 12px 10px", fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", gap: 10, alignItems: "center" } }, /* @__PURE__ */ React.createElement(NLRing, { pct, size: 48, stroke: 6, color, label: `${pct}%` }), /* @__PURE__ */ React.createElement("span", { style: { minWidth: 0, flex: 1 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", justifyContent: "space-between", gap: 6, fontSize: 12.5, fontWeight: 600, color: NL.SUB } }, /* @__PURE__ */ React.createElement("span", null, label), target && /* @__PURE__ */ React.createElement("span", { "data-nl-target": true, style: { fontWeight: 500, color: "#8A93A8", whiteSpace: "nowrap" } }, target)), /* @__PURE__ */ React.createElement("span", { style: { display: "flex", alignItems: "baseline", gap: 4 } }, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 24, letterSpacing: -0.8, fontWeight: 600, fontVariantNumeric: "tabular-nums" } }, big), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: NL.SUB } }, unit)))), vals && /* @__PURE__ */ React.createElement("span", { style: { display: "block", marginTop: 8 } }, /* @__PURE__ */ React.createElement(NLSpark, { vals, color })), legend ? /* @__PURE__ */ React.createElement("span", { "data-nl-legend": true, style: { display: "flex", flexDirection: "column", gap: 3, marginTop: 8 } }, legend.map(([n, t, c], i) => /* @__PURE__ */ React.createElement("span", { key: i, style: { display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, color: NL.SUB, minWidth: 0 } }, /* @__PURE__ */ React.createElement("span", { style: { width: 8, height: 8, borderRadius: 4, background: c, flex: "none" } }), /* @__PURE__ */ React.createElement("b", { style: { color: NL.INK, fontVariantNumeric: "tabular-nums", minWidth: 10 } }, n), /* @__PURE__ */ React.createElement("span", { style: { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, t)))) : /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 12, color: NL.SUB, marginTop: 6, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, sub));
+    }, style: { flex: 1, minWidth: 0, textAlign: "left", border: 0, background: "#fff", borderRadius: NLT.R.card, boxShadow: NLT.SHADOW, padding: "12px 12px 10px", fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", gap: 10, alignItems: "center" } }, /* @__PURE__ */ React.createElement(NLRing, { pct, size: 48, stroke: 6, color, label: `${pct}%` }), /* @__PURE__ */ React.createElement("span", { style: { minWidth: 0, flex: 1 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", justifyContent: "space-between", gap: 6, fontSize: 12.5, fontWeight: 600, color: NL.SUB } }, /* @__PURE__ */ React.createElement("span", null, label), target && /* @__PURE__ */ React.createElement("span", { "data-nl-target": true, style: { fontWeight: 500, color: "#8A93A8", whiteSpace: "nowrap" } }, target)), /* @__PURE__ */ React.createElement("span", { style: { display: "flex", alignItems: "baseline", gap: 4 } }, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 24, letterSpacing: -0.8, fontWeight: 600, fontVariantNumeric: "tabular-nums" } }, big), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: NL.SUB } }, unit)), after && /* @__PURE__ */ React.createElement("span", { style: { display: "block", marginTop: 1 } }, after))), vals && /* @__PURE__ */ React.createElement("span", { style: { display: "block", marginTop: 8 } }, /* @__PURE__ */ React.createElement(NLSpark, { vals, color })), legend ? /* @__PURE__ */ React.createElement("span", { "data-nl-legend": true, style: { display: "flex", flexDirection: "column", gap: 3, marginTop: 8 } }, legend.map(([n, t, c], i) => /* @__PURE__ */ React.createElement("span", { key: i, style: { display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, color: NL.SUB, minWidth: 0 } }, /* @__PURE__ */ React.createElement("span", { style: { width: 8, height: 8, borderRadius: 4, background: c, flex: "none" } }), /* @__PURE__ */ React.createElement("b", { style: { color: NL.INK, fontVariantNumeric: "tabular-nums", minWidth: 10 } }, n), /* @__PURE__ */ React.createElement("span", { style: { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, t)))) : /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 12, color: NL.SUB, marginTop: 6, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, sub));
     const qa = (label, icon, onClick, k) => /* @__PURE__ */ React.createElement("button", { key: k, "data-nl-qa": k, onClick: () => {
       nlHaptic();
       onClick();
@@ -38063,7 +38470,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         lead: /* @__PURE__ */ React.createElement(NLDot, { spec: l.spec }),
         title: l.spec,
         mono: true,
-        sub: l.kind === "GLUE" ? `${l.n} reel${l.n === 1 ? "" : "s"} \xB7 ${codesTxt(l.codes)} \xB7 ${l.metres.toLocaleString("en-GB")} m` : `${codesTxt(l.codes)} \xB7 ${l.boxes} box${l.boxes === 1 ? "" : "es"} \u2192 ${l.to}`,
+        sub: l.kind === "GLUE" ? `${l.n} reel${l.n === 1 ? "" : "s"} \xB7 ${codesTxt(l.codes)} \xB7 ${l.metres.toLocaleString("en-GB")} m` : `${codesTxt(l.codes)} \xB7 ${l.boxes} ${l.reel ? `reel${l.boxes === 1 ? "" : "s"}` : `box${l.boxes === 1 ? "" : "es"}`} \u2192 ${l.to}`,
         right: /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 13, color: NL.SUB, fontVariantNumeric: "tabular-nums" } }, l.t), /* @__PURE__ */ React.createElement(NLChip, null, l.kind)),
         onClick: () => go(l.kind === "GLUE" ? "glueline" : "bonding")
       }
@@ -38091,7 +38498,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         onClick: () => go("gluelineschedule")
       }
     ))));
-    if (desk) return /* @__PURE__ */ React.createElement("div", { "data-nl-home": true, "data-desk-today": true, style: { fontFamily: NLT.FONT, color: NL.INK, paddingBottom: 24 } }, /* @__PURE__ */ React.createElement(DeskBand, { title: `${hello}${name ? `, ${name}` : ""}`, sub: (/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }) }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { "data-nl-live": true, style: { display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.16)", border: "1px solid rgba(255,255,255,0.25)", borderRadius: 20, padding: "4px 10px 4px 8px", fontSize: 12, fontWeight: 500 } }, /* @__PURE__ */ React.createElement("i", { "aria-hidden": "true", className: "nl-pulse", style: { width: 8, height: 8, borderRadius: 4, background: "#5EE09A", boxShadow: "0 0 0 3px rgba(94,224,154,0.3)" } }), liveAt ? `Live \xB7 synced ${liveAt}` : "Live"), ranToday && /* @__PURE__ */ React.createElement("span", { style: { display: "inline-flex", alignItems: "center", background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 20, padding: "4px 10px", fontSize: 12, fontWeight: 500 } }, glued > 0 && bonded > 0 ? "Both lines ran today" : glued > 0 ? "Glue line ran today" : "Bonding ran today")), /* @__PURE__ */ React.createElement("div", { "data-nl-sentence": true, style: { marginTop: 14, fontSize: 15, lineHeight: 1.35, opacity: 0.95 } }, morning ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("b", null, "Overnight I checked ", runsAll.length.toLocaleString("en-GB"), " boxes, ", reelsAll.length, " reels and ", live.length, " orders."), " ", overnight.pending === 1 ? "One thing doesn't add up \u2014 I'd fix it like this. Yes or no?" : `${overnight.pending} things don't add up \u2014 I'd fix them like this. Yes or no?`) : sentence)), morning ? /* @__PURE__ */ React.createElement("div", { "data-nl-morning": true, style: { marginBottom: 12 } }, /* @__PURE__ */ React.createElement(OvernightMorning, { look: "cards" })) : /* @__PURE__ */ React.createElement("div", { "data-desk-tiles": true, style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 } }, /* @__PURE__ */ React.createElement(NLIn, { i: 0, style: { display: "flex", gap: 10 } }, tile("Glued today", gluedN.toLocaleString("en-GB"), "m", gPct, glueNeed > 0 ? `${glueNeed.toLocaleString("en-GB")} m still needed this week` : "nothing more needed this week", NL.NAVY, gluedBy, () => go("glueline"), "glued", glueTarget > 0 ? `of ${glueTarget.toLocaleString("en-GB")} m` : null), tile("Bonded today", bondedN.toLocaleString("en-GB"), "boxes", bPct, bondNeed > 0 ? `${bondNeed.toLocaleString("en-GB")} still needed this week` : "nothing more needed this week", NL.NAVY, bondedBy, () => go("bonding"), "bonded", bondTarget > 0 ? `of ${bondTarget.toLocaleString("en-GB")}` : null)), /* @__PURE__ */ React.createElement(NLIn, { i: 1, style: { display: "flex", gap: 10 } }, tile(
+    if (desk) return /* @__PURE__ */ React.createElement("div", { "data-nl-home": true, "data-desk-today": true, style: { fontFamily: NLT.FONT, color: NL.INK, paddingBottom: 24 } }, /* @__PURE__ */ React.createElement(DeskBand, { title: `${hello}${name ? `, ${name}` : ""}`, sub: (/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }) }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { "data-nl-live": true, style: { display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.16)", border: "1px solid rgba(255,255,255,0.25)", borderRadius: 20, padding: "4px 10px 4px 8px", fontSize: 12, fontWeight: 500 } }, /* @__PURE__ */ React.createElement("i", { "aria-hidden": "true", className: "nl-pulse", style: { width: 8, height: 8, borderRadius: 4, background: "#5EE09A", boxShadow: "0 0 0 3px rgba(94,224,154,0.3)" } }), liveAt ? `Live \xB7 synced ${liveAt}` : "Live"), ranToday && /* @__PURE__ */ React.createElement("span", { style: { display: "inline-flex", alignItems: "center", background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 20, padding: "4px 10px", fontSize: 12, fontWeight: 500 } }, glued > 0 && (bonded > 0 || bondedReels > 0) ? "Both lines ran today" : glued > 0 ? "Glue line ran today" : "Bonding ran today")), /* @__PURE__ */ React.createElement("div", { "data-nl-sentence": true, style: { marginTop: 14, fontSize: 15, lineHeight: 1.35, opacity: 0.95 } }, morning ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("b", null, "Overnight I checked ", runsAll.length.toLocaleString("en-GB"), " boxes, ", reelsAll.length, " reels and ", live.length, " orders."), " ", overnight.pending === 1 ? "One thing doesn't add up \u2014 I'd fix it like this. Yes or no?" : `${overnight.pending} things don't add up \u2014 I'd fix them like this. Yes or no?`) : sentence)), morning ? /* @__PURE__ */ React.createElement("div", { "data-nl-morning": true, style: { marginBottom: 12 } }, /* @__PURE__ */ React.createElement(OvernightMorning, { look: "cards" })) : /* @__PURE__ */ React.createElement("div", { "data-desk-tiles": true, style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 } }, /* @__PURE__ */ React.createElement(NLIn, { i: 0, style: { display: "flex", gap: 10 } }, tile("Glued today", gluedN.toLocaleString("en-GB"), "m", gPct, glueNeed > 0 ? `${glueNeed.toLocaleString("en-GB")} m still needed this week` : "nothing more needed this week", NL.NAVY, gluedBy, () => go("glueline"), "glued", glueTarget > 0 ? `of ${glueTarget.toLocaleString("en-GB")} m` : null), tile("Bonded today", bondedN.toLocaleString("en-GB"), "boxes", bPct, bondSub, NL.NAVY, bondedBy, () => go("bonding"), "bonded", bondTarget > 0 ? `of ${bondTarget.toLocaleString("en-GB")}` : null, null, reelsChip, bondedReels ? `${bondedReels} reels` : "")), /* @__PURE__ */ React.createElement(NLIn, { i: 1, style: { display: "flex", gap: 10 } }, tile(
       "Due this week",
       String(dueWeek.length),
       dueWeek.length === 1 ? "order" : "orders",
@@ -38155,7 +38562,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         }, style: { flex: "none", height: 34, padding: "0 14px", borderRadius: 17, border: 0, background: NL.NAVY, color: "#fff", fontFamily: NLT.FONT, fontSize: 13.5, fontWeight: 600 } }, x.fix || "Open"));
       })), isAdminDevice() ? /* @__PURE__ */ React.createElement("div", { "data-nl-needs": true, style: { background: NLT.TINT.warm, borderRadius: NLT.R.card, padding: "4px 14px" } }, /* @__PURE__ */ React.createElement(NeedsYouToday, { data, jumpToDiscrepancies: () => go("stock"), look: "new", openBox, openOrder: jumpToOrder, empty: items.length ? /* @__PURE__ */ React.createElement("div", { style: { padding: "10px 2px", fontSize: 13.5, color: NL.SUB } }, "Nothing on the shelf to look at.") : /* @__PURE__ */ React.createElement(NLAllGood, null) })) : /* @__PURE__ */ React.createElement(NLAllGood, null));
     })(), photoOn && setData && /* @__PURE__ */ React.createElement(NLIn, { i: 5 }, /* @__PURE__ */ React.createElement(WhatIDid, { data, setData }))), /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0 } }, /* @__PURE__ */ React.createElement(NLIn, { i: 6 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, "On the lines"), linesCard), /* @__PURE__ */ React.createElement(NLIn, { i: 7 }, nextCard))), /* @__PURE__ */ React.createElement("div", { "data-desk-dueweek": true }, dueWeek.length > 0 && /* @__PURE__ */ React.createElement(NLIn, { i: 8 }, /* @__PURE__ */ React.createElement(NLEyebrow, { right: /* @__PURE__ */ React.createElement("span", { style: { letterSpacing: 0, textTransform: "none", fontWeight: 500 } }, dueWeek.length) }, "Due this week"), /* @__PURE__ */ React.createElement("div", null, dueWeek.slice(0, 4).map((o) => /* @__PURE__ */ React.createElement(NLOrderCard, { key: o.id, data, o, plan: plans.get(o.id) || null, onOpen: () => jumpToOrder(o.id, o.stage) })), dueWeek.length > 4 && /* @__PURE__ */ React.createElement("button", { onClick: () => go("dashboard"), style: { border: 0, background: "none", color: NL.NAVY, fontWeight: 600, fontSize: 14.5, padding: "10px 2px", fontFamily: NLT.FONT } }, "All ", dueWeek.length, " in Orders \u203A")))));
-    return /* @__PURE__ */ React.createElement(PullToRefresh, { onRefresh }, /* @__PURE__ */ React.createElement("div", { "data-nl-home": true, style: { display: "flex", flexDirection: "column", fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement(NLHero, { title: `${hello}${name ? `, ${name}` : ""}`, sub: (/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }), onSearch, alerts: overnight ? overnight.alerts : [], onOpenAdmin: () => go("admin") }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { "data-nl-live": true, style: { display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.16)", border: "1px solid rgba(255,255,255,0.25)", borderRadius: 20, padding: "4px 10px 4px 8px", fontSize: 12, fontWeight: 500 } }, /* @__PURE__ */ React.createElement("i", { "aria-hidden": "true", className: "nl-pulse", style: { width: 8, height: 8, borderRadius: 4, background: "#5EE09A", boxShadow: "0 0 0 3px rgba(94,224,154,0.3)" } }), liveAt ? `Live \xB7 synced ${liveAt}` : "Live"), ranToday && /* @__PURE__ */ React.createElement("span", { style: { display: "inline-flex", alignItems: "center", background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 20, padding: "4px 10px", fontSize: 12, fontWeight: 500 } }, glued > 0 && bonded > 0 ? "Both lines ran today" : glued > 0 ? "Glue line ran today" : "Bonding ran today")), /* @__PURE__ */ React.createElement("div", { "data-nl-sentence": true, style: { marginTop: 14, fontSize: 15, lineHeight: 1.35, opacity: 0.95 } }, morning ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("b", null, "Overnight I checked ", runsAll.length.toLocaleString("en-GB"), " boxes, ", reelsAll.length, " reels and ", live.length, " orders."), " ", overnight.pending === 1 ? "One thing doesn't add up \u2014 I'd fix it like this. Yes or no?" : `${overnight.pending} things don't add up \u2014 I'd fix them like this. Yes or no?`) : sentence)), /* @__PURE__ */ React.createElement(NLOver, null, morning ? /* @__PURE__ */ React.createElement("div", { "data-nl-morning": true }, /* @__PURE__ */ React.createElement(OvernightMorning, { look: "cards" })) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(NLIn, { i: 0, style: { display: "flex", gap: 10 } }, tile("Glued today", gluedN.toLocaleString("en-GB"), "m", gPct, glueNeed > 0 ? `${glueNeed.toLocaleString("en-GB")} m still needed this week` : "nothing more needed this week", NL.NAVY, gluedBy, () => go("glueline"), "glued", glueTarget > 0 ? `of ${glueTarget.toLocaleString("en-GB")} m` : null), tile("Bonded today", bondedN.toLocaleString("en-GB"), "boxes", bPct, bondNeed > 0 ? `${bondNeed.toLocaleString("en-GB")} still needed this week` : "nothing more needed this week", NL.NAVY, bondedBy, () => go("bonding"), "bonded", bondTarget > 0 ? `of ${bondTarget.toLocaleString("en-GB")}` : null)), /* @__PURE__ */ React.createElement(NLIn, { i: 1, style: { display: "flex", gap: 10, marginTop: 10 } }, tile(
+    return /* @__PURE__ */ React.createElement(PullToRefresh, { onRefresh }, /* @__PURE__ */ React.createElement("div", { "data-nl-home": true, style: { display: "flex", flexDirection: "column", fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement(NLHero, { title: `${hello}${name ? `, ${name}` : ""}`, sub: (/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }), onSearch, alerts: overnight ? overnight.alerts : [], onOpenAdmin: () => go("admin") }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { "data-nl-live": true, style: { display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.16)", border: "1px solid rgba(255,255,255,0.25)", borderRadius: 20, padding: "4px 10px 4px 8px", fontSize: 12, fontWeight: 500 } }, /* @__PURE__ */ React.createElement("i", { "aria-hidden": "true", className: "nl-pulse", style: { width: 8, height: 8, borderRadius: 4, background: "#5EE09A", boxShadow: "0 0 0 3px rgba(94,224,154,0.3)" } }), liveAt ? `Live \xB7 synced ${liveAt}` : "Live"), ranToday && /* @__PURE__ */ React.createElement("span", { style: { display: "inline-flex", alignItems: "center", background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 20, padding: "4px 10px", fontSize: 12, fontWeight: 500 } }, glued > 0 && (bonded > 0 || bondedReels > 0) ? "Both lines ran today" : glued > 0 ? "Glue line ran today" : "Bonding ran today")), /* @__PURE__ */ React.createElement("div", { "data-nl-sentence": true, style: { marginTop: 14, fontSize: 15, lineHeight: 1.35, opacity: 0.95 } }, morning ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("b", null, "Overnight I checked ", runsAll.length.toLocaleString("en-GB"), " boxes, ", reelsAll.length, " reels and ", live.length, " orders."), " ", overnight.pending === 1 ? "One thing doesn't add up \u2014 I'd fix it like this. Yes or no?" : `${overnight.pending} things don't add up \u2014 I'd fix them like this. Yes or no?`) : sentence)), /* @__PURE__ */ React.createElement(NLOver, null, morning ? /* @__PURE__ */ React.createElement("div", { "data-nl-morning": true }, /* @__PURE__ */ React.createElement(OvernightMorning, { look: "cards" })) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(NLIn, { i: 0, style: { display: "flex", gap: 10 } }, tile("Glued today", gluedN.toLocaleString("en-GB"), "m", gPct, glueNeed > 0 ? `${glueNeed.toLocaleString("en-GB")} m still needed this week` : "nothing more needed this week", NL.NAVY, gluedBy, () => go("glueline"), "glued", glueTarget > 0 ? `of ${glueTarget.toLocaleString("en-GB")} m` : null), tile("Bonded today", bondedN.toLocaleString("en-GB"), "boxes", bPct, bondSub, NL.NAVY, bondedBy, () => go("bonding"), "bonded", bondTarget > 0 ? `of ${bondTarget.toLocaleString("en-GB")}` : null, null, reelsChip, bondedReels ? `${bondedReels} reels` : "")), /* @__PURE__ */ React.createElement(NLIn, { i: 1, style: { display: "flex", gap: 10, marginTop: 10 } }, tile(
       "Due this week",
       String(dueWeek.length),
       dueWeek.length === 1 ? "order" : "orders",
@@ -38185,7 +38592,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       "ready",
       null,
       ready.length ? [...ready.slice(0, 2).map((o) => [1, o.customer, NL.OK]), ...ready.length > 2 ? [[ready.length - 2, "more", NL.OK]] : []] : null
-    )))), morning && /* @__PURE__ */ React.createElement(NLIn, { i: 1, style: { display: "flex", gap: 10, marginTop: 12 } }, tile("Glued today", gluedN.toLocaleString("en-GB"), "m", gPct, `${glueNeed.toLocaleString("en-GB")} m still needed this week`, NL.NAVY, gluedBy, () => go("glueline"), "glued"), tile("Bonded today", bondedN.toLocaleString("en-GB"), "boxes", bPct, `${bondNeed.toLocaleString("en-GB")} still needed this week`, NL.NAVY, bondedBy, () => go("bonding"), "bonded")), first && nextLine && /* @__PURE__ */ React.createElement(NLIn, { i: 2 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, afternoon ? "What's left today" : "Your next move"), /* @__PURE__ */ React.createElement(NLCard, { white: true, "data-nl-nextmove": true, style: { padding: "14px 16px", display: "flex", gap: 12, alignItems: "center" } }, /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { width: 44, height: 44, borderRadius: 14, background: NL.NAVY, display: "flex", alignItems: "center", justifyContent: "center", flex: "none" } }, /* @__PURE__ */ React.createElement(NLIcon, { name: /^Pick|check/i.test(nextLine) ? "pick" : /bond/i.test(nextLine) ? "bonding" : "glueline", size: 22, color: "#fff", sw: 1.8 })), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 16, fontWeight: 600 } }, nextLine.replace(/ from the shelf$/i, ""), " for ", first.customer), /* @__PURE__ */ React.createElement("span", { "data-nl-nextfacts": true, style: { display: "block", fontSize: 13, color: NL.SUB } }, (() => {
+    )))), morning && /* @__PURE__ */ React.createElement(NLIn, { i: 1, style: { display: "flex", gap: 10, marginTop: 12 } }, tile("Glued today", gluedN.toLocaleString("en-GB"), "m", gPct, `${glueNeed.toLocaleString("en-GB")} m still needed this week`, NL.NAVY, gluedBy, () => go("glueline"), "glued"), tile("Bonded today", bondedN.toLocaleString("en-GB"), "boxes", bPct, bondSub, NL.NAVY, bondedBy, () => go("bonding"), "bonded", null, null, reelsChip, bondedReels ? `${bondedReels} reels` : "")), first && nextLine && /* @__PURE__ */ React.createElement(NLIn, { i: 2 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, afternoon ? "What's left today" : "Your next move"), /* @__PURE__ */ React.createElement(NLCard, { white: true, "data-nl-nextmove": true, style: { padding: "14px 16px", display: "flex", gap: 12, alignItems: "center" } }, /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { width: 44, height: 44, borderRadius: 14, background: NL.NAVY, display: "flex", alignItems: "center", justifyContent: "center", flex: "none" } }, /* @__PURE__ */ React.createElement(NLIcon, { name: /^Pick|check/i.test(nextLine) ? "pick" : /bond/i.test(nextLine) ? "bonding" : "glueline", size: 22, color: "#fff", sw: 1.8 })), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block", fontSize: 16, fontWeight: 600 } }, nextLine.replace(/ from the shelf$/i, ""), " for ", first.customer), /* @__PURE__ */ React.createElement("span", { "data-nl-nextfacts": true, style: { display: "block", fontSize: 13, color: NL.SUB } }, (() => {
       const d = due(first);
       const lateBy = d && d < today ? Math.round((Date.parse(today + "T12:00:00") - Date.parse(d + "T12:00:00")) / 864e5) : 0;
       const parts = [first.id, lateBy ? `${lateBy} day${lateBy === 1 ? "" : "s"} late` : d && d < "9999" ? `due ${dayOf(d)}` : null];
@@ -38238,8 +38645,10 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         return m ? `${m.toLocaleString("en-GB")} m today` : null;
       }
       if (k === "bonding") {
-        const b = (data.bondingRuns || []).filter((r) => r && !r.deleted && r.date === today && !r.packingOnly).reduce((t, r) => t + (Number(r.amountMade) || 0), 0);
-        return b ? `${b} boxes today` : null;
+        const rs = (data.bondingRuns || []).filter((r) => r && !r.deleted && r.date === today && !r.packingOnly);
+        const isR = (r) => String(r.packageType || "") === "Reel" || /\bREEL\b/i.test(String(r.productSize || ""));
+        const b = rs.filter((r) => !isR(r)).reduce((t, r) => t + (Number(r.amountMade) || 0), 0), rl = rs.filter(isR).reduce((t, r) => t + (Number(r.amountMade) || 0), 0);
+        return b || rl ? [b ? `${b} box${b === 1 ? "" : "es"}` : "", rl ? `${rl} reel${rl === 1 ? "" : "s"}` : ""].filter(Boolean).join(" + ") + " today" : null;
       }
       return null;
     };
