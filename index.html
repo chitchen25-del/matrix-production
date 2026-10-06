@@ -3067,7 +3067,7 @@
     const desc = (spec || "").toLowerCase();
     if (desc.includes("profile") || desc.includes("profitape") || desc.includes("pet film") || desc.includes("vulcan")) return "boughtin";
     if (desc.includes("shim")) return "shim";
-    if (desc.includes("exceed")) return "rubber";
+    if (desc.includes("exceed") || desc.includes("rubber")) return "rubber";
     const metalGap = speedyCreaseMetalGap(spec);
     if (metalGap !== null) return metalGap >= 3.5 ? "12mm" : "7mm";
     if (/\bspeedy\s*crease\s*plus\b/i.test(spec || "")) return "12mm";
@@ -5195,7 +5195,11 @@
     };
     for (const { li, runs } of byLineItem) {
       if (isSmallItem(li.description)) continue;
-      const maxSize = isReelFulfilled(runs, li.description) ? reelsPerCase(li.description) : CASE_MAX_SIZE_DEFAULT;
+      const formPer = (() => {
+        const f = li.formId && (CATALOGUE.productForms || []).find((x) => x && !x.deleted && x.id === li.formId);
+        return f && Number(f.perCase) > 0 ? Number(f.perCase) : null;
+      })();
+      const maxSize = formPer || (isReelFulfilled(runs, li.description) ? reelsPerCase(li.description) : CASE_MAX_SIZE_DEFAULT);
       const sorted = [...runs].sort((a, b) => (a.date || "").localeCompare(b.date || "") || a._seq - b._seq);
       const alreadyPacked = Number((packedOutside || {})[li.description]) || 0;
       let remaining = Math.max(0, (Number(li.qty) || 0) - alreadyPacked);
@@ -6067,6 +6071,11 @@
       return f && f.reel;
     }).map((l) => l.spec));
     const isReel = (spec) => reelSpecs.has(spec) || isReelSpec(spec);
+    const packCaps = new Map(lines.map((l) => {
+      const f = l.formId ? (CATALOGUE.productForms || []).find((x) => x && !x.deleted && x.id === l.formId) : null;
+      return [l.spec, f && Number(f.perCase) > 0 ? Number(f.perCase) : 0];
+    }).filter(([, c]) => c > 0));
+    const packCap = (spec) => packCaps.get(spec) || 0;
     const merged = /* @__PURE__ */ new Map();
     for (const l of lines) merged.set(l.spec, (merged.get(l.spec) || 0) + l.qty);
     const products = [...merged.entries()].map(([spec, qty]) => ({ spec, qty, band: planBandFor(spec) }));
@@ -6087,7 +6096,16 @@
     for (const f of factions) {
       const rest = [];
       for (const p of f.items) {
-        if (!isReel(p.spec)) continue;
+        if (!packCap(p.spec)) continue;
+        let left = p.qty;
+        while (left > 0) {
+          const take = Math.min(packCap(p.spec), left);
+          plan.push({ caseNum: n++, spec: p.spec, qty: take, band: p.band, maxSize: packCap(p.spec), kind: "box", packCase: true });
+          left -= take;
+        }
+      }
+      for (const p of f.items) {
+        if (!isReel(p.spec) || packCap(p.spec)) continue;
         const cap = reelsPerCase(p.spec);
         let left = p.qty;
         while (left > 0) {
@@ -6097,7 +6115,7 @@
         }
       }
       for (const p of f.items) {
-        if (isReel(p.spec)) continue;
+        if (isReel(p.spec) || packCap(p.spec)) continue;
         const over = p.qty % perCase;
         if (!over) continue;
         let left = over;
@@ -6110,7 +6128,7 @@
         if (left > 0) rest.push({ spec: p.spec, band: p.band, qty: left });
       }
       for (const p of f.items) {
-        if (isReel(p.spec)) continue;
+        if (isReel(p.spec) || packCap(p.spec)) continue;
         const whole = Math.floor(p.qty / perCase);
         for (let i = 0; i < whole; i++) {
           plan.push({ caseNum: n++, spec: p.spec, qty: perCase, band: p.band, maxSize: perCase, kind: "box" });
@@ -6130,7 +6148,7 @@
     }
     const usedByCase = /* @__PURE__ */ new Map();
     for (const r of plan) {
-      if (r.kind !== "box") continue;
+      if (r.kind !== "box" || packCap(r.spec)) continue;
       usedByCase.set(r.caseNum, (usedByCase.get(r.caseNum) || 0) + r.qty);
     }
     for (const [caseNum, used] of usedByCase) {
@@ -6159,7 +6177,8 @@
     const out = [];
     let n = startAt;
     for (const c of [...full, ...part]) {
-      const size = c.used >= perCase ? perCase : cartonFor(c.used);
+      const packSize = c.rows.every((r) => r.packCase) ? Number(c.rows[0].maxSize) : 0;
+      const size = packSize || (c.used >= perCase ? perCase : cartonFor(c.used));
       for (const r of c.rows) out.push({ ...r, caseNum: n, maxSize: size, kind: "box" });
       n++;
     }
@@ -9987,7 +10006,7 @@ ${line}` : line;
       updatedAt: "updated_at",
       updatedBy: "updated_by"
     } },
-    productForms: { table: "product_forms", cols: { productId: "product_id", createdAt: "created_at" } },
+    productForms: { table: "product_forms", cols: { productId: "product_id", createdAt: "created_at", perCase: "per_case" } },
     productAliases: { table: "product_aliases", cols: { productId: "product_id", createdAt: "created_at" } },
     /* Talking about an order, against the order. Written by the customer on the
        website and by Matrix here — one table, two front doors. */
@@ -13088,7 +13107,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-06.91";
+  var APP_VERSION = "2026-10-06.92";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
