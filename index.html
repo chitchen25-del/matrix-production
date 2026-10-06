@@ -13083,7 +13083,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-06.87";
+  var APP_VERSION = "2026-10-06.88";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -15094,7 +15094,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     const gone = new Set(casePhotoOrdersToClear(data.orders, Date.now()));
     if (!gone.size) return;
     try {
-      const { data: rows } = await c.from("case_photos").select("id,order_id,path,thumb_path").eq("deleted", false).in("order_id", [...gone]).limit(500);
+      const { data: rows } = await c.from("case_photos").select("id,order_id,path,thumb_path").eq("deleted", false).neq("source", "pallet").in("order_id", [...gone]).limit(500);
       if (!rows || !rows.length) return;
       const paths = rows.flatMap((r) => [r.path, r.thumb_path].filter(Boolean));
       const rm = await c.storage.from("case-photos").remove(paths);
@@ -15123,7 +15123,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
           if (typeof window !== "undefined" && typeof window.__listCasePhotosFn === "function") {
             const r2 = await window.__listCasePhotosFn(orderId);
             if (live) {
-              setRows(r2.rows || []);
+              setRows((r2.rows || []).filter((x) => x.source !== "pallet"));
               setUrls(r2.urls || {});
             }
             return;
@@ -15133,7 +15133,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
             if (live) setRows([]);
             return;
           }
-          const { data: r } = await c.from("case_photos").select("*").eq("order_id", orderId).eq("deleted", false).order("case_num", { ascending: true }).order("taken_at", { ascending: false }).limit(300);
+          const { data: r } = await c.from("case_photos").select("*").eq("order_id", orderId).eq("deleted", false).neq("source", "pallet").order("case_num", { ascending: true }).order("taken_at", { ascending: false }).limit(300);
           const list = r || [];
           if (!live) return;
           setRows(list);
@@ -15172,6 +15172,195 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       const u = urls[r.thumb_path] || urls[r.path];
       return /* @__PURE__ */ React.createElement("button", { key: r.id, type: "button", "data-case-photo": r.id, onClick: () => openBig(r), style: { border: 0, padding: 0, background: "#fff", borderRadius: 14, overflow: "hidden", textAlign: "left", cursor: "pointer", boxShadow: "0 1px 2px rgba(27,43,107,.06), 0 6px 16px rgba(27,43,107,.07)", fontFamily: "inherit" } }, /* @__PURE__ */ React.createElement("div", { style: { height: 96, background: "#E7EBF5", backgroundImage: u ? `url(${u})` : "none", backgroundSize: "cover", backgroundPosition: "center" } }), /* @__PURE__ */ React.createElement("div", { style: { padding: "7px 9px" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: NL.INK } }, "Case ", r.case_num ?? "\u2014"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: res.error || !res.labels ? "#B3261E" : NL.SUB } }, res.error ? "couldn't be read" : res.labels ? `${res.labels} label${res.labels === 1 ? "" : "s"} read` : "no labels read"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: NL.FAINT } }, when(r.taken_at), r.taken_by ? ` \xB7 ${String(r.taken_by).split("@")[0]}` : "")));
     })), big && ReactDOM.createPortal(/* @__PURE__ */ React.createElement("div", { "data-case-photo-big": true, onClick: () => setBig(null), style: { position: "fixed", inset: 0, zIndex: 1200, background: "rgba(10,14,30,.88)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 16 } }, big.url ? /* @__PURE__ */ React.createElement("img", { src: big.url, alt: `Case ${big.row.case_num}`, style: { maxWidth: "100%", maxHeight: "80vh", borderRadius: 12 } }) : /* @__PURE__ */ React.createElement("div", { style: { color: "#fff" } }, "Loading\u2026"), /* @__PURE__ */ React.createElement("div", { style: { color: "#fff", marginTop: 10, fontSize: 14, textAlign: "center" } }, /* @__PURE__ */ React.createElement("b", null, orderId, " \xB7 case ", big.row.case_num), " \xB7 ", when(big.row.taken_at), big.row.taken_by ? ` \xB7 ${String(big.row.taken_by).split("@")[0]}` : "", big.row.result && big.row.result.codes && Object.keys(big.row.result.codes).length ? /* @__PURE__ */ React.createElement("div", { style: { opacity: 0.8, fontSize: 12.5, marginTop: 4 } }, Object.entries(big.row.result.codes).map(([c, n]) => `${c} \xD7 ${n}`).join(" \xB7 ")) : null)), document.body));
+  }
+  async function savePalletPhoto({ file, orderId, pallet }) {
+    if (!file || !orderId) return null;
+    const p = String(pallet || "1");
+    const row = { order_id: orderId, case_num: null, pallet: p, source: "pallet", result: null, taken_by: nlEmail() || currentActor() || null };
+    try {
+      if (typeof window !== "undefined" && typeof window.__saveCasePhotoFn === "function") {
+        const r = await window.__saveCasePhotoFn({ ...row, file });
+        try {
+          window.dispatchEvent(new CustomEvent("mx-case-photo", { detail: { orderId } }));
+        } catch (e) {
+        }
+        return r;
+      }
+    } catch (e) {
+      return null;
+    }
+    const c = EVENT_CLIENT;
+    if (!c || !c.storage) return null;
+    try {
+      const [big, thumb] = await Promise.all([casePhotoShrink(file, 1600, 0.72), casePhotoShrink(file, 320, 0.7)]);
+      if (!big) return null;
+      const stem = `${orderId}/pallet-${p.replace(/[^\w-]/g, "")}/${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      const up3 = await c.storage.from("case-photos").upload(`${stem}.jpg`, big, { contentType: "image/jpeg", upsert: false });
+      if (up3.error) {
+        reportAppEvent({ kind: "error", message: `pallet photo upload: ${up3.error.message}` });
+        return null;
+      }
+      let thumbPath = null;
+      if (thumb) {
+        const t = await c.storage.from("case-photos").upload(`${stem}-thumb.jpg`, thumb, { contentType: "image/jpeg", upsert: false });
+        if (!t.error) thumbPath = `${stem}-thumb.jpg`;
+      }
+      const ins = await c.from("case_photos").insert({ ...row, path: `${stem}.jpg`, thumb_path: thumbPath, bytes: big.size }).select("id").single();
+      if (ins.error) {
+        reportAppEvent({ kind: "error", message: `pallet photo record: ${ins.error.message}` });
+        return null;
+      }
+      try {
+        window.dispatchEvent(new CustomEvent("mx-case-photo", { detail: { orderId } }));
+      } catch (e) {
+      }
+      return ins.data;
+    } catch (e) {
+      return null;
+    }
+  }
+  async function removePalletPhoto(row) {
+    try {
+      if (typeof window !== "undefined" && typeof window.__deleteCasePhotoFn === "function") {
+        await window.__deleteCasePhotoFn(row);
+        try {
+          window.dispatchEvent(new CustomEvent("mx-case-photo", { detail: { orderId: row.order_id } }));
+        } catch (e) {
+        }
+        return true;
+      }
+    } catch (e) {
+      return false;
+    }
+    const c = EVENT_CLIENT;
+    if (!c || !c.storage) return false;
+    try {
+      await c.storage.from("case-photos").remove([row.path, row.thumb_path].filter(Boolean));
+      const r = await c.from("case_photos").update({ deleted: true, deleted_at: (/* @__PURE__ */ new Date()).toISOString(), updated_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", row.id);
+      try {
+        window.dispatchEvent(new CustomEvent("mx-case-photo", { detail: { orderId: row.order_id } }));
+      } catch (e) {
+      }
+      return !r.error;
+    } catch (e) {
+      return false;
+    }
+  }
+  function palletLabelsFor(data, order) {
+    const m = order && order.shippingManifest && Array.isArray(order.shippingManifest.pallets) ? order.shippingManifest.pallets.map((p) => String(p.label || "").trim()).filter(Boolean) : [];
+    if (m.length) return m;
+    const fromCases = [...new Set((data.cases || []).filter((c) => c && !c.deleted && c.orderId === order.id && String(c.pallet || "").trim()).map((c) => String(c.pallet).trim()))].sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
+    return fromCases.length ? fromCases : ["1"];
+  }
+  function PalletPhotos({ data, order }) {
+    const orderId = order.id;
+    const [rows, setRows] = useState(null);
+    const [urls, setUrls] = useState({});
+    const [big, setBig] = useState(null);
+    const [tick, setTick] = useState(0);
+    const [busy, setBusy] = useState(null);
+    const [err, setErr] = useState(null);
+    useEffect(() => {
+      const f = (e) => {
+        if (!e.detail || e.detail.orderId === orderId) setTick((t) => t + 1);
+      };
+      window.addEventListener("mx-case-photo", f);
+      return () => window.removeEventListener("mx-case-photo", f);
+    }, [orderId]);
+    useEffect(() => {
+      let live = true;
+      (async () => {
+        try {
+          if (typeof window !== "undefined" && typeof window.__listCasePhotosFn === "function") {
+            const r2 = await window.__listCasePhotosFn(orderId);
+            if (live) {
+              setRows((r2.rows || []).filter((x) => x.source === "pallet" && !x.deleted));
+              setUrls(r2.urls || {});
+            }
+            return;
+          }
+          const c = EVENT_CLIENT;
+          if (!c || !c.storage) {
+            if (live) setRows([]);
+            return;
+          }
+          const { data: r } = await c.from("case_photos").select("*").eq("order_id", orderId).eq("source", "pallet").eq("deleted", false).order("taken_at", { ascending: true }).limit(200);
+          const list = r || [];
+          if (!live) return;
+          setRows(list);
+          const want = list.map((x) => x.thumb_path || x.path).filter(Boolean);
+          if (want.length) {
+            const s = await c.storage.from("case-photos").createSignedUrls(want, 3600);
+            const m = {};
+            for (const x of s.data || []) if (x.signedUrl) m[x.path] = x.signedUrl;
+            if (live) setUrls(m);
+          }
+        } catch (e) {
+          if (live) setRows([]);
+        }
+      })();
+      return () => {
+        live = false;
+      };
+    }, [orderId, tick]);
+    const labels = palletLabelsFor(data, order);
+    const extra = [...new Set((rows || []).map((r) => String(r.pallet || "1")))].filter((l) => !labels.includes(l));
+    const all = [...labels, ...extra];
+    const take = async (pallet, files) => {
+      const list = [...files || []];
+      if (!list.length) return;
+      nlHaptic();
+      setErr(null);
+      setBusy(pallet);
+      let ok = 0;
+      for (const f of list) {
+        const r = await savePalletPhoto({ file: f, orderId, pallet });
+        if (r) ok++;
+      }
+      setBusy(null);
+      if (ok < list.length) setErr(`${list.length - ok} photo${list.length - ok === 1 ? "" : "s"} couldn't be saved \u2014 check the signal and take ${list.length - ok === 1 ? "it" : "them"} again.`);
+      setTick((t) => t + 1);
+    };
+    const openBig = async (row) => {
+      try {
+        if (typeof window.__listCasePhotosFn === "function") {
+          setBig({ row, url: urls[row.path] || urls[row.thumb_path] });
+          return;
+        }
+        const s = await EVENT_CLIENT.storage.from("case-photos").createSignedUrl(row.path, 3600);
+        setBig({ row, url: s.data && s.data.signedUrl });
+      } catch (e) {
+      }
+    };
+    const when = (t) => new Date(t).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+    const count = (rows || []).length;
+    return /* @__PURE__ */ React.createElement("div", { "data-pallet-photos": true }, /* @__PURE__ */ React.createElement(NLEyebrow, null, "Pallet photos", count ? ` \xB7 ${count}` : ""), /* @__PURE__ */ React.createElement(NLCard, null, all.map((l, i) => {
+      const mine = (rows || []).filter((r) => String(r.pallet || "1") === l);
+      return /* @__PURE__ */ React.createElement("div", { key: l, "data-pallet-photo-row": l, style: { padding: "12px 14px", borderTop: i ? `1px solid ${NL.LINE}` : 0 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } }, /* @__PURE__ */ React.createElement(NLSq, { name: "finish", tone: "white" }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 600, color: NL.INK } }, "Pallet ", l), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: NL.SUB } }, busy === l ? "Saving\u2026" : mine.length ? `${mine.length} photo${mine.length === 1 ? "" : "s"} \xB7 last ${when(mine[mine.length - 1].taken_at)}` : "No photos yet")), /* @__PURE__ */ React.createElement("label", { "data-pallet-photo-take": l, style: { flex: "none", height: 40, padding: "0 14px", borderRadius: 20, background: NL.NAVY, color: "#fff", fontSize: 14.5, fontWeight: 600, fontFamily: NLT.FONT, display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer", opacity: busy ? 0.6 : 1 } }, /* @__PURE__ */ React.createElement(NLIcon, { name: "photo", size: 18, color: "#fff", sw: 1.8 }), "Take photo", /* @__PURE__ */ React.createElement("input", { "data-pallet-photo-input": l, type: "file", accept: "image/*", capture: "environment", multiple: true, disabled: !!busy, onChange: (e) => {
+        const fs = e.target.files;
+        take(l, fs);
+        e.target.value = "";
+      }, style: { display: "none" } }))), mine.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, overflowX: "auto", marginTop: 10, paddingBottom: 2 } }, mine.map((r) => {
+        const u = urls[r.thumb_path] || urls[r.path];
+        return /* @__PURE__ */ React.createElement("button", { key: r.id, type: "button", "data-pallet-photo": r.id, "aria-label": `Pallet ${l} photo, ${when(r.taken_at)}`, onClick: () => openBig(r), style: { flex: "none", width: 92, height: 92, border: 0, padding: 0, borderRadius: 12, background: "#E7EBF5", backgroundImage: u ? `url(${u})` : "none", backgroundSize: "cover", backgroundPosition: "center", cursor: "pointer" } });
+      })));
+    }), err && /* @__PURE__ */ React.createElement("div", { "data-pallet-photo-err": true, style: { padding: "10px 14px", fontSize: 13.5, color: "#B3261E", fontWeight: 600, borderTop: `1px solid ${NL.LINE}` } }, err)), big && ReactDOM.createPortal(/* @__PURE__ */ React.createElement("div", { "data-pallet-photo-big": true, onClick: () => setBig(null), style: { position: "fixed", inset: 0, zIndex: 1200, background: "rgba(10,14,30,.9)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 16 } }, big.url ? /* @__PURE__ */ React.createElement("img", { src: big.url, alt: `Pallet ${big.row.pallet}`, style: { maxWidth: "100%", maxHeight: "74vh", borderRadius: 12 } }) : /* @__PURE__ */ React.createElement("div", { style: { color: "#fff" } }, "Loading\u2026"), /* @__PURE__ */ React.createElement("div", { style: { color: "#fff", marginTop: 10, fontSize: 14, textAlign: "center" } }, /* @__PURE__ */ React.createElement("b", null, orderId, " \xB7 pallet ", big.row.pallet), " \xB7 ", when(big.row.taken_at), big.row.taken_by ? ` \xB7 ${String(big.row.taken_by).split("@")[0]}` : ""), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10, marginTop: 14 }, onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        type: "button",
+        "data-pallet-photo-remove": big.row.id,
+        onClick: async () => {
+          if (!window.confirm(`Remove this photo of pallet ${big.row.pallet}?`)) return;
+          nlHaptic();
+          const ok = await removePalletPhoto(big.row);
+          setBig(null);
+          if (!ok) setErr("That photo couldn't be removed \u2014 try again.");
+          setTick((t) => t + 1);
+        },
+        style: { height: 44, padding: "0 18px", borderRadius: 22, border: "1px solid rgba(255,255,255,.4)", background: "transparent", color: "#fff", fontSize: 15, fontWeight: 600, fontFamily: NLT.FONT }
+      },
+      "Remove photo"
+    ), /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => setBig(null), style: { height: 44, padding: "0 18px", borderRadius: 22, border: 0, background: "#fff", color: NL.NAVY, fontSize: 15, fontWeight: 700, fontFamily: NLT.FONT } }, "Close"))), document.body));
   }
   function OrderPhotoCheck({ order, data, setData, onClose }) {
     const cases = useMemo(() => Object.keys(recordedByCase(data, order.id)).map(Number).sort((a, b) => a - b), [order.id]);
@@ -20125,7 +20314,7 @@ Everything else was booked.`);
           } catch (e) {
           }
         });
-      } }, "\u2709 Email accounts")), lineEditMode && /* @__PURE__ */ React.createElement(OrderCustomerField, { order: o, data, updateOrder }), /* @__PURE__ */ React.createElement("div", { className: "mb-3", style: { maxWidth: 420 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Address (shown on the printed packing list)"), /* @__PURE__ */ React.createElement(
+      } }, "\u2709 Email accounts")), (o.stage === "Shipped" || mode === "completed") && /* @__PURE__ */ React.createElement("div", { "data-completed-pallet-photos": true, style: { margin: "4px 0 14px", maxWidth: 680 } }, /* @__PURE__ */ React.createElement(PalletPhotos, { data, order: o })), lineEditMode && /* @__PURE__ */ React.createElement(OrderCustomerField, { order: o, data, updateOrder }), /* @__PURE__ */ React.createElement("div", { className: "mb-3", style: { maxWidth: 420 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Address (shown on the printed packing list)"), /* @__PURE__ */ React.createElement(
         TextInput,
         {
           value: o.address || "",
@@ -39479,7 +39668,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         shareDoc("shipping manifest", shippingManifestDoc(o));
       } catch (e) {
       }
-    } })), /* @__PURE__ */ React.createElement(NLEyebrow, null, "On the order"), /* @__PURE__ */ React.createElement(NLCard, null, /* @__PURE__ */ React.createElement(NLRow, { first: true, lead: /* @__PURE__ */ React.createElement(NLSq, { name: "customers" }), title: o.customer, sub: [o.reference ? `Their reference ${o.reference}` : null, o.address || null].filter(Boolean).join(" \xB7 ") || "No reference or address recorded", right: /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 18, color: "#8A93A8", sw: 2 }), onClick: () => go("customers") }), o.floorNote && /* @__PURE__ */ React.createElement(NLRow, { lead: /* @__PURE__ */ React.createElement(NLSq, { name: "bonding", tone: "amber" }), title: "Note to the floor", sub: o.floorNote }), o.notes && /* @__PURE__ */ React.createElement(NLRow, { lead: /* @__PURE__ */ React.createElement(NLSq, { name: "register", tone: "white" }), title: "Office notes", sub: String(o.notes).length > 140 ? String(o.notes).slice(0, 140) + "\u2026" : o.notes, onClick: () => {
+    } })), /* @__PURE__ */ React.createElement(PalletPhotos, { data, order: o }), /* @__PURE__ */ React.createElement(NLEyebrow, null, "On the order"), /* @__PURE__ */ React.createElement(NLCard, null, /* @__PURE__ */ React.createElement(NLRow, { first: true, lead: /* @__PURE__ */ React.createElement(NLSq, { name: "customers" }), title: o.customer, sub: [o.reference ? `Their reference ${o.reference}` : null, o.address || null].filter(Boolean).join(" \xB7 ") || "No reference or address recorded", right: /* @__PURE__ */ React.createElement(NLIcon, { name: "chev", size: 18, color: "#8A93A8", sw: 2 }), onClick: () => go("customers") }), o.floorNote && /* @__PURE__ */ React.createElement(NLRow, { lead: /* @__PURE__ */ React.createElement(NLSq, { name: "bonding", tone: "amber" }), title: "Note to the floor", sub: o.floorNote }), o.notes && /* @__PURE__ */ React.createElement(NLRow, { lead: /* @__PURE__ */ React.createElement(NLSq, { name: "register", tone: "white" }), title: "Office notes", sub: String(o.notes).length > 140 ? String(o.notes).slice(0, 140) + "\u2026" : o.notes, onClick: () => {
       pickSeg("lines");
       setRecord(true);
     } })), /* @__PURE__ */ React.createElement(NLEyebrow, null, "Its history"), /* @__PURE__ */ React.createElement(NLCard, null, timeline.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { padding: "14px 16px", fontSize: 14, color: NL.SUB } }, "Nothing recorded yet."), timeline.map(([when, what], i) => /* @__PURE__ */ React.createElement(NLRow, { key: i, first: i === 0, lead: /* @__PURE__ */ React.createElement("span", { style: { width: 10, height: 10, borderRadius: 5, background: i === timeline.length - 1 ? NL.NAVY : NL.LINE, display: "inline-block", margin: "0 15px" } }), title: what, sub: when ? dayStr(when) : "" })))), why && ReactDOM.createPortal(/* @__PURE__ */ React.createElement("div", { "data-nl-why-sheet": true, style: { position: "fixed", inset: 0, zIndex: 1150, background: "rgba(20,33,82,0.35)" }, onClick: () => setWhy(null) }, /* @__PURE__ */ React.createElement("div", { onClick: (e) => e.stopPropagation(), className: "nl-up", style: { position: "absolute", left: 0, right: 0, bottom: 0, background: "#fff", borderRadius: "28px 28px 0 0", boxShadow: "0 -12px 40px rgba(20,33,82,0.22)", padding: "10px 20px calc(24px + env(safe-area-inset-bottom, 0px))", fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement("div", { "aria-hidden": "true", style: { width: 40, height: 5, borderRadius: 3, background: NL.LINE, margin: "0 auto 14px" } }), /* @__PURE__ */ React.createElement(NLChip, { tone: "amber" }, fmt(why.make), " TO MAKE"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 20, fontWeight: 600, margin: "10px 0 6px", fontVariantNumeric: "tabular-nums" } }, why.spec.replace(/\s*\(\d+m\)$/, "")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: NL.SUB, marginBottom: 12 } }, fmt(why.ordered), " ordered \xB7 ", fmt(why.packed), " packed \xB7 ", fmt(why.shelf), " on the shelf"), why.why.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, lineHeight: 1.5 } }, "The planner hasn't placed this yet \u2014 it will once a reel of this size is on the rack or a run is booked to the order.") : why.why.map((w, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { display: "flex", gap: 10, padding: "10px 0", borderTop: i ? `1px solid ${NL.LINE}` : 0, fontSize: 15, lineHeight: 1.45 } }, /* @__PURE__ */ React.createElement("span", { style: { width: 8, height: 8, borderRadius: 4, background: NL.AMBERTXT, marginTop: 7, flex: "none" } }), /* @__PURE__ */ React.createElement("span", null, w))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 14 } }, why.bondReels.length > 0 && /* @__PURE__ */ React.createElement("button", { onClick: () => {
