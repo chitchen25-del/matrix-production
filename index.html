@@ -13085,7 +13085,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-06.89";
+  var APP_VERSION = "2026-10-06.90";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -15005,6 +15005,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     );
   }
   var CASE_PHOTO_KEEP_DAYS = 90;
+  var CASE_PHOTO_FULL_DAYS = 30;
   function casePhotoShrink(file, maxPx, quality) {
     return new Promise((resolve) => {
       try {
@@ -15034,6 +15035,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     });
   }
   function casePhotoSummary(res) {
+    if (res && res.weigh) return { weigh: true };
     if (!res || res.error) return { error: res ? String(res.error) : "no result" };
     const codes = {};
     for (const l of res.labels || []) {
@@ -15053,7 +15055,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     const c = EVENT_CLIENT;
     if (!c || !c.storage) return null;
     try {
-      const [big, thumb] = await Promise.all([casePhotoShrink(file, 1600, 0.72), casePhotoShrink(file, 320, 0.7)]);
+      const [big, thumb] = await Promise.all([casePhotoShrink(file, 1200, 0.6), casePhotoShrink(file, 320, 0.7)]);
       if (!big) return null;
       const stem = `${orderId}/case-${Number(caseNum) || 0}/${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
       const up3 = await c.storage.from("case-photos").upload(`${stem}.jpg`, big, { contentType: "image/jpeg", upsert: false });
@@ -15080,8 +15082,8 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       return null;
     }
   }
-  function casePhotoOrdersToClear(orders, now) {
-    const cut = now - CASE_PHOTO_KEEP_DAYS * 864e5;
+  function casePhotoOrdersToClear(orders, now, days = CASE_PHOTO_KEEP_DAYS) {
+    const cut = now - days * 864e5;
     return (orders || []).filter((o) => o && (o.stage === "Shipped" && o.shippedDate && Date.parse(`${String(o.shippedDate).slice(0, 10)}T12:00:00`) < cut || (o.deleted || o.stage === "Cancelled") && Date.parse(o.deletedAt || o.updatedAt || 0) < cut)).map((o) => o.id);
   }
   async function casePhotoCleanup(data) {
@@ -15093,12 +15095,27 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       localStorage.setItem("mxCasePhotoSweep", String(Date.now()));
     } catch (e) {
     }
+    const thin = new Set(casePhotoOrdersToClear(data.orders, Date.now(), CASE_PHOTO_FULL_DAYS));
+    if (thin.size) {
+      try {
+        const { data: rows } = await c.from("case_photos").select("id,order_id,path,thumb_path").eq("deleted", false).neq("source", "pallet").in("order_id", [...thin]).limit(500);
+        const big = (rows || []).filter((r) => r.thumb_path && r.path && r.path !== r.thumb_path);
+        if (big.length) {
+          const rm = await c.storage.from("case-photos").remove(big.map((r) => r.path));
+          if (!rm.error) {
+            for (const r of big) await c.from("case_photos").update({ path: r.thumb_path, updated_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", r.id);
+            reportAppEvent({ kind: "info", message: `case photos thinned: ${big.length} full-size photos cleared (thumbnails kept) from orders shipped over ${CASE_PHOTO_FULL_DAYS} days ago` });
+          }
+        }
+      } catch (e) {
+      }
+    }
     const gone = new Set(casePhotoOrdersToClear(data.orders, Date.now()));
     if (!gone.size) return;
     try {
       const { data: rows } = await c.from("case_photos").select("id,order_id,path,thumb_path").eq("deleted", false).neq("source", "pallet").in("order_id", [...gone]).limit(500);
       if (!rows || !rows.length) return;
-      const paths = rows.flatMap((r) => [r.path, r.thumb_path].filter(Boolean));
+      const paths = [...new Set(rows.flatMap((r) => [r.path, r.thumb_path].filter(Boolean)))];
       const rm = await c.storage.from("case-photos").remove(paths);
       if (rm.error) return;
       await c.from("case_photos").update({ deleted: true, deleted_at: (/* @__PURE__ */ new Date()).toISOString(), updated_at: (/* @__PURE__ */ new Date()).toISOString() }).in("id", rows.map((r) => r.id));
@@ -15172,8 +15189,8 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     return /* @__PURE__ */ React.createElement("div", { "data-case-photos": true, style: { margin: "14px 0", fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 8, margin: "0 4px 8px" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, fontWeight: 700, letterSpacing: 1.2, color: NL.SUB } }, "PHOTOS OF THE CASES \xB7 ", rows.length), /* @__PURE__ */ React.createElement("span", { style: { marginLeft: "auto", fontSize: 12, color: NL.SUB } }, clears ? `kept until ${clears}` : "kept for 3 months after it ships")), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 10 } }, rows.map((r) => {
       const res = r.result || {};
       const u = urls[r.thumb_path] || urls[r.path];
-      return /* @__PURE__ */ React.createElement("button", { key: r.id, type: "button", "data-case-photo": r.id, onClick: () => openBig(r), style: { border: 0, padding: 0, background: "#fff", borderRadius: 14, overflow: "hidden", textAlign: "left", cursor: "pointer", boxShadow: "0 1px 2px rgba(27,43,107,.06), 0 6px 16px rgba(27,43,107,.07)", fontFamily: "inherit" } }, /* @__PURE__ */ React.createElement("div", { style: { height: 96, background: "#E7EBF5", backgroundImage: u ? `url(${u})` : "none", backgroundSize: "cover", backgroundPosition: "center" } }), /* @__PURE__ */ React.createElement("div", { style: { padding: "7px 9px" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: NL.INK } }, "Case ", r.case_num ?? "\u2014"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: res.error || !res.labels ? "#B3261E" : NL.SUB } }, res.error ? "couldn't be read" : res.labels ? `${res.labels} label${res.labels === 1 ? "" : "s"} read` : "no labels read"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: NL.FAINT } }, when(r.taken_at), r.taken_by ? ` \xB7 ${String(r.taken_by).split("@")[0]}` : "")));
-    })), big && ReactDOM.createPortal(/* @__PURE__ */ React.createElement("div", { "data-case-photo-big": true, onClick: () => setBig(null), style: { position: "fixed", inset: 0, zIndex: 1200, background: "rgba(10,14,30,.88)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 16 } }, big.url ? /* @__PURE__ */ React.createElement("img", { src: big.url, alt: `Case ${big.row.case_num}`, style: { maxWidth: "100%", maxHeight: "80vh", borderRadius: 12 } }) : /* @__PURE__ */ React.createElement("div", { style: { color: "#fff" } }, "Loading\u2026"), /* @__PURE__ */ React.createElement("div", { style: { color: "#fff", marginTop: 10, fontSize: 14, textAlign: "center" } }, /* @__PURE__ */ React.createElement("b", null, orderId, " \xB7 case ", big.row.case_num), " \xB7 ", when(big.row.taken_at), big.row.taken_by ? ` \xB7 ${String(big.row.taken_by).split("@")[0]}` : "", big.row.result && big.row.result.codes && Object.keys(big.row.result.codes).length ? /* @__PURE__ */ React.createElement("div", { style: { opacity: 0.8, fontSize: 12.5, marginTop: 4 } }, Object.entries(big.row.result.codes).map(([c, n]) => `${c} \xD7 ${n}`).join(" \xB7 ")) : null)), document.body));
+      return /* @__PURE__ */ React.createElement("button", { key: r.id, type: "button", "data-case-photo": r.id, onClick: () => openBig(r), style: { border: 0, padding: 0, background: "#fff", borderRadius: 14, overflow: "hidden", textAlign: "left", cursor: "pointer", boxShadow: "0 1px 2px rgba(27,43,107,.06), 0 6px 16px rgba(27,43,107,.07)", fontFamily: "inherit" } }, /* @__PURE__ */ React.createElement("div", { style: { height: 96, background: "#E7EBF5", backgroundImage: u ? `url(${u})` : "none", backgroundSize: "cover", backgroundPosition: "center" } }), /* @__PURE__ */ React.createElement("div", { style: { padding: "7px 9px" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, fontWeight: 700, color: NL.INK } }, "Case ", r.case_num ?? "\u2014"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: !res.weigh && (res.error || !res.labels) ? "#B3261E" : NL.SUB } }, res.weigh ? "taken when weighed" : res.error ? "couldn't be read" : res.labels ? `${res.labels} label${res.labels === 1 ? "" : "s"} read` : "no labels read"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: NL.FAINT } }, when(r.taken_at), r.taken_by ? ` \xB7 ${String(r.taken_by).split("@")[0]}` : "")));
+    })), big && ReactDOM.createPortal(/* @__PURE__ */ React.createElement("div", { "data-case-photo-big": true, onClick: () => setBig(null), style: { position: "fixed", inset: 0, zIndex: 1200, background: "rgba(10,14,30,.88)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 16 } }, big.url ? /* @__PURE__ */ React.createElement("img", { src: big.url, alt: `Case ${big.row.case_num}`, style: { maxWidth: "100%", maxHeight: "80vh", borderRadius: 12 } }) : /* @__PURE__ */ React.createElement("div", { style: { color: "#fff" } }, "Loading\u2026"), big.row.thumb_path && big.row.path === big.row.thumb_path && /* @__PURE__ */ React.createElement("div", { style: { color: "rgba(255,255,255,.75)", marginTop: 8, fontSize: 12.5 } }, "The full-size photo was cleared 30 days after shipping \u2014 this is the small copy, with what was read."), /* @__PURE__ */ React.createElement("div", { style: { color: "#fff", marginTop: 10, fontSize: 14, textAlign: "center" } }, /* @__PURE__ */ React.createElement("b", null, orderId, " \xB7 case ", big.row.case_num), " \xB7 ", when(big.row.taken_at), big.row.taken_by ? ` \xB7 ${String(big.row.taken_by).split("@")[0]}` : "", big.row.result && big.row.result.codes && Object.keys(big.row.result.codes).length ? /* @__PURE__ */ React.createElement("div", { style: { opacity: 0.8, fontSize: 12.5, marginTop: 4 } }, Object.entries(big.row.result.codes).map(([c, n]) => `${c} \xD7 ${n}`).join(" \xB7 ")) : null)), document.body));
   }
   async function savePalletPhoto({ file, orderId, pallet }) {
     if (!file || !orderId) return null;
@@ -15363,6 +15380,60 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       },
       "Remove photo"
     ), /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => setBig(null), style: { height: 44, padding: "0 18px", borderRadius: 22, border: 0, background: "#fff", color: NL.NAVY, fontSize: 15, fontWeight: 700, fontFamily: NLT.FONT } }, "Close"))), document.body));
+  }
+  var STORAGE_LIMIT_MB = 1024;
+  var STORAGE_NAMES = { "case-photos": "Case and pallet photos", "news-pdfs": "Newsletters (PDFs)" };
+  function useStorageUsage() {
+    const [u, setU] = useState(null);
+    useEffect(() => {
+      let live = true;
+      (async () => {
+        try {
+          if (typeof window !== "undefined" && typeof window.__storageUsageFn === "function") {
+            const r2 = await window.__storageUsageFn();
+            if (live) setU(r2);
+            return;
+          }
+          try {
+            const c0 = JSON.parse(sessionStorage.getItem("mxStorageUsage") || "null");
+            if (c0 && Date.now() - c0.at < 36e5) {
+              if (live) setU(c0.rows);
+              return;
+            }
+          } catch (e) {
+          }
+          const c = EVENT_CLIENT;
+          if (!c || !c.rpc) return;
+          const { data: r, error } = await c.rpc("mx_storage_usage");
+          if (error || !r) return;
+          try {
+            sessionStorage.setItem("mxStorageUsage", JSON.stringify({ at: Date.now(), rows: r }));
+          } catch (e) {
+          }
+          if (live) setU(r);
+        } catch (e) {
+        }
+      })();
+      return () => {
+        live = false;
+      };
+    }, []);
+    if (!u) return null;
+    const mb = (b) => Math.round(Number(b || 0) / 1048576 * 10) / 10;
+    const used = u.reduce((t, r) => t + mb(r.bytes), 0);
+    return { rows: u.map((r) => ({ name: STORAGE_NAMES[r.bucket] || r.bucket, files: Number(r.files) || 0, mb: mb(r.bytes) })), used: Math.round(used * 10) / 10, pct: Math.round(used / STORAGE_LIMIT_MB * 1e3) / 10 };
+  }
+  function StorageGauge({ P, card }) {
+    const s = useStorageUsage();
+    if (!s) return /* @__PURE__ */ React.createElement("div", { style: card }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, color: P.head } }, "File storage"), /* @__PURE__ */ React.createElement("div", { style: { color: P.dim, fontSize: 13.5, marginTop: 4 } }, "Reading how much is used\u2026"));
+    const col = s.pct >= 90 ? "#B3261E" : s.pct >= 70 ? "#B45309" : "#1E7F3C";
+    return /* @__PURE__ */ React.createElement("div", { style: card, "data-storage-gauge": true }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline" } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 600, color: P.head } }, "File storage"), /* @__PURE__ */ React.createElement("span", { "data-storage-used": true, style: { fontSize: 13.5, fontWeight: 600, color: col } }, s.used.toLocaleString("en-GB"), " MB of ", STORAGE_LIMIT_MB.toLocaleString("en-GB"), " MB \xB7 ", s.pct, "%")), /* @__PURE__ */ React.createElement("div", { style: { height: 10, borderRadius: 5, background: "#E2E6EE", marginTop: 8, overflow: "hidden" } }, /* @__PURE__ */ React.createElement("div", { style: { height: 10, width: `${Math.min(100, s.pct)}%`, background: col, borderRadius: 5 } })), s.rows.map((r) => /* @__PURE__ */ React.createElement("div", { key: r.name, style: { display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "6px 0", borderBottom: `1px solid ${P.line}` } }, /* @__PURE__ */ React.createElement("span", null, r.name), /* @__PURE__ */ React.createElement("span", { style: { color: P.dim } }, r.files, " files \xB7 ", r.mb.toLocaleString("en-GB"), " MB"))), /* @__PURE__ */ React.createElement("div", { style: { color: s.pct >= 70 ? col : P.dim, fontSize: 12.5, marginTop: 8, fontWeight: s.pct >= 70 ? 600 : 400 } }, s.pct >= 90 ? "Nearly full \u2014 uploads will fail at 100%. Clear old photos sooner, or move to Supabase's paid plan (100 GB)." : s.pct >= 70 ? "Over 70% \u2014 keep an eye on it." : `Case photos keep their full size for ${CASE_PHOTO_FULL_DAYS} days after an order ships, then just a small copy until ${CASE_PHOTO_KEEP_DAYS} days; pallet photos are kept.`));
+  }
+  function StorageWarning() {
+    const s = useStorageUsage();
+    if (!s || s.pct < 70) return null;
+    const red = s.pct >= 90;
+    return /* @__PURE__ */ React.createElement("div", { "data-storage-warning": true, style: { margin: "14px 0 0", padding: "12px 14px", borderRadius: 14, background: red ? "#FDECEA" : "#FFF6EC", border: `1px solid ${red ? "#F2B8B5" : "#F3D3AE"}`, color: red ? "#B3261E" : "#9A4A06", fontFamily: NLT.FONT, fontSize: 14.5, fontWeight: 600 } }, "File storage is ", s.pct, "% full (", s.used.toLocaleString("en-GB"), " MB of ", STORAGE_LIMIT_MB.toLocaleString("en-GB"), " MB)", red ? " \u2014 uploads stop at 100%." : ".", " Admin \u2192 Health shows what's using it.");
   }
   function OrderPhotoCheck({ order, data, setData, onClose }) {
     const cases = useMemo(() => Object.keys(recordedByCase(data, order.id)).map(Number).sort((a, b) => a - b), [order.id]);
@@ -22846,7 +22917,8 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     weightQueryFor,
     acceptCaseWeight,
     onClose,
-    onMore
+    onMore,
+    orderId = null
   }) {
     const ordered = [...cases].sort((a, b) => a.caseNum - b.caseNum);
     const holds = (c2) => c2.packedOutside || (c2.contributions || []).some((r) => Number(r.qty) > 0);
@@ -22856,8 +22928,33 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     const [at, setAt] = useState(startAt);
     const [typing, setTyping] = useState(false);
     const [finished, setFinished] = useState(false);
+    const [draft, setDraft] = useState(null);
+    const draftRef = useRef(null);
+    draftRef.current = draft;
+    const [pendingGo, setPendingGo] = useState(null);
+    const [shot, setShot] = useState({});
     const idle = useRef(null);
-    useEffect(() => () => clearTimeout(idle.current), []);
+    const commit = () => {
+      const d = draftRef.current;
+      if (!d) return false;
+      draftRef.current = null;
+      setDraft(null);
+      setCaseWeights({ ...caseWeights, [d.n]: d.v });
+      return true;
+    };
+    useEffect(() => () => {
+      clearTimeout(idle.current);
+      const d = draftRef.current;
+      if (d) setCaseWeights({ ...caseWeights, [d.n]: d.v });
+    }, []);
+    const goNowRef = useRef(null);
+    useEffect(() => {
+      if (pendingGo && !draft) {
+        const t = pendingGo.target;
+        setPendingGo(null);
+        goNowRef.current && goNowRef.current(t);
+      }
+    }, [pendingGo, draft, caseWeights]);
     useEffect(() => {
       if (finished) celebrate("Every case weighed");
     }, [finished]);
@@ -22865,16 +22962,29 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     const c = ordered.find((x) => x.caseNum === at) || ordered[0];
     if (!c) return null;
     const n = c.caseNum;
-    const w = weightOf(n);
-    const q = typing ? null : queryOf(n);
+    const w = draft && draft.n === n ? draft.v : weightOf(n);
+    const q = typing || draft ? null : queryOf(n);
     const setW = (v) => {
-      setCaseWeights({ ...caseWeights, [n]: v });
+      const d = { n, v };
+      draftRef.current = d;
+      setDraft(d);
       setTyping(true);
       clearTimeout(idle.current);
-      idle.current = setTimeout(() => setTyping(false), 1200);
+      idle.current = setTimeout(() => {
+        commit();
+        setTyping(false);
+      }, 900);
+    };
+    const photoFirst = !!orderId && !(Number(weightOf(n)) > 0) && !(draft && draft.n === n) && !["done", "skip"].includes(shot[n]);
+    const takePhoto = async (file) => {
+      if (!file) return;
+      nlHaptic && nlHaptic();
+      setShot((s) => ({ ...s, [n]: "busy" }));
+      const r = await saveCasePhoto({ file, orderId, caseNum: n, source: "case-check", result: { weigh: true } });
+      setShot((s) => ({ ...s, [n]: r ? "done" : "failed" }));
     };
     const press = (k) => {
-      let v = w;
+      let v = draftRef.current && draftRef.current.n === n ? draftRef.current.v : weightOf(n);
       if (k === "del") v = v.slice(0, -1);
       else if (k === ".") {
         if (!v.includes(".")) v = (v || "0") + ".";
@@ -22891,6 +23001,13 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     const go = (target) => {
       clearTimeout(idle.current);
       setTyping(false);
+      if (commit()) {
+        setPendingGo({ target });
+        return;
+      }
+      goNow(target);
+    };
+    const goNow = goNowRef.current = (target) => {
       if (queryOf(n)) return;
       if (!target) {
         if (walk) setFinished(true);
@@ -22912,7 +23029,10 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     });
     return ReactDOM.createPortal(
       /* touch-action: manipulation stops the iPhone's double-tap zoom — typing 11 on the pad was zooming the page in (Chris, 30 Sep 2026). */
-      /* @__PURE__ */ React.createElement("div", { className: "no-print", "data-weigh-sheet": walk ? "walk" : "case", style: { position: "fixed", inset: 0, zIndex: 1150, touchAction: "manipulation" } }, /* @__PURE__ */ React.createElement("button", { type: "button", "aria-label": "Close", onClick: onClose, style: { position: "absolute", inset: 0, border: 0, background: "rgba(20,26,40,0.38)" } }), /* @__PURE__ */ React.createElement("div", { style: {
+      /* @__PURE__ */ React.createElement("div", { className: "no-print", "data-weigh-sheet": walk ? "walk" : "case", style: { position: "fixed", inset: 0, zIndex: 1150, touchAction: "manipulation" } }, /* @__PURE__ */ React.createElement("button", { type: "button", "aria-label": "Close", onClick: () => {
+        commit();
+        onClose();
+      }, style: { position: "absolute", inset: 0, border: 0, background: "rgba(20,26,40,0.38)" } }), /* @__PURE__ */ React.createElement("div", { style: {
         position: "absolute",
         left: 0,
         right: 0,
@@ -22925,7 +23045,14 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
         boxShadow: "0 -6px 24px rgba(0,0,0,0.18)",
         fontFamily: NL.SANS,
         color: NL.INK
-      } }, /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 auto", minHeight: 0, overflowY: "auto" }, ...swipe }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "center", paddingTop: 8 } }, /* @__PURE__ */ React.createElement("span", { style: { width: 40, height: 5, borderRadius: 3, background: "#C5CBD8" } })), finished ? /* @__PURE__ */ React.createElement("div", { "data-weigh-finished": "1", style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 12, padding: "28px 20px calc(28px + env(safe-area-inset-bottom, 0px))", textAlign: "center" } }, /* @__PURE__ */ React.createElement("span", { style: { width: 64, height: 64, borderRadius: 32, background: "#E7F3EB", color: "#1E7F3C", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 34, fontWeight: 700 } }, "\u2713"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 22, fontWeight: 700 } }, done === total ? `All ${total} cases weighed` : `${done} of ${total} cases weighed`), noPallet.length > 0 && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15, fontWeight: 600, color: NL.AMBERTXT } }, "Still not on a pallet: case ", noPallet.join(", ")), /* @__PURE__ */ React.createElement("button", { type: "button", onClick: onClose, style: { ...btn, padding: "0 26px", background: NL.NAVY, color: "#fff" } }, "Back to the order")) : /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10, padding: "6px 16px 10px" } }, walk && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 5 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", justifyContent: "space-between", fontSize: 13.5, fontWeight: 600 } }, /* @__PURE__ */ React.createElement("span", null, done, " of ", total, " weighed"), /* @__PURE__ */ React.createElement("span", { style: { color: NL.SUB } }, total - done, " to weigh")), /* @__PURE__ */ React.createElement("span", { style: { display: "block", height: 6, borderRadius: 3, background: NL.TRACK } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block", width: `${total ? Math.round(100 * done / total) : 0}%`, height: 6, borderRadius: 3, background: NL.NAVY } }))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-start", gap: 10 } }, /* @__PURE__ */ React.createElement("span", { style: { flex: 1, display: "flex", flexDirection: "column", gap: 2 } }, /* @__PURE__ */ React.createElement("span", { "data-weigh-case": n, style: { fontSize: 28, fontWeight: 700, letterSpacing: "-0.5px" } }, "Case ", n), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13.5, color: NL.SUB } }, c.packedOutside ? "Packed outside the app" : `${f.held} boxes in it \xB7 plan ${f.plan}`)), /* @__PURE__ */ React.createElement("button", { type: "button", "aria-label": "Close", onClick: onClose, style: { width: 40, height: 40, border: 0, borderRadius: 20, background: NL.PANEL, fontSize: 18, color: NL.INK } }, "\u2715")), lines.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } }, lines.map((l, k) => /* @__PURE__ */ React.createElement("span", { key: k, style: { display: "inline-flex", alignItems: "center", gap: 7, padding: "4px 10px 4px 4px", borderRadius: 9, background: NL.PANEL, fontSize: 14, fontWeight: 500 } }, /* @__PURE__ */ React.createElement(BoxCount, { n: l.qty, size: "l" }), /* @__PURE__ */ React.createElement("span", null, l.label)))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 600, letterSpacing: 0.3, color: NL.SUB } }, "WEIGHT FOR CASE ", n), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } }, /* @__PURE__ */ React.createElement("output", { "data-weigh-value": "1", style: {
+      } }, /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 auto", minHeight: 0, overflowY: "auto" }, ...swipe }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "center", paddingTop: 8 } }, /* @__PURE__ */ React.createElement("span", { style: { width: 40, height: 5, borderRadius: 3, background: "#C5CBD8" } })), finished ? /* @__PURE__ */ React.createElement("div", { "data-weigh-finished": "1", style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 12, padding: "28px 20px calc(28px + env(safe-area-inset-bottom, 0px))", textAlign: "center" } }, /* @__PURE__ */ React.createElement("span", { style: { width: 64, height: 64, borderRadius: 32, background: "#E7F3EB", color: "#1E7F3C", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 34, fontWeight: 700 } }, "\u2713"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 22, fontWeight: 700 } }, done === total ? `All ${total} cases weighed` : `${done} of ${total} cases weighed`), noPallet.length > 0 && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15, fontWeight: 600, color: NL.AMBERTXT } }, "Still not on a pallet: case ", noPallet.join(", ")), /* @__PURE__ */ React.createElement("button", { type: "button", onClick: onClose, style: { ...btn, padding: "0 26px", background: NL.NAVY, color: "#fff" } }, "Back to the order")) : /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10, padding: "6px 16px 10px" } }, walk && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 5 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", justifyContent: "space-between", fontSize: 13.5, fontWeight: 600 } }, /* @__PURE__ */ React.createElement("span", null, done, " of ", total, " weighed"), /* @__PURE__ */ React.createElement("span", { style: { color: NL.SUB } }, total - done, " to weigh")), /* @__PURE__ */ React.createElement("span", { style: { display: "block", height: 6, borderRadius: 3, background: NL.TRACK } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block", width: `${total ? Math.round(100 * done / total) : 0}%`, height: 6, borderRadius: 3, background: NL.NAVY } }))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-start", gap: 10 } }, /* @__PURE__ */ React.createElement("span", { style: { flex: 1, display: "flex", flexDirection: "column", gap: 2 } }, /* @__PURE__ */ React.createElement("span", { "data-weigh-case": n, style: { fontSize: 28, fontWeight: 700, letterSpacing: "-0.5px" } }, "Case ", n), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13.5, color: NL.SUB } }, c.packedOutside ? "Packed outside the app" : `${f.held} boxes in it \xB7 plan ${f.plan}`)), /* @__PURE__ */ React.createElement("button", { type: "button", "aria-label": "Close", onClick: () => {
+        commit();
+        onClose();
+      }, style: { width: 40, height: 40, border: 0, borderRadius: 20, background: NL.PANEL, fontSize: 18, color: NL.INK } }, "\u2715")), lines.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } }, lines.map((l, k) => /* @__PURE__ */ React.createElement("span", { key: k, style: { display: "inline-flex", alignItems: "center", gap: 7, padding: "4px 10px 4px 4px", borderRadius: 9, background: NL.PANEL, fontSize: 14, fontWeight: 500 } }, /* @__PURE__ */ React.createElement(BoxCount, { n: l.qty, size: "l" }), /* @__PURE__ */ React.createElement("span", null, l.label)))), orderId && (photoFirst || shot[n] === "busy" || shot[n] === "failed") && /* @__PURE__ */ React.createElement("div", { "data-weigh-photo-step": n, style: { display: "flex", alignItems: "center", gap: 10 } }, /* @__PURE__ */ React.createElement("label", { "data-weigh-photo": n, style: { flex: 1, height: 52, borderRadius: 26, background: shot[n] === "busy" ? "#9AA3B8" : NL.NAVY, color: "#fff", fontSize: 16.5, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, cursor: "pointer" } }, /* @__PURE__ */ React.createElement(NLIcon, { name: "photo", size: 20, color: "#fff", sw: 1.8 }), shot[n] === "busy" ? "Saving the photo\u2026" : shot[n] === "failed" ? "Photo didn't save \u2014 again" : `Photo of case ${n}`, /* @__PURE__ */ React.createElement("input", { "data-weigh-photo-input": n, type: "file", accept: "image/*", capture: "environment", disabled: shot[n] === "busy", onChange: (e) => {
+        const f2 = e.target.files && e.target.files[0];
+        e.target.value = "";
+        takePhoto(f2);
+      }, style: { display: "none" } })), /* @__PURE__ */ React.createElement("button", { type: "button", "data-weigh-photo-skip": n, onClick: () => setShot((s) => ({ ...s, [n]: "skip" })), style: { height: 52, padding: "0 14px", border: "1px solid #C5CBD8", borderRadius: 26, background: "#fff", color: NL.SUB, fontSize: 15, fontWeight: 600 } }, "Skip photo")), shot[n] === "done" && /* @__PURE__ */ React.createElement("div", { "data-weigh-photo-done": n, style: { fontSize: 14, fontWeight: 600, color: "#1E7F3C" } }, "\u2713 Photo of case ", n, " saved \u2014 now the weight"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6, opacity: photoFirst ? 0.45 : 1 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 600, letterSpacing: 0.3, color: NL.SUB } }, photoFirst ? `PHOTO FIRST, THEN THE WEIGHT` : `WEIGHT FOR CASE ${n}`), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } }, /* @__PURE__ */ React.createElement("output", { "data-weigh-value": "1", style: {
         flex: 1,
         height: 54,
         borderRadius: 12,
@@ -22979,8 +23106,16 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
           type: "button",
           "data-key": k,
           "aria-label": k === "del" ? "Delete" : k,
-          onClick: () => press(k),
-          style: { height: 46, border: 0, borderRadius: 8, background: "#fff", boxShadow: "0 1px 0 #9CA1AA", fontSize: 24, color: NL.INK, touchAction: "manipulation", WebkitUserSelect: "none", userSelect: "none" }
+          disabled: photoFirst,
+          onPointerDown: (e) => {
+            if (photoFirst) return;
+            e.preventDefault();
+            press(k);
+          },
+          onClick: (e) => {
+            if (!photoFirst && e.detail === 0) press(k);
+          },
+          style: { height: 46, border: 0, borderRadius: 8, background: photoFirst ? "#EEF0F4" : "#fff", boxShadow: "0 1px 0 #9CA1AA", fontSize: 24, color: photoFirst ? "#A3ABBC" : NL.INK, touchAction: "manipulation", WebkitUserSelect: "none", userSelect: "none", WebkitTouchCallout: "none" }
         },
         k === "del" ? "\u232B" : k
       ))))),
@@ -23087,6 +23222,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
         weightQueryFor,
         acceptCaseWeight,
         onClose: () => setWeigh(null),
+        orderId: editOrder ? editOrder.id : null,
         onMore: (n) => {
           setWeigh(null);
           setSel(n);
@@ -27986,7 +28122,7 @@ Stock changes back: ${b.stock.map(([c, q]) => `${c} ${q > 0 ? "\u2212" : "+"}${M
       } });
       if (section === "activity") return /* @__PURE__ */ React.createElement(AdminActivity, { data, P, card, btn, openOldLog: () => setSection("oldlog") });
       if (section === "fix") return /* @__PURE__ */ React.createElement(AdminFixTools, { data, setData, P, card, btn });
-      if (section === "health") return /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 10 } }, /* @__PURE__ */ React.createElement(OvernightMorning, null), /* @__PURE__ */ React.createElement(
+      if (section === "health") return /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 10 } }, /* @__PURE__ */ React.createElement(StorageGauge, { P, card }), /* @__PURE__ */ React.createElement(OvernightMorning, null), /* @__PURE__ */ React.createElement(
         AdminTruths,
         {
           P,
@@ -38760,7 +38896,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       else if (/^Bond/i.test(nextLine)) go("bonding");
       else if (/glue/i.test(nextLine)) go("glueline");
       else jumpToOrder(first.id, first.stage);
-    }, style: { height: 40, borderRadius: 20, border: 0, background: NL.NAVY, color: "#fff", fontFamily: NLT.FONT, fontSize: 14.5, fontWeight: 600, padding: "0 16px", whiteSpace: "nowrap", flex: "none" } }, /^Pick/i.test(nextLine) ? "Start pick" : /^Bond/i.test(nextLine) ? "Bonding" : /glue/i.test(nextLine) ? "Glue line" : "Open"))), photoOn && setData && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 12 } }, qa("Check a case", "photo", () => setCheckCase(true), "check")), checkCase && /* @__PURE__ */ React.createElement(CheckACaseSheet, { data, setData, onClose: () => setCheckCase(false) }), (() => {
+    }, style: { height: 40, borderRadius: 20, border: 0, background: NL.NAVY, color: "#fff", fontFamily: NLT.FONT, fontSize: 14.5, fontWeight: 600, padding: "0 16px", whiteSpace: "nowrap", flex: "none" } }, /^Pick/i.test(nextLine) ? "Start pick" : /^Bond/i.test(nextLine) ? "Bonding" : /glue/i.test(nextLine) ? "Glue line" : "Open"))), photoOn && setData && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 12 } }, qa("Check a case", "photo", () => setCheckCase(true), "check")), checkCase && /* @__PURE__ */ React.createElement(CheckACaseSheet, { data, setData, onClose: () => setCheckCase(false) }), isAdminLogin() && /* @__PURE__ */ React.createElement(StorageWarning, null), (() => {
       const items = isAdminDevice() ? (() => {
         try {
           return adminAlertObjects(data);
@@ -38824,7 +38960,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       else if (/^Bond/i.test(nextLine)) go("bonding");
       else if (/glue/i.test(nextLine)) go("glueline");
       else jumpToOrder(first.id, first.stage);
-    }, style: { height: 40, borderRadius: 20, border: 0, background: NL.NAVY, color: "#fff", fontFamily: NLT.FONT, fontSize: 14.5, fontWeight: 600, padding: "0 16px", whiteSpace: "nowrap", flex: "none" } }, /^Pick/i.test(nextLine) ? "Start pick" : /^Bond/i.test(nextLine) ? "Bonding" : /glue/i.test(nextLine) ? "Glue line" : "Open"))), /* @__PURE__ */ React.createElement(NLIn, { i: 3 }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 12, overflowX: "auto", paddingBottom: 2 } }, photoOn && setData && qa("Check a case", "photo", () => setCheckCase(true), "check"), qa("New order", "dashboard", () => go("neworders"), "neworder"), qa("Log a reel", "glueline", () => go("glueline"), "reel"), qa("Find a box", "search", () => onSearch && onSearch(), "find"))), checkCase && /* @__PURE__ */ React.createElement(CheckACaseSheet, { data, setData, onClose: () => setCheckCase(false) }), afternoon && nextCard, (() => {
+    }, style: { height: 40, borderRadius: 20, border: 0, background: NL.NAVY, color: "#fff", fontFamily: NLT.FONT, fontSize: 14.5, fontWeight: 600, padding: "0 16px", whiteSpace: "nowrap", flex: "none" } }, /^Pick/i.test(nextLine) ? "Start pick" : /^Bond/i.test(nextLine) ? "Bonding" : /glue/i.test(nextLine) ? "Glue line" : "Open"))), /* @__PURE__ */ React.createElement(NLIn, { i: 3 }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 12, overflowX: "auto", paddingBottom: 2 } }, photoOn && setData && qa("Check a case", "photo", () => setCheckCase(true), "check"), qa("New order", "dashboard", () => go("neworders"), "neworder"), qa("Log a reel", "glueline", () => go("glueline"), "reel"), qa("Find a box", "search", () => onSearch && onSearch(), "find"))), checkCase && /* @__PURE__ */ React.createElement(CheckACaseSheet, { data, setData, onClose: () => setCheckCase(false) }), afternoon && nextCard, isAdminLogin() && /* @__PURE__ */ React.createElement(StorageWarning, null), (() => {
       const items = isAdminDevice() ? (() => {
         try {
           return adminAlertObjects(data);
@@ -39167,7 +39303,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const seenG = new Set(grouped.flatMap((g) => g[1].map((m) => m.id)));
     const other = mats.filter((m) => !seenG.has(m.id));
     if (other.length) grouped.push(["Everything else", other]);
-    return /* @__PURE__ */ React.createElement(PullToRefresh, { onRefresh }, /* @__PURE__ */ React.createElement("div", { "data-nl-stock": true, style: { display: "flex", flexDirection: "column", fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement(NLHero, { title: "Stock", sub: `${fmt(totalBoxes)} boxes \xB7 ${fmt(totalReels)} reels \xB7 ${mats.length} materials`, onSearch, alerts, onOpenAdmin: () => go("admin") }, /* @__PURE__ */ React.createElement("label", { "data-nl-stock-search": true, style: { display: "flex", alignItems: "center", gap: 10, height: 46, marginTop: 16, padding: "0 6px 0 14px", borderRadius: 14, background: "rgba(255,255,255,0.14)", border: "1px solid rgba(255,255,255,0.22)", color: "rgba(255,255,255,0.85)" } }, /* @__PURE__ */ React.createElement(NLIcon, { name: "search", size: 20, color: "rgba(255,255,255,0.85)", sw: 1.8 }), /* @__PURE__ */ React.createElement("input", { value: q, onChange: (e) => setQ(e.target.value), placeholder: "A size, a code, a bay or a material", "aria-label": "Search stock", autoCapitalize: "characters", style: { flex: 1, minWidth: 0, border: 0, outline: "none", background: "transparent", color: "#fff", fontFamily: NLT.FONT, fontSize: 15 } }), /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => {
+    return /* @__PURE__ */ React.createElement(PullToRefresh, { onRefresh }, /* @__PURE__ */ React.createElement("div", { "data-nl-stock": true, style: { display: "flex", flexDirection: "column", fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement(NLHero, { title: "Stock", sub: `${fmt(totalBoxes)} boxes \xB7 ${fmt(totalReels)} reels \xB7 ${mats.length} materials`, onSearch, alerts, onOpenAdmin: () => go("admin") }, /* @__PURE__ */ React.createElement("label", { "data-nl-stock-search": true, style: { display: "flex", alignItems: "center", gap: 10, height: 46, marginTop: 16, padding: "0 6px 0 14px", borderRadius: 14, background: "rgba(255,255,255,0.14)", border: "1px solid rgba(255,255,255,0.22)", color: "rgba(255,255,255,0.85)" } }, /* @__PURE__ */ React.createElement(NLIcon, { name: "search", size: 20, color: "rgba(255,255,255,0.85)", sw: 1.8 }), /* @__PURE__ */ React.createElement("input", { value: q, onChange: (e) => setQ(e.target.value), placeholder: "A size, a code, a bay or a material", "aria-label": "Search stock", autoCapitalize: "characters", "data-nl-stock-input": true, style: { flex: 1, minWidth: 0, border: 0, outline: "none", background: "transparent", color: NL.INK, caretColor: NL.NAVY, fontFamily: NLT.FONT, fontSize: 15 } }), /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => {
       nlHaptic();
       onScan && onScan();
     }, "aria-label": "Scan a code", style: { width: 36, height: 36, borderRadius: 18, border: 0, background: "rgba(255,255,255,0.18)", display: "flex", alignItems: "center", justifyContent: "center" } }, /* @__PURE__ */ React.createElement(NLIcon, { name: "scan", size: 18, color: "#fff", sw: 1.8 }))), /* @__PURE__ */ React.createElement(NLBandStats, { items: [[unchecked.length, "unchecked", "amber", () => openStockTab("boxes")], [missing, "still missing", "red", () => openStockTab("boxes")], [disc, "don't add up", "amber", () => openStockTab("discrepancies")], [lowMats.length, lowMats.length === 1 ? "material low" : "materials low", lowMats.length ? "red" : "teal", () => {
