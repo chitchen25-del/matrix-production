@@ -12672,12 +12672,15 @@ ${line}` : line;
     const orderCodes = /* @__PURE__ */ new Set();
     for (const m of Object.values(recorded)) for (const k of Object.keys(m)) orderCodes.add(k);
     const knownCodes = new Set((data.bondingRuns || []).filter((r) => r && !r.deleted && r.boxNumber).map((r) => upper(r.boxNumber)));
-    const perCase = caseNums.map((n) => ({ caseNum: n, recorded: recorded[n], ...reads[n] ? photoCounts(reads[n], orderCodes, knownCodes) : { counts: null } }));
+    const perCase = caseNums.map((n) => ({ caseNum: n, recorded: recorded[n], ...reads[n] ? reads[n].error ? { counts: null, error: reads[n].error } : photoCounts(reads[n], orderCodes, knownCodes) : { counts: null } }));
     const missingPhotos = perCase.filter((p) => !p.counts && !p.error).map((p) => p.caseNum);
     const failed = perCase.filter((p) => p.error).map((p) => p.caseNum);
-    const recTotal = {}, photoTotal = {};
+    const recTotal = {}, photoTotal = {}, recSeen = {};
     for (const p of perCase) {
-      for (const [k, n] of Object.entries(p.recorded)) addTo(recTotal, k, n);
+      for (const [k, n] of Object.entries(p.recorded)) {
+        addTo(recTotal, k, n);
+        if (p.counts) addTo(recSeen, k, n);
+      }
       if (p.counts) for (const [k, n] of Object.entries(p.counts)) addTo(photoTotal, k, n);
     }
     const unsure = perCase.filter((p) => p.counts && (p.unsure.length || p.unreadable)).map((p) => p.caseNum);
@@ -12688,11 +12691,16 @@ ${line}` : line;
     const trusted = !missingPhotos.length && !failed.length && !unsure.length && !unknown.length;
     const problems = [];
     if (!totalsAgree) {
-      for (const code of /* @__PURE__ */ new Set([...Object.keys(recTotal), ...Object.keys(photoTotal)])) {
-        const r = recTotal[code] || 0, ph = photoTotal[code] || 0;
+      for (const code of /* @__PURE__ */ new Set([...Object.keys(recSeen), ...Object.keys(photoTotal)])) {
+        const r = recSeen[code] || 0, ph = photoTotal[code] || 0;
         if (r === ph) continue;
         const where = perCase.filter((p) => p.counts && (p.recorded[code] || 0) !== (p.counts[code] || 0)).map((p) => ({ caseNum: p.caseNum, rec: p.recorded[code] || 0, got: p.counts[code] || 0 }));
         problems.push({ code, recorded: r, seen: ph, where, belongs: orderCodes.has(code), onSystem: knownCodes.has(code) });
+      }
+      for (const code of Object.keys(recSeen)) {
+        if ((recSeen[code] || 0) !== (photoTotal[code] || 0)) continue;
+        const where = perCase.filter((p) => p.counts && (p.recorded[code] || 0) !== (p.counts[code] || 0)).map((p) => ({ caseNum: p.caseNum, rec: p.recorded[code] || 0, got: p.counts[code] || 0 }));
+        if (where.length) problems.push({ code, recorded: recSeen[code], seen: photoTotal[code], where, belongs: true, onSystem: knownCodes.has(code), moved: true });
       }
     }
     const verdict = trusted && totalsAgree && comp.complete ? casesRight === caseNums.length ? "correct" : "rearrange" : "problems";
@@ -12741,6 +12749,9 @@ ${line}` : line;
       else if (g > r) extra.push({ code, n: g - r, onSystem: knownCodes.has(code) });
     }
     const held = Object.values(recorded).reduce((t, n) => t + n, 0), seen = Object.values(pc.counts).reduce((t, n) => t + n, 0);
+    const caseRow = (data.cases || []).find((c) => c && !c.deleted && c.orderId === orderId && Number(c.caseNum) === Number(caseNum));
+    const cap = Math.max(Number(caseRow && caseRow.maxSize) || 0, 20);
+    if (cap > 0 && seen > cap && seen > held) return { state: "error", error: `${seen} labels read in a case that holds ${cap} \u2014 some were counted twice. Retake it, straight down.`, overCap: true, seen, cap };
     const sameAsSystem = !missing.length && !extra.length;
     const orderRight = !notOrder.length && !wrongTape.length && !pc.unknown.length;
     const hidden = !sameAsSystem && !extra.length && orderRight && weightOk && seen > 0 && seen * 2 >= held ? missing.reduce((t, x) => t + x.n, 0) : 0;
@@ -13229,7 +13240,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-07.102";
+  var APP_VERSION = "2026-10-07.104";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -15236,6 +15247,53 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       return null;
     }
   }
+  var EARLIER_PHOTO_HOURS = 12;
+  async function earlierCasePhotos(orderId) {
+    if (!orderId) return {};
+    let rows = null;
+    try {
+      if (typeof window !== "undefined" && typeof window.__earlierCasePhotosFn === "function") rows = await window.__earlierCasePhotosFn(orderId);
+      else {
+        const c = EVENT_CLIENT;
+        if (!c || !c.from) return {};
+        const { data } = await c.from("case_photos").select("id,case_num,path,taken_at,result").eq("order_id", orderId).eq("deleted", false).eq("source", "case-check").gte("taken_at", new Date(Date.now() - EARLIER_PHOTO_HOURS * 36e5).toISOString()).order("taken_at", { ascending: false }).limit(300);
+        rows = data;
+      }
+    } catch (e) {
+      return {};
+    }
+    const out = {};
+    for (const r of rows || []) {
+      const n = Number(r.case_num);
+      if (!n || out[n]) continue;
+      const res = r.result || {};
+      const read = Number(res.labels) >= 0 && res.codes && typeof res.codes === "object" && !res.error ? { labels: Object.entries(res.codes).flatMap(([code, k]) => Array.from({ length: Number(k) || 0 }, () => ({ code }))), unreadable: Number(res.unreadable) || 0 } : null;
+      out[n] = { id: r.id, path: r.path, read };
+    }
+    return out;
+  }
+  async function readSavedCasePhoto(row) {
+    let res;
+    try {
+      if (typeof window !== "undefined" && typeof window.__readSavedCasePhotoFn === "function") res = await window.__readSavedCasePhotoFn(row);
+      else {
+        const c = EVENT_CLIENT;
+        if (!c || !c.storage) return { error: "Reading a photo needs the internet \u2014 try again when this phone is online." };
+        const d = await c.storage.from("case-photos").download(row.path);
+        if (d.error || !d.data) return { error: "The photo taken earlier couldn't be opened \u2014 retake it." };
+        res = await readLabelsFromFile(d.data);
+        if (res && !res.error && row.id) {
+          try {
+            await c.from("case_photos").update({ result: casePhotoSummary({ ...res, weigh: true }), updated_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", row.id);
+          } catch (e) {
+          }
+        }
+      }
+    } catch (e) {
+      res = { error: String(e && e.message || e) };
+    }
+    return res || { error: "No answer came back \u2014 try again." };
+  }
   function casePhotoOrdersToClear(orders, now, days = CASE_PHOTO_KEEP_DAYS) {
     const cut = now - days * 864e5;
     return (orders || []).filter((o) => o && (o.stage === "Shipped" && o.shippedDate && Date.parse(`${String(o.shippedDate).slice(0, 10)}T12:00:00`) < cut || (o.deleted || o.stage === "Cancelled") && Date.parse(o.deletedAt || o.updatedAt || 0) < cut)).map((o) => o.id);
@@ -15643,6 +15701,10 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     }
     for (const n of cases) {
       const k = checks[n];
+      if (k && k.overCap) forVerdict[n] = { error: k.error };
+    }
+    for (const n of cases) {
+      const k = checks[n];
       if (k && k.state === "hidden") forVerdict[n] = { labels: Object.entries(k.recorded).flatMap(([code, q]) => Array.from({ length: q }, () => ({ code, sure: true }))), unreadable: 0 };
     }
     const v0 = stage === "result" ? photoOrderVerdict(data, order.id, forVerdict) : null;
@@ -15653,7 +15715,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     const hiddenCases = cases.filter((n) => checks[n] && checks[n].state === "hidden");
     const short = (sp) => String(sp || "").replace(/\s+(2-3pt|3-4pt|6pt)$/i, "");
     const tally = v0 ? photoOrderLines(data, order, v0.photoTotal) : null;
-    const linesShort = tally ? tally.lines.filter((l) => !l.complete) : [], linesOver = tally ? tally.lines.filter((l) => l.over > 0) : [];
+    const linesShort = tally && v0 && !v0.failed.length && !v0.missingPhotos.length ? tally.lines.filter((l) => !l.complete) : [], linesOver = tally ? tally.lines.filter((l) => l.over > 0) : [];
     const empties = v0 && initialReads ? cases.filter((n) => !Object.keys((v0.perCase.find((p) => p.caseNum === n) || {}).recorded || {}).length).length : 0;
     const v1 = v0 && empties ? { ...v0, casesRight: v0.casesRight - empties, caseCount: v0.caseCount - empties } : v0;
     const v = v1 && (orderIssues.length || tally && tally.spare.length || v0.trusted && v0.totalsAgree && (linesShort.length || linesOver.length)) ? { ...v1, verdict: "problems" } : v1;
@@ -15732,9 +15794,9 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
         const f = e.target.files && e.target.files[0];
         e.target.value = "";
         onFile(f);
-      } }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 12 } }, /* @__PURE__ */ React.createElement("button", { type: "button", onClick: onClose, "aria-label": "Close", style: { width: 40, height: 40, borderRadius: 20, border: 0, background: NL.PANEL, fontSize: 18 } }, "\u2715"), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, display: "flex", flexDirection: "column" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, fontWeight: 600, letterSpacing: 0.4, color: NL.SUB } }, order.id, " \xB7 ", String(order.customer || "").toUpperCase()), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 21, fontWeight: 600 } }, stage === "walk" ? "Check the whole order" : "Whole order checked"))), stage === "walk" && /* @__PURE__ */ React.createElement("div", { ...swipe }, strip, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: NL.SUB, margin: "8px 0 12px" } }, "\u2713 read \xB7 \u2026 reading in the background \xB7 swipe or tap a number to retake"), /* @__PURE__ */ React.createElement("div", { style: { height: 300, borderRadius: 16, background: "#22262E", color: "#fff", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, position: "relative" } }, /* @__PURE__ */ React.createElement("span", { style: { position: "absolute", left: 14, top: 12, padding: "4px 10px", borderRadius: 12, background: "rgba(255,255,255,0.18)", fontSize: 13, fontWeight: 700 } }, "CASE ", cn, " of ", cases.length), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 16, fontWeight: 600 } }, reads[cn] ? reads[cn] === "reading" ? `Case ${cn} is being read\u2026` : `Case ${cn} is done \u2014 retake?` : `Look straight down into case ${cn}`), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, opacity: 0.8 } }, "every label in the frame")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", padding: "18px 0 6px" } }, /* @__PURE__ */ React.createElement("button", { type: "button", "data-walk-shoot": true, "aria-label": `Take case ${cn}`, onClick: shoot, style: { width: 80, height: 80, borderRadius: 40, border: `5px solid ${NL.NAVY}`, background: "#fff", display: "flex", alignItems: "center", justifyContent: "center", touchAction: "manipulation" } }, /* @__PURE__ */ React.createElement("span", { style: { width: 58, height: 58, borderRadius: 29, background: NL.NAVY } }))), /* @__PURE__ */ React.createElement("div", { style: { textAlign: "center", fontSize: 13.5, color: NL.SUB } }, taken, " of ", cases.length, " taken", reading ? ` \xB7 ${reading} being read` : ""), taken === cases.length && reading === 0 && /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => setStage("result"), style: { ...pill(NL.NAVY, "#fff"), width: "100%", minHeight: 50, marginTop: 12, fontSize: 16 } }, "See the result")), stage === "result" && v && /* @__PURE__ */ React.createElement("div", { "data-walk-result": v.verdict }, v.verdict !== "problems" ? /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 8, textAlign: "center", padding: "12px 0" } }, /* @__PURE__ */ React.createElement("span", { style: { width: 96, height: 96, borderRadius: 48, background: "#1E7F3C", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 52, fontWeight: 700 } }, "\u2713"), /* @__PURE__ */ React.createElement("span", { "data-walk-pct": true, style: { fontSize: 40, fontWeight: 700, color: "#1E7F3C" } }, "100%"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 18, fontWeight: 600 } }, order.id, " is ", auto ? "complete and correct" : "correct"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 14, color: NL.SUB } }, v.caseCount, " cases \xB7 ", v.boxes, " boxes", tally ? ` \xB7 all ${tally.total} line${tally.total === 1 ? "" : "s"} of the order` : ""), hiddenCases.length > 0 && /* @__PURE__ */ React.createElement("span", { "data-walk-hidden": true, style: { fontSize: 13, color: NL.SUB } }, "Case", hiddenCases.length === 1 ? "" : "s", " ", hiddenCases.join(", "), ": some labels hidden in the photo \u2014 the weight says they're there."), auto && /* @__PURE__ */ React.createElement("div", { "data-walk-auto": true, style: { textAlign: "left", width: "100%", marginTop: 8, padding: 12, borderRadius: 12, background: "#EEF7F1", border: "1px solid #9FCDAE" } }, /* @__PURE__ */ React.createElement("b", { style: { color: "#1E7F3C" } }, "I've put the case map right"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, margin: "4px 0 6px" } }, "The order was all there, but ", auto.boxes, " box", auto.boxes === 1 ? " was" : "es were", " in different cases from the system. I've moved ", auto.boxes === 1 ? "it" : "them", " on the system to match your photos:"), auto.pairs.map((p, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { display: "flex", gap: 8, alignItems: "center", fontSize: 14, padding: "4px 0" } }, /* @__PURE__ */ React.createElement(BoxCount, { n: p.n, size: "m" }), /* @__PURE__ */ React.createElement("b", { style: { fontFamily: "ui-monospace, Menlo, monospace" } }, p.code), /* @__PURE__ */ React.createElement("span", { style: { color: NL.SUB } }, "case ", p.from, " \u2192 case ", p.to))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: NL.SUB, marginTop: 6 } }, "Case plans for case", auto.changed.length === 1 ? "" : "s", " ", auto.changed.join(", "), " now match what's in them. Weights stay as weighed.")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, width: "100%", marginTop: 10 } }, /* @__PURE__ */ React.createElement("button", { type: "button", onClick: onClose, style: { ...pill(NL.NAVY, "#fff"), flex: 1, minHeight: 50, fontSize: 16 } }, "Done"), auto && /* @__PURE__ */ React.createElement("button", { type: "button", "data-walk-undo": true, onClick: undo, style: { ...pill("#fff", NL.INK, "1px solid #C5CBD8"), minHeight: 50 } }, "Undo the moves"))) : /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { padding: 14, borderRadius: 14, background: "#FFF4E0", border: `1px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("b", { "data-walk-pct": true, style: { fontSize: 18, color: "#8A4B00" } }, Math.floor(100 * v.casesRight / Math.max(1, v.caseCount)), "% \u2014 ", v.casesRight, " of ", v.caseCount, " cases right"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, marginTop: 4 } }, !v.complete ? `The order is ${v.pct}% complete, so nothing has been moved.` : "Some things need you, so nothing has been moved yet.")), (orderIssues.length > 0 || tally && tally.spare.length > 0 || linesShort.length > 0 || linesOver.length > 0) && /* @__PURE__ */ React.createElement("div", { "data-walk-order": true, style: { padding: 12, borderRadius: 12, border: `1px solid ${NL.LINE}`, display: "flex", flexDirection: "column", gap: 6 } }, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 15 } }, "Against the order", tally ? ` \u2014 ${tally.complete} of ${tally.total} lines in full` : ""), orderIssues.map((x, i) => /* @__PURE__ */ React.createElement("div", { key: "oi" + i, "data-walk-order-issue": x.kind, style: { fontSize: 14, color: RED, fontWeight: 600 } }, "Case ", x.caseNum, ": ", /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "ui-monospace, Menlo, monospace" } }, x.code), " \xD7 ", x.n, " \u2014 ", x.kind === "tape" ? x.strong ? "strong tape, on an ordinary order" : "not strong tape, and this order is strong tape" : `${x.product ? short(x.product) + " \u2014 " : ""}not on this order`)), tally && tally.spare.filter((x) => !orderIssues.some((o) => o.code === x.code)).map((x, i) => /* @__PURE__ */ React.createElement("div", { key: "sp" + i, style: { fontSize: 14, color: RED, fontWeight: 600 } }, /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "ui-monospace, Menlo, monospace" } }, x.code), " \xD7 ", x.n, " fits no line on the order")), linesShort.slice(0, 6).map((l) => /* @__PURE__ */ React.createElement("div", { key: "ls" + l.id, "data-walk-line-short": true, style: { fontSize: 14 } }, short(l.description), ": ", /* @__PURE__ */ React.createElement("b", null, l.seen, " of ", l.ordered), " in the photos \u2014 ", l.ordered - l.seen, " still to go in")), linesShort.length > 6 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: NL.SUB } }, "\u2026and ", linesShort.length - 6, " more line", linesShort.length - 6 === 1 ? "" : "s", " not in the cases yet"), linesOver.map((l) => /* @__PURE__ */ React.createElement("div", { key: "lo" + l.id, style: { fontSize: 14, color: "#B45309" } }, short(l.description), ": ", l.seen, " in the photos, the order wants ", l.ordered))), [...v.failed, ...v.unsure].length > 0 && /* @__PURE__ */ React.createElement("div", { "data-walk-retake": true, style: { padding: 12, borderRadius: 12, border: `1px solid ${NL.LINE}` } }, /* @__PURE__ */ React.createElement("b", null, "Retake ", [.../* @__PURE__ */ new Set([...v.failed, ...v.unsure])].length === 1 ? "this case" : "these cases"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: NL.SUB, margin: "4px 0 8px" } }, "A label couldn't be read for certain."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } }, [.../* @__PURE__ */ new Set([...v.failed, ...v.unsure])].map((n) => /* @__PURE__ */ React.createElement("button", { key: n, type: "button", onClick: () => retake(n), style: pill(NL.NAVY, "#fff") }, "Retake case ", n)))), v.unknown.map((u, i) => /* @__PURE__ */ React.createElement("div", { key: "u" + i, style: { padding: 12, borderRadius: 12, border: `1px solid ${NL.LINE}`, fontSize: 14 } }, /* @__PURE__ */ React.createElement("b", { style: { fontFamily: "ui-monospace, Menlo, monospace" } }, u.code), " \xD7 ", u.n, " in case ", u.caseNum, " \u2014 not on the system. Add it with Found a box first, then check again.")), v.problems.map((p) => /* @__PURE__ */ React.createElement("div", { key: p.code, "data-walk-problem": p.code, style: { padding: 12, borderRadius: 12, border: `1px solid ${NL.LINE}`, display: "flex", flexDirection: "column", gap: 6 } }, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 15 } }, /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "ui-monospace, Menlo, monospace" } }, p.code), ": system ", p.recorded, ", photos ", p.seen, !p.belongs ? " \u2014 not this order's" : ""), p.where.map((w) => {
+      } }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 12 } }, /* @__PURE__ */ React.createElement("button", { type: "button", onClick: onClose, "aria-label": "Close", style: { width: 40, height: 40, borderRadius: 20, border: 0, background: NL.PANEL, fontSize: 18 } }, "\u2715"), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, display: "flex", flexDirection: "column" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, fontWeight: 600, letterSpacing: 0.4, color: NL.SUB } }, order.id, " \xB7 ", String(order.customer || "").toUpperCase()), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 21, fontWeight: 600 } }, stage === "walk" ? "Check the whole order" : "Whole order checked"))), stage === "walk" && /* @__PURE__ */ React.createElement("div", { ...swipe }, strip, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: NL.SUB, margin: "8px 0 12px" } }, "\u2713 read \xB7 \u2026 reading in the background \xB7 swipe or tap a number to retake"), /* @__PURE__ */ React.createElement("div", { style: { height: 300, borderRadius: 16, background: "#22262E", color: "#fff", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, position: "relative" } }, /* @__PURE__ */ React.createElement("span", { style: { position: "absolute", left: 14, top: 12, padding: "4px 10px", borderRadius: 12, background: "rgba(255,255,255,0.18)", fontSize: 13, fontWeight: 700 } }, "CASE ", cn, " of ", cases.length), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 16, fontWeight: 600 } }, reads[cn] ? reads[cn] === "reading" ? `Case ${cn} is being read\u2026` : `Case ${cn} is done \u2014 retake?` : `Look straight down into case ${cn}`), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, opacity: 0.8 } }, "every label in the frame")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", padding: "18px 0 6px" } }, /* @__PURE__ */ React.createElement("button", { type: "button", "data-walk-shoot": true, "aria-label": `Take case ${cn}`, onClick: shoot, style: { width: 80, height: 80, borderRadius: 40, border: `5px solid ${NL.NAVY}`, background: "#fff", display: "flex", alignItems: "center", justifyContent: "center", touchAction: "manipulation" } }, /* @__PURE__ */ React.createElement("span", { style: { width: 58, height: 58, borderRadius: 29, background: NL.NAVY } }))), /* @__PURE__ */ React.createElement("div", { style: { textAlign: "center", fontSize: 13.5, color: NL.SUB } }, taken, " of ", cases.length, " taken", reading ? ` \xB7 ${reading} being read` : ""), taken === cases.length && reading === 0 && /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => setStage("result"), style: { ...pill(NL.NAVY, "#fff"), width: "100%", minHeight: 50, marginTop: 12, fontSize: 16 } }, "See the result")), stage === "result" && v && /* @__PURE__ */ React.createElement("div", { "data-walk-result": v.verdict }, v.verdict !== "problems" ? /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 8, textAlign: "center", padding: "12px 0" } }, /* @__PURE__ */ React.createElement("span", { style: { width: 96, height: 96, borderRadius: 48, background: "#1E7F3C", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 52, fontWeight: 700 } }, "\u2713"), /* @__PURE__ */ React.createElement("span", { "data-walk-pct": true, style: { fontSize: 40, fontWeight: 700, color: "#1E7F3C" } }, "100%"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 18, fontWeight: 600 } }, order.id, " is ", auto ? "complete and correct" : "correct"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 14, color: NL.SUB } }, v.caseCount, " cases \xB7 ", v.boxes, " boxes", tally ? ` \xB7 all ${tally.total} line${tally.total === 1 ? "" : "s"} of the order` : ""), hiddenCases.length > 0 && /* @__PURE__ */ React.createElement("span", { "data-walk-hidden": true, style: { fontSize: 13, color: NL.SUB } }, "Case", hiddenCases.length === 1 ? "" : "s", " ", hiddenCases.join(", "), ": some labels hidden in the photo \u2014 the weight says they're there."), auto && /* @__PURE__ */ React.createElement("div", { "data-walk-auto": true, style: { textAlign: "left", width: "100%", marginTop: 8, padding: 12, borderRadius: 12, background: "#EEF7F1", border: "1px solid #9FCDAE" } }, /* @__PURE__ */ React.createElement("b", { style: { color: "#1E7F3C" } }, "I've put the case map right"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, margin: "4px 0 6px" } }, "The order was all there, but ", auto.boxes, " box", auto.boxes === 1 ? " was" : "es were", " in different cases from the system. I've moved ", auto.boxes === 1 ? "it" : "them", " on the system to match your photos:"), auto.pairs.map((p, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { display: "flex", gap: 8, alignItems: "center", fontSize: 14, padding: "4px 0" } }, /* @__PURE__ */ React.createElement(BoxCount, { n: p.n, size: "m" }), /* @__PURE__ */ React.createElement("b", { style: { fontFamily: "ui-monospace, Menlo, monospace" } }, p.code), /* @__PURE__ */ React.createElement("span", { style: { color: NL.SUB } }, "case ", p.from, " \u2192 case ", p.to))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: NL.SUB, marginTop: 6 } }, "Case plans for case", auto.changed.length === 1 ? "" : "s", " ", auto.changed.join(", "), " now match what's in them. Weights stay as weighed.")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, width: "100%", marginTop: 10 } }, /* @__PURE__ */ React.createElement("button", { type: "button", onClick: onClose, style: { ...pill(NL.NAVY, "#fff"), flex: 1, minHeight: 50, fontSize: 16 } }, "Done"), auto && /* @__PURE__ */ React.createElement("button", { type: "button", "data-walk-undo": true, onClick: undo, style: { ...pill("#fff", NL.INK, "1px solid #C5CBD8"), minHeight: 50 } }, "Undo the moves"))) : /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { padding: 14, borderRadius: 14, background: "#FFF4E0", border: `1px solid ${AMBER}` } }, /* @__PURE__ */ React.createElement("b", { "data-walk-pct": true, style: { fontSize: 18, color: "#8A4B00" } }, Math.floor(100 * v.casesRight / Math.max(1, v.caseCount)), "% \u2014 ", v.casesRight, " of ", v.caseCount, " cases right"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, marginTop: 4 } }, !v.complete ? `The order is ${v.pct}% complete, so nothing has been moved.` : "Some things need you, so nothing has been moved yet.")), (orderIssues.length > 0 || tally && tally.spare.length > 0 || linesShort.length > 0 || linesOver.length > 0) && /* @__PURE__ */ React.createElement("div", { "data-walk-order": true, style: { padding: 12, borderRadius: 12, border: `1px solid ${NL.LINE}`, display: "flex", flexDirection: "column", gap: 6 } }, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 15 } }, "Against the order", tally ? ` \u2014 ${tally.complete} of ${tally.total} lines in full` : ""), orderIssues.map((x, i) => /* @__PURE__ */ React.createElement("div", { key: "oi" + i, "data-walk-order-issue": x.kind, style: { fontSize: 14, color: RED, fontWeight: 600 } }, "Case ", x.caseNum, ": ", /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "ui-monospace, Menlo, monospace" } }, x.code), " \xD7 ", x.n, " \u2014 ", x.kind === "tape" ? x.strong ? "strong tape, on an ordinary order" : "not strong tape, and this order is strong tape" : `${x.product ? short(x.product) + " \u2014 " : ""}not on this order`)), tally && tally.spare.filter((x) => !orderIssues.some((o) => o.code === x.code)).map((x, i) => /* @__PURE__ */ React.createElement("div", { key: "sp" + i, style: { fontSize: 14, color: RED, fontWeight: 600 } }, /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "ui-monospace, Menlo, monospace" } }, x.code), " \xD7 ", x.n, " fits no line on the order")), linesShort.slice(0, 6).map((l) => /* @__PURE__ */ React.createElement("div", { key: "ls" + l.id, "data-walk-line-short": true, style: { fontSize: 14 } }, short(l.description), ": ", /* @__PURE__ */ React.createElement("b", null, l.seen, " of ", l.ordered), " in the photos \u2014 ", l.ordered - l.seen, " still to go in")), linesShort.length > 6 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: NL.SUB } }, "\u2026and ", linesShort.length - 6, " more line", linesShort.length - 6 === 1 ? "" : "s", " not in the cases yet"), linesOver.map((l) => /* @__PURE__ */ React.createElement("div", { key: "lo" + l.id, style: { fontSize: 14, color: "#B45309" } }, short(l.description), ": ", l.seen, " in the photos, the order wants ", l.ordered))), [...v.failed, ...v.unsure].length > 0 && /* @__PURE__ */ React.createElement("div", { "data-walk-retake": true, style: { padding: 12, borderRadius: 12, border: `1px solid ${NL.LINE}` } }, /* @__PURE__ */ React.createElement("b", null, "Retake ", [.../* @__PURE__ */ new Set([...v.failed, ...v.unsure])].length === 1 ? "this case" : "these cases"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: NL.SUB, margin: "4px 0 8px" } }, "A label couldn't be read for certain."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } }, [.../* @__PURE__ */ new Set([...v.failed, ...v.unsure])].map((n) => /* @__PURE__ */ React.createElement("button", { key: n, type: "button", onClick: () => retake(n), style: pill(NL.NAVY, "#fff") }, "Retake case ", n)))), v.unknown.map((u, i) => /* @__PURE__ */ React.createElement("div", { key: "u" + i, style: { padding: 12, borderRadius: 12, border: `1px solid ${NL.LINE}`, fontSize: 14 } }, /* @__PURE__ */ React.createElement("b", { style: { fontFamily: "ui-monospace, Menlo, monospace" } }, u.code), " \xD7 ", u.n, " in case ", u.caseNum, " \u2014 not on the system. Add it with Found a box first, then check again.")), v.problems.map((p) => /* @__PURE__ */ React.createElement("div", { key: p.code, "data-walk-problem": p.code, style: { padding: 12, borderRadius: 12, border: `1px solid ${NL.LINE}`, display: "flex", flexDirection: "column", gap: 6 } }, /* @__PURE__ */ React.createElement("b", { style: { fontSize: 15 } }, /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "ui-monospace, Menlo, monospace" } }, p.code), ": ", p.moved ? `all ${p.seen} there, in a different case` : `system ${p.recorded}, photos ${p.seen}`, !p.belongs ? " \u2014 not this order's" : ""), p.where.map((w) => {
         const other = v.perCase.find((q) => q.caseNum !== w.caseNum && q.counts && (q.recorded[p.code] || 0) > (q.counts[p.code] || 0));
-        return /* @__PURE__ */ React.createElement("div", { key: w.caseNum, style: { display: "flex", flexDirection: "column", gap: 4 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13.5, color: NL.SUB } }, "Case ", w.caseNum, ": system ", w.rec, ", photo ", w.got), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } }, w.got < w.rec && /* @__PURE__ */ React.createElement("button", { type: "button", "data-walk-fix": `off-${p.code}-${w.caseNum}`, onClick: () => fix({ kind: "off", code: p.code, n: w.rec - w.got, caseNum: w.caseNum }), style: pill(NL.NAVY, "#fff") }, "Not there \u2014 ", w.rec - w.got, " back to the shelf"), w.got > w.rec && other && /* @__PURE__ */ React.createElement("button", { type: "button", "data-walk-fix": `move-${p.code}-${w.caseNum}`, onClick: () => fix({ kind: "move", code: p.code, n: Math.min(w.got - w.rec, (other.recorded[p.code] || 0) - (other.counts[p.code] || 0)), fromCase: other.caseNum, caseNum: w.caseNum }), style: pill(NL.NAVY, "#fff") }, "Move on the system from case ", other.caseNum), w.got > w.rec && !other && /* @__PURE__ */ React.createElement("button", { type: "button", "data-walk-fix": `in-${p.code}-${w.caseNum}`, onClick: () => fix({ kind: "in", code: p.code, n: w.got - w.rec, caseNum: w.caseNum }), style: pill(NL.NAVY, "#fff") }, "Record ", w.got - w.rec, " in from the shelf")));
+        return /* @__PURE__ */ React.createElement("div", { key: w.caseNum, style: { display: "flex", flexDirection: "column", gap: 4 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13.5, color: NL.SUB } }, "Case ", w.caseNum, ": system ", w.rec, ", photo ", w.got), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } }, w.got < w.rec && !p.moved && /* @__PURE__ */ React.createElement("button", { type: "button", "data-walk-fix": `off-${p.code}-${w.caseNum}`, onClick: () => fix({ kind: "off", code: p.code, n: w.rec - w.got, caseNum: w.caseNum }), style: pill(NL.NAVY, "#fff") }, "Not there \u2014 ", w.rec - w.got, " back to the shelf"), w.got > w.rec && other && /* @__PURE__ */ React.createElement("button", { type: "button", "data-walk-fix": `move-${p.code}-${w.caseNum}`, onClick: () => fix({ kind: "move", code: p.code, n: Math.min(w.got - w.rec, (other.recorded[p.code] || 0) - (other.counts[p.code] || 0)), fromCase: other.caseNum, caseNum: w.caseNum }), style: pill(NL.NAVY, "#fff") }, "Move on the system from case ", other.caseNum), w.got > w.rec && !other && /* @__PURE__ */ React.createElement("button", { type: "button", "data-walk-fix": `in-${p.code}-${w.caseNum}`, onClick: () => fix({ kind: "in", code: p.code, n: w.got - w.rec, caseNum: w.caseNum }), style: pill(NL.NAVY, "#fff") }, "Record ", w.got - w.rec, " in from the shelf")));
       }))), v.totalsAgree && v.trusted && !v.complete && v.casesRight < v.caseCount && /* @__PURE__ */ React.createElement("div", { "data-walk-later": true, style: { padding: 12, borderRadius: 12, background: NL.PANEL, fontSize: 13.5 } }, "Every box is there, but some sit in different cases from the system (case ", v.perCase.filter((q) => q.counts && JSON.stringify(Object.entries(q.counts).sort()) !== JSON.stringify(Object.entries(q.recorded).sort())).map((q) => q.caseNum).join(", "), "). I'll put that right when you check again once the order is complete."), v.missingPhotos.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: NL.SUB } }, "No photo yet for case ", v.missingPhotos.join(", "), "."), /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => {
         doneRef.current = false;
         setStage("walk");
@@ -23171,6 +23233,36 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     const queryOf = (n2) => queries[n2] || null;
     const needsWeight = (c2) => holds(c2) && (!(Number(weightOf(c2.caseNum)) > 0) || !!queryOf(c2.caseNum));
     const [reads, setReads] = useState({});
+    const [earlierDone, setEarlierDone] = useState(!check || !orderId);
+    useEffect(() => {
+      if (!check || !orderId) return;
+      let live = true;
+      (async () => {
+        const got = await earlierCasePhotos(orderId);
+        if (!live) return;
+        const withBoxes = new Set(cases.filter((c2) => (c2.contributions || []).some((r) => Number(r.qty) > 0)).map((c2) => c2.caseNum));
+        const todo = Object.entries(got).filter(([n2]) => withBoxes.has(Number(n2)));
+        setReads((r) => {
+          const o = { ...r };
+          for (const [n2, x] of todo) if (!o[n2]) o[n2] = x.read || "reading";
+          return o;
+        });
+        setShot((s) => {
+          const o = { ...s };
+          for (const [n2] of todo) if (!o[n2]) o[n2] = "done";
+          return o;
+        });
+        setEarlierDone(true);
+        for (const [n2, x] of todo) if (!x.read) {
+          readSavedCasePhoto(x).then((res) => {
+            if (live) setReads((r) => r[n2] === "reading" ? { ...r, [n2]: res } : r);
+          });
+        }
+      })();
+      return () => {
+        live = false;
+      };
+    }, []);
     useEffect(() => {
       const m = document.querySelector('meta[name="viewport"]');
       if (!m) return;
@@ -23219,7 +23311,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
         return out;
       },
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      [finished]
+      [finished, reads, queries]
     );
     const idle = useRef(null);
     const commit = () => {
@@ -23244,8 +23336,26 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       }
     }, [pendingGo, draft, caseWeights]);
     useEffect(() => {
-      if (finished) celebrate("Every case weighed");
+      if (finished && !check) celebrate("Every case weighed");
     }, [finished]);
+    const doneAll = ordered.filter((x) => x.packedOutside || (x.contributions || []).some((r) => Number(r.qty) > 0)).every((x) => Number(String(caseWeights[x.caseNum] ?? "").trim()) > 0 && !queries[x.caseNum]);
+    const readingLeft = Object.values(reads).filter((r) => r === "reading").length;
+    const anyRead = Object.values(reads).some((r) => r && r !== "reading");
+    const autoReport = !!(finished && check && onCheckDone && anyRead && readingLeft === 0 && doneAll);
+    useEffect(
+      () => {
+        if (autoReport) onCheckDone(Object.fromEntries(Object.entries(reads).filter(([, r]) => r && r !== "reading")));
+      },
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [autoReport]
+    );
+    useEffect(
+      () => {
+        if (check && walk && earlierDone && !finished && ordered.some(holds) && !ordered.some(needsWork)) setFinished(true);
+      },
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [earlierDone]
+    );
     const swipeRef = useRef(null);
     const c = ordered.find((x) => x.caseNum === at) || ordered[0];
     if (!c) return null;
@@ -23263,7 +23373,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
       }, 900);
     };
     const readHere = reads[n] && reads[n] !== "reading";
-    const photoFirst = !!orderId && !["done", "skip"].includes(shot[n]) && !readHere && (check ? hasBoxes(c) : !(Number(weightOf(n)) > 0) && !(draft && draft.n === n));
+    const photoFirst = !!orderId && !["done", "skip"].includes(shot[n]) && !reads[n] && (check ? hasBoxes(c) : !(Number(weightOf(n)) > 0) && !(draft && draft.n === n));
     const takeAndRead = (file) => {
       if (!file) return;
       nlHaptic && nlHaptic();
@@ -23320,7 +23430,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     const goNow = goNowRef.current = (target) => {
       if (queryOf(n)) return;
       if (!target) {
-        if (walk) setFinished(true);
+        if (walk || check) setFinished(true);
         else onClose();
         return;
       }
@@ -23359,16 +23469,20 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
         const xs = Object.values(allChecks).filter(Boolean);
         const right = xs.filter((x) => x.state === "ok" || x.state === "hidden").length, look = xs.filter((x) => x.state === "problem" || x.state === "error").length, waiting = xs.filter((x) => x.state === "reading").length, none = xs.filter((x) => x.state === "none").length;
         return /* @__PURE__ */ React.createElement("div", { "data-weigh-check-summary": true, style: { display: "flex", flexDirection: "column", gap: 4, fontSize: 15 } }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("b", { style: { color: "#1E7F3C" } }, right), " of ", xs.length, " cases right by their photo", look ? /* @__PURE__ */ React.createElement(React.Fragment, null, " \xB7 ", /* @__PURE__ */ React.createElement("b", { style: { color: RED } }, look), " to look at") : null), (waiting > 0 || none > 0) && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13.5, color: NL.SUB } }, waiting ? `${waiting} still being read` : "", waiting && none ? " \xB7 " : "", none ? `${none} with no photo` : ""));
-      })(), check && onCheckDone && Object.keys(reads).length > 0 && /* @__PURE__ */ React.createElement(
-        "button",
-        {
-          type: "button",
-          "data-weigh-check-result": true,
-          onClick: () => onCheckDone(Object.fromEntries(Object.entries(reads).filter(([, r]) => r && r !== "reading"))),
-          style: { ...btn, padding: "0 26px", background: NL.NAVY, color: "#fff" }
-        },
-        "Check the whole order \u203A"
-      ), /* @__PURE__ */ React.createElement("button", { type: "button", onClick: onClose, style: check ? { ...btn, padding: "0 26px", background: "#fff", color: NL.INK, border: "1px solid #C5CBD8" } : { ...btn, padding: "0 26px", background: NL.NAVY, color: "#fff" } }, "Back to the order")) : /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10, padding: "6px 16px 10px" } }, walk && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 5 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", justifyContent: "space-between", fontSize: 13.5, fontWeight: 600 } }, /* @__PURE__ */ React.createElement("span", null, check ? `${ordered.filter((x) => holds(x) && reads[x.caseNum]).length} photographed \xB7 ${done} weighed` : `${done} of ${total} weighed`), /* @__PURE__ */ React.createElement("span", { style: { color: NL.SUB } }, check ? `of ${total}` : `${total - done} to weigh`)), /* @__PURE__ */ React.createElement("span", { style: { display: "block", height: 6, borderRadius: 3, background: NL.TRACK } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block", width: `${total ? Math.round(100 * done / total) : 0}%`, height: 6, borderRadius: 3, background: NL.NAVY } }))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-start", gap: 10 } }, /* @__PURE__ */ React.createElement("span", { style: { flex: 1, display: "flex", flexDirection: "column", gap: 2 } }, /* @__PURE__ */ React.createElement("span", { "data-weigh-case": n, style: { fontSize: 28, fontWeight: 700, letterSpacing: "-0.5px" } }, "Case ", n), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13.5, color: NL.SUB } }, c.packedOutside ? "Packed outside the app" : `${f.held} boxes in it \xB7 plan ${f.plan}`)), /* @__PURE__ */ React.createElement("button", { type: "button", "aria-label": "Close", onClick: () => {
+      })(), check && onCheckDone && Object.keys(reads).length > 0 && (() => {
+        const left = Object.values(reads).filter((r) => r === "reading").length;
+        return /* @__PURE__ */ React.createElement(
+          "button",
+          {
+            type: "button",
+            "data-weigh-check-result": true,
+            disabled: left > 0,
+            onClick: () => onCheckDone(Object.fromEntries(Object.entries(reads).filter(([, r]) => r && r !== "reading"))),
+            style: { ...btn, padding: "0 26px", background: left ? "#9AA3B8" : NL.NAVY, color: "#fff" }
+          },
+          left ? `Reading the photos\u2026 ${left} to go \u2014 the report opens by itself` : "See the report \u203A"
+        );
+      })(), /* @__PURE__ */ React.createElement("button", { type: "button", onClick: onClose, style: check ? { ...btn, padding: "0 26px", background: "#fff", color: NL.INK, border: "1px solid #C5CBD8" } : { ...btn, padding: "0 26px", background: NL.NAVY, color: "#fff" } }, "Back to the order")) : /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10, padding: "6px 16px 10px" } }, walk && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 5 } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", justifyContent: "space-between", fontSize: 13.5, fontWeight: 600 } }, /* @__PURE__ */ React.createElement("span", null, check ? `${ordered.filter((x) => holds(x) && reads[x.caseNum]).length} photographed \xB7 ${done} weighed` : `${done} of ${total} weighed`), /* @__PURE__ */ React.createElement("span", { style: { color: NL.SUB } }, check ? `of ${total}` : `${total - done} to weigh`)), /* @__PURE__ */ React.createElement("span", { style: { display: "block", height: 6, borderRadius: 3, background: NL.TRACK } }, /* @__PURE__ */ React.createElement("span", { style: { display: "block", width: `${total ? Math.round(100 * done / total) : 0}%`, height: 6, borderRadius: 3, background: NL.NAVY } }))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-start", gap: 10 } }, /* @__PURE__ */ React.createElement("span", { style: { flex: 1, display: "flex", flexDirection: "column", gap: 2 } }, /* @__PURE__ */ React.createElement("span", { "data-weigh-case": n, style: { fontSize: 28, fontWeight: 700, letterSpacing: "-0.5px" } }, "Case ", n), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13.5, color: NL.SUB } }, c.packedOutside ? "Packed outside the app" : `${f.held} boxes in it \xB7 plan ${f.plan}`)), /* @__PURE__ */ React.createElement("button", { type: "button", "aria-label": "Close", onClick: () => {
         commit();
         onClose();
       }, style: { width: 40, height: 40, border: 0, borderRadius: 20, background: NL.PANEL, fontSize: 18, color: NL.INK } }, "\u2715")), lines.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } }, lines.map((l, k) => /* @__PURE__ */ React.createElement("span", { key: k, style: { display: "inline-flex", alignItems: "center", gap: 7, padding: "4px 10px 4px 4px", borderRadius: 9, background: NL.PANEL, fontSize: 14, fontWeight: 500 } }, /* @__PURE__ */ React.createElement(BoxCount, { n: l.qty, size: "l" }), /* @__PURE__ */ React.createElement("span", null, l.label)))), orderId && (photoFirst || shot[n] === "busy" || shot[n] === "failed") && /* @__PURE__ */ React.createElement("div", { "data-weigh-photo-step": n, style: { display: "flex", alignItems: "center", gap: 10 } }, /* @__PURE__ */ React.createElement("label", { "data-weigh-photo": n, style: { flex: 1, height: 52, borderRadius: 26, background: shot[n] === "busy" ? "#9AA3B8" : NL.NAVY, color: "#fff", fontSize: 16.5, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, cursor: "pointer" } }, /* @__PURE__ */ React.createElement(NLIcon, { name: "photo", size: 20, color: "#fff", sw: 1.8 }), shot[n] === "busy" ? "Saving the photo\u2026" : shot[n] === "failed" ? "Photo didn't save \u2014 again" : `Photo of case ${n}`, /* @__PURE__ */ React.createElement("input", { "data-weigh-photo-input": n, type: "file", accept: "image/*", capture: "environment", disabled: shot[n] === "busy", onChange: (e) => {
@@ -23422,7 +23536,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
         },
         "Same as case ",
         prevC.caseNum
-      )), walk ? /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4 } }, /* @__PURE__ */ React.createElement("button", { type: "button", "data-weigh-next": "1", onClick: () => go(nextWalk), style: { ...btn, background: queryOf(n) && !typing ? "#9AA3B8" : NL.NAVY, color: "#fff" } }, nextWalk ? `Next: case ${nextWalk.caseNum} \u203A` : "Finish \u203A"), nextWalk && !q && /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => setAt(nextWalk.caseNum), style: { height: 36, border: 0, background: "transparent", color: NL.SUB, fontSize: 14.5, fontWeight: 600 } }, "Skip this one for now")) : /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, prevC && /* @__PURE__ */ React.createElement("button", { type: "button", "data-weigh-prev": "1", onClick: () => go(prevC), style: { ...btn, padding: "0 16px", background: "#fff", color: NL.INK, border: "1px solid #C5CBD8", fontSize: 15.5, fontWeight: 600 } }, "\u2039 Case ", prevC.caseNum), /* @__PURE__ */ React.createElement("button", { type: "button", "data-weigh-next": "1", onClick: () => go(nextPlain), style: { ...btn, flex: 1, background: NL.NAVY, color: "#fff" } }, nextPlain ? `Next: case ${nextPlain.caseNum} \u203A` : "Done")), !walk && onMore && /* @__PURE__ */ React.createElement("button", { type: "button", "data-weigh-more": "1", onClick: () => onMore(n), style: { alignSelf: "flex-start", height: 36, border: 0, background: "transparent", color: NL.NAVY, fontSize: 14, fontWeight: 600, padding: 0 } }, "Boxes in this case \xB7 Swap \xB7 Move \xB7 Count \u203A"))), !finished && /* @__PURE__ */ React.createElement("div", { style: { flex: "none", display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 6, padding: "7px 6px calc(8px + env(safe-area-inset-bottom, 0px))", background: "#D3D6DD" } }, keys.map((k) => /* @__PURE__ */ React.createElement(
+      )), walk ? /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4 } }, /* @__PURE__ */ React.createElement("button", { type: "button", "data-weigh-next": "1", onClick: () => go(nextWalk), style: { ...btn, background: queryOf(n) && !typing ? "#9AA3B8" : NL.NAVY, color: "#fff" } }, nextWalk ? `Next: case ${nextWalk.caseNum} \u203A` : "Finish \u203A"), nextWalk && !q && /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => setAt(nextWalk.caseNum), style: { height: 36, border: 0, background: "transparent", color: NL.SUB, fontSize: 14.5, fontWeight: 600 } }, "Skip this one for now")) : /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, prevC && /* @__PURE__ */ React.createElement("button", { type: "button", "data-weigh-prev": "1", onClick: () => go(prevC), style: { ...btn, padding: "0 16px", background: "#fff", color: NL.INK, border: "1px solid #C5CBD8", fontSize: 15.5, fontWeight: 600 } }, "\u2039 Case ", prevC.caseNum), /* @__PURE__ */ React.createElement("button", { type: "button", "data-weigh-next": "1", onClick: () => go(nextPlain), style: { ...btn, flex: 1, background: NL.NAVY, color: "#fff" } }, nextPlain ? `Next: case ${nextPlain.caseNum} \u203A` : check ? "Finish \u203A" : "Done")), !walk && onMore && /* @__PURE__ */ React.createElement("button", { type: "button", "data-weigh-more": "1", onClick: () => onMore(n), style: { alignSelf: "flex-start", height: 36, border: 0, background: "transparent", color: NL.NAVY, fontSize: 14, fontWeight: 600, padding: 0 } }, "Boxes in this case \xB7 Swap \xB7 Move \xB7 Count \u203A"))), !finished && /* @__PURE__ */ React.createElement("div", { style: { flex: "none", display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 6, padding: "7px 6px calc(8px + env(safe-area-inset-bottom, 0px))", background: "#D3D6DD" } }, keys.map((k) => /* @__PURE__ */ React.createElement(
         "button",
         {
           key: k,
@@ -23457,7 +23571,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     const [weigh, setWeigh] = useState(null);
     const pickTile = (n) => {
       setSel(n);
-      if (phoneWeigh) setWeigh({ at: n, walk: false });
+      if (phoneWeigh) setWeigh({ at: n, walk: false, check: checkHere });
     };
     const photoOn = usePhotoReader();
     const [caseCheck, setCaseCheck] = useState(null);
@@ -23524,7 +23638,7 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
         onClick: () => setWeigh({ at: orderedCases.find(holdsBoxes).caseNum, walk: true, check: true }),
         style: { height: 40, padding: "0 16px", borderRadius: 20, border: 0, background: NAVY, color: "#fff", fontSize: 14.5, fontWeight: 600 }
       },
-      "Weigh & check"
+      "Photo & weigh"
     ), !checkHere && stillToWeigh.length > 0 && /* @__PURE__ */ React.createElement(
       "button",
       {
