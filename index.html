@@ -5648,13 +5648,15 @@
           hits = inLive.map((id) => live.get(id)).filter(soon);
           if (shelf > 0) {
             const run = runs.find((r) => String(r.boxNumber || "").toUpperCase() === ref);
+            const strongBox = isStrongTapeBoxCode(ref);
             if (run) {
-              for (const { o, li } of soonLines) if (runMatchesLine(run, li, { formCheck: false })) hits.push(o);
+              for (const { o, li } of soonLines) if (isStrongTapeOrder(o) === strongBox && runMatchesLine(run, li, { formCheck: false })) hits.push(o);
             }
           }
         }
       }
       const uniq = [...new Map(hits.map((o) => [o.id, o])).values()].sort((a, b) => String(a.dueDate || "9999").localeCompare(String(b.dueDate || "9999")));
+      if (it.onlyShipped) isLive = false;
       if (!isLive) out.history.push(it);
       else {
         out.live.push(it);
@@ -5730,6 +5732,7 @@
         const code = String(r.boxNumber || "").trim().toUpperCase();
         if (code && r.productSize && !runSpecByBox.has(code)) runSpecByBox.set(code, r.productSize);
       }
+      const shippedOrders = new Set((data.orders || []).filter((o) => o && !o.deleted && o.stage === "Shipped").map((o) => o.id));
       const drift = /* @__PURE__ */ new Map();
       for (const m of data.movements || []) {
         if (!m || m.deleted || !m.spec) continue;
@@ -5739,8 +5742,9 @@
         if (productOf(m.spec) === productOf(now)) continue;
         if (sameMatrix(m.spec, now)) continue;
         const key = `${code}|${m.spec}|${now}`;
-        if (!drift.has(key)) drift.set(key, { code, was: m.spec, now, count: 0 });
+        if (!drift.has(key)) drift.set(key, { code, was: m.spec, now, count: 0, live: 0 });
         drift.get(key).count++;
+        if (!(m.orderId && shippedOrders.has(m.orderId))) drift.get(key).live++;
       }
       for (const d of drift.values()) {
         add({
@@ -5752,7 +5756,9 @@
           why: "The ledger keeps what was believed at the time, so this is history, not an error in itself. But if the correction was wrong, stock and pick sheets are counting these boxes as the wrong product.",
           todo: "Check the box against its label. If the ledger was right, correct the run back; if the box was relabelled, nothing to do \u2014 this line is the record that it changed.",
           fixHere: false,
-          ref: d.code
+          ref: d.code,
+          onlyShipped: d.live === 0,
+          now: d.now
         });
       }
     }
@@ -13189,7 +13195,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-06.96";
+  var APP_VERSION = "2026-10-07.97";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -17137,6 +17143,10 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     };
     return /* @__PURE__ */ React.createElement("section", { "data-notthere-list": true, style: { margin: "14px 0", border: `1.5px solid ${AMBER}`, borderRadius: 10, padding: "12px 14px", background: "#FFF8F0" } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, fontSize: 16, marginBottom: 6 } }, "Not there \u2014 still missing (", open.length, ")"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: INK_MUTED, marginBottom: 8 } }, "Marked not there while picking. If you find them, put them back here \u2014 don't add them as new."), open.map((m) => /* @__PURE__ */ React.createElement("div", { key: m.id, style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "6px 0", borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14.5 } }, /* @__PURE__ */ React.createElement("b", { className: "font-mono" }, m.boxNumber), " \xD7 ", m.missing, /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, " \xB7 ", String(m.note || "").replace(/^Not there — /, ""), " \xB7 ", String(m.at || "").slice(0, 10))), /* @__PURE__ */ React.createElement("button", { onClick: () => putBack(m), style: { height: 40, padding: "0 12px", borderRadius: 6, border: `1px solid ${NAVY}`, background: "#fff", color: NAVY, fontWeight: 600, cursor: "pointer" } }, "Found \u2014 put back"))));
   }
+  function shortSpecForButton(spec) {
+    const m = String(spec || "").match(/\d+(?:\.\d+)?\s*x\s*\d+(?:\.\d+)?/i);
+    return m ? m[0] : String(spec || "");
+  }
   function NeedsYouToday({ data, jumpToDiscrepancies, look = "classic", openBox = null, openOrder = null, empty = null }) {
     const [sheet, setSheet] = useState(false);
     const admin = isAdminDevice();
@@ -17207,7 +17217,21 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
         }, style: { height: 38, padding: "0 16px", borderRadius: 19, border: 0, background: NL.NAVY, color: "#fff", fontSize: 14.5, fontWeight: 600, fontFamily: NL.SANS } }, "Open ", g.ref), o0 && openOrder && /* @__PURE__ */ React.createElement("button", { "data-nl-fix-order": true, onClick: () => {
           setSheet(false);
           openOrder(o0.id, o0.stage);
-        }, style: { height: 38, padding: "0 16px", borderRadius: 19, border: `1px solid ${NL.LINE}`, background: "#fff", color: NL.INK, fontSize: 14.5, fontWeight: 600, fontFamily: NL.SANS } }, "Open ", o0.id), /* @__PURE__ */ React.createElement("button", { "data-nl-later": g.ref, onClick: () => putOff(g.ref), "aria-label": "Later \u2014 quiet until tomorrow", style: { height: 36, padding: "0 12px", borderRadius: 18, border: `1px solid ${NL.LINE}`, background: "#fff", fontFamily: NLT.FONT, fontSize: 13.5, fontWeight: 600, color: NL.SUB } }, "Later")));
+        }, style: { height: 38, padding: "0 16px", borderRadius: 19, border: `1px solid ${NL.LINE}`, background: "#fff", color: NL.INK, fontSize: 14.5, fontWeight: 600, fontFamily: NL.SANS } }, "Open ", o0.id), g.top.kind === "Ledger spec differs" && g.top.now && /* @__PURE__ */ React.createElement(
+          "button",
+          {
+            "data-nl-label-right": g.ref,
+            onClick: () => {
+              for (const it of g.items) if (it.kind === "Ledger spec differs") writeDiscrepancyDismissal(it.id, `Label checked: ${g.ref} is ${it.now || g.top.now} \u2014 the old ledger wording "${String(it.what || "").replace(/^.*the ledger recorded /, "")}" was wrong`);
+              nlHaptic("landed");
+              setLaterTick((t) => t + 1);
+            },
+            style: { height: 38, padding: "0 16px", borderRadius: 19, border: `1px solid ${NL.LINE}`, background: "#fff", color: NL.INK, fontSize: 14.5, fontWeight: 600, fontFamily: NL.SANS }
+          },
+          "Label says ",
+          shortSpecForButton(g.top.now),
+          " \u2713"
+        ), /* @__PURE__ */ React.createElement("button", { "data-nl-later": g.ref, onClick: () => putOff(g.ref), "aria-label": "Later \u2014 quiet until tomorrow", style: { height: 36, padding: "0 12px", borderRadius: 18, border: `1px solid ${NL.LINE}`, background: "#fff", fontFamily: NLT.FONT, fontSize: 13.5, fontWeight: 600, color: NL.SUB } }, "Later")));
       }))), document.body));
     }
     if (look === "new-list") return /* @__PURE__ */ React.createElement("div", { "data-needs-you": true, style: { display: "flex", flexDirection: "column", gap: 8, fontFamily: NL.SANS } }, /* @__PURE__ */ React.createElement(NLLabel, { right: groups.length }, "Needs you"), /* @__PURE__ */ React.createElement("section", { style: { background: "#fff", borderRadius: 20, boxShadow: NL.SH, overflow: "hidden" } }, shown.map((g, i) => /* @__PURE__ */ React.createElement("div", { key: g.ref, "data-needs-item": true, style: { display: "flex", gap: 14, padding: "14px 16px", borderTop: i ? `1px solid ${NL.LINE}` : "none" } }, /* @__PURE__ */ React.createElement("span", { style: { flex: "0 0 38px", height: 38, borderRadius: 11, background: NL.ORBG, display: "flex", alignItems: "center", justifyContent: "center" } }, /* @__PURE__ */ React.createElement(NLIcon, { name: "register", size: 19, color: NL.OR, sw: 1.8 })), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, display: "flex", flexDirection: "column", gap: 3, minWidth: 0 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15, fontWeight: 700, color: NL.INK } }, g.top.what), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 500, color: NL.SUB } }, "Holds up ", g.orders.slice(0, 2).map((o) => `${o.customer || o.id} ${o.id}`).join(", "), g.orders.length > 2 ? ` +${g.orders.length - 2}` : ""), g.top.todo && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13.5, fontWeight: 600, color: NL.INK } }, g.top.todo)))), more > 0 && /* @__PURE__ */ React.createElement("button", { onClick: () => jumpToDiscrepancies && jumpToDiscrepancies(), style: { width: "100%", textAlign: "left", padding: "12px 16px", border: 0, borderTop: `1px solid ${NL.LINE}`, background: "none", fontFamily: NL.SANS, fontSize: 14, fontWeight: 700, color: NL.NAVY } }, more, " more on the full list")));
