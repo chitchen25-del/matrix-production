@@ -5020,6 +5020,244 @@
     const { caseRows } = arrangedCasesForOrder(data, orderId);
     return caseRows.filter((c) => (c.contributions || []).some((r) => String(r.boxNumber || "").trim().toUpperCase() === want)).map((c) => c.caseNum);
   }
+  function traceLot(data, query) {
+    const norm = (s) => String(s == null ? "" : s).trim().toUpperCase();
+    const q = norm(query);
+    if (!q || !data) return null;
+    data = withGlueRunSettings(data);
+    const runs = (data.bondingRuns || []).filter((r) => r && !r.deleted && r.boxNumber);
+    const glue = (data.glueLineBatches || []).filter((g) => g && !g.deleted && g.batchNumber);
+    const ext = [...(data.extrusion1 || []).map((e) => ({ ...e, extruder: 1 })), ...(data.extrusion2 || []).map((e) => ({ ...e, extruder: 2 }))].filter((e) => e && !e.deleted && e.batchNumber);
+    const glueBy = new Map(glue.map((g) => [norm(g.batchNumber), g]));
+    const extBy = new Map(ext.map((e) => [norm(e.batchNumber), e]));
+    const plOf = (g) => norm(g && (g.plCode || g.sourceReelBatch));
+    const pvcOf = (g) => {
+      if (!g) return "";
+      if (String(g.extPvcCode || "").trim()) return String(g.extPvcCode).trim();
+      const e = extBy.get(plOf(g));
+      return e && String(e.pvcCode || "").trim() ? String(e.pvcCode).trim() : "";
+    };
+    const val = (s) => {
+      const t = String(s == null ? "" : s).trim();
+      return t && !/^(null|undefined|n\/?a|-)$/i.test(t) ? t : "";
+    };
+    const runsByCode2 = /* @__PURE__ */ new Map();
+    for (const r of runs) {
+      const k = norm(r.boxNumber);
+      if (!runsByCode2.has(k)) runsByCode2.set(k, []);
+      runsByCode2.get(k).push(r);
+    }
+    let kind = null, startRuns = runsByCode2.get(q) || [], startReels = [];
+    if (startRuns.length) {
+      kind = "box";
+      startReels = [...new Set(startRuns.map((r) => norm(r.baselineBatchCode)).filter((c) => c && glueBy.has(c)))];
+    } else if (glueBy.has(q)) {
+      kind = "reel";
+      startReels = [q];
+    } else if (extBy.has(q)) {
+      kind = "extrusion";
+      startReels = glue.filter((g) => plOf(g) === q).map((g) => norm(g.batchNumber));
+    } else return null;
+    const reels = startReels.map((c) => glueBy.get(c)).filter(Boolean);
+    const exts = kind === "extrusion" ? [q] : [...new Set(reels.map(plOf).filter((c) => c))];
+    const loginOf = (s) => {
+      const t = String(s || "");
+      if (/^claude/i.test(t)) return "admin (a correction)";
+      const n = t.split("@")[0].trim();
+      return n ? n.charAt(0).toUpperCase() + n.slice(1) : "";
+    };
+    const made = {
+      boxes: startRuns.map((r) => ({
+        code: r.boxNumber,
+        product: r.productSize || "",
+        qty: Number(r.amountMade) || 0,
+        date: r.date || "",
+        time: val(r.timeOfDay),
+        reel: val(r.baselineBatchCode),
+        eva: val(r.evaCode),
+        tape: val(r.tapeCode),
+        carton: val(r.boxTypeId),
+        bay: val(r.location),
+        by: loginOf(r.updatedBy),
+        comments: val(r.comments)
+      })),
+      reels: reels.map((g) => ({
+        code: g.batchNumber,
+        product: g.productSize || "",
+        metres: Number(g.meterage) || 0,
+        date: g.date || "",
+        time: val(g.timeOfDay),
+        die: val(g.glueDie),
+        mylar: val(g.petType),
+        glueBatch: val(g.glueBatch),
+        pvc: pvcOf(g),
+        direct: g.direct === true || g.plBaseCode === "Direct",
+        pin: val(g.extPinSize),
+        extrusion: plOf(g) || "",
+        by: loginOf(g.updatedBy)
+      })),
+      extrusions: exts.map((c) => extBy.get(c)).filter(Boolean).map((e) => ({
+        code: e.batchNumber,
+        product: e.productSize || "",
+        metres: Number(e.meterage) || 0,
+        date: e.date || "",
+        extruder: e.extruder,
+        pin: val(e.pinSize),
+        pvc: val(e.pvcCode),
+        by: loginOf(e.updatedBy)
+      }))
+    };
+    const orders = new Map((data.orders || []).filter((o) => o && !o.deleted).map((o) => [o.id, o]));
+    const gone = (id) => {
+      const o = orders.get(id);
+      return !!o && (o.stage === "Shipped" || o.stage === "Cancelled");
+    };
+    const ledger = liveRowsByBox(data.movements || []);
+    const ledgerByCode = /* @__PURE__ */ new Map();
+    for (const [k, rows] of ledger) {
+      const n = norm(k);
+      if (!ledgerByCode.has(n)) ledgerByCode.set(n, []);
+      ledgerByCode.get(n).push(...rows);
+    }
+    const whereCache = /* @__PURE__ */ new Map();
+    const whereIs = (code) => {
+      if (whereCache.has(code)) return whereCache.get(code);
+      const rows = ledgerByCode.get(code) || [];
+      let madeQ = 0, scrapped = 0;
+      const shipped = /* @__PURE__ */ new Map(), inCase = /* @__PURE__ */ new Map();
+      for (const m of rows) {
+        const n = Number(m.qty) || 0;
+        if (m.kind === "made" || m.kind === "adjusted") madeQ += n;
+        else if (m.kind === "scrapped") scrapped += n;
+        else if (m.kind === "shipped" && m.orderId) shipped.set(m.orderId, (shipped.get(m.orderId) || 0) + n);
+        else if ((m.kind === "placed" || m.kind === "unplaced") && m.orderId && m.caseNum != null && m.caseNum !== "" && !gone(m.orderId)) {
+          const k = `${m.orderId}#${Number(m.caseNum)}`;
+          inCase.set(k, (inCase.get(k) || 0) + (m.kind === "placed" ? n : -n));
+        }
+      }
+      const cases = [...inCase].filter(([, n]) => n > 0).map(([k, n]) => {
+        const [orderId, c] = k.split("#");
+        return { orderId, caseNum: Number(c), qty: n };
+      }).sort((a, b) => a.orderId.localeCompare(b.orderId) || a.caseNum - b.caseNum);
+      const ship = [...shipped].filter(([, n]) => n > 0).map(([orderId, qty]) => ({ orderId, qty, date: (orders.get(orderId) || {}).shippedDate || "" }));
+      const packed = cases.reduce((t, x) => t + x.qty, 0), out = ship.reduce((t, x) => t + x.qty, 0);
+      const onShelf = Math.max(0, madeQ - scrapped - out - packed);
+      const bays = [...new Set((runsByCode2.get(code) || []).map((r) => val(r.location)).filter((b) => b && BOX_LOCATIONS.includes(b)))].sort();
+      const w = { made: madeQ, scrapped, shipped: ship, cases, onShelf, bays };
+      whereCache.set(code, w);
+      return w;
+    };
+    const customerOf = (id) => {
+      const o = orders.get(id);
+      return o && (o.customer || "") || id;
+    };
+    const NCRS = (data.ncrs || []).filter((n) => n && !n.deleted && n.batchNumber);
+    const ncrOn = (codes) => NCRS.filter((n) => codes.has(norm(n.batchNumber)));
+    const chainCodes = /* @__PURE__ */ new Set([...startReels, ...exts]);
+    const ncrs = ncrOn(chainCodes).map((n) => ({ batch: n.batchNumber, date: n.date || "", reason: val(n.reason) || "NCR raised" }));
+    const codeFacts = (code) => {
+      const rs = runsByCode2.get(code) || [];
+      const r0 = rs[0] || {};
+      const reelCodes = new Set(rs.map((r) => norm(r.baselineBatchCode)).filter(Boolean));
+      for (const c of [...reelCodes]) {
+        const p = plOf(glueBy.get(c));
+        if (p) reelCodes.add(p);
+      }
+      return {
+        code: r0.boxNumber || code,
+        product: r0.productSize || "",
+        date: r0.date || "",
+        reel: val(r0.baselineBatchCode),
+        by: loginOf(r0.updatedBy),
+        ncr: ncrOn(reelCodes).length > 0,
+        where: whereIs(code)
+      };
+    };
+    const circle = (key, title, why, codes) => {
+      const list = [...codes].map(codeFacts).sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.code).localeCompare(String(b.code)));
+      const totals = { codes: list.length, boxes: 0, shipped: 0, inCases: 0, onShelf: 0, scrapped: 0 };
+      const cust = /* @__PURE__ */ new Map();
+      const touch = (orderId) => {
+        const name = customerOf(orderId);
+        if (!cust.has(name)) cust.set(name, { customer: name, shipped: 0, inCases: 0, orders: /* @__PURE__ */ new Map() });
+        const c = cust.get(name);
+        if (!c.orders.has(orderId)) {
+          const o = orders.get(orderId) || {};
+          c.orders.set(orderId, { id: orderId, stage: o.stage || "", shippedDate: o.shippedDate || "", shipped: 0, inCases: 0 });
+        }
+        return c;
+      };
+      for (const f of list) {
+        const w = f.where;
+        totals.boxes += w.made;
+        totals.onShelf += w.onShelf;
+        totals.scrapped += w.scrapped;
+        for (const s of w.shipped) {
+          totals.shipped += s.qty;
+          const c = touch(s.orderId);
+          c.shipped += s.qty;
+          c.orders.get(s.orderId).shipped += s.qty;
+        }
+        for (const x of w.cases) {
+          totals.inCases += x.qty;
+          const c = touch(x.orderId);
+          c.inCases += x.qty;
+          c.orders.get(x.orderId).inCases += x.qty;
+        }
+      }
+      const customers = [...cust.values()].map((c) => ({ ...c, orders: [...c.orders.values()] })).sort((a, b) => b.shipped + b.inCases - (a.shipped + a.inCases) || a.customer.localeCompare(b.customer));
+      return { key, title, why, codes: list, totals, customers, ncrCodes: list.filter((f) => f.ncr).length };
+    };
+    const codesOfRuns = (pred) => new Set(runs.filter(pred).map((r) => norm(r.boxNumber)));
+    const circles = [];
+    const push = (c, sameNote = null) => {
+      if (!c.codes.length) return;
+      const sig = c.codes.map((x) => norm(x.code)).join(",");
+      const prev = circles.find((p) => p._sig === sig);
+      if (prev) {
+        if (sameNote) prev.notes.push(sameNote);
+        return;
+      }
+      c._sig = sig;
+      c.notes = [];
+      circles.push(c);
+    };
+    if (kind === "box") push(circle("box", `This box \xB7 ${startRuns[0].boxNumber}`, "Where these boxes are now", /* @__PURE__ */ new Set([q])));
+    const reelSet = new Set(startReels);
+    if (reelSet.size) push(
+      circle("reel", `Same glue line reel \xB7 ${[...reelSet].join(", ")}`, "Every box bonded off the same reel", codesOfRuns((r) => reelSet.has(norm(r.baselineBatchCode)))),
+      `Nothing else was bonded off ${[...reelSet].join(", ")}.`
+    );
+    if (exts.length) {
+      const ex = new Set(exts);
+      const sib = new Set(glue.filter((g) => ex.has(plOf(g))).map((g) => norm(g.batchNumber)));
+      push(
+        circle("extrusion", `Same extruded reel \xB7 ${exts.join(", ")}`, "Every glue line reel glued off it, and their boxes", codesOfRuns((r) => sib.has(norm(r.baselineBatchCode)))),
+        `Nothing else came from extruded reel ${exts.join(", ")}.`
+      );
+    }
+    if (kind === "box") {
+      const evas = new Set(startRuns.map((r) => norm(val(r.evaCode))).filter(Boolean));
+      if (evas.size) push(
+        circle("eva", `Same EVA batch \xB7 ${[...evas].join(", ")}`, "Every box bonded with the same EVA locator batch", codesOfRuns((r) => evas.has(norm(val(r.evaCode))))),
+        `Nothing else was bonded with EVA ${[...evas].join(", ")}.`
+      );
+      const tapes = new Set(startRuns.map((r) => norm(val(r.tapeCode))).filter(Boolean));
+      if (tapes.size) push(circle("tape", `Same tape batch \xB7 ${[...tapes].join(", ")}`, "Every box bonded with the same bonding tape batch", codesOfRuns((r) => tapes.has(norm(val(r.tapeCode))))));
+    }
+    const glueBatches = new Set(reels.map((g) => norm(val(g.glueBatch))).filter(Boolean));
+    if (glueBatches.size) {
+      const sib = new Set(glue.filter((g) => glueBatches.has(norm(val(g.glueBatch)))).map((g) => norm(g.batchNumber)));
+      push(circle("glue", `Same glue batch \xB7 ${[...glueBatches].join(", ")}`, "Every reel glued with the same glue batch, and their boxes", codesOfRuns((r) => sib.has(norm(r.baselineBatchCode)))));
+    }
+    const pvcs = new Set([...reels.map(pvcOf), ...made.extrusions.map((e) => e.pvc)].map(norm).filter(Boolean));
+    if (pvcs.size) {
+      const sib = new Set(glue.filter((g) => pvcs.has(norm(pvcOf(g)))).map((g) => norm(g.batchNumber)));
+      push(circle("pvc", `Same PVC \xB7 ${[...pvcs].join(", ")}`, "Every reel extruded from the same PVC code, and their boxes", codesOfRuns((r) => sib.has(norm(r.baselineBatchCode)))));
+    }
+    for (const c of circles) delete c._sig;
+    return { kind, query: kind === "box" ? startRuns[0].boxNumber : (glueBy.get(q) || extBy.get(q) || {}).batchNumber || q, made, ncrs, circles };
+  }
 
   // mx_packing.js
   var MONTH_LETTERS = "ABCDEFGHIJKL";
@@ -5663,6 +5901,7 @@
       }
       const uniq = [...new Map(hits.map((o) => [o.id, o])).values()].sort((a, b) => String(a.dueDate || "9999").localeCompare(String(b.dueDate || "9999")));
       if (it.onlyShipped) isLive = false;
+      if (it.cancelsOut) isLive = false;
       if (!isLive) out.history.push(it);
       else {
         out.live.push(it);
@@ -5748,11 +5987,19 @@
         if (productOf(m.spec) === productOf(now)) continue;
         if (sameMatrix(m.spec, now)) continue;
         const key = `${code}|${m.spec}|${now}`;
-        if (!drift.has(key)) drift.set(key, { code, was: m.spec, now, count: 0, live: 0 });
-        drift.get(key).count++;
-        if (!(m.orderId && shippedOrders.has(m.orderId))) drift.get(key).live++;
+        if (!drift.has(key)) drift.set(key, { code, was: m.spec, now, count: 0, live: 0, stock: 0, inCase: /* @__PURE__ */ new Map(), other: false });
+        const d = drift.get(key);
+        d.count++;
+        if (!(m.orderId && shippedOrders.has(m.orderId))) d.live++;
+        const q = Number(m.qty || 0);
+        if (m.kind === "made" || m.kind === "adjusted") d.stock += q;
+        else if (m.kind === "placed" || m.kind === "unplaced") {
+          const at = `${m.orderId || ""}#${m.caseNum ?? ""}`;
+          d.inCase.set(at, (d.inCase.get(at) || 0) + (m.kind === "placed" ? q : -q));
+        } else d.other = true;
       }
       for (const d of drift.values()) {
+        d.cancelsOut = !d.other && d.stock === 0 && [...d.inCase.values()].every((v) => v === 0);
         add({
           id: `specdrift:${d.code}:${d.was}:${d.now}`,
           kind: "Ledger spec differs",
@@ -5764,6 +6011,7 @@
           fixHere: false,
           ref: d.code,
           onlyShipped: d.live === 0,
+          cancelsOut: d.cancelsOut,
           now: d.now
         });
       }
@@ -13481,7 +13729,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-07.110";
+  var APP_VERSION = "2026-10-08.112";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -26520,6 +26768,137 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       })(), d.to === "__scrap__" && /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 200px", minWidth: 0 } }, /* @__PURE__ */ React.createElement(TextInput, { value: d.reason || "", placeholder: "Why? (goes on the NCR)", onChange: (e) => setDraft(r, { reason: e.target.value }) })), d.to === "__sample__" && /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 200px", minWidth: 0 } }, /* @__PURE__ */ React.createElement(TextInput, { value: d.reason || "", placeholder: "Who is it for? (customer / trial)", onChange: (e) => setDraft(r, { reason: e.target.value }) })), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: () => d.to === "__scrap__" ? scrap(r) : d.to === "__sample__" ? sample(r) : d.to === "__repack__" ? repack(r) : move(r), disabled: !d.to }, d.to === "__scrap__" ? "Scrap" : d.to === "__sample__" ? "Send sample" : d.to === "__repack__" ? "Repack" : "Move")), d.qty !== "" && Number(d.qty) > 0 && Number(d.qty) < have && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-1", style: { color: INK_MUTED } }, have - Number(d.qty), " will stay where ", have - Number(d.qty) === 1 ? "it is" : "they are", "."));
     }), error && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: RED } }, error));
   }
+  function traceDay(iso) {
+    if (!iso) return "";
+    const t = new Date(String(iso).length <= 10 ? String(iso) + "T12:00:00" : iso);
+    return isNaN(t.getTime()) ? String(iso) : t.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  }
+  function traceWhere(data, w) {
+    const cust = (id) => {
+      const o = (data.orders || []).find((x) => x && x.id === id);
+      return o ? o.customer : id;
+    };
+    const parts = [];
+    for (const s of w.shipped) parts.push({ tone: "ship", text: `Shipped to ${cust(s.orderId)} \xB7 ${s.qty}${s.date ? ` \xB7 ${traceDay(s.date)}` : ""}`, ref: s.orderId });
+    for (const c of w.cases) parts.push({ tone: "case", text: `${cust(c.orderId)} ${c.orderId} case ${c.caseNum} \xB7 ${c.qty}`, ref: c.orderId });
+    if (w.onShelf > 0) parts.push({ tone: "shelf", text: `Shelf${w.bays.length ? ` ${w.bays.join(", ")}` : " (no bay)"} \xB7 ${w.onShelf}` });
+    if (w.scrapped > 0) parts.push({ tone: "scrap", text: `Scrapped \xB7 ${w.scrapped}` });
+    if (!parts.length) parts.push({ tone: "none", text: w.made > 0 ? "Not placed anywhere" : "None left \u2014 written off" });
+    return parts;
+  }
+  function traceFigures(t) {
+    const x = [];
+    if (t.shipped) x.push(`${t.shipped} shipped`);
+    if (t.inCases) x.push(`${t.inCases} in cases`);
+    if (t.onShelf) x.push(`${t.onShelf} on the shelf`);
+    if (t.scrapped) x.push(`${t.scrapped} scrapped`);
+    return x.join(" \xB7 ") || "nothing left";
+  }
+  function traceMadeRows(data, tr) {
+    const rows = [];
+    for (const b of tr.made.boxes) rows.push(
+      ["Bonded", [`${b.qty} \xD7 ${b.product}`, `${traceDay(b.date)}${b.time ? ` ${b.time}` : ""}`, b.by && `saved by ${b.by}`].filter(Boolean).join(" \xB7 ")],
+      ["EVA \xB7 tape", [b.eva ? `EVA ${b.eva}` : "EVA not recorded", b.tape ? `tape ${b.tape}` : "tape not recorded", b.carton && `${cartonNameOf(data, b.carton)} carton`].filter(Boolean).join(" \xB7 ")]
+    );
+    for (const g of tr.made.reels) rows.push(
+      ["Glue line reel", [g.code, g.product, `${g.metres} m`, `${traceDay(g.date)}${g.time ? ` ${g.time}` : ""}`, g.by && `saved by ${g.by}`].filter(Boolean).join(" \xB7 ")],
+      ["Glued with", [g.die ? `die ${g.die}` : "die not recorded", g.mylar ? `mylar ${g.mylar}` : "mylar not recorded", g.glueBatch ? `glue ${g.glueBatch}` : "glue batch not recorded", g.pvc ? `PVC ${g.pvc}` : "PVC not recorded", g.direct ? `extruded on the line${g.pin ? ` (pin ${g.pin})` : ""}` : null].filter(Boolean).join(" \xB7 ")]
+    );
+    for (const e of tr.made.extrusions) rows.push(["Extruded reel", [e.code, e.product, e.metres ? `${e.metres} m` : null, e.date ? traceDay(e.date) : null, `extruder ${e.extruder}`, e.pin && `pin ${e.pin}`, e.pvc && `PVC ${e.pvc}`, e.by && `saved by ${e.by}`].filter(Boolean).join(" \xB7 ")]);
+    return rows;
+  }
+  function traceReportDoc(data, tr) {
+    const esc2 = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const now = /* @__PURE__ */ new Date();
+    const made = traceMadeRows(data, tr).map(([k, v]) => `<tr><th>${esc2(k)}</th><td>${esc2(v)}</td></tr>`).join("");
+    const ncr = tr.ncrs.length ? `<div class="ncr">${tr.ncrs.map((n) => `NCR on ${esc2(n.batch)}${n.date ? ` (${esc2(traceDay(n.date))})` : ""}: ${esc2(n.reason)}`).join("<br>")}</div>` : "";
+    const circles = tr.circles.map((c) => `<h2>${esc2(c.title)}</h2><p class="sub">${esc2(c.why)} \u2014 ${c.totals.codes} code${c.totals.codes === 1 ? "" : "s"}, ${c.totals.boxes} box${c.totals.boxes === 1 ? "" : "es"}: ${esc2(traceFigures(c.totals))}${c.notes && c.notes.length ? `. ${esc2(c.notes.join(" "))}` : ""}</p>
+    ${c.customers.length ? `<table class="cust"><tr><th>Customer</th><th>Orders</th><th>Shipped</th><th>In cases</th></tr>${c.customers.map((x) => `<tr><td>${esc2(x.customer)}</td><td>${esc2(x.orders.map((o) => o.id + (o.shippedDate ? ` (shipped ${traceDay(o.shippedDate)})` : "")).join(", "))}</td><td>${x.shipped || ""}</td><td>${x.inCases || ""}</td></tr>`).join("")}</table>` : ""}
+    <table class="codes"><tr><th>Box code</th><th>Product</th><th>Bonded</th><th>Where it is now</th></tr>${c.codes.map((f) => `<tr><td class="m">${esc2(f.code)}${f.ncr ? " (NCR)" : ""}</td><td>${esc2(f.product)}</td><td>${esc2(traceDay(f.date))}</td><td>${esc2(traceWhere(data, f.where).map((p) => p.text).join("; "))}</td></tr>`).join("")}</table>`).join("");
+    return `<!doctype html><html><head><meta charset="utf-8"><title>Trace ${esc2(tr.query)}</title><style>
+    body { font-family: Arial, Helvetica, sans-serif; color: #000; font-size: 11.5px; } .sheet { padding: 6px; }
+    h1 { font-size: 20px; margin: 0 0 2px; } .gen { color: #444; margin-bottom: 12px; } h2 { font-size: 14px; margin: 18px 0 2px; border-bottom: 1.5px solid #000; padding-bottom: 2px; }
+    .sub { margin: 2px 0 6px; } table { border-collapse: collapse; width: 100%; margin-bottom: 6px; } th, td { border: 1px solid #999; padding: 3px 6px; text-align: left; vertical-align: top; }
+    th { background: #eee; } table.made th { width: 120px; } .m { font-family: "Courier New", monospace; white-space: nowrap; } .ncr { border: 2px solid #000; padding: 6px 8px; font-weight: bold; margin: 8px 0; }
+    @media print { @page { size: A4 landscape; margin: 12mm; } h2 { break-after: avoid; } tr { break-inside: avoid; } }
+  </style></head><body><div class="sheet"><h1>Trace report \u2014 ${esc2(tr.query)}</h1><div class="gen">Matrix Engineering \xB7 made ${esc2(now.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" }))} ${esc2(now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }))} \xB7 from the records as they stand</div>
+    ${ncr}<h2>What it was made from</h2><table class="made">${made}</table>${circles}</div></body></html>`;
+  }
+  function TracePanel({ data, query, onOpen }) {
+    const tr = useMemo(() => {
+      try {
+        return traceLot(data, query);
+      } catch (e) {
+        return null;
+      }
+    }, [data, query]);
+    const [open, setOpen] = useState(() => /* @__PURE__ */ new Set(["box", "reel"]));
+    const [all, setAll] = useState(() => /* @__PURE__ */ new Set());
+    const [preview, setPreview] = useState(false);
+    useEffect(() => {
+      setOpen(/* @__PURE__ */ new Set(["box", "reel"]));
+      setAll(/* @__PURE__ */ new Set());
+    }, [query]);
+    if (!tr || !tr.circles.length && !tr.ncrs.length) return null;
+    const toggle = (k) => setOpen((s) => {
+      const n = new Set(s);
+      n.has(k) ? n.delete(k) : n.add(k);
+      return n;
+    });
+    const tone = { ship: { bg: "#E8F3EC", fg: "#1E7F3C" }, case: { bg: "#EEF1F8", fg: NAVY }, shelf: { bg: "#F4F6FA", fg: INK }, scrap: { bg: "#FEF3F1", fg: RED }, none: { bg: "#F4F6FA", fg: INK_MUTED } };
+    const report = () => traceReportDoc(data, tr);
+    const doPrint = () => {
+      printInFrame("trace-print-frame", report());
+    };
+    const LIMIT = 25;
+    return /* @__PURE__ */ React.createElement(Panel, { className: "p-4 mb-5", "data-trace": tr.query }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: INK_MUTED } }, "Trace"), /* @__PURE__ */ React.createElement("div", { className: "text-lg font-semibold font-display", style: { color: INK, lineHeight: 1.25 } }, "Everything made from the same materials, and where it went")), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        type: "button",
+        "data-trace-print": true,
+        onClick: () => nlOnNow() ? setPreview(true) : doPrint(),
+        className: "no-print",
+        style: { flexShrink: 0, height: 40, padding: "0 14px", borderRadius: 20, border: `1px solid ${NAVY}`, background: "#fff", color: NAVY, fontWeight: 600, fontSize: 14.5, cursor: "pointer" }
+      },
+      nlOnNow() ? "Report" : "Print report"
+    )), tr.ncrs.map((n, i) => /* @__PURE__ */ React.createElement("div", { key: i, "data-trace-ncr": true, style: { marginTop: 12, padding: "10px 12px", borderRadius: 8, background: "#FEF3F1", border: `1px solid #F3C6BE`, color: RED, fontSize: 14.5, lineHeight: 1.4 } }, /* @__PURE__ */ React.createElement("b", null, "NCR on ", n.batch), n.date ? ` \xB7 ${traceDay(n.date)}` : "", " \u2014 ", n.reason)), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 14 } }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-1", style: { color: INK_MUTED } }, "What it was made from"), /* @__PURE__ */ React.createElement("div", { "data-trace-made": true, style: { display: "grid", gridTemplateColumns: "minmax(92px, auto) 1fr", columnGap: 12, rowGap: 6, fontSize: 14, lineHeight: 1.4 } }, traceMadeRows(data, tr).map(([k, v], i) => /* @__PURE__ */ React.createElement(React.Fragment, { key: i }, /* @__PURE__ */ React.createElement("div", { style: { color: INK_MUTED } }, k), /* @__PURE__ */ React.createElement("div", { style: { color: INK, minWidth: 0, overflowWrap: "anywhere" } }, v))))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 16 } }, tr.circles.map((c, ci) => {
+      const isOpen = open.has(c.key);
+      const showAll = all.has(c.key);
+      const list = showAll ? c.codes : c.codes.slice(0, LIMIT);
+      const custLine = c.customers.slice(0, 4).map((x) => `${x.customer} ${[x.shipped ? `${x.shipped} shipped` : null, x.inCases ? `${x.inCases} in cases` : null].filter(Boolean).join(", ")}`).join(" \xB7 ") + (c.customers.length > 4 ? ` \xB7 +${c.customers.length - 4} more` : "");
+      return /* @__PURE__ */ React.createElement("div", { key: c.key, "data-trace-circle": c.key, style: { borderTop: ci ? `1px solid ${BORDER}` : "none", padding: "10px 0" } }, /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          type: "button",
+          onClick: () => toggle(c.key),
+          "aria-expanded": isOpen,
+          "data-trace-toggle": c.key,
+          style: { display: "block", width: "100%", textAlign: "left", background: "none", border: 0, padding: 0, cursor: "pointer", color: INK }
+        },
+        /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 600, fontSize: 15, minWidth: 0, overflowWrap: "anywhere" } }, c.title), /* @__PURE__ */ React.createElement("span", { style: { flexShrink: 0, color: NAVY, fontSize: 13.5, fontWeight: 600 } }, c.totals.codes, " code", c.totals.codes === 1 ? "" : "s", " \xB7 ", c.totals.boxes, " box", c.totals.boxes === 1 ? "" : "es", " ", isOpen ? "\u25BE" : "\u25B8")),
+        /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: INK_MUTED, marginTop: 2 } }, c.why, " \u2014 ", traceFigures(c.totals)),
+        custLine && /* @__PURE__ */ React.createElement("div", { "data-trace-customers": true, style: { fontSize: 13.5, color: INK, marginTop: 3 } }, custLine),
+        c.ncrCodes > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: RED, marginTop: 3 } }, c.ncrCodes, " of these came off a reel with an NCR"),
+        c.notes && c.notes.map((n, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { fontSize: 13, color: INK_MUTED, marginTop: 3, fontStyle: "italic" } }, n))
+      ), isOpen && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8 } }, list.map((f) => /* @__PURE__ */ React.createElement("div", { key: f.code, "data-trace-code": f.code, style: { padding: "7px 0", borderTop: `1px dashed ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" } }, onOpen && String(f.code).toUpperCase() !== String(tr.query).toUpperCase() ? /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => onOpen(f.code), style: { background: "none", border: 0, padding: 0, color: NAVY, fontWeight: 700, fontFamily: "ui-monospace, Menlo, monospace", fontSize: 14, cursor: "pointer", textDecoration: "underline" } }, f.code) : /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 700, fontFamily: "ui-monospace, Menlo, monospace", fontSize: 14 } }, f.code), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: INK_MUTED } }, f.product, f.date ? ` \xB7 ${traceDay(f.date)}` : ""), f.ncr && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, fontWeight: 700, color: RED } }, "NCR")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 } }, traceWhere(data, f.where).map((p, i) => /* @__PURE__ */ React.createElement("span", { key: i, style: { fontSize: 12.5, padding: "3px 8px", borderRadius: 10, background: tone[p.tone].bg, color: tone[p.tone].fg } }, p.text))))), c.codes.length > LIMIT && /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          type: "button",
+          "data-trace-all": c.key,
+          onClick: () => setAll((s) => {
+            const n = new Set(s);
+            n.has(c.key) ? n.delete(c.key) : n.add(c.key);
+            return n;
+          }),
+          style: { marginTop: 6, background: "none", border: 0, padding: 0, color: NAVY, fontWeight: 600, fontSize: 14, cursor: "pointer" }
+        },
+        showAll ? "Show fewer" : `Show all ${c.codes.length}`
+      )));
+    })), preview && /* @__PURE__ */ React.createElement(NLPrintPreview, { html: report(), title: `Trace \xB7 ${tr.query}`, sub: "Everything made from the same materials", fileName: `Trace ${tr.query}`, onPrint: () => {
+      setPreview(false);
+      doPrint();
+    }, onClose: () => setPreview(false) }));
+  }
   function BoxHistoryView({ data, setData, initialQuery }) {
     const { bondingRuns, glueLineBatches, extrusion1, extrusion2, stockPicks, orders } = data;
     const otherStock = data.otherStock || [];
@@ -26530,6 +26909,13 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     useEffect(() => {
       if (initialQuery) setQuery(initialQuery);
     }, [initialQuery]);
+    useEffect(() => {
+      const f = (e) => {
+        if (e && e.detail) setQuery(String(e.detail));
+      };
+      window.addEventListener("mx-box-query", f);
+      return () => window.removeEventListener("mx-box-query", f);
+    }, []);
     const allBoxCodes = [.../* @__PURE__ */ new Set([
       ...bondingRuns.map((r) => r.boxNumber).filter(Boolean),
       ...otherStock.map((r) => r.boxNumber).filter(Boolean)
@@ -26722,7 +27108,13 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
           })()
         }
       )), overDrawn && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-2 px-3 py-2 rounded", style: { background: "#FEF3F1", color: RED } }, "This box used ", boxUsed, "m but the reel it names only held ", glueMatch.meterage, "m. The real source reel probably wasn't recorded \u2014 worth checking the paper record for that day."));
-    })(), bondingRowsForCode.length > 0 && /* @__PURE__ */ React.createElement(MoveBoxPanel, { rows: bondingRowsForCode, data, setData }), /* @__PURE__ */ React.createElement(
+    })(), bondingRowsForCode.length > 0 && /* @__PURE__ */ React.createElement(MoveBoxPanel, { rows: bondingRowsForCode, data, setData }), q && /* @__PURE__ */ React.createElement(TracePanel, { data, query: q, onOpen: (code) => {
+      setQuery(code);
+      try {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      } catch (e) {
+      }
+    } }), /* @__PURE__ */ React.createElement(
       "button",
       {
         type: "button",
@@ -33371,7 +33763,16 @@ Plan it?`
       }
     ), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-2 items-end" }, /* @__PURE__ */ React.createElement("div", { style: { width: 260 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Batch number"), /* @__PURE__ */ React.createElement(NcrBatchField, { value: form.batchNumber, onChange: (v) => setForm({ ...form, batchNumber: v }), options: batchOptions, listId: "ncr-batch-codes" })), /* @__PURE__ */ React.createElement("div", { style: { width: 150 } }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Date"), /* @__PURE__ */ React.createElement(TextInput, { type: "date", value: form.date, onChange: (e) => setForm({ ...form, date: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { className: "flex-1 min-w-[220px]" }, /* @__PURE__ */ React.createElement("label", { className: "text-xs block mb-1", style: { color: INK_MUTED } }, "Reason it was scrapped"), /* @__PURE__ */ React.createElement(TextInput, { value: form.reason, onChange: (e) => setForm({ ...form, reason: e.target.value }) })), /* @__PURE__ */ React.createElement(Button, { variant: "accent", onClick: addRow }, "+ Add")), batchOptions.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-xs mt-3", style: { color: INK_MUTED } }, "No batches yet \u2014 batch numbers come from Baseline Glue Line.")), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(SortTh, { col: "batchNumber", sortBy: ncrSortBy, sortDir: ncrSortDir, onSort: ncrToggleSort, className: "text-left px-3 py-2", style: { width: 140 } }, "Batch number"), /* @__PURE__ */ React.createElement(SortTh, { col: "productSpec", sortBy: ncrSortBy, sortDir: ncrSortDir, onSort: ncrToggleSort, className: "text-left px-3 py-2" }, "Product spec"), /* @__PURE__ */ React.createElement(SortTh, { col: "date", sortBy: ncrSortBy, sortDir: ncrSortDir, onSort: ncrToggleSort, startDir: "desc", className: "text-left px-3 py-2", style: { width: 130 } }, "Date"), /* @__PURE__ */ React.createElement(Th, null, "Reason scrapped"), /* @__PURE__ */ React.createElement("th", { style: { width: 70 } }))), /* @__PURE__ */ React.createElement("tbody", null, sortedNcrs.map((r, i) => {
       const isEditing = editingId === r.id;
-      return /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}`, background: isEditing ? "#FFF8EF" : void 0 } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, isEditing ? /* @__PURE__ */ React.createElement(NcrBatchField, { value: editForm.batchNumber, onChange: (v) => setEditForm({ ...editForm, batchNumber: v }), options: batchOptions, listId: "ncr-batch-codes-edit" }) : /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.batchNumber)), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 no-wrap" }, isEditing ? specForBatch(editForm.batchNumber) || /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014") : specForBatch(r.batchNumber)), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, isEditing ? /* @__PURE__ */ React.createElement(TextInput, { type: "date", value: editForm.date, onChange: (e) => setEditForm({ ...editForm, date: e.target.value }) }) : r.date || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, isEditing ? /* @__PURE__ */ React.createElement(TextInput, { value: editForm.reason, onChange: (e) => setEditForm({ ...editForm, reason: e.target.value }) }) : r.reason), /* @__PURE__ */ React.createElement("td", { className: "px-2 whitespace-nowrap" }, isEditing ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: saveEdit, title: "Save", className: "opacity-60 hover:opacity-100 px-1", style: { color: GREEN } }, "\u2713"), /* @__PURE__ */ React.createElement("button", { onClick: cancelEdit, title: "Cancel", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: () => startEdit(r), title: "Edit", className: "opacity-40 hover:opacity-100 px-1" }, "\u270E"), /* @__PURE__ */ React.createElement("button", { onClick: () => removeRow(r.id), title: "Delete", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715"))));
+      return /* @__PURE__ */ React.createElement("tr", { key: r.id, className: i % 2 ? "" : "bg-black/[0.015]", style: { borderTop: `1px solid ${BORDER}`, background: isEditing ? "#FFF8EF" : void 0 } }, /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, isEditing ? /* @__PURE__ */ React.createElement(NcrBatchField, { value: editForm.batchNumber, onChange: (v) => setEditForm({ ...editForm, batchNumber: v }), options: batchOptions, listId: "ncr-batch-codes-edit" }) : /* @__PURE__ */ React.createElement("span", { style: { display: "inline-flex", gap: 8, alignItems: "center" } }, /* @__PURE__ */ React.createElement(Mono, { className: "text-xs" }, r.batchNumber), /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          type: "button",
+          "data-ncr-trace": r.batchNumber,
+          onClick: () => window.dispatchEvent(new CustomEvent("mx-open-box", { detail: r.batchNumber })),
+          style: { background: "none", border: 0, padding: 0, color: NAVY, fontWeight: 600, fontSize: 12.5, cursor: "pointer", textDecoration: "underline" }
+        },
+        "Trace"
+      ))), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5 no-wrap" }, isEditing ? specForBatch(editForm.batchNumber) || /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, "\u2014") : specForBatch(r.batchNumber)), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, isEditing ? /* @__PURE__ */ React.createElement(TextInput, { type: "date", value: editForm.date, onChange: (e) => setEditForm({ ...editForm, date: e.target.value }) }) : r.date || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-3 py-1.5" }, isEditing ? /* @__PURE__ */ React.createElement(TextInput, { value: editForm.reason, onChange: (e) => setEditForm({ ...editForm, reason: e.target.value }) }) : r.reason), /* @__PURE__ */ React.createElement("td", { className: "px-2 whitespace-nowrap" }, isEditing ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: saveEdit, title: "Save", className: "opacity-60 hover:opacity-100 px-1", style: { color: GREEN } }, "\u2713"), /* @__PURE__ */ React.createElement("button", { onClick: cancelEdit, title: "Cancel", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { onClick: () => startEdit(r), title: "Edit", className: "opacity-40 hover:opacity-100 px-1" }, "\u270E"), /* @__PURE__ */ React.createElement("button", { onClick: () => removeRow(r.id), title: "Delete", className: "opacity-40 hover:opacity-100 px-1" }, "\u2715"))));
     }), ncrs.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 5 }, "No NCRs logged.")))));
   }
   function BaselineToolingView({ data, setData }) {
@@ -42638,10 +43039,18 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         setOpenGroup(groupForView(result.value));
       } else {
         setSearchJump({ view: "stock", query: result.value });
+        setTimeout(() => window.dispatchEvent(new CustomEvent("mx-box-query", { detail: result.value })), 0);
         setOpenGroup(groupForView("stock"));
         navigateTo("stock");
       }
     };
+    useEffect(() => {
+      const f = (e) => {
+        if (e && e.detail) jumpToSearchResult({ type: "box", value: String(e.detail) });
+      };
+      window.addEventListener("mx-open-box", f);
+      return () => window.removeEventListener("mx-open-box", f);
+    });
     const fileInputRef = useRef(null);
     const [syncEnabled, setSyncEnabled] = useState(() => localStorage.getItem(SYNC_PREF_KEY) === "true");
     const [testMode, setTestMode] = useState(() => localStorage.getItem("matrixTestMode") === "true");
