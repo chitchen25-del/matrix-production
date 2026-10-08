@@ -13856,7 +13856,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-08.119";
+  var APP_VERSION = "2026-10-08.120";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -14913,20 +14913,20 @@ ${line}` : line;
     const summary = plan.length === 1 ? res.summary : `Moved ${qty} \xD7 ${row.boxNumber || row.id} to order ${toOrder}: ${parts.join(", ")}${qty < have ? ` (${have - qty} left where it was)` : ""}`;
     return { patch: working, summary, qty, partial: qty < have, cases: plan };
   }
-  function moveShelfBay(data, rowId, bay) {
+  function moveShelfBay(data, rowId, bay, qty = null) {
     const to = String(bay || "").trim().toUpperCase();
     if (!to) return { error: "Pick the bay it's going to." };
-    const row = (data.bondingRuns || []).find((r) => r.id === rowId && !r.deleted);
+    const baseId = String(rowId || "").split("~")[0];
+    const row = (data.bondingRuns || []).find((r) => r.id === baseId && !r.deleted);
     if (!row) return { error: "That box row no longer exists." };
-    if (row.workNumber) return { error: "These boxes are on an order \u2014 move them back to the shelf first." };
     const code = String(row.boxNumber || "").trim().toUpperCase();
-    const runs = (data.bondingRuns || []).filter((r) => !r.deleted && !r.workNumber && String(r.boxNumber || "").trim().toUpperCase() === code);
+    const runs = (data.bondingRuns || []).filter((r) => !r.deleted && String(r.boxNumber || "").trim().toUpperCase() === code);
     const from = [...new Set(runs.map((r) => String(r.location || "").trim()).filter(Boolean))].join(", ") || "no bay";
     if (runs.every((r) => String(r.location || "").trim().toUpperCase() === to)) return { error: `${code} is already at ${to}.` };
     const when = (/* @__PURE__ */ new Date()).toISOString(), note = `Moved ${from} \u2192 ${to} (${when.slice(0, 10)})`;
     const ids = new Set(runs.map((r) => r.id));
     const patch = { ...data, bondingRuns: (data.bondingRuns || []).map((r) => ids.has(r.id) ? { ...r, location: to, comments: [String(r.comments || "").trim(), note].filter(Boolean).join(" \xB7 "), updatedAt: when } : r) };
-    const n = Number(row.toStock) || 0;
+    const n = Number(qty) || 0;
     return { patch, summary: `Move ${n ? `${n} \xD7 ` : ""}${code} from ${from} to ${to}`, to };
   }
   function moveBoxRowToCase(data, rowId, dest) {
@@ -26901,14 +26901,14 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     const orderName = (id) => (data.orders || []).find((o) => o.id === id)?.customer || "";
     const toBay = (r) => {
       const d = draftFor(r);
-      const res = moveShelfBay(data, r.id, d.location);
+      const res = moveShelfBay(data, r.id, d.location, holds(r));
       if (res.error) {
         setError(res.error);
         return;
       }
       if (!window.confirm(`${res.summary}?`)) return;
       setData((prev) => {
-        const x = moveShelfBay(prev, r.id, d.location);
+        const x = moveShelfBay(prev, r.id, d.location, holds(r));
         return x.error ? prev : x.patch;
       });
       setDone(res.summary.replace(/^Move/, "Moved"));
