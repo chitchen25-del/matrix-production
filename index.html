@@ -13856,7 +13856,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-08.117";
+  var APP_VERSION = "2026-10-08.119";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -13989,10 +13989,26 @@ ${line}` : line;
         const prevRows = prevTables[table] || [];
         const nextRows = nextTables[table] || [];
         const prevById = new Map(prevRows.map((p) => [p.id, p]));
-        const changed = nextRows.filter((r) => {
+        let changed = nextRows.filter((r) => {
           const before = prevById.get(r.id);
           return !before || JSON.stringify(stripMeta(before)) !== JSON.stringify(stripMeta(r));
         });
+        if (table === "cases") {
+          const shipped = new Set((prevData.orders || []).filter((o) => o && !o.deleted && o.stage === "Shipped").map((o) => o.id));
+          const frozen = shipped.size ? changed.filter((r) => prevById.has(r.id) && shipped.has(r.order_id)) : [];
+          if (frozen.length) {
+            const ids = frozen.map((r) => r.id);
+            const no = new Set(ids);
+            changed = changed.filter((r) => !no.has(r.id));
+            refused.push({ table, ids, reasons: [], quiet: true });
+            try {
+              const { data: fresh } = await client.from(table).select("*").in("id", ids);
+              if (fresh && fresh.length) refusedFresh.push({ table, rows: fresh });
+            } catch (e) {
+              console.warn("Could not fetch the cloud copy of a shipped order's cases:", e);
+            }
+          }
+        }
         const deletedIds = prevRows.filter((p) => !p.deleted && !nextRows.some((r) => r.id === p.id)).map((p) => p.id);
         if (changed.length) {
           const outgoing = actor ? changed.map((r) => ({ ...r, updated_by: actor })) : changed;
@@ -14896,6 +14912,22 @@ ${line}` : line;
     }
     const summary = plan.length === 1 ? res.summary : `Moved ${qty} \xD7 ${row.boxNumber || row.id} to order ${toOrder}: ${parts.join(", ")}${qty < have ? ` (${have - qty} left where it was)` : ""}`;
     return { patch: working, summary, qty, partial: qty < have, cases: plan };
+  }
+  function moveShelfBay(data, rowId, bay) {
+    const to = String(bay || "").trim().toUpperCase();
+    if (!to) return { error: "Pick the bay it's going to." };
+    const row = (data.bondingRuns || []).find((r) => r.id === rowId && !r.deleted);
+    if (!row) return { error: "That box row no longer exists." };
+    if (row.workNumber) return { error: "These boxes are on an order \u2014 move them back to the shelf first." };
+    const code = String(row.boxNumber || "").trim().toUpperCase();
+    const runs = (data.bondingRuns || []).filter((r) => !r.deleted && !r.workNumber && String(r.boxNumber || "").trim().toUpperCase() === code);
+    const from = [...new Set(runs.map((r) => String(r.location || "").trim()).filter(Boolean))].join(", ") || "no bay";
+    if (runs.every((r) => String(r.location || "").trim().toUpperCase() === to)) return { error: `${code} is already at ${to}.` };
+    const when = (/* @__PURE__ */ new Date()).toISOString(), note = `Moved ${from} \u2192 ${to} (${when.slice(0, 10)})`;
+    const ids = new Set(runs.map((r) => r.id));
+    const patch = { ...data, bondingRuns: (data.bondingRuns || []).map((r) => ids.has(r.id) ? { ...r, location: to, comments: [String(r.comments || "").trim(), note].filter(Boolean).join(" \xB7 "), updatedAt: when } : r) };
+    const n = Number(row.toStock) || 0;
+    return { patch, summary: `Move ${n ? `${n} \xD7 ` : ""}${code} from ${from} to ${to}`, to };
   }
   function moveBoxRowToCase(data, rowId, dest) {
     const runs = data.bondingRuns || [];
@@ -26867,6 +26899,25 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
     };
     const holds = (r) => r.workNumber ? Number(r.onOrderQty) || 0 : Number(r.toStock) || 0;
     const orderName = (id) => (data.orders || []).find((o) => o.id === id)?.customer || "";
+    const toBay = (r) => {
+      const d = draftFor(r);
+      const res = moveShelfBay(data, r.id, d.location);
+      if (res.error) {
+        setError(res.error);
+        return;
+      }
+      if (!window.confirm(`${res.summary}?`)) return;
+      setData((prev) => {
+        const x = moveShelfBay(prev, r.id, d.location);
+        return x.error ? prev : x.patch;
+      });
+      setDone(res.summary.replace(/^Move/, "Moved"));
+      setDrafts((x) => {
+        const c = { ...x };
+        delete c[r.id];
+        return c;
+      });
+    };
     const move = (r) => {
       const d = draftFor(r);
       if (!d.to) {
@@ -26883,6 +26934,10 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       }
       if (d.to === "__repack__") {
         repack(r);
+        return;
+      }
+      if (d.to === "__bay__") {
+        toBay(r);
         return;
       }
       const toOrderId = d.to === "__shelf__" ? null : d.to;
@@ -26924,7 +26979,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
       return /* @__PURE__ */ React.createElement("div", { key: r.id, className: "mb-3 pb-3", style: { borderBottom: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("div", { className: "flex items-baseline gap-2 flex-wrap mb-2", style: { fontSize: 14 } }, /* @__PURE__ */ React.createElement("b", null, have), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED } }, have === 1 ? "box" : "boxes", " currently"), r.workNumber ? (() => {
         const inCases = casesHoldingBox(data, r.workNumber, r.boxNumber);
         return /* @__PURE__ */ React.createElement("span", null, "on ", /* @__PURE__ */ React.createElement("b", null, r.workNumber), orderName(r.workNumber) ? ` \u2014 ${orderName(r.workNumber)}` : "", inCases.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, ", ", /* @__PURE__ */ React.createElement("b", null, "case", inCases.length === 1 ? "" : "s", " ", caseRangeLabel(inCases))));
-      })() : /* @__PURE__ */ React.createElement("span", null, "on the shelf", r.location ? /* @__PURE__ */ React.createElement(React.Fragment, null, " at ", /* @__PURE__ */ React.createElement("b", null, r.location)) : /* @__PURE__ */ React.createElement("span", { style: { color: AMBER } }, " (no location recorded)"))), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 items-center flex-wrap" }, /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 220px", minWidth: 0 } }, /* @__PURE__ */ React.createElement(Select, { value: d.to, onChange: (e) => setDraft(r, { to: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Move to\u2026"), r.workNumber && /* @__PURE__ */ React.createElement("option", { value: r.workNumber }, "Move between cases on ", r.workNumber), r.workNumber && /* @__PURE__ */ React.createElement("option", { value: "__shelf__" }, "Back to the shelf"), /* @__PURE__ */ React.createElement("option", { value: "__scrap__" }, "Scrap (damaged / unusable)"), !r.workNumber && /* @__PURE__ */ React.createElement("option", { value: "__sample__" }, "Sample (sent out)"), !r.workNumber && /* @__PURE__ */ React.createElement("option", { value: "__repack__" }, "Repack into another carton"), ranked.needing.filter((o) => o.orderId !== r.workNumber).length > 0 && /* @__PURE__ */ React.createElement("optgroup", { label: "Orders needing this size" }, ranked.needing.filter((o) => o.orderId !== r.workNumber).map((o) => /* @__PURE__ */ React.createElement("option", { key: o.orderId, value: o.orderId }, o.customer, " \xB7 ", o.orderId, " \u2014 needs ", o.needs, o.priority != null ? ` \xB7 P${o.priority}` : "", o.dueDate ? ` \xB7 due ${o.dueDate}` : ""))), /* @__PURE__ */ React.createElement("optgroup", { label: "Every other open order" }, ranked.others.filter((o) => o.orderId !== r.workNumber).map((o) => /* @__PURE__ */ React.createElement("option", { key: o.orderId, value: o.orderId }, o.customer, " \xB7 ", o.orderId))))), /* @__PURE__ */ React.createElement("div", { style: { width: 80 } }, /* @__PURE__ */ React.createElement(
+      })() : /* @__PURE__ */ React.createElement("span", null, "on the shelf", r.location ? /* @__PURE__ */ React.createElement(React.Fragment, null, " at ", /* @__PURE__ */ React.createElement("b", null, r.location)) : /* @__PURE__ */ React.createElement("span", { style: { color: AMBER } }, " (no location recorded)"))), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 items-center flex-wrap" }, /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 220px", minWidth: 0 } }, /* @__PURE__ */ React.createElement(Select, { value: d.to, onChange: (e) => setDraft(r, { to: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Move to\u2026"), r.workNumber && /* @__PURE__ */ React.createElement("option", { value: r.workNumber }, "Move between cases on ", r.workNumber), r.workNumber && /* @__PURE__ */ React.createElement("option", { value: "__shelf__" }, "Back to the shelf"), /* @__PURE__ */ React.createElement("option", { value: "__scrap__" }, "Scrap (damaged / unusable)"), !r.workNumber && /* @__PURE__ */ React.createElement("option", { value: "__sample__" }, "Sample (sent out)"), !r.workNumber && /* @__PURE__ */ React.createElement("option", { value: "__bay__" }, "Another bay on the shelf"), !r.workNumber && /* @__PURE__ */ React.createElement("option", { value: "__repack__" }, "Repack into another carton"), ranked.needing.filter((o) => o.orderId !== r.workNumber).length > 0 && /* @__PURE__ */ React.createElement("optgroup", { label: "Orders needing this size" }, ranked.needing.filter((o) => o.orderId !== r.workNumber).map((o) => /* @__PURE__ */ React.createElement("option", { key: o.orderId, value: o.orderId }, o.customer, " \xB7 ", o.orderId, " \u2014 needs ", o.needs, o.priority != null ? ` \xB7 P${o.priority}` : "", o.dueDate ? ` \xB7 due ${o.dueDate}` : ""))), /* @__PURE__ */ React.createElement("optgroup", { label: "Every other open order" }, ranked.others.filter((o) => o.orderId !== r.workNumber).map((o) => /* @__PURE__ */ React.createElement("option", { key: o.orderId, value: o.orderId }, o.customer, " \xB7 ", o.orderId))))), d.to !== "__bay__" && /* @__PURE__ */ React.createElement("div", { style: { width: 80 } }, /* @__PURE__ */ React.createElement(
         TextInput,
         {
           type: "number",
@@ -26933,7 +26988,7 @@ Why is this alright? (kept with the date, and it comes back if the data changes)
           style: { textAlign: "right" },
           onChange: (e) => setDraft(r, { qty: e.target.value })
         }
-      )), toShelf && /* @__PURE__ */ React.createElement("div", { style: { width: 130 } }, /* @__PURE__ */ React.createElement(Select, { value: d.location, onChange: (e) => setDraft(r, { location: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Which shelf?"), BOX_LOCATIONS.map((loc) => /* @__PURE__ */ React.createElement("option", { key: loc, value: loc }, loc)))), d.to && d.to !== "__shelf__" && d.to !== "__scrap__" && (() => {
+      )), (toShelf || d.to === "__bay__") && /* @__PURE__ */ React.createElement("div", { style: { width: 130 }, "data-move-bay": true }, /* @__PURE__ */ React.createElement(Select, { value: d.location, onChange: (e) => setDraft(r, { location: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Which shelf?"), BOX_LOCATIONS.map((loc) => /* @__PURE__ */ React.createElement("option", { key: loc, value: loc }, loc)))), d.to && !["__shelf__", "__scrap__", "__bay__", "__sample__", "__repack__"].includes(d.to) && (() => {
         const cases = openCasesForOrder(data, d.to, r.productSize);
         const auto = planForMove(data, r, d.to, d.qty === "" ? holds(r) : d.qty);
         const autoText = !auto || !auto.cases.length ? "No room planned for this size" : "Plan: " + auto.cases.map((c2) => `case ${c2.caseNum}${auto.cases.length > 1 ? ` \xD7${c2.qty}` : ""}`).join(", ");
@@ -43528,7 +43583,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
           const now = (/* @__PURE__ */ new Date()).toISOString();
           reportDeviceStatus({ last_sync_at: now, last_ok_at: now, pending: 0 });
         }
-        if (res && res.refused && res.refused.length) for (const r of res.refused.slice(0, 20))
+        if (res && res.refused && res.refused.length) for (const r of res.refused.filter((x) => !x.quiet).slice(0, 20))
           reportAppEvent({ kind: "refused", table: r.table || r.key || null, rowId: r.id || null, message: "The cloud held a newer copy; it was fetched instead" });
         setSyncWarnings(res && res.warnings && res.warnings.length ? res.warnings : null);
         if (res && res.refused && res.refused.length) reconcileRefusedRowsRef.current(res.refused, res.refusedFresh);
@@ -43699,6 +43754,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       const client = syncClientRef.current;
       if (!client) return;
       const count = refused.reduce((t, r) => t + (r.ids || []).length, 0);
+      const loud = refused.filter((r) => !r.quiet), loudCount = loud.reduce((t, r) => t + (r.ids || []).length, 0);
       try {
         const res = await fetchRemoteTables(client);
         noteWatermarks(res);
@@ -43737,10 +43793,14 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         prevDataRef.current = merged;
         setPendingCount(0);
         markSynced();
+        if (!loudCount && !drop.length) {
+          setSyncWarnings((cur) => cur ? cur.filter((w) => !(w.stale && w.stale.length)).length ? cur.filter((w) => !(w.stale && w.stale.length)) : null : cur);
+          return;
+        }
         setSyncWarnings((cur) => [...(cur || []).filter((w) => !(w.stale && w.stale.length)), {
-          table: refused.map((r) => r.table).join(", "),
-          stale: refused,
-          message: drop.length ? `${drop.length} ${drop.length === 1 ? "change was" : "changes were"} refused by the database and taken off this device: ${[...new Set(drop.map((x) => x.reason))].slice(0, 3).join(" ")}` + (count > drop.length ? ` ${count - drop.length} more ${count - drop.length === 1 ? "was" : "were"} not saved because the cloud already had a newer version.` : "") : `${count} ${count === 1 ? "change was" : "changes were"} not saved \u2014 the cloud already had a newer version. This device has been brought up to date.`
+          table: loud.map((r) => r.table).join(", "),
+          stale: loud,
+          message: drop.length ? `${drop.length} ${drop.length === 1 ? "change was" : "changes were"} refused by the database and taken off this device: ${[...new Set(drop.map((x) => x.reason))].slice(0, 3).join(" ")}` + (loudCount > drop.length ? ` ${loudCount - drop.length} more ${loudCount - drop.length === 1 ? "was" : "were"} not saved because the cloud already had a newer version.` : "") : `${loudCount} ${loudCount === 1 ? "change was" : "changes were"} not saved \u2014 the cloud already had a newer version. This device has been brought up to date.`
         }]);
       } catch (e) {
         console.error("Could not reconcile refused rows:", e);
