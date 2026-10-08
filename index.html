@@ -9607,15 +9607,44 @@ ${line}` : line;
     }
     return pallets.map((p) => ({ ...p, dims: p.dims || (order.palletDims || {})[p.label] || null }));
   }
+  var EMPTY_CASE_KG = 0.65;
+  function manifestWeights(order) {
+    const m = order && order.shippingManifest || {};
+    const rows = m.caseRows || [];
+    const pallets = manifestPallets(order);
+    const share = /* @__PURE__ */ new Map();
+    for (const p of pallets) {
+      const cs = (p.cases || []).filter((cn) => rows.some((c) => String(c.caseNum) === String(cn) && Number(c.weight) > 0));
+      const each = cs.length ? (Number(p.tare) || 0) / cs.length : 0;
+      for (const cn of cs) share.set(String(cn), each);
+    }
+    const r2 = (v) => Math.round(v * 100) / 100;
+    const cases = /* @__PURE__ */ new Map();
+    for (const c of rows) {
+      const w = Number(c.weight) || 0;
+      cases.set(String(c.caseNum), { weighed: w, net: w > 0 ? r2(Math.max(0, w - EMPTY_CASE_KG)) : 0, gross: w > 0 ? r2(w + (share.get(String(c.caseNum)) || 0)) : 0 });
+    }
+    const netOf = (nums) => r2(nums.reduce((t, n) => t + ((cases.get(String(n)) || {}).net || 0), 0));
+    const weighedIn = (nums) => nums.filter((n) => ((cases.get(String(n)) || {}).weighed || 0) > 0).length;
+    const palletRows = pallets.map((p) => ({ ...p, net: r2(Math.max(0, (Number(p.goods) || 0) - EMPTY_CASE_KG * weighedIn(p.cases || []))), gross: r2(Number(p.gross) || (Number(p.goods) || 0) + (Number(p.tare) || 0)) }));
+    const goods = pallets.length ? pallets.reduce((t, p) => t + (Number(p.goods) || 0), 0) : Number(m.goodsWeight) || Number(m.totalWeight) || rows.reduce((t, c) => t + (Number(c.weight) || 0), 0);
+    const tare = pallets.length ? pallets.reduce((t, p) => t + (Number(p.tare) || 0), 0) : Number(m.tareWeight) || 0;
+    const weighedCases = rows.filter((c) => Number(c.weight) > 0).length;
+    return { cases, pallets: palletRows, net: r2(Math.max(0, goods - EMPTY_CASE_KG * weighedCases)), gross: r2(goods + tare), tare: r2(tare), weighedCases };
+  }
+  function hsDescription(specs) {
+    const c = hsCodesFor(specs);
+    if (c.length === 1) return `All the above items are ${c[0].what}, used in the folding carton industry`;
+    return `${c.map((x) => `${x.what.charAt(0).toUpperCase()}${x.what.slice(1)}`).join("; ")}. Used in the folding carton industry`;
+  }
   function shippingManifestDoc(order) {
     const m = order && order.shippingManifest;
     if (!m) return null;
     const esc2 = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
     const n2 = (v) => (Number(v) || 0).toFixed(2);
-    const pallets = manifestPallets(order);
-    const goodsTotal = pallets.length ? pallets.reduce((t, p) => t + (Number(p.goods) || 0), 0) : Number(m.goodsWeight) || Number(m.totalWeight) || 0;
-    const tareTotal = pallets.length ? pallets.reduce((t, p) => t + (Number(p.tare) || 0), 0) : Number(m.tareWeight) || 0;
-    const grossTotal = Math.round((goodsTotal + tareTotal) * 100) / 100;
+    const W = manifestWeights(order);
+    const pallets = W.pallets;
+    const netTotal = W.net, grossTotal = W.gross;
     const manifestSpecs = [...(m.caseRows || []).flatMap((c) => (c.contributions || []).map((r) => r.spec)), ...(m.smallRows || []).map((r) => r.spec)];
     const hsCodes = hsCodesFor(manifestSpecs);
     const pr = m.photoReport && m.photoReport.allClear && Array.isArray(m.photoReport.cases) ? m.photoReport : null;
@@ -9664,12 +9693,6 @@ ${line}` : line;
       for (const pn of cols) out[pn] = bySize[sizeOnly(pn)].length > 1 ? sizeOnly(pn) + tailOf(pn) : sizeOnly(pn);
       return out;
     };
-    const tareShare = /* @__PURE__ */ new Map();
-    for (const p of pallets) {
-      const cs = (p.cases || []).filter((cn) => m.caseRows.some((c) => String(c.caseNum) === String(cn) && Number(c.weight) > 0));
-      const each = cs.length ? (Number(p.tare) || 0) / cs.length : 0;
-      for (const cn of cs) tareShare.set(String(cn), each);
-    }
     const grand = Object.fromEntries(products.map((pn) => [pn, 0]));
     let weightTotal = 0, totalQty = 0;
     const sheets = chunks.map((rows, si) => {
@@ -9693,11 +9716,10 @@ ${line}` : line;
         const w = Number(c.weight) || 0;
         subW += w;
         weightTotal += w;
-        const share = w ? tareShare.get(String(c.caseNum)) || 0 : 0;
-        const gross = w + share;
-        subN += w;
-        subG += gross;
-        return `<tr><td class="cn">${esc2(c.caseNum)}</td>${cols.map((pn) => `<td class="q${byProduct[pn] ? " has" : ""}">${byProduct[pn] ? esc2(byProduct[pn]) : ""}</td>`).join("")}<td class="wt">${w ? n2(gross) : ""}</td><td class="wt">${w ? n2(w) : ""}</td>${pr ? `<td class="ph">${prCases.has(String(c.caseNum)) ? CAM : ""}</td>` : ""}</tr>`;
+        const cw = W.cases.get(String(c.caseNum)) || { net: 0, gross: 0 };
+        subN += cw.net;
+        subG += cw.gross;
+        return `<tr><td class="cn">${esc2(c.caseNum)}</td>${cols.map((pn) => `<td class="q${byProduct[pn] ? " has" : ""}">${byProduct[pn] ? esc2(byProduct[pn]) : ""}</td>`).join("")}<td class="wt">${w ? n2(cw.gross) : ""}</td><td class="wt">${w ? n2(cw.net) : ""}</td>${pr ? `<td class="ph">${prCases.has(String(c.caseNum)) ? CAM : ""}</td>` : ""}</tr>`;
       }).join("");
       const first = rows[0] ? rows[0].caseNum : "", last = rows.length ? rows[rows.length - 1].caseNum : "";
       return `<div class="sheet${si < chunks.length - 1 ? " brk" : ""}">
@@ -9705,7 +9727,7 @@ ${line}` : line;
       <table class="sm${wide ? " wide" : ""}${vwide ? " vwide" : ""}">
         <colgroup><col style="width:${wide ? 5 : 7}%">${cols.map(() => `<col style="width:${colW}%">`).join("")}<col style="width:${wide ? 7 : 9}%"><col style="width:${wide ? 7 : 9}%">${pr ? `<col style="width:${wide ? 4 : 5}%">` : ""}</colgroup>
         <thead><tr><th class="cn">Case</th>${cols.map((pn) => `<th>${headOf(pn)}</th>`).join("")}<th class="wt">${wide ? "Gross kg" : "Gross kg"}</th><th class="wt">${wide ? "Net kg" : "Net kg"}</th>${pr ? `<th class="ph">Photo</th>` : ""}</tr></thead>
-        <tbody>${body}<tr class="tot"><td class="cn">${chunks.length > 1 ? "Sheet" : "Total"}</td>${cols.map((pn) => `<td>${sub[pn] || ""}</td>`).join("")}<td class="wt">${n2(subG)}</td><td class="wt">${n2(subN)}</td>${pr ? `<td class="ph">${rows.filter((c) => prCases.has(String(c.caseNum))).length}/${rows.length}</td>` : ""}</tr></tbody>
+        <tbody>${body}<tr class="tot"><td class="cn">${chunks.length > 1 ? "Sheet" : "Total"}</td>${cols.map((pn) => `<td>${sub[pn] || ""}</td>`).join("")}<td class="wt">${chunks.length > 1 ? n2(subG) : ""}</td><td class="wt">${chunks.length > 1 ? n2(subN) : ""}</td>${pr ? `<td class="ph">${rows.filter((c) => prCases.has(String(c.caseNum))).length}/${rows.length}</td>` : ""}</tr></tbody>
       </table>
     </div>`;
     }).join("");
@@ -9715,8 +9737,8 @@ ${line}` : line;
     const palletText = pallets.length ? pallets.map((p) => {
       const d = p.dims || {};
       const has = Number(d.h) > 0 && Number(d.w) > 0 && Number(d.d) > 0;
-      return `<p><b>Pallet ${esc2(p.label)}</b> &mdash; cases ${esc2(caseRangeLabel(p.cases))}. ${has ? `Pallet dimensions ${esc2(d.w)} &times; ${esc2(d.d)} &times; ${esc2(d.h)} cm.` : `<span class="p-flag">Pallet dimensions not measured.</span>`} Net weight ${n2(p.goods)} kg, gross weight ${n2(p.gross)} kg.</p>`;
-    }).join("") : `<p>Not shipped on a pallet. Goods weight ${n2(goodsTotal)} kg.</p>`;
+      return `<p><b>Pallet ${esc2(p.label)}</b> &mdash; cases ${esc2(caseRangeLabel(p.cases))}. ${has ? `Pallet dimensions ${esc2(d.w)} &times; ${esc2(d.d)} &times; ${esc2(d.h)} cm.` : `<span class="p-flag">Pallet dimensions not measured.</span>`} Net weight ${n2(p.net)} kg, gross weight ${n2(p.gross)} kg.</p>`;
+    }).join("") : "";
     const cust = (CUSTOMERS || []).find((c) => c && !c.deleted && (c.id === order.customerId || c.id === order.customer || String(c.companyName || "").trim().toLowerCase() === String(order.customer || "").trim().toLowerCase()));
     const billLines = String(order.address || cust && cust.address || "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
     if (cust && cust.contactEmail && !billLines.some((l) => l.toLowerCase() === String(cust.contactEmail).trim().toLowerCase())) billLines.push(String(cust.contactEmail).trim());
@@ -9811,11 +9833,11 @@ ${line}` : line;
         <tr><td>Total number of Cases</td><td>${m.caseRows.length}</td></tr>
         <tr><td>Total number of boxes</td><td>${totalQty}</td></tr>
         <tr><td>HS Code</td><td>${hsCodes.length === 1 ? hsCodes[0].code : hsCodes.map((x) => `${x.code} (${x.short})`).join("<br>")}</td></tr>
-        <tr><td>Net weight</td><td>${n2(goodsTotal)}kg</td></tr>
+        <tr><td>Net weight</td><td>${n2(netTotal)}kg</td></tr>
         <tr><td>Gross weight</td><td>${n2(grossTotal)}kg</td></tr>
         <tr><td>Pallet Dimensions</td><td>${dimsCell}</td></tr>
       </table>
-      ${pr ? `<div class="whatcol"><p class="what">${esc2(hsSentence(manifestSpecs))}.</p>${prBadge}</div>` : `<p class="what">${esc2(hsSentence(manifestSpecs))}.</p>`}</div>
+      ${pr ? `<div class="whatcol"><p class="what">${esc2(hsDescription(manifestSpecs))}.</p>${prBadge}</div>` : `<p class="what">${esc2(hsDescription(manifestSpecs))}.</p>`}</div>
     </div>
   </body></html>`;
     return html;
@@ -9893,8 +9915,7 @@ ${line}` : line;
       caseWeights += w;
       return `Case ${c.caseNum}: ${[...parts].map(([k, q]) => `${q} x ${k}`).join(", ") || "empty"}${w ? ` - ${n2(w)} kg` : ""}`;
     });
-    const goods = pallets.length ? pallets.reduce((t, p) => t + (Number(p.goods) || 0), 0) : Number(m.goodsWeight) || Number(m.totalWeight) || caseWeights;
-    const tare = pallets.length ? pallets.reduce((t, p) => t + (Number(p.tare) || 0), 0) : Number(m.tareWeight) || 0;
+    const W = manifestWeights(order);
     const shipped = m.shippedDate || order.shippedDate || "";
     const subject = `Shipping manifest ${order.id} - ${order.customer || ""}${shipped ? ` - shipped ${shipped}` : ""}`;
     const head = [
@@ -9904,7 +9925,7 @@ ${line}` : line;
       "Products",
       ...[...byProduct].sort((a, b) => a[0].localeCompare(b[0], void 0, { numeric: true })).map(([k, q]) => `  ${k}: ${q} box${q === 1 ? "" : "es"}`),
       "",
-      `Total: ${rows.length} case${rows.length === 1 ? "" : "s"}, ${boxes} boxes. Net weight ${n2(goods)} kg. Gross weight ${n2(goods + tare)} kg.`,
+      `Total: ${rows.length} case${rows.length === 1 ? "" : "s"}, ${boxes} boxes. Net weight ${n2(W.net)} kg. Gross weight ${n2(W.gross)} kg.`,
       "",
       ...pallets.length ? ["Pallets", ...pallets.map((p) => {
         const d = p.dims || {};
@@ -9919,6 +9940,71 @@ ${line}` : line;
     if (urlFor(full).length <= maxUrl) return { to: ACCOUNTS_EMAIL, subject, body: full, url: urlFor(full), caseList, trimmed: false };
     const cut = [...head, `Case by case: ${rows.length} cases - too long for an email link. Paste the copied list here, or print the manifest from the order.`, ...foot].join("\n");
     return { to: ACCOUNTS_EMAIL, subject, body: cut, url: urlFor(cut), caseList, trimmed: true };
+  }
+  function bondingListDoc(rows, specs, { orders = [], when = /* @__PURE__ */ new Date(), reels = null } = {}) {
+    const esc2 = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const size = (s) => {
+      const m = String(s).match(/(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)/) || String(s).match(/(\d+(?:\.\d+)?)\s*mm/);
+      return m ? [Number(m[1]), Number(m[2] || 0)] : [999, 999];
+    };
+    const range = (s) => (String(s).match(/^(PX Plus|Smart Formes|Ultra SR|Ken PX|KEN PX|Speedy Crease Metal|Speedy Crease|Phoenix XL|PX|Exceed)/i) || [String(s)])[0].toUpperCase();
+    const short = (s) => String(s).replace(/\s*\((\d+(\.\d+)?)m\)$/, "");
+    const want = new Set(specs || []);
+    const byId = new Map((orders || []).map((o, i) => [o.id, { o, i }]));
+    const list = (rows || []).filter((r) => want.has(r.spec) && Number(r.toMake) > 0 && !isSmallItem(r.spec)).slice().sort((a, b) => range(a.spec).localeCompare(range(b.spec)) || size(a.spec)[0] - size(b.spec)[0] || size(a.spec)[1] - size(b.spec)[1] || String(a.spec).localeCompare(String(b.spec)));
+    const plan = reels ? planReels(reels.list, list.map((r) => {
+      const k = reels.keyOf(r.spec) || {};
+      return { id: r.spec, pool: k.pool, boxes: Number(r.toMake), mpb: k.mpb };
+    })) : null;
+    const dueOf = (id) => {
+      const e = byId.get(id);
+      const d = e && e.o.dueDate;
+      if (!d) return "";
+      const t = /* @__PURE__ */ new Date(String(d).slice(0, 10) + "T12:00:00");
+      return isNaN(t) ? String(d) : t.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+    };
+    const total = list.reduce((t, r) => t + Number(r.toMake), 0);
+    const day = when.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+    const time = when.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+    const blocks = list.map((r) => {
+      const merged = /* @__PURE__ */ new Map();
+      for (const b of r.breakdown || []) {
+        if (!(Number(b.toMake) > 0)) continue;
+        const e = merged.get(b.orderId);
+        if (e) {
+          e.toMake = Number(e.toMake) + Number(b.toMake);
+          e.strongTape = e.strongTape || b.strongTape;
+        } else merged.set(b.orderId, { ...b, toMake: Number(b.toMake) });
+      }
+      const who = [...merged.values()].sort((a, b) => ((byId.get(a.orderId) || {}).i ?? 1e9) - ((byId.get(b.orderId) || {}).i ?? 1e9) || String(a.orderId).localeCompare(String(b.orderId)));
+      const p = plan ? plan.get(r.spec) : null;
+      return `<div class="s"><h2>${esc2(short(r.spec))}<span class="t">${Number(r.toMake)} to bond</span></h2>
+      <table><colgroup><col class="c1"><col class="c2"><col class="c3"><col class="c4"><col class="c5"></colgroup>
+      <tr class="h"><td>Customer</td><td>Order</td><td>Due</td><td class="n">Boxes</td><td>Note</td></tr>
+      ${who.map((b) => `<tr><td>${esc2(b.customer)}</td><td>${esc2(b.orderId)}</td><td>${esc2(dueOf(b.orderId))}</td><td class="n">${Number(b.toMake)}</td><td>${[
+        b.boxType && !/^PX Plus$/i.test(b.boxType) ? `${esc2(b.boxType)} box` : "",
+        b.strongTape ? "<b>STRONG TAPE</b>" : ""
+      ].filter(Boolean).join(" \xB7 ")}</td></tr>`).join("")}
+      </table>${p ? `<div class="rl"><b>Reels:</b> ${reelCell(esc2, p)} ${reelMark(p)}</div>` : ""}</div>`;
+    }).join("");
+    const none = [...want].filter((sp) => !list.some((r) => r.spec === sp));
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Bonding list</title><style>
+    @page { size: A4; margin: 14mm 16mm; }
+    body { font-family: Arial, sans-serif; font-size: 11pt; color: #000; margin: 0; }
+    h1 { font-size: 15pt; margin: 0 0 2px; } .sub { font-size: 9pt; margin-bottom: 10px; }
+    .s { margin: 0 0 14px; break-inside: avoid; page-break-inside: avoid; }
+    h2 { font-size: 13pt; margin: 0 0 3px; border-bottom: 2px solid #000; padding-bottom: 2px; display: flex; justify-content: space-between; }
+    h2 .t { font-size: 12pt; }
+    table { border-collapse: collapse; width: 100%; table-layout: fixed; } td { padding: 3px 4px; border-bottom: 1px solid #bbb; vertical-align: top; overflow-wrap: anywhere; }
+    col.c1 { width: 40%; } col.c2 { width: 13%; } col.c3 { width: 11%; } col.c4 { width: 10%; } col.c5 { width: 26%; }
+    tr.h td { font-size: 9pt; color: #444; border-bottom: 1px solid #000; } td.n { text-align: right; font-weight: 700; }
+    .rl { font-size: 10pt; margin-top: 3px; } p { font-size: 10pt; } ${REEL_CSS}
+  </style></head><body>
+    <h1>Bonding list</h1>
+    <div class="sub">${esc2(day)} ${esc2(time)} \xB7 ${list.length} size${list.length === 1 ? "" : "s"} \xB7 ${total} boxes \xB7 after what's already made, in cases and on the shelf</div>
+    ${blocks || "<p>Nothing left to bond for the sizes chosen.</p>"}${plan && blocks ? REEL_KEY : ""}
+    ${none.length ? `<p>Nothing left to bond: ${none.map((x) => esc2(short(x))).join(", ")}.</p>` : ""}
+  </body></html>`;
   }
   function ordersLeftDoc(rows, orderIds, { orders = [], when = /* @__PURE__ */ new Date(), reels = null } = {}) {
     const esc2 = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -13729,7 +13815,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-08.112";
+  var APP_VERSION = "2026-10-08.115";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -21959,6 +22045,29 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     const [viewMode, setViewMode] = useState(initialCategory ? "size" : "size");
     const allRows = productionOutstandingRows(data.orders, data.lineItems, data.bondingRuns, data.stockPicks);
     const [leftPick, setLeftPick] = useState(null);
+    const [sizePick, setSizePick] = useState(null);
+    const pickSizes = useMemo(() => {
+      const rng = (s) => (String(s).match(/^(PX Plus|Smart Formes|Ultra SR|Speedy Crease Metal|Speedy Crease|Phoenix XL|PX|Exceed)/i) || ["Rubber and other"])[0];
+      const dims = (s) => {
+        const m = String(s).match(/(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)/) || String(s).match(/(\d+(?:\.\d+)?)\s*mm/);
+        return m ? [Number(m[1]), Number(m[2] || 0)] : [999, 999];
+      };
+      const list = allRows.filter((r) => Number(r.toMake) > 0 && !isSmallItem(r.spec)).map((r) => ({
+        /* bought-in (Profile Tape, shim…) is never bonded */
+        spec: r.spec,
+        label: String(r.spec).replace(/\s*\((\d+(\.\d+)?)m\)$/, ""),
+        range: rng(r.spec),
+        toMake: Number(r.toMake),
+        orders: new Set((r.breakdown || []).filter((b) => Number(b.toMake) > 0).map((b) => b.orderId)).size
+      })).sort((a, b) => a.range.localeCompare(b.range) || dims(a.spec)[0] - dims(b.spec)[0] || dims(a.spec)[1] - dims(b.spec)[1] || a.label.localeCompare(b.label));
+      const groups = [];
+      for (const x of list) {
+        let g = groups.find((y) => y.range === x.range);
+        if (!g) groups.push(g = { range: x.range, sizes: [] });
+        g.sizes.push(x);
+      }
+      return groups;
+    }, [allRows]);
     const leftOrders = useMemo(() => {
       const seen = /* @__PURE__ */ new Map();
       for (const r of allRows) for (const b of r.breakdown || []) if (Number(b.toMake) > 0 && !seen.has(b.orderId)) seen.set(b.orderId, b.customer || "");
@@ -22026,7 +22135,34 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "no-print" }, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Production list", subtitle: "What needs making \u2014 across all orders by size, for one order, or your two most urgent combined.", right: (
       /* By size: the plain sheet for the tab you're on — Dave's list (Chris, 23 Sep 2026). By order: the screen, as before. */
       viewMode === "size" ? /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => printLabelDoc(productionSheetDoc(allRows.filter((r) => classifySize(r.spec) === cat), { reels: reelsForPrint(), group: catLabel })) }, "Print ", catLabel, " list") : viewMode !== "top2" && /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => window.print() }, "Print")
-    ) }), /* @__PURE__ */ React.createElement("div", { className: "mb-4" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setLeftPick(leftPick ? null : /* @__PURE__ */ new Set()) }, "\u{1F5A8} What's left to make \u2014 pick orders"), leftPick && /* @__PURE__ */ React.createElement("div", { style: { border: `1px solid ${BORDER}`, borderRadius: 8, padding: 12, marginTop: 8, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-2", style: { flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setLeftPick(new Set(leftOrders.map((o) => o.id))) }, "All"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setLeftPick(/* @__PURE__ */ new Set()) }, "None"), /* @__PURE__ */ React.createElement(Button, { disabled: !leftPick.size, onClick: () => printLabelDoc(ordersLeftDoc(allRows, [...leftPick], { orders: data.orders, reels: reelsForPrint() })) }, "\u{1F5A8} Print (", leftPick.size, " order", leftPick.size === 1 ? "" : "s", ")")), leftOrders.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED } }, "Nothing left to make on any order.") : leftOrders.map((o) => /* @__PURE__ */ React.createElement("label", { key: o.id, style: { display: "flex", alignItems: "center", gap: 10, padding: "7px 2px", fontSize: 15, borderBottom: `1px solid ${BORDER}`, cursor: "pointer" } }, /* @__PURE__ */ React.createElement(
+    ) }), /* @__PURE__ */ React.createElement("div", { className: "mb-4" }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setLeftPick(leftPick ? null : /* @__PURE__ */ new Set()) }, "\u{1F5A8} What's left to make \u2014 pick orders"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", "data-bondlist-open": true, onClick: () => setSizePick(sizePick ? null : /* @__PURE__ */ new Set()) }, "\u{1F5A8} Bonding list \u2014 pick sizes"), sizePick && /* @__PURE__ */ React.createElement("div", { "data-bondlist-pick": true, style: { border: `1px solid ${BORDER}`, borderRadius: 8, padding: 12, marginTop: 8, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: INK_MUTED, marginBottom: 8 } }, "Tick the sizes \u2014 the sheet lists every order that still wants each one, how many, and the reels to bond it from."), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-2", style: { flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setSizePick(/* @__PURE__ */ new Set()) }, "None"), /* @__PURE__ */ React.createElement(Button, { "data-bondlist-print": true, disabled: !sizePick.size, onClick: () => printLabelDoc(bondingListDoc(allRows, [...sizePick], { orders: data.orders, reels: reelsForPrint() })) }, "\u{1F5A8} Print (", sizePick.size, " size", sizePick.size === 1 ? "" : "s", ")")), pickSizes.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED } }, "Nothing left to make on any order.") : pickSizes.map((g) => /* @__PURE__ */ React.createElement("div", { key: g.range, style: { marginTop: 6 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12.5, fontWeight: 700, color: INK_MUTED, textTransform: "uppercase", letterSpacing: 0.4, padding: "6px 2px 2px" } }, /* @__PURE__ */ React.createElement("span", null, g.range), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        type: "button",
+        "data-bondlist-range": g.range,
+        onClick: () => setSizePick((prev) => {
+          const n = new Set(prev);
+          const all = g.sizes.every((x) => n.has(x.spec));
+          for (const x of g.sizes) all ? n.delete(x.spec) : n.add(x.spec);
+          return n;
+        }),
+        style: { background: "none", border: 0, color: NAVY, fontWeight: 600, fontSize: 13, cursor: "pointer", textTransform: "none", letterSpacing: 0 }
+      },
+      g.sizes.every((x) => sizePick.has(x.spec)) ? "None of these" : "All of these"
+    )), g.sizes.map((x) => /* @__PURE__ */ React.createElement("label", { key: x.spec, "data-bondlist-size": x.spec, style: { display: "flex", alignItems: "center", gap: 10, padding: "7px 2px", fontSize: 15, borderBottom: `1px solid ${BORDER}`, cursor: "pointer" } }, /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        type: "checkbox",
+        style: { width: 20, height: 20, flex: "none" },
+        checked: sizePick.has(x.spec),
+        onChange: () => setSizePick((prev) => {
+          const n = new Set(prev);
+          if (n.has(x.spec)) n.delete(x.spec);
+          else n.add(x.spec);
+          return n;
+        })
+      }
+    ), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, minWidth: 0, fontWeight: 600 } }, x.label), /* @__PURE__ */ React.createElement("span", { style: { color: INK_MUTED, fontSize: 13, whiteSpace: "nowrap" } }, x.toMake, " \xB7 ", x.orders, " order", x.orders === 1 ? "" : "s")))))), leftPick && /* @__PURE__ */ React.createElement("div", { style: { border: `1px solid ${BORDER}`, borderRadius: 8, padding: 12, marginTop: 8, background: "#fff" } }, /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-2", style: { flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setLeftPick(new Set(leftOrders.map((o) => o.id))) }, "All"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setLeftPick(/* @__PURE__ */ new Set()) }, "None"), /* @__PURE__ */ React.createElement(Button, { disabled: !leftPick.size, onClick: () => printLabelDoc(ordersLeftDoc(allRows, [...leftPick], { orders: data.orders, reels: reelsForPrint() })) }, "\u{1F5A8} Print (", leftPick.size, " order", leftPick.size === 1 ? "" : "s", ")")), leftOrders.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: INK_MUTED } }, "Nothing left to make on any order.") : leftOrders.map((o) => /* @__PURE__ */ React.createElement("label", { key: o.id, style: { display: "flex", alignItems: "center", gap: 10, padding: "7px 2px", fontSize: 15, borderBottom: `1px solid ${BORDER}`, cursor: "pointer" } }, /* @__PURE__ */ React.createElement(
       "input",
       {
         type: "checkbox",
@@ -39665,6 +39801,18 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
   function newLayoutAllowed() {
     return true;
   }
+  var NEW_PHONE_ROLLOUT = { id: "2026-10-08", logins: ["dave@creasingmatrix.com", "steve@creasingmatrix.com"] };
+  function phoneRolloutOnce() {
+    try {
+      if (!NEW_PHONE_ROLLOUT.logins.includes(nlEmail()) || !isPhoneScreen(761)) return false;
+      if (localStorage.getItem("mxNewLayoutRollout") === NEW_PHONE_ROLLOUT.id) return false;
+      localStorage.setItem(NEW_LAYOUT_KEY, "on");
+      localStorage.setItem("mxNewLayoutRollout", NEW_PHONE_ROLLOUT.id);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
   function setNewLayoutPref(on) {
     try {
       localStorage.setItem(NEW_LAYOUT_KEY, on ? "on" : "off");
@@ -39678,9 +39826,10 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
   function useNewLayout() {
     const read = () => {
       try {
+        phoneRolloutOnce();
         const v = localStorage.getItem(NEW_LAYOUT_KEY);
         if (v === "on" || v === "off") return v !== "off";
-        return !newScreensDefaultOld();
+        return true;
       } catch (e) {
         return true;
       }
@@ -41604,7 +41753,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     let off = false;
     try {
       const v = localStorage.getItem(NEW_LAYOUT_KEY);
-      off = v === "off" || v !== "on" && newScreensDefaultOld();
+      off = v === "off";
     } catch (e) {
     }
     if (!newLayoutAllowed() || !narrow || !off) return null;
@@ -41716,11 +41865,8 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       return false;
     }
   }
-  function isDaveLogin() {
-    return /^dave@creasingmatrix\.com$/i.test(nlEmail());
-  }
   function photoReaderHere() {
-    return isAdminLogin() || isDaveLogin() && isTabletDevice();
+    return isAdminLogin();
   }
   function screenAccessAll() {
     try {
@@ -43615,6 +43761,12 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       }
       localStorage.setItem(SYNC_PREF_KEY, "true");
       localStorage.setItem("matrixSyncEmail", email);
+      if (phoneRolloutOnce()) {
+        try {
+          window.dispatchEvent(new Event("mx-layout"));
+        } catch (e) {
+        }
+      }
       setSyncEmail(email);
       setSyncEnabled(true);
       setSyncStatus("connected");
