@@ -41999,7 +41999,20 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     <div class="ft"><span>${tot - left} of ${tot} done</span><b>${left} boxes to complete</b></div></body></html>`;
   }
   function DavesPlanner({ data, setData, go }) {
-    const [tab, setTab] = useState("lists");
+    const [tab, setTab0] = useState(() => {
+      try {
+        return localStorage.getItem("mxDpTab") || "lists";
+      } catch (e) {
+        return "lists";
+      }
+    });
+    const setTab = (k) => {
+      setTab0(k);
+      try {
+        localStorage.setItem("mxDpTab", k);
+      } catch (e) {
+      }
+    };
     const { lists, needs } = useMemo(() => dpOrderLists(data), [data]);
     const tweaks = (data.scheduleTweaks || []).filter((t) => t && !t.deleted && String(t.kind || "").startsWith("dp_"));
     const marks = useMemo(
@@ -42018,7 +42031,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         return null;
       }
     });
-    const cur = lists.find((x) => x.o.id === oid) || lists[0] || null;
+    const cur = lists.find((x) => x.o.id === oid) || lists.find((L) => L.lines.some((l) => l.make > 0)) || lists[0] || null;
     const pick2 = (id) => {
       setOid(id);
       setOpen(null);
@@ -42073,11 +42086,99 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     const dayName = (d) => d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric" });
     const todayKey = dayKeys[0], tomorrowKey = dayKeys[1];
     const tabs = [["lists", "My lists"], ["board", "Week board"], ["all", "All orders by size"]];
-    return /* @__PURE__ */ React.createElement("div", { "data-planner": true, style: { fontFamily: NLT.FONT, color: NL.INK, maxWidth: 1400 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 12 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 26, fontWeight: 700 } }, "Dave's Planner"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: NL.SUB } }, "The app keeps the facts. You make the plan.")), /* @__PURE__ */ React.createElement("div", { style: { display: "inline-flex", background: "#fff", border: `1px solid ${NL.LINE}`, borderRadius: 11, padding: 3, marginLeft: 8 } }, tabs.map(([k, l]) => /* @__PURE__ */ React.createElement("button", { key: k, "data-dp-tab": k, onClick: () => setTab(k), style: { height: 34, padding: "0 14px", border: 0, borderRadius: 8, background: tab === k ? NAVY2 : "transparent", color: tab === k ? "#fff" : NL.SUB, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: NLT.FONT } }, l))), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }), tab === "lists" && cur && /* @__PURE__ */ React.createElement("button", { "data-dp-print": true, onClick: () => printLabelDoc(dpListDoc(cur.o, dpGrouped(cur.lines), marks, needs, short)), style: { height: 40, padding: "0 16px", borderRadius: 11, border: 0, background: NAVY2, color: "#fff", fontWeight: 700, fontSize: 14.5, cursor: "pointer", fontFamily: NLT.FONT } }, "\u{1F5A8} Print this list")), tab === "lists" && (lists.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { ...card, padding: 18, color: NL.SUB } }, "No live orders with boxes on them.") : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { "data-dp-orders": true, style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 } }, lists.map(({ o, lines }) => {
-      const left = lines.reduce((t, l) => t + l.make, 0);
-      const on = cur && cur.o.id === o.id;
-      return /* @__PURE__ */ React.createElement("button", { key: o.id, "data-dp-order": o.id, onClick: () => pick2(o.id), style: { ...chipBtn(false), height: 38, border: on ? `2px solid ${NAVY2}` : `1px solid ${NL.LINE}`, color: on ? NAVY2 : NL.INK, fontWeight: 700 } }, short(o.customer), " ", /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 500, color: NL.SUB, fontSize: 12.5 } }, "\xB7 ", left ? `${left.toLocaleString("en-GB")} left` : "all made \u2713"));
-    })), cur && (() => {
+    const PT = usePlanTimes(data);
+    const bondCal = useMemo(() => {
+      try {
+        return workCalendar(scheduleSettingsOf(data).saturdayBondHours, data.lineDowntime, "bonding");
+      } catch (e) {
+        return null;
+      }
+    }, [data.scheduleSettings, data.lineDowntime]);
+    const capOf = (d) => {
+      try {
+        const h = bondCal ? hoursOn(bondCal, d) : null;
+        return h ? Math.max(0, h[1] - h[0]) : 0;
+      } catch (e) {
+        return 0;
+      }
+    };
+    const hpb = useMemo(() => {
+      const m = /* @__PURE__ */ new Map();
+      let H2 = 0, B = 0;
+      for (const j of PT.plan && PT.plan.bondJobs || []) {
+        const k = `${j.orderId}|${dpKey(j.label)}`;
+        const x = m.get(k) || { h: 0, b: 0 };
+        x.h += j.hours || 0;
+        x.b += j.boxes || 0;
+        m.set(k, x);
+        H2 += j.hours || 0;
+        B += j.boxes || 0;
+      }
+      const avg = B > 0 ? H2 / B : 0.035;
+      return { get: (o, s) => {
+        const x = m.get(`${o}|${dpKey(s)}`);
+        return x && x.b > 0 ? x.h / x.b : avg;
+      } };
+    }, [PT.plan]);
+    const sugg = useMemo(
+      () => {
+        const m = /* @__PURE__ */ new Map();
+        const keys = new Set(dayKeys);
+        for (const j of PT.plan && PT.plan.bondJobs || []) {
+          if (!j.start) continue;
+          const k = dpDayKey(new Date(j.start));
+          if (!keys.has(k)) continue;
+          const key = `${k}|${j.orderId}|${dpKey(j.label)}`;
+          const x = m.get(key) || { day: k, orderId: j.orderId, spec: j.label, boxes: 0, hours: 0, start: new Date(j.start) };
+          x.boxes += j.boxes || 0;
+          x.hours += j.hours || 0;
+          m.set(key, x);
+        }
+        return [...m.values()].sort((a, b) => a.start - b.start);
+      },
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [PT.plan, dayKeys.join()]
+    );
+    const [showSug, setShowSug] = useState(() => {
+      try {
+        return localStorage.getItem("mxDpSug") !== "0";
+      } catch (e) {
+        return true;
+      }
+    });
+    const [wf, setWf] = useState("all");
+    const [wQ, setWQ] = useState("");
+    const [wPick, setWPick] = useState(null);
+    const [dragOver, setDragOver] = useState(null);
+    const [sugOpen, setSugOpen] = useState({});
+    const placeBond = (row, day, beforeId = null) => setData((prev) => {
+      const list = prev.scheduleTweaks || [];
+      const had = list.find((t) => t && t.id === row.id);
+      const moving = had ? { ...had } : { createdAt: stamp(), createdBy: who(), deleted: false, ...row };
+      const same = list.filter((t) => t && !t.deleted && t.kind === "dp_bond" && String(t.day).slice(0, 10) === day && t.id !== row.id).sort((a, b) => (Number(a.pos) || 0) - (Number(b.pos) || 0));
+      let at = beforeId ? same.findIndex((t) => t.id === beforeId) : -1;
+      if (at < 0) at = same.length;
+      const order = [...same.slice(0, at), moving, ...same.slice(at)];
+      const posOf = new Map(order.map((t, i) => [t.id, i]));
+      const upd = list.map((t) => t && t.id === row.id ? { ...t, day, pos: posOf.get(t.id), updatedAt: stamp() } : t && posOf.has(t.id) && Number(t.pos) !== posOf.get(t.id) ? { ...t, pos: posOf.get(t.id), updatedAt: stamp() } : t);
+      return { ...prev, scheduleTweaks: had ? upd : [...upd, { ...moving, day, pos: posOf.get(moving.id), updatedAt: stamp() }] };
+    });
+    return /* @__PURE__ */ React.createElement("div", { "data-planner": true, style: { fontFamily: NLT.FONT, color: NL.INK, maxWidth: tab === "lists" ? 1500 : "none" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 12 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 26, fontWeight: 700 } }, "Dave's Planner"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: NL.SUB } }, "The app keeps the facts. You make the plan.")), /* @__PURE__ */ React.createElement("div", { style: { display: "inline-flex", background: "#fff", border: `1px solid ${NL.LINE}`, borderRadius: 11, padding: 3, marginLeft: 8 } }, tabs.map(([k, l]) => /* @__PURE__ */ React.createElement("button", { key: k, "data-dp-tab": k, onClick: () => setTab(k), style: { height: 34, padding: "0 14px", border: 0, borderRadius: 8, background: tab === k ? NAVY2 : "transparent", color: tab === k ? "#fff" : NL.SUB, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: NLT.FONT } }, l))), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }), tab === "lists" && cur && /* @__PURE__ */ React.createElement("button", { "data-dp-print": true, onClick: () => printLabelDoc(dpListDoc(cur.o, dpGrouped(cur.lines), marks, needs, short)), style: { height: 40, padding: "0 16px", borderRadius: 11, border: 0, background: NAVY2, color: "#fff", fontWeight: 700, fontSize: 14.5, cursor: "pointer", fontFamily: NLT.FONT } }, "\u{1F5A8} Print this list")), tab === "lists" && (lists.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { ...card, padding: 18, color: NL.SUB } }, "No live orders with boxes on them.") : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { "data-dp-orders": true, style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 } }, (() => {
+      const nameCount = {};
+      for (const L of lists) {
+        const n = short(L.o.customer);
+        nameCount[n] = (nameCount[n] || 0) + 1;
+      }
+      const td = todayKey;
+      const live = lists.filter((L) => L.lines.some((l) => l.make > 0)), made = lists.filter((L) => !L.lines.some((l) => l.make > 0));
+      const btn = ({ o, lines }) => {
+        const left = lines.reduce((t, l) => t + l.make, 0);
+        const on = cur && cur.o.id === o.id;
+        const late = left > 0 && o.dueDate && String(o.dueDate).slice(0, 10) < td;
+        return /* @__PURE__ */ React.createElement("button", { key: o.id, "data-dp-order": o.id, onClick: () => pick2(o.id), style: { ...chipBtn(false), height: 42, display: "inline-flex", alignItems: "center", gap: 6, border: on ? `2px solid ${NAVY2}` : late ? "1.5px solid #E7A39B" : `1px solid ${NL.LINE}`, background: on ? "#EEF2FA" : "#fff", color: on ? NAVY2 : NL.INK, fontWeight: 800, fontSize: 14.5, opacity: left ? 1 : 0.6 } }, o.priority ? /* @__PURE__ */ React.createElement("span", { style: { fontSize: 10.5, fontWeight: 800, color: "#fff", background: Number(o.priority) <= 2 ? "#B42318" : "#7A869E", borderRadius: 4, padding: "1px 4px" } }, "P", o.priority) : null, short(o.customer), nameCount[short(o.customer)] > 1 ? /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 600, color: NL.SUB, fontSize: 12 } }, o.id) : null, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 600, color: late ? "#B42318" : NL.SUB, fontSize: 12.5 } }, "\xB7 ", left ? `${left.toLocaleString("en-GB")} left` : "all made \u2713", late ? " \xB7 LATE" : ""));
+      };
+      return /* @__PURE__ */ React.createElement(React.Fragment, null, live.map(btn), made.length > 0 && /* @__PURE__ */ React.createElement("span", { style: { alignSelf: "center", fontSize: 12, color: NL.SUB, margin: "0 4px 0 8px" } }, "All made:"), made.map(btn));
+    })()), cur && (() => {
       const g = dpGrouped(cur.lines);
       const all = g.groups.flatMap((x) => x.lines);
       const tot = all.reduce((t, l) => t + l.ordered, 0), left = all.reduce((t, l) => t + l.make, 0);
@@ -42093,7 +42194,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         return /* @__PURE__ */ React.createElement("div", { key: ok, "data-dp-line": dpSizeText(l.p, l.spec), "data-dp-done": done ? "1" : void 0, style: { borderBottom: `1px dotted #D5DAE3`, background: mk.hi && DP_HI[mk.hi] ? DP_HI[mk.hi] : void 0 } }, /* @__PURE__ */ React.createElement("div", { onClick: () => {
           setOpen(isOpen ? null : ok);
           setNoteDraft(mk.note || "");
-        }, style: { display: "flex", alignItems: "baseline", gap: 7, padding: "5px 4px", cursor: "pointer", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 16, fontWeight: 600, minWidth: 120, fontVariantNumeric: "tabular-nums", textDecoration: done ? "line-through" : "none", textDecorationThickness: 2, color: done ? "#9AA3B5" : NL.INK } }, dpSizeText(l.p, l.spec)), l.p.pt && /* @__PURE__ */ React.createElement("span", { "data-dp-pt": true, style: { fontSize: 11, fontWeight: 700, color: done ? "#B5BCCB" : NL.SUB, textDecoration: done ? "line-through" : "none" } }, l.p.pt), /* @__PURE__ */ React.createElement("span", { style: { color: "#8B94A8" } }, "\u2014"), /* @__PURE__ */ React.createElement("span", { "data-dp-qty": true, style: { fontSize: 16, fontWeight: 800, color: done ? "#9AA3B5" : NL.INK, textDecoration: done ? "line-through" : "none", textDecorationThickness: 2 } }, part ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("s", { style: { color: "#8B94A8", fontWeight: 500 } }, l.ordered), " ", l.make) : l.ordered), !done && l.bondReels && l.bondReels.length > 0 && /* @__PURE__ */ React.createElement("b", { "data-dp-r": true, title: `On the rack: ${l.bondReels.join(", ")}`, style: { fontSize: 11, fontWeight: 900, color: "#1E7F3C", border: "1.5px solid #1E7F3C", borderRadius: 4, padding: "0 4px" } }, "R"), !done && l.shelf > 0 && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, color: NL.SUB } }, l.shelf, " on the shelf"), planned.length > 0 && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11.5, fontWeight: 700, color: NAVY2, background: "#EEF2FA", borderRadius: 6, padding: "1px 6px" } }, "\u{1F4C5} ", planned.map((b) => `${days.find((d) => dpDayKey(d) === String(b.day).slice(0, 10)) ? dayName(days.find((d) => dpDayKey(d) === String(b.day).slice(0, 10))) : String(b.day).slice(5, 10)} ${b.label}`).join(" \xB7 ")), !done && others.length > 0 && /* @__PURE__ */ React.createElement("span", { "data-dp-others": true, style: { marginLeft: "auto", fontSize: 12, fontWeight: 600, color: NAVY2, background: "#EEF2FA", borderRadius: 999, padding: "1px 9px" } }, "also ", others.map((x) => `${short(x.customer)} ${x.n}`).join(" \xB7 "), " \xB7 all ", allN)), mk.note && !isOpen && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, fontStyle: "italic", color: "#3A4458", padding: "0 6px 5px" } }, "\u201C", mk.note, "\u201D"), isOpen && /* @__PURE__ */ React.createElement("div", { "data-dp-edit": true, style: { padding: "6px 6px 10px", display: "flex", flexDirection: "column", gap: 8, background: "#F8FAFD", borderTop: `1px solid ${NL.LINE}` } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, fontWeight: 700, color: NL.SUB } }, "Highlight"), Object.keys(DP_HI).map((c) => /* @__PURE__ */ React.createElement("button", { key: c, "data-dp-hi": c, "aria-label": DP_HI_NAMES[c], onClick: () => setMark(cur.o.id, l.spec, { hi: mk.hi === c ? null : c }), style: { width: 30, height: 26, borderRadius: 7, border: mk.hi === c ? `2px solid ${NAVY2}` : `1px solid #C5CBD6`, background: DP_HI[c], cursor: "pointer" } })), mk.hi && /* @__PURE__ */ React.createElement("button", { onClick: () => setMark(cur.o.id, l.spec, { hi: null }), style: { ...chipBtn(false), height: 26, fontSize: 12 } }, "none")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6 } }, /* @__PURE__ */ React.createElement("input", { "data-dp-note": true, value: noteDraft, onChange: (e) => setNoteDraft(e.target.value), placeholder: "A note on this line\u2026", style: { flex: 1, height: 34, border: `1px solid ${NL.LINE}`, borderRadius: 8, padding: "0 10px", fontSize: 14, fontFamily: NLT.FONT } }), /* @__PURE__ */ React.createElement("button", { "data-dp-note-save": true, onClick: () => {
+        }, style: { display: "flex", alignItems: "baseline", gap: 8, padding: "8px 6px", cursor: "pointer", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 19, fontWeight: 600, minWidth: 140, fontVariantNumeric: "tabular-nums", textDecoration: done ? "line-through" : "none", textDecorationThickness: 2, color: done ? "#9AA3B5" : NL.INK } }, dpSizeText(l.p, l.spec)), l.p.pt && /* @__PURE__ */ React.createElement("span", { "data-dp-pt": true, style: { fontSize: 12, fontWeight: 700, color: done ? "#B5BCCB" : NL.SUB, textDecoration: done ? "line-through" : "none" } }, l.p.pt), /* @__PURE__ */ React.createElement("span", { style: { color: "#8B94A8" } }, "\u2014"), /* @__PURE__ */ React.createElement("span", { "data-dp-qty": true, style: { fontSize: 19, fontWeight: 800, color: done ? "#9AA3B5" : NL.INK, textDecoration: done ? "line-through" : "none", textDecorationThickness: 2 } }, part ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("s", { style: { color: "#8B94A8", fontWeight: 500 } }, l.ordered), " ", l.make) : l.ordered), !done && l.bondReels && l.bondReels.length > 0 && /* @__PURE__ */ React.createElement("b", { "data-dp-r": true, title: `On the rack: ${l.bondReels.join(", ")}`, style: { fontSize: 11, fontWeight: 900, color: "#1E7F3C", border: "1.5px solid #1E7F3C", borderRadius: 4, padding: "0 4px" } }, "R"), !done && l.shelf > 0 && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, color: NL.SUB } }, l.shelf, " on the shelf"), planned.length > 0 && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11.5, fontWeight: 700, color: NAVY2, background: "#EEF2FA", borderRadius: 6, padding: "1px 6px" } }, "\u{1F4C5} ", planned.map((b) => `${days.find((d) => dpDayKey(d) === String(b.day).slice(0, 10)) ? dayName(days.find((d) => dpDayKey(d) === String(b.day).slice(0, 10))) : String(b.day).slice(5, 10)} ${b.label}`).join(" \xB7 ")), !done && others.length > 0 && /* @__PURE__ */ React.createElement("span", { "data-dp-others": true, style: { marginLeft: "auto", fontSize: 12, fontWeight: 600, color: NAVY2, background: "#EEF2FA", borderRadius: 999, padding: "1px 9px" } }, "also ", others.map((x) => `${short(x.customer)} ${x.n}`).join(" \xB7 "), " \xB7 all ", allN)), mk.note && !isOpen && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, fontStyle: "italic", color: "#3A4458", padding: "0 6px 5px" } }, "\u201C", mk.note, "\u201D"), isOpen && /* @__PURE__ */ React.createElement("div", { "data-dp-edit": true, style: { padding: "6px 6px 10px", display: "flex", flexDirection: "column", gap: 8, background: "#F8FAFD", borderTop: `1px solid ${NL.LINE}` } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, fontWeight: 700, color: NL.SUB } }, "Highlight"), Object.keys(DP_HI).map((c) => /* @__PURE__ */ React.createElement("button", { key: c, "data-dp-hi": c, "aria-label": DP_HI_NAMES[c], onClick: () => setMark(cur.o.id, l.spec, { hi: mk.hi === c ? null : c }), style: { width: 30, height: 26, borderRadius: 7, border: mk.hi === c ? `2px solid ${NAVY2}` : `1px solid #C5CBD6`, background: DP_HI[c], cursor: "pointer" } })), mk.hi && /* @__PURE__ */ React.createElement("button", { onClick: () => setMark(cur.o.id, l.spec, { hi: null }), style: { ...chipBtn(false), height: 26, fontSize: 12 } }, "none")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6 } }, /* @__PURE__ */ React.createElement("input", { "data-dp-note": true, value: noteDraft, onChange: (e) => setNoteDraft(e.target.value), placeholder: "A note on this line\u2026", style: { flex: 1, height: 34, border: `1px solid ${NL.LINE}`, borderRadius: 8, padding: "0 10px", fontSize: 14, fontFamily: NLT.FONT } }), /* @__PURE__ */ React.createElement("button", { "data-dp-note-save": true, onClick: () => {
           setMark(cur.o.id, l.spec, { note: noteDraft.trim() || null });
           setOpen(null);
         }, style: chipBtn(true) }, "Save note")), !done && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, fontWeight: 700, color: NL.SUB } }, "Make ", l.make, " on"), days.map((d) => /* @__PURE__ */ React.createElement("button", { key: dpDayKey(d), "data-dp-plan": dpDayKey(d), onClick: () => {
@@ -42110,24 +42211,254 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         n += grp.lines.length;
       }
       return /* @__PURE__ */ React.createElement("div", { "data-dp-sheet": cur.o.id, style: { ...card, padding: "16px 20px" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-end", gap: 10, borderBottom: `2px solid ${NL.INK}`, paddingBottom: 6, marginBottom: 6, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 26, fontWeight: 800 } }, short(cur.o.customer)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: NL.SUB } }, cur.o.customer, " \xB7 ", cur.o.id, cur.o.dueDate ? ` \xB7 due ${cur.o.dueDate}` : "", cur.o.boxType ? ` \xB7 ${cur.o.boxType} cartons` : "", cur.o.strongTape ? " \xB7 strong tape" : "")), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: NL.SUB } }, /* @__PURE__ */ React.createElement("b", { style: { color: "#1E7F3C", border: "1.5px solid #1E7F3C", borderRadius: 4, padding: "0 4px" } }, "R"), " reel on the rack \xB7 struck = made \xB7 tap a line to highlight, note or plan it")), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))", gap: "0 28px" } }, /* @__PURE__ */ React.createElement("div", null, colA), /* @__PURE__ */ React.createElement("div", null, colB)), cur.extras.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: NL.SUB, marginTop: 10 } }, "Also on the order: ", cur.extras.map((x) => `${x.ordered} \xD7 ${x.spec}`).join(" \xB7 ")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", borderTop: `2px solid ${NL.INK}`, marginTop: 10, paddingTop: 6 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: NL.SUB } }, (tot - left).toLocaleString("en-GB"), " of ", tot.toLocaleString("en-GB"), " done"), /* @__PURE__ */ React.createElement("span", { "data-dp-left": true, style: { fontSize: 22, fontWeight: 800 } }, left.toLocaleString("en-GB"), " boxes to complete")));
-    })())), tab === "all" && /* @__PURE__ */ React.createElement("div", { "data-dp-all": true }, /* @__PURE__ */ React.createElement(ProductionListView, { data })), tab === "board" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { "data-dp-firmbar": true, style: { ...card, display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", marginBottom: 12, borderLeft: `5px solid ${firm.has(tomorrowKey) ? "#1E7F3C" : "#B45309"}` } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, fontWeight: 800, borderRadius: 999, padding: "3px 9px", background: firm.has(tomorrowKey) ? "#E8F3EC" : "#FDF3E3", color: firm.has(tomorrowKey) ? "#1E7F3C" : "#B45309" } }, firm.has(tomorrowKey) ? "\u{1F512} FIRM" : "NOT FIRM YET"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 14 } }, /* @__PURE__ */ React.createElement("b", null, "Tomorrow (", dayName(days[1]), ")"), " ", firm.has(tomorrowKey) ? "is firm \u2014 the office can plan round it." : "\u2014 make it firm by 4 pm so Chris and the office know what's coming."), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }), /* @__PURE__ */ React.createElement("button", { "data-dp-firm": tomorrowKey, onClick: () => toggleFirm(tomorrowKey), style: chipBtn(!firm.has(tomorrowKey)) }, firm.has(tomorrowKey) ? "Unlock tomorrow" : "Make tomorrow firm")), /* @__PURE__ */ React.createElement("div", { style: { ...card, padding: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, fontSize: 15, margin: "0 4px 8px" } }, "Bonding line \u2014 Dave"), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 8 } }, days.map((d) => {
-      const k = dpDayKey(d);
-      const mine = bonds.filter((b) => String(b.day).slice(0, 10) === k);
-      const boxes = mine.reduce((t, b) => t + (Number(b.label) || 0), 0);
-      const isFirm = firm.has(k);
-      return /* @__PURE__ */ React.createElement("div", { key: k, "data-dp-day": k, style: { background: isFirm ? "#EDF5EF" : NL.PANEL, boxShadow: isFirm ? "inset 0 0 0 2px #A8D5B6" : "none", borderRadius: 10, padding: 7, minHeight: 280 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 13.5, fontWeight: 700, marginBottom: 6 } }, /* @__PURE__ */ React.createElement("span", null, k === todayKey ? "Today" : dayName(d), isFirm ? " \u{1F512}" : ""), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, color: NL.SUB, fontWeight: 600 } }, boxes, " boxes")), mine.map((b, i) => {
-        const oId = b.orderIds && b.orderIds[0];
-        const o = (data.orders || []).find((x) => x.id === oId);
-        const l = lineOf(oId, b.size);
-        const p = dpParse(b.size);
-        const done = !l || l.make === 0;
-        const onRack = l && l.bondReels && l.bondReels.length > 0;
-        return /* @__PURE__ */ React.createElement("div", { key: b.id, "data-dp-card": b.id, style: { background: done ? "#E8F3EC" : "#fff", border: `1px solid ${NL.LINE}`, borderLeft: `4px solid ${done ? "#1E7F3C" : NAVY2}`, borderRadius: 8, padding: "6px 8px", marginBottom: 6 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 4, alignItems: "baseline" } }, /* @__PURE__ */ React.createElement("span", { style: { flex: 1, fontSize: 13.5, fontWeight: 700 } }, dpSizeText(p, b.size), " ", /* @__PURE__ */ React.createElement("span", { style: { fontSize: 10.5, color: NL.SUB } }, p.pt || ""), " \u2192 ", b.label, done ? " \u2713" : ""), /* @__PURE__ */ React.createElement("button", { "aria-label": "Up", onClick: () => moveBond(b, -1), disabled: i === 0, style: { border: 0, background: "none", cursor: "pointer", color: NL.SUB } }, "\u25B2"), /* @__PURE__ */ React.createElement("button", { "aria-label": "Down", onClick: () => moveBond(b, 1), disabled: i === mine.length - 1, style: { border: 0, background: "none", cursor: "pointer", color: NL.SUB } }, "\u25BC"), /* @__PURE__ */ React.createElement("button", { "data-dp-remove": b.id, "aria-label": "Take off", onClick: () => removeBond(b), style: { border: 0, background: "none", cursor: "pointer", color: "#9A2A1C" } }, "\u2715")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: NL.SUB } }, o ? short(o.customer) : oId, o && o.strongTape ? " \xB7 strong tape" : ""), !done && /* @__PURE__ */ React.createElement("span", { style: { display: "inline-block", marginTop: 4, fontSize: 10.5, fontWeight: 800, borderRadius: 5, padding: "2px 6px", background: onRack ? "#E8F3EC" : "#FDF3E3", color: onRack ? "#1E7F3C" : "#B45309" } }, onRack ? `ON THE RACK \xB7 ${l.bondReels.join(", ")}` : "NEEDS GLUING"));
-      }), /* @__PURE__ */ React.createElement("button", { "data-dp-add": k, onClick: () => {
-        setAdding(k);
-        setAddQ("");
-      }, style: { width: "100%", height: 36, border: "2px dashed #9FB0D8", borderRadius: 8, background: "#F6F8FD", color: "#5D72AA", fontWeight: 700, cursor: "pointer", fontFamily: NLT.FONT } }, "+ Add"), k !== todayKey && /* @__PURE__ */ React.createElement("button", { onClick: () => toggleFirm(k), style: { width: "100%", marginTop: 6, height: 30, border: 0, background: "none", color: isFirm ? "#1E7F3C" : NL.SUB, fontSize: 12.5, fontWeight: 700, cursor: "pointer" } }, isFirm ? "\u{1F512} Firm \u2014 unlock" : "Make firm"));
-    }))), adding && ReactDOM.createPortal(/* @__PURE__ */ React.createElement("div", { "data-dp-picker": true, style: { position: "fixed", inset: 0, zIndex: 1200, background: "rgba(20,26,40,.4)", display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: 60 }, onClick: () => setAdding(null) }, /* @__PURE__ */ React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { ...card, width: 620, maxWidth: "94vw", maxHeight: "80vh", display: "flex", flexDirection: "column", fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("div", { style: { padding: "12px 14px", borderBottom: `1px solid ${NL.LINE}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, fontSize: 16 } }, "Add to ", days.find((d) => dpDayKey(d) === adding) ? dayName(days.find((d) => dpDayKey(d) === adding)) : adding), /* @__PURE__ */ React.createElement("input", { "data-dp-search": true, autoFocus: true, value: addQ, onChange: (e) => setAddQ(e.target.value), placeholder: "Search a size or customer\u2026", style: { marginTop: 8, width: "100%", height: 36, border: `1px solid ${NL.LINE}`, borderRadius: 8, padding: "0 10px", fontSize: 14, fontFamily: NLT.FONT } })), /* @__PURE__ */ React.createElement("div", { style: { overflowY: "auto" } }, lists.flatMap(({ o, lines }) => lines.filter((l) => l.make > 0).map((l) => ({ o, l }))).filter(({ o, l }) => {
+    })())), tab === "all" && /* @__PURE__ */ React.createElement("div", { "data-dp-all": true }, /* @__PURE__ */ React.createElement(ProductionListView, { data })), tab === "board" && (() => {
+      const fmtH = (h) => {
+        const m = Math.round((Number(h) || 0) * 60);
+        return m < 60 ? `${m} min` : `${Math.floor(m / 60)}h${m % 60 ? " " + String(m % 60).padStart(2, "0") : ""}`;
+      };
+      const dayShort = (t) => t ? new Date(t).toLocaleDateString("en-GB", { weekday: "short", day: "numeric" }) : "";
+      const glueInfo = (spec) => {
+        const g = PT.glueOf(spec);
+        if (!g || !PT.plan) return null;
+        const s = PT.plan.glueSteps[g.i];
+        const end = s && s.end ? new Date(s.end) : g.at;
+        let ready = null;
+        try {
+          ready = bondCal ? glueUsableFrom(end, bondCal) : glueUsableFrom(end);
+        } catch (e) {
+          ready = null;
+        }
+        return { i: g.i, at: g.at, end, ready, readyKey: ready ? dpDayKey(new Date(ready)) : null };
+      };
+      const statusOf = (oId, spec, k) => {
+        const l = lineOf(oId, spec);
+        if (!l || l.make === 0) return { t: "done", text: "DONE \u2713", c: "#1E7F3C", bg: "#E8F3EC" };
+        if (l.bondReels && l.bondReels.length) return { t: "rack", text: `ON THE RACK \xB7 ${l.bondReels.slice(0, 2).join(", ")}${l.bondReels.length > 2 ? " \u2026" : ""}`, c: "#1E7F3C", bg: "#E8F3EC" };
+        const gi = glueInfo(spec);
+        if (gi && gi.readyKey) return !k || gi.readyKey <= k ? { t: "glued", text: `GLUE LINE ${dayShort(gi.at).toUpperCase()} \xB7 READY ${dayShort(gi.ready).toUpperCase()}`, c: "#1E4FA0", bg: "#EAF1FC" } : { t: "late", text: `\u26A0 REEL NOT READY TILL ${dayShort(gi.ready).toUpperCase()}`, c: "#B42318", bg: "#FDECEA" };
+        return { t: "glue", text: `NEEDS GLUING${l.glueM ? ` \xB7 ${Math.round(l.glueM).toLocaleString("en-GB")} m` : ""}`, c: "#B45309", bg: "#FDF3E3" };
+      };
+      const chip = (s) => /* @__PURE__ */ React.createElement("span", { "data-dp-status": s.t, style: { display: "inline-block", marginTop: 4, fontSize: 10.5, fontWeight: 800, letterSpacing: 0.2, borderRadius: 5, padding: "2px 6px", background: s.bg, color: s.c } }, s.text);
+      const today = todayKey;
+      const plannedN = /* @__PURE__ */ new Map();
+      for (const b of bonds) {
+        if (String(b.day).slice(0, 10) < today) continue;
+        const k = `${b.orderIds && b.orderIds[0]}|${dpKey(b.size)}`;
+        plannedN.set(k, (plannedN.get(k) || 0) + (Number(b.label) || 0));
+      }
+      const daveHas = new Set(bonds.map((b) => `${b.orderIds && b.orderIds[0]}|${dpKey(b.size)}`));
+      const isLate = (o) => !!(o && o.dueDate && String(o.dueDate).slice(0, 10) < today);
+      const waiting = lists.flatMap(({ o, lines }) => lines.filter((l) => l.make > 0).map((l) => ({ o, l, n: Math.max(0, l.make - (plannedN.get(`${o.id}|${dpKey(l.spec)}`) || 0)) }))).filter((x) => x.n > 0);
+      const wq = wQ.trim().toLowerCase();
+      const shown = waiting.filter((x) => (wf === "rack" ? x.l.bondReels && x.l.bondReels.length > 0 : wf === "all" ? true : x.o.id === wf) && (!wq || `${x.o.customer} ${x.o.id} ${x.l.spec} ${dpSizeText(dpParse(x.l.spec), x.l.spec)}`.toLowerCase().includes(wq)));
+      const suggFor = (k) => !showSug ? [] : sugg.filter((s) => s.day === k && !daveHas.has(`${s.orderId}|${dpKey(s.spec)}`) && s.boxes >= 0.5);
+      const specFor = (oId, spec) => {
+        const l = lineOf(oId, spec);
+        return l ? l.spec : spec;
+      };
+      const keepAll = (k) => {
+        const xs = suggFor(k);
+        if (!xs.length) return;
+        setData((prev) => {
+          const list = prev.scheduleTweaks || [];
+          const base = list.filter((t) => t && !t.deleted && t.kind === "dp_bond" && String(t.day).slice(0, 10) === k).length;
+          return { ...prev, scheduleTweaks: [...list, ...xs.map((s, i) => ({ id: uid("dpb"), kind: "dp_bond", size: specFor(s.orderId, s.spec), label: String(Math.max(1, Math.round(s.boxes))), orderIds: [s.orderId], day: k, pos: base + i, deleted: false, createdAt: stamp(), createdBy: who(), updatedAt: stamp(), note: "kept from the app's suggestion" }))] };
+        });
+      };
+      const drag = (payload) => (e) => {
+        try {
+          e.dataTransfer.setData("text/plain", JSON.stringify(payload));
+          e.dataTransfer.effectAllowed = "move";
+        } catch (er) {
+        }
+      };
+      const drop = (k, beforeId) => (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setDragOver(null);
+        let p = null;
+        try {
+          p = JSON.parse(e.dataTransfer.getData("text/plain"));
+        } catch (er) {
+          return;
+        }
+        if (!p) return;
+        if (p.type === "move") placeBond({ id: p.id }, k, beforeId);
+        else placeBond({ id: uid("dpb"), kind: "dp_bond", size: specFor(p.orderId, p.spec), label: String(Math.max(1, Math.round(Number(p.n) || 0))), orderIds: [p.orderId], ...p.note ? { note: p.note } : {} }, k, beforeId);
+      };
+      const over = (k) => (e) => {
+        e.preventDefault();
+        if (dragOver !== k) setDragOver(k);
+      };
+      const needDay = /* @__PURE__ */ new Map();
+      for (const b of bonds) {
+        const k = String(b.day).slice(0, 10);
+        if (k < today) continue;
+        const st = statusOf(b.orderIds && b.orderIds[0], b.size, k);
+        if (st.t === "rack" || st.t === "done") continue;
+        const gi = glueInfo(b.size);
+        if (gi && (!needDay.has(gi.i) || needDay.get(gi.i) > k)) needDay.set(gi.i, k);
+      }
+      const glueByDay = /* @__PURE__ */ new Map();
+      if (PT.plan) PT.plan.glueSteps.forEach((s, i) => {
+        const k = dpDayKey(new Date(s.start));
+        if (!dayKeys.includes(k)) return;
+        if (!glueByDay.has(k)) glueByDay.set(k, []);
+        glueByDay.get(k).push({ s, i });
+      });
+      const printDay = (k) => {
+        const d = days.find((x) => dpDayKey(x) === k);
+        const mine = bonds.filter((b) => {
+          const bd = String(b.day).slice(0, 10);
+          if (bd === k) return true;
+          if (k !== todayKey || bd >= todayKey) return false;
+          const l = lineOf(b.orderIds && b.orderIds[0], b.size);
+          return !!(l && l.make > 0);
+        });
+        const fromApp = mine.length === 0;
+        const rows0 = fromApp ? suggFor(k).map((s) => ({ orderId: s.orderId, spec: specFor(s.orderId, s.spec), n: Math.max(1, Math.round(s.boxes)) })) : mine.map((b) => ({ orderId: b.orderIds && b.orderIds[0], spec: b.size, n: Number(b.label) || 0 }));
+        const esc2 = (x) => String(x ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        let H2 = 0, B = 0;
+        const rows = rows0.map((r, i) => {
+          const o = (data.orders || []).find((x) => x.id === r.orderId);
+          const p = dpParse(r.spec);
+          const st = statusOf(r.orderId, r.spec, k);
+          const mk = marks.get(`${r.orderId}|${dpKey(r.spec)}`) || {};
+          const h = r.n * hpb.get(r.orderId, r.spec);
+          if (st.t !== "done") {
+            H2 += h;
+            B += r.n;
+          }
+          const reel = st.t === "rack" ? (lineOf(r.orderId, r.spec)?.bondReels || []).join(", ") : st.t === "done" ? "done" : st.text.replace(/^⚠\s*/, "! ").toLowerCase();
+          return `<tr class="${st.t === "done" ? "done" : ""}"><td class="n">${i + 1}</td><td class="bx"></td><td class="sz">${esc2(dpSizeText(p, r.spec))}${p.variant ? "" : ""}</td><td class="pt">${esc2(p.pt || "")}</td><td class="q">${r.n}</td><td>${esc2(o ? short(o.customer) : r.orderId)}<div class="sm">${esc2(r.orderId)}${o && o.strongTape ? " \xB7 <b>STRONG TAPE</b>" : ""}</div></td><td class="sm">${esc2(o && o.boxType ? o.boxType : "")}</td><td class="sm">${esc2(reel)}</td><td class="code"></td><td class="sm">${mk.note ? `<i>${esc2(mk.note)}</i>` : ""}<span class="t">\u2248 ${esc2(fmtH(h))}</span></td></tr>`;
+        }).join("");
+        const title = d ? d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }) : k;
+        const doc = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Bonding \u2014 ${esc2(title)}</title><style>
+          @page { size: A4; margin: 12mm; } body { font-family: Arial, sans-serif; color: #111; margin: 0; }
+          .hd { display: flex; align-items: flex-end; border-bottom: 2.5px solid #000; padding-bottom: 5px; margin-bottom: 8px; } .t1 { font-size: 22pt; font-weight: 800; } .s { font-size: 9.5pt; color: #333; } .sp { flex: 1; } .k { font-size: 9pt; text-align: right; }
+          table { width: 100%; border-collapse: collapse; } th { font-size: 8pt; text-transform: uppercase; letter-spacing: .5px; text-align: left; border-bottom: 1.5px solid #000; padding: 3px 4px; }
+          td { border-bottom: 1px solid #999; padding: 6px 4px; vertical-align: top; font-size: 11pt; } td.n { color: #555; width: 5mm; } td.bx { width: 7mm; } td.bx::before { content: ""; display: inline-block; width: 4.5mm; height: 4.5mm; border: 1.5px solid #000; }
+          td.sz { font-size: 13.5pt; font-weight: 800; white-space: nowrap; } td.pt { font-size: 8.5pt; font-weight: 700; white-space: nowrap; } td.q { font-size: 14pt; font-weight: 800; text-align: right; padding-right: 8px; } .sm { font-size: 8.5pt; color: #333; } td.code { width: 30mm; border-bottom: 1px solid #000; }
+          .t { display: block; color: #555; } tr.done td { color: #888; } tr.done td.sz, tr.done td.q { text-decoration: line-through; }
+          .ft { display: flex; justify-content: space-between; border-top: 2.5px solid #000; margin-top: 10px; padding-top: 6px; font-size: 10pt; } .ft b { font-size: 15pt; } .sig { margin-top: 14mm; display: flex; gap: 20mm; font-size: 9.5pt; } .sig span { flex: 1; border-top: 1px solid #000; padding-top: 3px; }
+          .warn { border: 1.5px solid #000; padding: 4px 8px; font-size: 9.5pt; margin-bottom: 8px; }
+        </style></head><body><div class="hd"><div><div class="t1">Bonding \u2014 ${esc2(title)}</div><div class="s">Dave's plan \xB7 ${rows0.length} job${rows0.length === 1 ? "" : "s"}${firm.has(k) ? " \xB7 FIRM" : ""}</div></div><div class="sp"></div><div class="k">printed ${esc2((/* @__PURE__ */ new Date()).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }))}</div></div>
+          ${fromApp ? `<div class="warn">Nothing planned by Dave for this day yet \u2014 this is the app's suggestion.</div>` : ""}
+          <table><thead><tr><th></th><th>\u2713</th><th>Size</th><th>pt</th><th style="text-align:right">Boxes</th><th>For</th><th>Carton</th><th>Reel</th><th>Box code</th><th>Notes</th></tr></thead><tbody>${rows || `<tr><td colspan="10">Nothing on this day.</td></tr>`}</tbody></table>
+          <div class="ft"><span>Line time \u2248 ${esc2(fmtH(H2))}${capOf(d || /* @__PURE__ */ new Date()) ? ` of ${esc2(fmtH(capOf(d)))}` : ""}</span><b>${B} boxes to bond</b></div>
+          <div class="sig"><span>Bonded by</span><span>Checked by</span></div></body></html>`;
+        printLabelDoc(doc);
+      };
+      const legendDot = (c, dashed) => /* @__PURE__ */ React.createElement("span", { style: { display: "inline-block", width: 12, height: 12, borderRadius: 3, background: dashed ? "#fff" : c, border: dashed ? `2px dashed ${c}` : 0, marginRight: 5, verticalAlign: -1 } });
+      return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { "data-dp-firmbar": true, style: { ...card, display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", marginBottom: 12, borderLeft: `5px solid ${firm.has(tomorrowKey) ? "#1E7F3C" : "#B45309"}`, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, fontWeight: 800, borderRadius: 999, padding: "3px 9px", background: firm.has(tomorrowKey) ? "#E8F3EC" : "#FDF3E3", color: firm.has(tomorrowKey) ? "#1E7F3C" : "#B45309" } }, firm.has(tomorrowKey) ? "\u{1F512} FIRM" : "NOT FIRM YET"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 14.5 } }, /* @__PURE__ */ React.createElement("b", null, "Tomorrow (", dayName(days[1]), ")"), " ", firm.has(tomorrowKey) ? "is firm \u2014 the office can plan round it." : "\u2014 make it firm by 4 pm so Chris and the office know what's coming."), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }), /* @__PURE__ */ React.createElement("label", { style: { display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13.5, color: NL.SUB, cursor: "pointer" } }, /* @__PURE__ */ React.createElement("input", { "data-dp-showsug": true, type: "checkbox", checked: showSug, onChange: (e) => {
+        setShowSug(e.target.checked);
+        try {
+          localStorage.setItem("mxDpSug", e.target.checked ? "1" : "0");
+        } catch (er) {
+        }
+      } }), " Show the app's suggestion"), /* @__PURE__ */ React.createElement("button", { "data-dp-print-tomorrow": true, onClick: () => printDay(tomorrowKey), style: chipBtn(false) }, "\u{1F5A8} Print tomorrow"), /* @__PURE__ */ React.createElement("button", { "data-dp-firm": tomorrowKey, onClick: () => toggleFirm(tomorrowKey), style: chipBtn(!firm.has(tomorrowKey)) }, firm.has(tomorrowKey) ? "Unlock tomorrow" : "Make tomorrow firm")), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "minmax(220px, 250px) minmax(0, 1fr)", gap: 12, alignItems: "start" } }, /* @__PURE__ */ React.createElement("div", { "data-dp-waiting": true, style: { ...card, padding: 12, position: "sticky", top: 8, maxHeight: "calc(100vh - 40px)", display: "flex", flexDirection: "column" } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 800, fontSize: 17 } }, "What's waiting to bond"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: NL.SUB, marginBottom: 8 } }, "Every line still to make. Drag one onto a day \u2014 or tap it."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 6 } }, [["all", `All \xB7 ${waiting.length}`], ["rack", `On the rack \xB7 ${waiting.filter((x) => x.l.bondReels && x.l.bondReels.length).length}`]].map(([k, l]) => /* @__PURE__ */ React.createElement("button", { key: k, "data-dp-wf": k, onClick: () => setWf(k), style: { ...chipBtn(wf === k), height: 30, fontSize: 12.5, borderRadius: 999 } }, l)), /* @__PURE__ */ React.createElement("select", { "data-dp-wf-order": true, value: wf !== "all" && wf !== "rack" ? wf : "", onChange: (e) => setWf(e.target.value || "all"), style: { height: 30, borderRadius: 999, border: `1px solid ${NL.LINE}`, padding: "0 8px", fontSize: 12.5, fontFamily: NLT.FONT, maxWidth: 140 } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "One order\u2026"), lists.filter((L) => L.lines.some((l) => l.make > 0)).map((L) => /* @__PURE__ */ React.createElement("option", { key: L.o.id, value: L.o.id }, short(L.o.customer), " \xB7 ", L.o.id)))), /* @__PURE__ */ React.createElement("input", { "data-dp-wsearch": true, value: wQ, onChange: (e) => setWQ(e.target.value), placeholder: "Search size or customer", style: { height: 32, border: `1px solid ${NL.LINE}`, borderRadius: 8, padding: "0 9px", fontSize: 13.5, fontFamily: NLT.FONT, marginBottom: 8 } }), /* @__PURE__ */ React.createElement("div", { style: { overflowY: "auto", flex: 1, margin: "0 -4px", padding: "0 4px" } }, shown.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: NL.SUB, padding: 8 } }, waiting.length ? "Nothing matches." : "Everything still to make is on your week. \u2713"), shown.slice(0, 150).map(({ o, l, n }) => {
+        const p = dpParse(l.spec);
+        const st = statusOf(o.id, l.spec, null);
+        const key = `${o.id}|${l.id}`;
+        const mk = marks.get(`${o.id}|${dpKey(l.spec)}`) || {};
+        return /* @__PURE__ */ React.createElement(
+          "div",
+          {
+            key,
+            "data-dp-wait": `${o.id}|${l.spec}`,
+            draggable: true,
+            onDragStart: drag({ type: "new", orderId: o.id, spec: l.spec, n }),
+            onClick: () => setWPick(wPick === key ? null : key),
+            style: { border: `1px solid ${NL.LINE}`, borderLeft: `4px solid ${st.t === "rack" ? "#1E7F3C" : "#C9A15A"}`, borderRadius: 9, padding: "7px 9px", marginBottom: 6, background: mk.hi && DP_HI[mk.hi] ? DP_HI[mk.hi] : "#fff", cursor: "grab" }
+          },
+          /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 6 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15.5, fontWeight: 800 } }, dpSizeText(p, l.spec)), p.pt && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 10.5, fontWeight: 700, color: NL.SUB } }, p.pt), /* @__PURE__ */ React.createElement("span", { style: { marginLeft: "auto", fontSize: 15.5, fontWeight: 800 } }, "\u2192 ", n)),
+          /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: isLate(o) ? "#B42318" : NL.SUB, fontWeight: isLate(o) ? 700 : 400 } }, short(o.customer), " \xB7 ", o.id, o.dueDate ? ` \xB7 due ${(/* @__PURE__ */ new Date(`${String(o.dueDate).slice(0, 10)}T12:00:00`)).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}` : "", isLate(o) ? " \xB7 LATE" : "", o.priority ? ` \xB7 P${o.priority}` : "", n < l.make ? ` \xB7 ${l.make - n} already on your week` : ""),
+          chip(st),
+          mk.note && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, fontStyle: "italic", color: "#3A4458", marginTop: 3 } }, "\u201C", mk.note, "\u201D"),
+          wPick === key && /* @__PURE__ */ React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { display: "flex", gap: 4, flexWrap: "wrap", marginTop: 6 } }, days.map((d) => /* @__PURE__ */ React.createElement("button", { key: dpDayKey(d), "data-dp-wplan": dpDayKey(d), onClick: () => {
+            placeBond({ id: uid("dpb"), kind: "dp_bond", size: l.spec, label: String(n), orderIds: [o.id] }, dpDayKey(d));
+            setWPick(null);
+          }, style: { ...chipBtn(false), height: 28, fontSize: 12, padding: "0 8px" } }, dpDayKey(d) === todayKey ? "Today" : dayName(d))))
+        );
+      }))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { ...card, padding: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, margin: "0 4px 8px" } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 800, fontSize: 17 } }, "Bonding line \u2014 Dave"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: NL.SUB } }, "drag cards between days \xB7 times are worked out from the line's real speed")), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 8 } }, days.map((d) => {
+        const k = dpDayKey(d);
+        const mine = bonds.filter((b) => {
+          const bd = String(b.day).slice(0, 10);
+          if (bd === k) return true;
+          if (k !== todayKey || bd >= todayKey) return false;
+          const l = lineOf(b.orderIds && b.orderIds[0], b.size);
+          return !!(l && l.make > 0);
+        });
+        const isFirm = firm.has(k);
+        const cap = capOf(d);
+        const hrs = mine.reduce((t, b) => {
+          const l = lineOf(b.orderIds && b.orderIds[0], b.size);
+          return t + (l && l.make === 0 ? 0 : (Number(b.label) || 0) * hpb.get(b.orderIds && b.orderIds[0], b.size));
+        }, 0);
+        const sg = suggFor(k);
+        const sgH = sg.reduce((t, s) => t + (s.hours || 0), 0);
+        const full = cap > 0 && hrs > cap + 0.05;
+        return /* @__PURE__ */ React.createElement("div", { key: k, "data-dp-day": k, onDragOver: over(k), onDragLeave: () => setDragOver(null), onDrop: drop(k, null), style: { background: dragOver === k ? "#E3EAF9" : isFirm ? "#EDF5EF" : NL.PANEL, boxShadow: dragOver === k ? `inset 0 0 0 2px ${NAVY2}` : isFirm ? "inset 0 0 0 2px #A8D5B6" : "none", borderRadius: 10, padding: 7, minHeight: 360 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 15, fontWeight: 800 } }, /* @__PURE__ */ React.createElement("span", { style: { whiteSpace: "nowrap" } }, k === todayKey ? "Today" : dayName(d)), /* @__PURE__ */ React.createElement("button", { "data-dp-printday": k, "aria-label": "Print this day", title: "Print this day's work", onClick: () => printDay(k), style: { border: `1px solid ${NL.LINE}`, background: "#fff", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 700, padding: "2px 6px", color: NAVY2 } }, "\u{1F5A8} Print")), /* @__PURE__ */ React.createElement("div", { "data-dp-hours": true, style: { fontSize: 12, color: full ? "#B42318" : NL.SUB, fontWeight: 700, marginTop: 2 } }, isFirm ? "\u{1F512} " : "", fmtH(hrs), " of ", cap ? fmtH(cap) : "\u2014", full ? " \u2014 over" : ""), /* @__PURE__ */ React.createElement("div", { style: { height: 6, borderRadius: 3, background: "#DDE3EE", margin: "5px 0 7px", overflow: "hidden", display: "flex" } }, /* @__PURE__ */ React.createElement("span", { style: { width: `${cap ? Math.min(100, hrs / cap * 100) : 0}%`, background: full ? "#B42318" : NAVY2 } }), sg.length > 0 && /* @__PURE__ */ React.createElement("span", { style: { width: `${cap ? Math.max(0, Math.min(100 - hrs / cap * 100, sgH / cap * 100)) : 0}%`, background: "#AFC0E6" } })), mine.map((b, i) => {
+          const oId = b.orderIds && b.orderIds[0];
+          const o = (data.orders || []).find((x) => x.id === oId);
+          const p = dpParse(b.size);
+          const st = statusOf(oId, b.size, k);
+          const done = st.t === "done";
+          const mk = marks.get(`${oId}|${dpKey(b.size)}`) || {};
+          return /* @__PURE__ */ React.createElement(
+            "div",
+            {
+              key: b.id,
+              "data-dp-card": b.id,
+              draggable: true,
+              onDragStart: drag({ type: "move", id: b.id }),
+              onDragOver: over(k),
+              onDrop: drop(k, b.id),
+              style: { background: done ? "#E8F3EC" : mk.hi && DP_HI[mk.hi] ? DP_HI[mk.hi] : "#fff", border: `1px solid ${NL.LINE}`, borderLeft: `4px solid ${done ? "#1E7F3C" : st.t === "late" ? "#B42318" : NAVY2}`, borderRadius: 8, padding: "6px 8px", marginBottom: 6, cursor: "grab" }
+            },
+            /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 2, alignItems: "baseline" } }, /* @__PURE__ */ React.createElement("span", { style: { flex: 1, fontSize: 14.5, fontWeight: 800, lineHeight: 1.25 } }, /* @__PURE__ */ React.createElement("span", { style: { whiteSpace: "nowrap" } }, dpSizeText(p, b.size)), " ", /* @__PURE__ */ React.createElement("span", { style: { fontSize: 10.5, color: NL.SUB, fontWeight: 700 } }, p.pt || ""), /* @__PURE__ */ React.createElement("br", null), "\u2192 ", b.label, " boxes"), /* @__PURE__ */ React.createElement("button", { "data-dp-remove": b.id, "aria-label": "Take off", onClick: () => removeBond(b), style: { border: 0, background: "none", cursor: "pointer", color: "#9A2A1C", padding: "0 2px" } }, "\u2715")),
+            /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: isLate(o) ? "#B42318" : NL.SUB } }, String(b.day).slice(0, 10) < k ? /* @__PURE__ */ React.createElement("b", { style: { color: "#B45309" } }, "carried from ", dayShort(/* @__PURE__ */ new Date(`${String(b.day).slice(0, 10)}T12:00:00`)), " \xB7 ") : null, o ? short(o.customer) : oId, o && o.strongTape ? " \xB7 strong tape" : "", isLate(o) ? " \xB7 LATE" : "", !done ? ` \xB7 \u2248 ${fmtH((Number(b.label) || 0) * hpb.get(oId, b.size))}` : ""),
+            chip(st),
+            mk.note && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, fontStyle: "italic", color: "#3A4458", marginTop: 3 } }, "\u201C", mk.note, "\u201D")
+          );
+        }), sg.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 4, margin: "6px 2px 4px" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, fontWeight: 800, color: "#5D72AA", letterSpacing: 0.4 } }, "THE APP WOULD DO"), /* @__PURE__ */ React.createElement("span", { style: { flex: 1 } }), /* @__PURE__ */ React.createElement("button", { "data-dp-keepall": k, onClick: () => keepAll(k), style: { border: 0, background: "none", color: NAVY2, fontWeight: 800, fontSize: 12, cursor: "pointer", padding: 0 } }, "Keep all")), (sugOpen[k] ? sg : sg.slice(0, 5)).map((s) => {
+          const o = (data.orders || []).find((x) => x.id === s.orderId);
+          const p = dpParse(s.spec);
+          const n = Math.max(1, Math.round(s.boxes));
+          return /* @__PURE__ */ React.createElement(
+            "div",
+            {
+              key: `${s.orderId}|${s.spec}`,
+              "data-dp-sugg": `${s.orderId}|${s.spec}`,
+              draggable: true,
+              onDragStart: drag({ type: "new", orderId: s.orderId, spec: s.spec, n }),
+              style: { background: "rgba(255,255,255,.55)", border: "1.5px dashed #AFC0E6", borderRadius: 8, padding: "5px 8px", marginBottom: 6, cursor: "grab", color: "#55607A" }
+            },
+            /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 4 } }, /* @__PURE__ */ React.createElement("span", { style: { flex: 1, fontSize: 13, fontWeight: 700 } }, /* @__PURE__ */ React.createElement("span", { style: { whiteSpace: "nowrap" } }, dpSizeText(p, s.spec)), " \u2192 ", n), /* @__PURE__ */ React.createElement("button", { "data-dp-keep": `${s.orderId}|${s.spec}`, onClick: () => placeBond({ id: uid("dpb"), kind: "dp_bond", size: specFor(s.orderId, s.spec), label: String(n), orderIds: [s.orderId], note: "kept from the app's suggestion" }, k), style: { border: `1px solid ${NAVY2}`, background: "#fff", color: NAVY2, borderRadius: 6, fontSize: 11.5, fontWeight: 800, cursor: "pointer", padding: "1px 7px" } }, "Keep")),
+            /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5 } }, o ? short(o.customer) : s.orderId, " \xB7 \u2248 ", fmtH(s.hours))
+          );
+        }), sg.length > 5 && /* @__PURE__ */ React.createElement("button", { "data-dp-sugmore": k, onClick: () => setSugOpen((x) => ({ ...x, [k]: !x[k] })), style: { width: "100%", border: 0, background: "none", color: "#5D72AA", fontSize: 12, fontWeight: 700, cursor: "pointer", marginBottom: 4 } }, sugOpen[k] ? "Show fewer" : `+ ${sg.length - 5} more the app would do`), /* @__PURE__ */ React.createElement("button", { "data-dp-add": k, onClick: () => {
+          setAdding(k);
+          setAddQ("");
+        }, style: { width: "100%", height: 34, border: "2px dashed #9FB0D8", borderRadius: 8, background: "#F6F8FD", color: "#5D72AA", fontWeight: 700, cursor: "pointer", fontFamily: NLT.FONT, marginTop: 2 } }, "+ Add"), k !== todayKey && /* @__PURE__ */ React.createElement("button", { onClick: () => toggleFirm(k), style: { width: "100%", marginTop: 6, height: 28, border: 0, background: "none", color: isFirm ? "#1E7F3C" : NL.SUB, fontSize: 12.5, fontWeight: 700, cursor: "pointer" } }, isFirm ? "\u{1F512} Firm \u2014 unlock" : "Make firm"));
+      }))), /* @__PURE__ */ React.createElement("div", { "data-dp-glue": true, style: { ...card, padding: 10, marginTop: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, margin: "0 4px 8px" } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 800, fontSize: 15 } }, "Glue line \u2014 the plan"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: NL.SUB } }, "what's being glued, and which of your days it's for \xB7 a reel bonds from the next working day")), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 8 } }, days.map((d) => {
+        const k = dpDayKey(d);
+        const xs = glueByDay.get(k) || [];
+        return /* @__PURE__ */ React.createElement("div", { key: k, style: { background: NL.PANEL, borderRadius: 10, padding: 7, minHeight: 70 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 800, marginBottom: 5 } }, k === todayKey ? "Today" : dayName(d)), xs.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: NL.SUB } }, "Nothing planned."), xs.slice(0, 8).map(({ s, i }) => {
+          const want = needDay.get(i);
+          const gi = (() => {
+            let r = null;
+            try {
+              r = bondCal ? glueUsableFrom(new Date(s.end), bondCal) : glueUsableFrom(new Date(s.end));
+            } catch (e) {
+            }
+            return r ? dpDayKey(new Date(r)) : null;
+          })();
+          const tooLate = want && gi && gi > want;
+          return /* @__PURE__ */ React.createElement("div", { key: i, "data-dp-gstep": true, style: { background: "#fff", border: `1px solid ${NL.LINE}`, borderLeft: `4px solid ${tooLate ? "#B42318" : want ? NAVY2 : "#C5CBD6"}`, borderRadius: 7, padding: "4px 7px", marginBottom: 5, fontSize: 12.5 } }, /* @__PURE__ */ React.createElement("b", null, String(s.label || "").replace(/^PX Plus\s+/i, "").replace(/mm\b/, "")), " \xB7 ", Math.round(s.metres || 0).toLocaleString("en-GB"), " m", want && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, fontWeight: 700, color: tooLate ? "#B42318" : NAVY2 } }, tooLate ? `\u26A0 ready ${dayShort(/* @__PURE__ */ new Date(`${gi}T12:00:00`))} \u2014 you want it ${dayShort(/* @__PURE__ */ new Date(`${want}T12:00:00`))}` : `\u2190 for your ${dayShort(/* @__PURE__ */ new Date(`${want}T12:00:00`))}`));
+        }), xs.length > 8 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: NL.SUB } }, "+ ", xs.length - 8, " more"));
+      }))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 16, fontSize: 12.5, color: NL.SUB, margin: "10px 4px" } }, /* @__PURE__ */ React.createElement("span", null, legendDot(NAVY2), "Planned by you"), /* @__PURE__ */ React.createElement("span", null, legendDot("#AFC0E6", true), "The app's suggestion \u2014 keep it, drag it, or ignore it"), /* @__PURE__ */ React.createElement("span", null, legendDot("#1E7F3C"), "Done / reel on the rack"), /* @__PURE__ */ React.createElement("span", null, legendDot("#B42318"), "Reel won't be ready in time"), /* @__PURE__ */ React.createElement("span", null, "\u{1F512} Firm day \u2014 the office plans round it")))));
+    })(), tab === "board" && adding && ReactDOM.createPortal(/* @__PURE__ */ React.createElement("div", { "data-dp-picker": true, style: { position: "fixed", inset: 0, zIndex: 1200, background: "rgba(20,26,40,.4)", display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: 60 }, onClick: () => setAdding(null) }, /* @__PURE__ */ React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { ...card, width: 620, maxWidth: "94vw", maxHeight: "80vh", display: "flex", flexDirection: "column", fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("div", { style: { padding: "12px 14px", borderBottom: `1px solid ${NL.LINE}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, fontSize: 16 } }, "Add to ", days.find((d) => dpDayKey(d) === adding) ? dayName(days.find((d) => dpDayKey(d) === adding)) : adding), /* @__PURE__ */ React.createElement("input", { "data-dp-search": true, autoFocus: true, value: addQ, onChange: (e) => setAddQ(e.target.value), placeholder: "Search a size or customer\u2026", style: { marginTop: 8, width: "100%", height: 36, border: `1px solid ${NL.LINE}`, borderRadius: 8, padding: "0 10px", fontSize: 14, fontFamily: NLT.FONT } })), /* @__PURE__ */ React.createElement("div", { style: { overflowY: "auto" } }, lists.flatMap(({ o, lines }) => lines.filter((l) => l.make > 0).map((l) => ({ o, l }))).filter(({ o, l }) => {
       const q = addQ.trim().toLowerCase();
       return !q || `${o.customer} ${o.id} ${l.spec}`.toLowerCase().includes(q);
     }).slice(0, 80).map(({ o, l }) => {
@@ -42136,7 +42467,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         addBond(o.id, l.spec, l.make, adding);
         setAdding(null);
       }, style: { display: "flex", width: "100%", gap: 10, alignItems: "center", padding: "9px 14px", border: 0, borderTop: `1px solid ${NL.LINE}`, background: "#fff", textAlign: "left", cursor: "pointer", fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 700, minWidth: 140 } }, dpSizeText(p, l.spec), " ", /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: NL.SUB } }, p.pt || "")), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, color: NL.SUB, fontSize: 13.5 } }, short(o.customer), " \xB7 ", o.id), /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 800 } }, l.make), l.bondReels && l.bondReels.length > 0 && /* @__PURE__ */ React.createElement("b", { style: { fontSize: 11, color: "#1E7F3C", border: "1.5px solid #1E7F3C", borderRadius: 4, padding: "0 4px" } }, "R"));
-    })))), document.body)));
+    })))), document.body));
   }
   function nlLineFigures(data, o, plan) {
     const lines = tapeLast((data.lineItems || []).filter((l) => l && !l.deleted && l.orderId === o.id));
