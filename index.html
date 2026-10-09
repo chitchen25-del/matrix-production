@@ -12314,17 +12314,39 @@ ${line}` : line;
   }
   var GAP_VERDICT_WORDS = { over: "OVER MAX", under: "UNDER MIN", onset: "ON SET", inrange: "IN RANGE" };
   function guessStripColour(px, w, h) {
-    let best = null, bestSat = -1;
-    const y0 = Math.floor(h / 2), step = Math.max(1, Math.floor(w / 300));
-    for (let x = Math.floor(w * 0.1); x < w * 0.9; x += step) {
-      const i = (y0 * w + x) * 4, r = px[i], g = px[i + 1], b = px[i + 2];
+    const bins = new Array(24).fill(0).map(() => []), wt = new Array(24).fill(0);
+    const rowStep = Math.max(1, Math.floor(h / 5)), step = Math.max(1, Math.floor(w / 600));
+    let bright = null, bv = -1;
+    for (let y = 0; y < h; y += rowStep) for (let x = 0; x < w; x += step) {
+      const i = (y * w + x) * 4, r = px[i], g = px[i + 1], b = px[i + 2];
       const mx = Math.max(r, g, b), mn = Math.min(r, g, b), sat = mx ? (mx - mn) / mx : 0;
-      if (sat * mx > bestSat) {
-        bestSat = sat * mx;
-        best = [r, g, b];
+      if (mx > bv) {
+        bv = mx;
+        bright = [r, g, b];
       }
+      if (sat < 0.22 || mx < 70) continue;
+      const d = mx - mn;
+      let hh = mx === r ? (g - b) / d % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+      hh = (hh * 60 + 360) % 360;
+      const k = Math.floor(hh / 15) % 24;
+      bins[k].push([r, g, b]);
+      wt[k] += sat * sat * (mx / 255);
     }
-    return best;
+    let best = -1, bn = 0;
+    wt.forEach((v, k) => {
+      const n = v + 0.5 * (wt[(k + 23) % 24] + wt[(k + 1) % 24]);
+      if (n > bn) {
+        bn = n;
+        best = k;
+      }
+    });
+    const total = Math.ceil(h / rowStep) * Math.ceil(w / step);
+    if (best < 0 || bins[best].length < total * 0.03) return bright;
+    const pick2 = bins[best].filter((c) => {
+      const mx = Math.max(...c);
+      return mx && (mx - Math.min(...c)) / mx >= 0.3;
+    }).concat(bins[best]).slice(0, Math.max(1, bins[best].length)), med = (j) => pick2.map((c) => c[j]).sort((p, q) => p - q)[pick2.length >> 1];
+    return [med(0), med(1), med(2)];
   }
   function stripSignal(rgb) {
     const [R, G, B] = rgb, m = (R + G + B) / 3;
@@ -12420,19 +12442,13 @@ ${line}` : line;
       edges: { a0: med(rows.map((r) => r.a0)), a1: med(rows.map((r) => r.a1)), b0: med(rows.map((r) => r.b0)), b1: med(rows.map((r) => r.b1)) }
     };
   }
-  var STRIP_COLOURS = { Blue: [40, 90, 200], Red: [210, 35, 35], Yellow: [225, 200, 40], Green: [40, 150, 70], Natural: [210, 205, 190] };
   function colourNameOf(rgb) {
     if (!rgb) return null;
-    let best = null, bd = Infinity;
-    for (const [n, c] of Object.entries(STRIP_COLOURS)) {
-      const s = rgb[0] + rgb[1] + rgb[2] || 1, t = c[0] + c[1] + c[2];
-      const d = Math.hypot(rgb[0] / s - c[0] / t, rgb[1] / s - c[1] / t) + (n === "Natural" ? 0 : 0.02);
-      if (d < bd) {
-        bd = d;
-        best = n;
-      }
-    }
-    return best;
+    const [r, g, b] = rgb, mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn, sat = mx ? d / mx : 0;
+    if (sat < 0.2) return "Natural";
+    let h = mx === r ? (g - b) / d % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    h = (h * 60 + 360) % 360;
+    return h < 12 || h >= 340 ? "Red" : h < 38 ? "Orange" : h < 68 ? "Yellow" : h < 170 ? "Green" : h < 260 ? "Blue" : "Red";
   }
   function suggestSizes(ratio, colour, candidates) {
     const seen = /* @__PURE__ */ new Set(), out = [];
@@ -14361,7 +14377,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-09.148";
+  var APP_VERSION = "2026-10-09.149";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
