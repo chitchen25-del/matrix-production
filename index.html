@@ -14041,7 +14041,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-09.138";
+  var APP_VERSION = "2026-10-09.139";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -17700,13 +17700,16 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     const orders = useMemo(() => (data.orders || []).filter((o) => o && !o.deleted).sort((a, b) => (a.stage === "Shipped") - (b.stage === "Shipped") || String(b.id).localeCompare(String(a.id))), [data.orders]);
     const [orderId, setOrderId] = useState(() => initialOrderId || (orders.find((o) => o.stage !== "Shipped") || orders[0] || {}).id || "");
     const [showShipped, setShowShipped] = useState(false);
-    const order = orders.find((o) => o.id === orderId) || null;
-    const cust = caseLabelCustomer(data, order);
+    const custList = useMemo(() => (data.customers || []).filter((c) => c && !c.deleted && String(c.companyName || "").trim()).sort((a, b) => String(a.companyName).localeCompare(String(b.companyName))), [data.customers]);
+    const isNew = orderId === "new";
+    const pickedCust = String(orderId).startsWith("cust:") ? custList.find((c) => "cust:" + c.id === orderId) || null : null;
+    const order = isNew || pickedCust ? null : orders.find((o) => o.id === orderId) || null;
+    const cust = pickedCust || caseLabelCustomer(data, order);
     const caseNums = useMemo(() => (data.cases || []).filter((c) => c && !c.deleted && c.orderId === orderId).map((c) => Number(c.caseNum)).filter((n) => n > 0).sort((a, b) => a - b), [data.cases, orderId]);
     const nCases = caseNums.length ? caseNums[caseNums.length - 1] : 0;
-    const printed = useMemo(() => caseLabelsPrintedFor(data, orderId), [data.changeLog, orderId]);
+    const printed = useMemo(() => order ? caseLabelsPrintedFor(data, order.id) : /* @__PURE__ */ new Set(), [data.changeLog, orderId]);
     const notYet = caseNums.filter((n) => !printed.has(n));
-    const fromCust = () => ({ attn: cust && cust.contactName || "", name: cust && cust.companyName || order && order.customer || "", address: cust && cust.address || order && order.address || "", tel: cust && cust.contactPhone || "", email: cust && cust.contactEmail || "" });
+    const fromCust = () => isNew ? { attn: "", name: "", address: "", tel: "", email: "" } : { attn: cust && cust.contactName || "", name: cust && cust.companyName || order && order.customer || "", address: cust && cust.address || order && order.address || "", tel: cust && cust.contactPhone || "", email: cust && cust.contactEmail || "" };
     const [f, setF] = useState(fromCust);
     const [from, setFrom] = useState(1), [to, setTo] = useState(1);
     const [layout, setLayout] = useState(() => {
@@ -17738,15 +17741,19 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     };
     const numIn = (v) => Math.max(1, Math.min(999, Math.round(Number(String(v).replace(/\D/g, "")) || 1)));
     const saved = fromCust();
-    const changed = ["attn", "address", "tel", "email"].some((k) => String(f[k] || "").trim() !== String(saved[k] || "").trim());
+    const changed = (isNew ? ["attn", "name", "address", "tel", "email"] : ["attn", "address", "tel", "email"]).some((k) => String(f[k] || "").trim() !== String(saved[k] || "").trim());
+    const newName = String(f.name || "").trim();
+    const sameNameCust = isNew && newName ? custList.find((c) => custNorm(c.companyName) === custNorm(newName)) || null : null;
+    const target = order ? order.customer : pickedCust ? pickedCust.companyName : newName;
     const saveToCustomer = () => {
-      if (!order) return;
+      if (!order && !pickedCust && !newName) return;
       const now = (/* @__PURE__ */ new Date()).toISOString();
+      let savedId = null;
       setData((prev) => {
         const list2 = prev.customers || [];
-        const had = caseLabelCustomer(prev, order);
+        const had = order ? caseLabelCustomer(prev, order) : pickedCust ? list2.find((c) => c.id === pickedCust.id) : list2.find((c) => c && !c.deleted && custNorm(c.companyName) === custNorm(newName)) || null;
         const next = {
-          ...had || { id: "cust-" + custNorm(order.customer || order.id), companyName: order.customer, createdAt: now, deleted: false },
+          ...had || { id: "cust-" + custNorm(target || order && order.id), companyName: target, createdAt: now, deleted: false },
           contactName: String(f.attn || "").trim() || null,
           address: String(f.address || "").trim() || null,
           contactPhone: String(f.tel || "").trim() || null,
@@ -17754,13 +17761,15 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
           updatedAt: now,
           updatedBy: currentActor()
         };
+        savedId = next.id;
         return {
           ...prev,
           customers: had ? list2.map((c) => c.id === had.id ? next : c) : [...list2, next],
-          ...appendLog(prev, { action: "update", entity: "customer", entityId: next.id, summary: `${next.companyName} \u2014 delivery details saved from Case Labels`, before: had ? { contactName: had.contactName, address: had.address, contactPhone: had.contactPhone, contactEmail: had.contactEmail } : null, after: { contactName: next.contactName, address: next.address, contactPhone: next.contactPhone, contactEmail: next.contactEmail } })
+          ...appendLog(prev, { action: had ? "update" : "create", entity: "customer", entityId: next.id, summary: had ? `${next.companyName} \u2014 delivery details saved from Case Labels` : `${next.companyName} \u2014 new customer added from Case Labels`, before: had ? { contactName: had.contactName, address: had.address, contactPhone: had.contactPhone, contactEmail: had.contactEmail } : null, after: { contactName: next.contactName, address: next.address, contactPhone: next.contactPhone, contactEmail: next.contactEmail } })
         };
       });
-      setMsg(`Saved to ${order.customer} \u2014 the next case labels for them fill in by themselves.`);
+      if (isNew && savedId) setOrderId("cust:" + savedId);
+      setMsg(isNew ? `${newName} saved as a customer \u2014 pick them from the list next time and the address fills in.` : `Saved to ${target} \u2014 the next case labels for them fill in by themselves.`);
     };
     const [station, setStation] = useState(() => isCaseLabelStation());
     const [jobId, setJobId] = useState(null);
@@ -17772,9 +17781,11 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       } catch (e) {
       }
     };
+    const canPrint = !!count && !!(order || pickedCust || isNew && newName);
     const print = () => {
-      if (!order || !count) return;
+      if (!canPrint) return;
       nlHaptic && nlHaptic();
+      const refId = order ? order.id : pickedCust ? pickedCust.id : "new customer";
       const html = caseLabelDoc(f, nums, layout, ofCases);
       try {
         window.__lastCaseLabelDoc = html;
@@ -17782,13 +17793,13 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       }
       const what = count === 1 ? `case ${nums[0]}` : `cases ${nums[0]} to ${nums[nums.length - 1]}`;
       if (station) printInFrame("case-label-print-frame", html);
-      else setJobId(queuePrint(setData, { kind: "caseLabel", ref: order.id, doc: html, label: `case labels ${order.id} ${what}` }));
+      else setJobId(queuePrint(setData, { kind: "caseLabel", ref: order ? order.id : target, doc: html, label: `case labels ${order ? order.id : target} ${what}` }));
       setData((prev) => ({ ...prev, ...appendLog(prev, {
         action: "case_labels_printed",
-        entity: "order",
-        entityId: order.id,
-        summary: `Case labels printed for ${order.id} (${order.customer}): ${count === 1 ? `case ${nums[0]}` : `cases ${nums[0]} to ${nums[nums.length - 1]}`}`,
-        after: { cases: nums, layout }
+        entity: order ? "order" : "customer",
+        entityId: refId,
+        summary: `Case labels printed for ${order ? `${order.id} (${order.customer})` : `${target} (no order)`}: ${what}`,
+        after: { cases: nums, layout, name: order ? void 0 : target }
       }) }));
       setMsg(station ? `Sent ${count} case label${count === 1 ? "" : "s"} to the printer \u2014 ${what}.` : `Sent ${count} case label${count === 1 ? "" : "s"} to the case label printer in the office \u2014 ${what}.`);
     };
@@ -17800,10 +17811,10 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     const same = (a, b) => nums.length && nums[0] === a && nums[nums.length - 1] === b;
     const field = (k, label, ph, multi = false) => /* @__PURE__ */ React.createElement("label", { style: { display: "block", marginBottom: 10 } }, /* @__PURE__ */ React.createElement("div", { style: lab }, label), multi ? /* @__PURE__ */ React.createElement("textarea", { "data-cl-field": k, value: f[k] || "", onChange: (e) => setF({ ...f, [k]: e.target.value }), rows: 5, placeholder: ph, style: { ...inp, resize: "vertical", lineHeight: 1.35 } }) : /* @__PURE__ */ React.createElement("input", { "data-cl-field": k, value: f[k] || "", onChange: (e) => setF({ ...f, [k]: e.target.value }), placeholder: ph, style: inp }));
     const list = orders.filter((o) => showShipped || o.stage !== "Shipped" || o.id === orderId);
-    return /* @__PURE__ */ React.createElement("div", { "data-case-labels": true, style: { maxWidth: 1180, fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 14 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 26, fontWeight: 700 } }, "Case Labels"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: NL.SUB } }, "The address label for each case \u2014 pick the order, say which cases, print.")), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: phone ? "1fr" : "minmax(0, 1fr) minmax(0, 1.25fr)", gap: 14, alignItems: "start" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 14 } }, /* @__PURE__ */ React.createElement("div", { style: box }, /* @__PURE__ */ React.createElement("div", { style: lab }, "Order"), /* @__PURE__ */ React.createElement("select", { "data-cl-order": true, value: orderId, onChange: (e) => setOrderId(e.target.value), style: { ...inp, fontWeight: 600 } }, list.map((o) => {
+    return /* @__PURE__ */ React.createElement("div", { "data-case-labels": true, style: { maxWidth: 1180, fontFamily: NLT.FONT, color: NL.INK } }, /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 14 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 26, fontWeight: 700 } }, "Case Labels"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: NL.SUB } }, "The address label for each case \u2014 pick the order (or a customer, or type a new one), say which cases, print.")), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: phone ? "1fr" : "minmax(0, 1fr) minmax(0, 1.25fr)", gap: 14, alignItems: "start" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 14 } }, /* @__PURE__ */ React.createElement("div", { style: box }, /* @__PURE__ */ React.createElement("div", { style: lab }, "Order"), /* @__PURE__ */ React.createElement("select", { "data-cl-order": true, value: orderId, onChange: (e) => setOrderId(e.target.value), style: { ...inp, fontWeight: 600 } }, /* @__PURE__ */ React.createElement("option", { value: "new", "data-cl-new-opt": true }, "+ New customer \u2014 type the address"), /* @__PURE__ */ React.createElement("optgroup", { label: "Orders" }, list.map((o) => {
       const n = (data.cases || []).filter((c) => c && !c.deleted && c.orderId === o.id).length;
       return /* @__PURE__ */ React.createElement("option", { key: o.id, value: o.id }, o.customer, " \u2014 ", o.id, o.stage === "Shipped" ? " (shipped)" : "", " \xB7 ", n, " case", n === 1 ? "" : "s");
-    })), /* @__PURE__ */ React.createElement("label", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, color: NL.SUB, marginTop: 8 } }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: showShipped, onChange: (e) => setShowShipped(e.target.checked) }), " Show shipped orders too"), order && /* @__PURE__ */ React.createElement("div", { "data-cl-cases": true, style: { fontSize: 14, marginTop: 10 } }, nCases ? /* @__PURE__ */ React.createElement(React.Fragment, null, "This order has ", /* @__PURE__ */ React.createElement("b", null, nCases, " case", nCases === 1 ? "" : "s"), printed.size ? /* @__PURE__ */ React.createElement(React.Fragment, null, " \xB7 labels printed before for ", printed.size === nCases && !notYet.length ? "all of them" : `${[...printed].filter((n) => n <= nCases).length} of them`) : " \xB7 no case labels printed yet", ".") : "This order has no cases yet.")), /* @__PURE__ */ React.createElement("div", { style: box }, /* @__PURE__ */ React.createElement("div", { style: lab }, "Which cases"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 } }, nCases > 0 && /* @__PURE__ */ React.createElement("button", { "data-cl-all": true, onClick: () => {
+    })), /* @__PURE__ */ React.createElement("optgroup", { label: "Customers \u2014 no order" }, custList.map((c) => /* @__PURE__ */ React.createElement("option", { key: c.id, value: "cust:" + c.id }, c.companyName, String(c.address || "").trim() ? "" : " (no address yet)")))), isNew && /* @__PURE__ */ React.createElement("div", { "data-cl-new-note": true, style: { fontSize: 13.5, color: NL.SUB, marginTop: 10 } }, "Type who it's going to below. It prints as it is \u2014 ", /* @__PURE__ */ React.createElement("b", { style: { color: NL.INK } }, "Save as new customer"), " keeps the address for next time."), pickedCust && /* @__PURE__ */ React.createElement("div", { "data-cl-cust-note": true, style: { fontSize: 13.5, color: NL.SUB, marginTop: 10 } }, "Labels for ", pickedCust.companyName, " without an order \u2014 say which case numbers below."), /* @__PURE__ */ React.createElement("label", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, color: NL.SUB, marginTop: 8 } }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: showShipped, onChange: (e) => setShowShipped(e.target.checked) }), " Show shipped orders too"), order && /* @__PURE__ */ React.createElement("div", { "data-cl-cases": true, style: { fontSize: 14, marginTop: 10 } }, nCases ? /* @__PURE__ */ React.createElement(React.Fragment, null, "This order has ", /* @__PURE__ */ React.createElement("b", null, nCases, " case", nCases === 1 ? "" : "s"), printed.size ? /* @__PURE__ */ React.createElement(React.Fragment, null, " \xB7 labels printed before for ", printed.size === nCases && !notYet.length ? "all of them" : `${[...printed].filter((n) => n <= nCases).length} of them`) : " \xB7 no case labels printed yet", ".") : "This order has no cases yet.")), /* @__PURE__ */ React.createElement("div", { style: box }, /* @__PURE__ */ React.createElement("div", { style: lab }, "Which cases"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 } }, nCases > 0 && /* @__PURE__ */ React.createElement("button", { "data-cl-all": true, onClick: () => {
       setFrom(1);
       setTo(nCases);
     }, style: chip(same(1, nCases)) }, "All ", nCases, " cases"), printed.size > 0 && notYet.length > 0 && /* @__PURE__ */ React.createElement("button", { "data-cl-notyet": true, onClick: () => {
@@ -17814,13 +17825,13 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       const k = count || 1;
       setFrom(a);
       setTo(a + k - 1);
-    }, style: numBox }), /* @__PURE__ */ React.createElement("span", null, "to"), /* @__PURE__ */ React.createElement("input", { "data-cl-to": true, inputMode: "numeric", value: to, onChange: (e) => setTo(numIn(e.target.value)), style: numBox })), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", fontSize: 16, marginTop: 10 } }, /* @__PURE__ */ React.createElement("span", null, "How many labels"), /* @__PURE__ */ React.createElement("input", { "data-cl-count": true, inputMode: "numeric", value: count, onChange: (e) => setCount(e.target.value), style: numBox })), nCases > 0 && nums.length > 0 && nums[nums.length - 1] > nCases && /* @__PURE__ */ React.createElement("div", { "data-cl-beyond": true, style: { fontSize: 13.5, color: "#8A5300", marginTop: 10 } }, "The order has ", nCases, " case", nCases === 1 ? "" : "s", " on the system \u2014 ", nums[nums.length - 1] === nCases + 1 ? `case ${nCases + 1} isn't` : `cases ${Math.max(nums[0], nCases + 1)} to ${nums[nums.length - 1]} aren't`, " on it yet. They'll still print.")), /* @__PURE__ */ React.createElement("div", { style: box }, /* @__PURE__ */ React.createElement("div", { style: lab }, "Who it's going to"), field("attn", "Attn", "e.g. Eliza Kalogirou"), field("name", "Name", "Company or person"), field("address", "Address \u2014 one line each", "Street\nTown and postcode\nCITY\nCOUNTRY", true), field("tel", "Tel", "+30 \u2026"), field("email", "Email", "name@company.com"), changed && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13.5, color: NL.SUB } }, "Changed for this print."), /* @__PURE__ */ React.createElement("button", { "data-cl-save-cust": true, onClick: saveToCustomer, style: { ...chip(false), background: "#fff", border: `1px solid ${NL.LINE}` } }, "Save to ", order ? order.customer : "the customer")), order && !changed && !String(saved.address || "").trim() && !String(saved.tel || "").trim() && !String(saved.email || "").trim() && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: NL.SUB } }, "No delivery details on file for ", order.customer, " \u2014 type them in and save them to the customer."))), /* @__PURE__ */ React.createElement("div", { style: { ...box, position: phone ? "static" : "sticky", top: 12 } }, /* @__PURE__ */ React.createElement("div", { style: lab }, "Preview \u2014 case ", nums[0] || 1), /* @__PURE__ */ React.createElement("div", { "data-cl-preview": true, style: { border: `1px solid ${NL.LINE}`, borderRadius: 6, overflow: "hidden", aspectRatio: `${(CASE_LABEL_LAYOUTS[layout] || CASE_LABEL_LAYOUTS.tec).w} / ${(CASE_LABEL_LAYOUTS[layout] || CASE_LABEL_LAYOUTS.tec).h}`, position: "relative", background: "#fff" } }, /* @__PURE__ */ React.createElement(CaseLabelPreview, { f, n: nums[0] || 1, of: ofCases, layout })), /* @__PURE__ */ React.createElement("div", { style: { ...lab, marginTop: 16 } }, "Paper"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } }, Object.entries(CASE_LABEL_LAYOUTS).map(([k, L]) => /* @__PURE__ */ React.createElement("button", { key: k, "data-cl-layout": k, "aria-pressed": layout === k, onClick: () => {
+    }, style: numBox }), /* @__PURE__ */ React.createElement("span", null, "to"), /* @__PURE__ */ React.createElement("input", { "data-cl-to": true, inputMode: "numeric", value: to, onChange: (e) => setTo(numIn(e.target.value)), style: numBox })), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", fontSize: 16, marginTop: 10 } }, /* @__PURE__ */ React.createElement("span", null, "How many labels"), /* @__PURE__ */ React.createElement("input", { "data-cl-count": true, inputMode: "numeric", value: count, onChange: (e) => setCount(e.target.value), style: numBox })), nCases > 0 && nums.length > 0 && nums[nums.length - 1] > nCases && /* @__PURE__ */ React.createElement("div", { "data-cl-beyond": true, style: { fontSize: 13.5, color: "#8A5300", marginTop: 10 } }, "The order has ", nCases, " case", nCases === 1 ? "" : "s", " on the system \u2014 ", nums[nums.length - 1] === nCases + 1 ? `case ${nCases + 1} isn't` : `cases ${Math.max(nums[0], nCases + 1)} to ${nums[nums.length - 1]} aren't`, " on it yet. They'll still print.")), /* @__PURE__ */ React.createElement("div", { style: box }, /* @__PURE__ */ React.createElement("div", { style: lab }, "Who it's going to"), field("attn", "Attn", "e.g. Eliza Kalogirou"), field("name", "Name", "Company or person"), field("address", "Address \u2014 one line each", "Street\nTown and postcode\nCITY\nCOUNTRY", true), field("tel", "Tel", "+30 \u2026"), field("email", "Email", "name@company.com"), changed && !isNew && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13.5, color: NL.SUB } }, "Changed for this print."), /* @__PURE__ */ React.createElement("button", { "data-cl-save-cust": true, onClick: saveToCustomer, style: { ...chip(false), background: "#fff", border: `1px solid ${NL.LINE}` } }, "Save to ", target || "the customer")), isNew && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("button", { "data-cl-save-new": true, disabled: !newName, onClick: saveToCustomer, style: { ...chip(false), background: newName ? NL.NAVY : "#E7EBF5", color: newName ? "#fff" : NL.SUB, cursor: newName ? "pointer" : "default" } }, sameNameCust ? `Update ${sameNameCust.companyName}` : "Save as new customer"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13.5, color: NL.SUB } }, !newName ? "Type the name first." : sameNameCust ? `${sameNameCust.companyName} is already a customer \u2014 this replaces their address.` : "")), (order || pickedCust) && !changed && !String(saved.address || "").trim() && !String(saved.tel || "").trim() && !String(saved.email || "").trim() && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: NL.SUB } }, "No delivery details on file for ", target, " \u2014 type them in and save them to the customer."))), /* @__PURE__ */ React.createElement("div", { style: { ...box, position: phone ? "static" : "sticky", top: 12 } }, /* @__PURE__ */ React.createElement("div", { style: lab }, "Preview \u2014 case ", nums[0] || 1), /* @__PURE__ */ React.createElement("div", { "data-cl-preview": true, style: { border: `1px solid ${NL.LINE}`, borderRadius: 6, overflow: "hidden", aspectRatio: `${(CASE_LABEL_LAYOUTS[layout] || CASE_LABEL_LAYOUTS.tec).w} / ${(CASE_LABEL_LAYOUTS[layout] || CASE_LABEL_LAYOUTS.tec).h}`, position: "relative", background: "#fff" } }, /* @__PURE__ */ React.createElement(CaseLabelPreview, { f, n: nums[0] || 1, of: ofCases, layout })), /* @__PURE__ */ React.createElement("div", { style: { ...lab, marginTop: 16 } }, "Paper"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } }, Object.entries(CASE_LABEL_LAYOUTS).map(([k, L]) => /* @__PURE__ */ React.createElement("button", { key: k, "data-cl-layout": k, "aria-pressed": layout === k, onClick: () => {
       setLayout(k);
       try {
         localStorage.setItem(CASE_LABEL_LAYOUT_KEY, k);
       } catch (e) {
       }
-    }, style: chip(layout === k) }, L.name))), /* @__PURE__ */ React.createElement("button", { "data-cl-print": true, disabled: !order || !count, onClick: print, style: { width: "100%", marginTop: 16, height: 56, borderRadius: 12, border: 0, background: !order || !count ? "#C9CFDB" : NL.NAVY, color: "#fff", fontSize: 18, fontWeight: 700, fontFamily: NLT.FONT, cursor: "pointer" } }, "Print ", count, " label", count === 1 ? "" : "s", count ? ` \u2014 ${count === 1 ? `case ${nums[0]}` : `cases ${nums[0]} to ${nums[nums.length - 1]}`}` : ""), msg && /* @__PURE__ */ React.createElement("div", { "data-cl-msg": true, style: { fontSize: 14, color: NL.OK, fontWeight: 600, marginTop: 10 } }, msg), jobId && !station && /* @__PURE__ */ React.createElement("div", { "data-cl-job": true }, /* @__PURE__ */ React.createElement(PrintJobStatus, { data, jobId })), /* @__PURE__ */ React.createElement("div", { "data-cl-station": true, style: { marginTop: 14, paddingTop: 12, borderTop: `1px solid ${NL.LINE}`, fontSize: 13.5, color: NL.SUB } }, isPhoneOrTablet() ? /* @__PURE__ */ React.createElement(React.Fragment, null, "Labels from this phone print on the ", /* @__PURE__ */ React.createElement("b", { style: { color: NL.INK } }, "case label printer in the office"), ".") : /* @__PURE__ */ React.createElement("label", { style: { display: "flex", alignItems: "center", gap: 10, cursor: "pointer" } }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", "data-cl-station-toggle": true, checked: station, onChange: flipStation, style: { width: 18, height: 18 } }), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("b", { style: { color: NL.INK } }, "This PC has the case label printer"), " \u2014 ", station ? "case labels sent from phones print here too." : "case labels from here are sent to the PC that has it."))))));
+    }, style: chip(layout === k) }, L.name))), /* @__PURE__ */ React.createElement("button", { "data-cl-print": true, disabled: !canPrint, onClick: print, style: { width: "100%", marginTop: 16, height: 56, borderRadius: 12, border: 0, background: !canPrint ? "#C9CFDB" : NL.NAVY, color: "#fff", fontSize: 18, fontWeight: 700, fontFamily: NLT.FONT, cursor: "pointer" } }, "Print ", count, " label", count === 1 ? "" : "s", count ? ` \u2014 ${count === 1 ? `case ${nums[0]}` : `cases ${nums[0]} to ${nums[nums.length - 1]}`}` : ""), msg && /* @__PURE__ */ React.createElement("div", { "data-cl-msg": true, style: { fontSize: 14, color: NL.OK, fontWeight: 600, marginTop: 10 } }, msg), jobId && !station && /* @__PURE__ */ React.createElement("div", { "data-cl-job": true }, /* @__PURE__ */ React.createElement(PrintJobStatus, { data, jobId })), /* @__PURE__ */ React.createElement("div", { "data-cl-station": true, style: { marginTop: 14, paddingTop: 12, borderTop: `1px solid ${NL.LINE}`, fontSize: 13.5, color: NL.SUB } }, isPhoneOrTablet() ? /* @__PURE__ */ React.createElement(React.Fragment, null, "Labels from this phone print on the ", /* @__PURE__ */ React.createElement("b", { style: { color: NL.INK } }, "case label printer in the office"), ".") : /* @__PURE__ */ React.createElement("label", { style: { display: "flex", alignItems: "center", gap: 10, cursor: "pointer" } }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", "data-cl-station-toggle": true, checked: station, onChange: flipStation, style: { width: 18, height: 18 } }), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("b", { style: { color: NL.INK } }, "This PC has the case label printer"), " \u2014 ", station ? "case labels sent from phones print here too." : "case labels from here are sent to the PC that has it."))))));
   }
   function CaseLabelPreview({ f, n, of = null, layout }) {
     const L = CASE_LABEL_LAYOUTS[layout] || CASE_LABEL_LAYOUTS.tec;
@@ -22832,8 +22843,52 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
     const [selected, setSelected] = useState(null);
     const [openOrder, setOpenOrder] = useState(null);
     const phone = useIsPhone();
-    const rows = customerRows(orders, lineItems);
+    const rows = useMemo(() => {
+      const r = customerRows(orders, lineItems);
+      const seen = new Set(r.map((x) => custNorm(x.customer)));
+      for (const c of data.customers || []) {
+        if (!c || c.deleted) continue;
+        const nm = String(c.companyName || "").trim();
+        if (!nm || seen.has(custNorm(nm))) continue;
+        seen.add(custNorm(nm));
+        r.push({ customer: nm, orderCount: 0, activeCount: 0, shippedCount: 0, totalValue: 0 });
+      }
+      return r;
+    }, [orders, lineItems, data.customers]);
     const { sorted, sortBy, sortDir, toggleSort } = useSortableRows(rows, "totalValue", "desc");
+    const [adding, setAdding] = useState(null);
+    const addCustomer = () => {
+      const nm = String(adding && adding.name || "").trim();
+      if (!nm) return;
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const clean = (v) => String(v || "").trim() || null;
+      setData((prev) => {
+        const list = prev.customers || [];
+        const had = list.find((c) => c && !c.deleted && custNorm(c.companyName) === custNorm(nm));
+        const next = {
+          ...had || { id: "cust-" + custNorm(nm), companyName: nm, createdAt: now, deleted: false },
+          contactName: clean(adding.attn),
+          address: clean(adding.address),
+          contactPhone: clean(adding.tel),
+          contactEmail: clean(adding.email),
+          updatedAt: now,
+          updatedBy: currentActor()
+        };
+        return {
+          ...prev,
+          customers: had ? list.map((c) => c.id === had.id ? next : c) : [...list, next],
+          ...appendLog(prev, {
+            action: had ? "update" : "create",
+            entity: "customer",
+            entityId: next.id,
+            summary: had ? `${next.companyName} \u2014 details updated` : `${next.companyName} \u2014 new customer added`,
+            after: { contactName: next.contactName, address: next.address, contactPhone: next.contactPhone, contactEmail: next.contactEmail }
+          })
+        };
+      });
+      setAdding(null);
+      setSelected((data.customers || []).find((c) => c && !c.deleted && custNorm(c.companyName) === custNorm(nm))?.companyName || nm);
+    };
     if (selected && openOrder) {
       const o = orders.find((x) => x.id === openOrder);
       const its = (lineItems || []).filter((li) => !li.deleted && li.orderId === openOrder);
@@ -23021,7 +23076,12 @@ Cancel = no, add ${custName} as a new customer`)) custName = near.companyName;
         /* @__PURE__ */ React.createElement(Mono, { className: "text-xs font-semibold", style: { textDecoration: "underline" } }, o.id)
       )), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, /* @__PURE__ */ React.createElement(StageRule, { stage: o.stage })), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, o.orderDate || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "px-3" }, o.dueDate || "\u2014"), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, fmtMoney(o.value)))), theirOrders.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 5 }, "No orders found.")))));
     }
-    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Customers", subtitle: "Every customer, their order count, and total value \u2014 click one for their full history." }), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(SortTh, { col: "customer", sortBy, sortDir, onSort: toggleSort, className: "text-left px-3 py-2" }, "Customer"), /* @__PURE__ */ React.createElement(SortTh, { col: "orderCount", sortBy, sortDir, onSort: toggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 100 } }, "Orders"), /* @__PURE__ */ React.createElement(SortTh, { col: "activeCount", sortBy, sortDir, onSort: toggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 90 } }, "Active"), /* @__PURE__ */ React.createElement(SortTh, { col: "totalValue", sortBy, sortDir, onSort: toggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 120 } }, "Total value"))), /* @__PURE__ */ React.createElement("tbody", null, sorted.map((c, i) => /* @__PURE__ */ React.createElement("tr", { key: c.customer, onClick: () => setSelected(c.customer), className: (i % 2 ? "" : "bg-black/[0.015]") + " cursor-pointer hover:bg-black/[0.03]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 font-medium" }, c.customer), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, c.orderCount), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3", style: { color: c.activeCount > 0 ? ORANGE : INK_MUTED } }, c.activeCount), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, fmtMoney(c.totalValue)))), rows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 4 }, "No customers yet.")))));
+    return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(SectionHeader, { title: "Customers", subtitle: "Every customer, their order count, and total value \u2014 click one for their full history." }), /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 12 } }, !adding ? /* @__PURE__ */ React.createElement(Button, { "data-cust-new": true, onClick: () => setAdding({ name: "", attn: "", address: "", tel: "", email: "" }) }, "+ New customer") : (() => {
+      const nm = String(adding.name || "").trim();
+      const dup = nm && rows.find((r) => custNorm(r.customer) === custNorm(nm));
+      const box = (k, label, ph, lines) => /* @__PURE__ */ React.createElement("label", { className: "text-xs", style: { color: INK_MUTED, flex: lines ? "1 1 100%" : "1 1 200px" } }, /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 3 } }, label), lines ? /* @__PURE__ */ React.createElement("textarea", { "data-cust-new-field": k, rows: lines, value: adding[k], placeholder: ph, onChange: (e) => setAdding({ ...adding, [k]: e.target.value }), style: { font: "inherit", fontSize: 14, width: "100%", padding: "8px 10px", borderRadius: 4, border: `1px solid ${BORDER}`, background: "#fff", color: INK, resize: "vertical" } }) : /* @__PURE__ */ React.createElement("input", { "data-cust-new-field": k, value: adding[k], placeholder: ph, onChange: (e) => setAdding({ ...adding, [k]: e.target.value }), style: { font: "inherit", fontSize: 14, width: "100%", minHeight: 38, padding: "7px 10px", borderRadius: 4, border: `1px solid ${BORDER}`, background: "#fff", color: INK } }));
+      return /* @__PURE__ */ React.createElement(Panel, { className: "p-4", "data-cust-new-form": true }, /* @__PURE__ */ React.createElement("div", { className: "mx-eyebrow mb-3", style: { color: INK_MUTED } }, "New customer"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 12, flexWrap: "wrap" } }, box("name", "Company name", "as it goes on the label"), box("attn", "Attn \u2014 who it's for", "name"), box("tel", "Telephone", "number"), box("email", "Email", "address"), box("address", "Delivery address \u2014 one line each", "Street\nTown and postcode\nCITY\nCOUNTRY", 4)), dup && /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: ORANGE, marginTop: 8 } }, dup.customer, " is already a customer \u2014 saving replaces their contact and address."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10, marginTop: 12 } }, /* @__PURE__ */ React.createElement(Button, { "data-cust-new-save": true, disabled: !nm, onClick: addCustomer }, dup ? `Update ${dup.customer}` : "Save customer"), /* @__PURE__ */ React.createElement(Button, { variant: "ghost", onClick: () => setAdding(null) }, "Cancel")));
+    })()), /* @__PURE__ */ React.createElement(Panel, { className: "overflow-hidden overflow-x-auto", style: { width: "100%", maxWidth: "100%" } }, /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: NAVY, color: "#fff" } }, /* @__PURE__ */ React.createElement(SortTh, { col: "customer", sortBy, sortDir, onSort: toggleSort, className: "text-left px-3 py-2" }, "Customer"), /* @__PURE__ */ React.createElement(SortTh, { col: "orderCount", sortBy, sortDir, onSort: toggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 100 } }, "Orders"), /* @__PURE__ */ React.createElement(SortTh, { col: "activeCount", sortBy, sortDir, onSort: toggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 90 } }, "Active"), /* @__PURE__ */ React.createElement(SortTh, { col: "totalValue", sortBy, sortDir, onSort: toggleSort, startDir: "desc", className: "text-right px-3 py-2", style: { width: 120 } }, "Total value"))), /* @__PURE__ */ React.createElement("tbody", null, sorted.map((c, i) => /* @__PURE__ */ React.createElement("tr", { key: c.customer, onClick: () => setSelected(c.customer), className: (i % 2 ? "" : "bg-black/[0.015]") + " cursor-pointer hover:bg-black/[0.03]", style: { borderTop: `1px solid ${BORDER}` } }, /* @__PURE__ */ React.createElement("td", { className: "py-2 px-3 font-medium" }, c.customer), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3" }, c.orderCount), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3", style: { color: c.activeCount > 0 ? ORANGE : INK_MUTED } }, c.activeCount), /* @__PURE__ */ React.createElement("td", { className: "text-right px-3 font-medium" }, fmtMoney(c.totalValue)))), rows.length === 0 && /* @__PURE__ */ React.createElement(Empty, { colSpan: 4 }, "No customers yet.")))));
   }
   function ProductionScheduleView({ data, embedded = false }) {
     const [selectedEva, setSelectedEva] = useState(null);
