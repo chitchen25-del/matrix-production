@@ -3383,7 +3383,7 @@
   }
   var LEARN_AFTER = 3;
   function learnFromTweaks(data) {
-    const all = (data.scheduleTweaks || []).filter((t) => t && t.kind && t.size);
+    const all = (data.scheduleTweaks || []).filter((t) => t && t.kind && t.size && !String(t.kind).startsWith("dp_"));
     const decided = new Set((data.scheduleRules || []).filter((r) => r && !r.deleted).map((r) => `${r.kind}|${r.attr || ""}`));
     const groups = /* @__PURE__ */ new Map();
     const add = (key, kind, attr, t) => {
@@ -3423,7 +3423,7 @@
     return ids.length ? ids : null;
   }
   function scheduleTweaksOf(data) {
-    return (data.scheduleTweaks || []).filter((t) => t && !t.deleted && t.kind && t.size).map((t) => ({ ...t, size: glueReelPool(t.size), refSize: t.refSize ? glueReelPool(t.refSize) : t.refSize })).sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
+    return (data.scheduleTweaks || []).filter((t) => t && !t.deleted && t.kind && t.size && !String(t.kind).startsWith("dp_")).map((t) => ({ ...t, size: glueReelPool(t.size), refSize: t.refSize ? glueReelPool(t.refSize) : t.refSize })).sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
   }
   function glueLineSequence(demand, current, opts = {}) {
     const mode = opts.glueOrder || "priority";
@@ -3814,7 +3814,7 @@
         });
       }
     }
-    const tweaks = scheduleTweaksOf(data).filter((t) => t.kind !== "daylist"), rules = scheduleRulesOf(data);
+    const tweaks = scheduleTweaksOf(data).filter((t) => t.kind !== "daylist" && !String(t.kind || "").startsWith("dp_")), rules = scheduleRulesOf(data);
     const { steps, covered } = glueLineSequence(demand, current, {
       glueOrder: cfg.glueOrder === "batch" ? "size_once" : cfg.glueOrder,
       joinMinutes: cfg.joinMinutes,
@@ -14089,7 +14089,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-09.144";
+  var APP_VERSION = "2026-10-09.145";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -19036,6 +19036,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
   var DESK_OR = "#D9482F";
   var DESK_BAND = "linear-gradient(160deg,#1B2B6B 0%,#223A8E 70%,#2A4BB0 100%)";
   var DESK_ICON = {
+    planner: "\u2630",
     home: "\u25F7",
     dashboard: "\u25A4",
     finish: "\u25A6",
@@ -41867,6 +41868,282 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       go("materials");
     }, style: { flex: 1, height: 44, borderRadius: 14, border: 0, background: i === 0 ? NL.NAVY : NL.PANEL, color: i === 0 ? "#fff" : NL.INK, fontFamily: NLT.FONT, fontSize: 14.5, fontWeight: 600, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 } }, /* @__PURE__ */ React.createElement(NLIcon, { name: ic, size: 18, color: i === 0 ? "#fff" : NL.NAVY, sw: 1.7 }), t))), lowMats.length > 0 ? /* @__PURE__ */ React.createElement(NLIn, { i: 0 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, "Low \u2014 order soon"), /* @__PURE__ */ React.createElement("div", { style: { background: NLT.TINT.warm, borderRadius: NLT.R.card } }, lowMats.map((m, i) => matRow(m, i, i === 0)))) : /* @__PURE__ */ React.createElement(NLIn, { i: 0 }, /* @__PURE__ */ React.createElement("div", { style: { marginTop: 12 } }, /* @__PURE__ */ React.createElement(NLAllGood, { title: "Nothing is low", sub: "Every material is above its line." }))), grouped.filter((g) => g[1].length).map(([title, list], gi) => /* @__PURE__ */ React.createElement(NLIn, { key: title, i: gi + 1 }, /* @__PURE__ */ React.createElement(NLEyebrow, null, title), /* @__PURE__ */ React.createElement(NLCard, null, list.filter((m) => !term || String(m.name || "").toLowerCase().includes(term)).map((m, i) => matRow(m, i, i === 0)))))), /* @__PURE__ */ React.createElement("div", { style: { height: 24 } })));
   }
+  var DP_HI = { g: "#C9F2B8", y: "#FFF1A8", p: "#FFD3E0", b: "#CFE2FF" };
+  var DP_HI_NAMES = { g: "Green", y: "Yellow", p: "Pink", b: "Blue" };
+  function plannerHere() {
+    const e = String(nlEmail() || "").toLowerCase();
+    return e === "dave@creasingmatrix.com" || isAdminLogin();
+  }
+  function dpHash(s) {
+    let h = 0;
+    for (const c of String(s)) h = h * 31 + c.charCodeAt(0) | 0;
+    return (h >>> 0).toString(36);
+  }
+  function dpKey(spec) {
+    return String(spec || "").replace(/\s*\(\d+(?:\.\d+)?m\)\s*$/i, "").trim().toLowerCase();
+  }
+  function dpParse(spec) {
+    const s = String(spec || "").replace(/\s*\(\d+(?:\.\d+)?m\)\s*$/i, "").trim();
+    const m = s.match(/^(.*?)\s*(\d+\.\d+)\s*x\s*(\d+\.\d+)\s*mm(?:\s+(D\d|O\/S|MINI))?\s*(2-3pt|3-4pt|6pt)?\s*$/i);
+    if (!m) return { family: s, t: null, g: null, variant: null, pt: null };
+    return { family: m[1].trim(), t: m[2], g: m[3], variant: m[4] ? m[4].toUpperCase() : null, pt: m[5] || null };
+  }
+  function dpShortName(customer) {
+    return String(customer || "").replace(/\s+(Manufacturing Company|GmbH|SAS|Ltd\.?|Limited|Inc\.?|SRL|S\.?A\.?|Single Member.*)\b.*$/i, "").replace(/^Insumos Graficos\s+/i, "").replace(/^Dimou\s+/i, "").trim() || String(customer || "");
+  }
+  function dpGroup(p, mainFamily) {
+    if (!p.t) return { key: "z|" + p.family, label: p.family, sec: true, order: 9e3 };
+    const fam = p.family && p.family !== mainFamily ? p.family + " " : "";
+    const base = fam ? 5e3 : 0;
+    if (p.variant && /^D\d/.test(p.variant)) return { key: "d|" + fam, label: fam + "Doubles", sec: true, order: base + 7e3 };
+    if (p.variant === "O/S") return { key: "o|" + fam, label: fam + "7mm O/S", sec: true, order: base + 7500 };
+    if (p.variant === "MINI") return { key: "m|" + fam, label: fam + "Mini", sec: true, order: base + 7600 };
+    return { key: "t|" + fam + p.t, label: fam + p.t + "s", sec: !!fam, order: base + Math.round(Number(p.t) * 1e3) };
+  }
+  function dpWorkDays(n = 5) {
+    const out = [];
+    const d = /* @__PURE__ */ new Date();
+    d.setHours(12, 0, 0, 0);
+    while (out.length < n) {
+      const w = d.getDay();
+      if (w !== 0 && w !== 6) out.push(new Date(d));
+      d.setDate(d.getDate() + 1);
+    }
+    return out;
+  }
+  function dpDayKey(d) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  function dpOrderLists(data) {
+    let planAll;
+    try {
+      planAll = orderMakePlan(data);
+    } catch (e) {
+      planAll = /* @__PURE__ */ new Map();
+    }
+    const live = (data.orders || []).filter((o) => o && !o.deleted && !["Shipped", "Cancelled"].includes(o.stage));
+    const lists = [];
+    for (const o of live) {
+      let ls = [];
+      try {
+        ls = nlLineFigures(data, o, planAll.get(o.id) || {});
+      } catch (e) {
+        ls = [];
+      }
+      const box = ls.filter((l) => !l.delivery && !l.tapeOrShim && l.ordered > 0);
+      if (!box.length) continue;
+      lists.push({ o, lines: box, extras: ls.filter((l) => l.tapeOrShim && l.ordered > 0) });
+    }
+    const needs = /* @__PURE__ */ new Map();
+    for (const { o, lines } of lists) for (const l of lines) {
+      if (!(l.make > 0)) continue;
+      const k = dpKey(l.spec);
+      if (!needs.has(k)) needs.set(k, []);
+      needs.get(k).push({ orderId: o.id, customer: o.customer, n: l.make });
+    }
+    const pr = (o) => Number(o.priority) || 99;
+    lists.sort((a, b) => pr(a.o) - pr(b.o) || String(a.o.dueDate || "9999").localeCompare(String(b.o.dueDate || "9999")) || String(a.o.id).localeCompare(String(b.o.id)));
+    return { lists, needs };
+  }
+  function dpGrouped(lines) {
+    const fams = {};
+    for (const l of lines) {
+      const p = dpParse(l.spec);
+      fams[p.family] = (fams[p.family] || 0) + l.ordered;
+    }
+    const main = Object.entries(fams).sort((a, b) => b[1] - a[1])[0]?.[0] || "";
+    const groups = /* @__PURE__ */ new Map();
+    for (const l of lines) {
+      const p = dpParse(l.spec);
+      const g = dpGroup(p, main);
+      if (!groups.has(g.key)) groups.set(g.key, { ...g, lines: [] });
+      groups.get(g.key).lines.push({ ...l, p });
+    }
+    const out = [...groups.values()].sort((a, b) => a.order - b.order);
+    for (const g of out) g.lines.sort((a, b) => (Number(a.p.t) || 0) - (Number(b.p.t) || 0) || (Number(a.p.g) || 0) - (Number(b.p.g) || 0) || String(a.p.variant || "").localeCompare(String(b.p.variant || "")));
+    return { main, groups: out };
+  }
+  function dpSizeText(p, spec) {
+    return p.t ? `${p.t} \xD7 ${p.g}${p.variant ? " " + p.variant : ""}` : String(spec || "").replace(/\s*\(\d+(?:\.\d+)?m\)$/, "");
+  }
+  function dpListDoc(o, grouped, marks, needs, short) {
+    const esc2 = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const lines = grouped.groups.flatMap((g) => g.lines);
+    const tot = lines.reduce((t, l) => t + l.ordered, 0), left = lines.reduce((t, l) => t + l.make, 0);
+    const row = (l) => {
+      const k = `${o.id}|${dpKey(l.spec)}`, mk = marks.get(k) || {};
+      const done = l.make === 0;
+      const part = !done && l.make < l.ordered;
+      const others = (needs.get(dpKey(l.spec)) || []).filter((x) => x.orderId !== o.id);
+      return `<div class="ln${done ? " done" : ""}"${mk.hi && DP_HI[mk.hi] ? ` style="background:${DP_HI[mk.hi]}"` : ""}><span class="sz">${esc2(dpSizeText(l.p, l.spec))}</span>${l.p.pt ? `<span class="pt">${esc2(l.p.pt)}</span>` : ""}<span class="dash">\u2014</span><span class="q">${part ? `<s>${l.ordered}</s> ${l.make}` : l.ordered}</span>${l.bondReels && l.bondReels.length && !done ? `<b class="R">R</b>` : ""}${!done && others.length ? `<span class="al">also ${others.map((x) => `${esc2(short(x.customer))} ${x.n}`).join(", ")}</span>` : ""}${mk.note ? `<div class="nt">${esc2(mk.note)}</div>` : ""}</div>`;
+    };
+    const half = Math.ceil(lines.length / 2);
+    let n = 0;
+    const colA = [], colB = [];
+    for (const g of grouped.groups) {
+      (n < half ? colA : colB).push(`<div class="gh${g.sec ? " sec" : ""}">${esc2(g.label)}</div>${g.lines.map(row).join("")}`);
+      n += g.lines.length;
+    }
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc2(short(o.customer))} \u2014 ${esc2(o.id)}</title><style>
+    @page { size: A4; margin: 13mm 13mm; } body { font-family: Arial, sans-serif; color: #111; margin: 0; }
+    .hd { display: flex; align-items: flex-end; border-bottom: 2px solid #000; padding-bottom: 5px; margin-bottom: 6px; } .t { font-size: 22pt; font-weight: 800; } .s { font-size: 9pt; color: #444; } .sp { flex: 1; } .k { font-size: 8.5pt; color: #444; }
+    .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 9mm; } .gh { font-size: 8.5pt; font-weight: 800; letter-spacing: .8px; color: #444; margin: 8px 0 1px; border-bottom: 1px solid #bbb; text-transform: uppercase; }
+    .gh.sec { display: inline-block; background: #FFD28A; color: #3a2400; border: 0; padding: 1px 6px; border-radius: 3px; margin-top: 11px; }
+    .ln { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px; font-size: 12.5pt; padding: 2.5px 3px; border-bottom: 1px dotted #bbb; page-break-inside: avoid; }
+    .sz { font-weight: 600; min-width: 30mm; } .pt { font-size: 7.5pt; color: #555; font-weight: 700; } .dash { color: #888; } .q { font-weight: 800; } .q s { color: #888; font-weight: 400; }
+    .R { font-size: 8pt; border: 1.5px solid #000; border-radius: 3px; padding: 0 3px; } .al { margin-left: auto; font-size: 7.5pt; color: #333; } .nt { flex-basis: 100%; font-size: 8pt; font-style: italic; color: #333; }
+    .ln.done .sz, .ln.done .q, .ln.done .pt { text-decoration: line-through; text-decoration-thickness: 2px; color: #888; }
+    .ft { display: flex; justify-content: space-between; align-items: baseline; border-top: 2px solid #000; margin-top: 10px; padding-top: 5px; font-size: 9pt; } .ft b { font-size: 15pt; }
+  </style></head><body><div class="hd"><div><div class="t">${esc2(short(o.customer))}</div><div class="s">${esc2(o.customer)} \xB7 ${esc2(o.id)}${o.dueDate ? ` \xB7 due ${esc2(o.dueDate)}` : ""}${o.boxType ? ` \xB7 ${esc2(o.boxType)} cartons` : ""}${o.strongTape ? " \xB7 STRONG TAPE" : ""}</div></div><div class="sp"></div><div class="k">R = reel on the rack \xB7 struck = made \xB7 printed ${esc2((/* @__PURE__ */ new Date()).toLocaleDateString("en-GB", { day: "numeric", month: "short" }))}</div></div>
+    <div class="cols"><div>${colA.join("")}</div><div>${colB.join("")}</div></div>
+    <div class="ft"><span>${tot - left} of ${tot} done</span><b>${left} boxes to complete</b></div></body></html>`;
+  }
+  function DavesPlanner({ data, setData, go }) {
+    const [tab, setTab] = useState("lists");
+    const { lists, needs } = useMemo(() => dpOrderLists(data), [data]);
+    const tweaks = (data.scheduleTweaks || []).filter((t) => t && !t.deleted && String(t.kind || "").startsWith("dp_"));
+    const marks = useMemo(
+      () => {
+        const m = /* @__PURE__ */ new Map();
+        for (const t of tweaks) if (t.kind === "dp_mark" && Array.isArray(t.orderIds) && t.orderIds[0]) m.set(`${t.orderIds[0]}|${dpKey(t.size)}`, { id: t.id, hi: t.label || null, note: t.note || "" });
+        return m;
+      },
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [data.scheduleTweaks]
+    );
+    const [oid, setOid] = useState(() => {
+      try {
+        return localStorage.getItem("mxDpOrder") || null;
+      } catch (e) {
+        return null;
+      }
+    });
+    const cur = lists.find((x) => x.o.id === oid) || lists[0] || null;
+    const pick2 = (id) => {
+      setOid(id);
+      setOpen(null);
+      try {
+        localStorage.setItem("mxDpOrder", id);
+      } catch (e) {
+      }
+    };
+    const [open, setOpen] = useState(null);
+    const [noteDraft, setNoteDraft] = useState("");
+    const short = (c) => dpShortName(c);
+    const stamp = () => (/* @__PURE__ */ new Date()).toISOString();
+    const who = () => currentActor();
+    const upsert = (row) => setData((prev) => {
+      const list = prev.scheduleTweaks || [];
+      const had = list.find((t) => t && t.id === row.id);
+      const next = had ? list.map((t) => t.id === row.id ? { ...t, ...row, updatedAt: stamp() } : t) : [...list, { createdAt: stamp(), createdBy: who(), deleted: false, ...row, updatedAt: stamp() }];
+      return { ...prev, scheduleTweaks: next };
+    });
+    const setMark = (orderId, spec, patch) => {
+      const k = `${orderId}|${dpKey(spec)}`;
+      const was = marks.get(k) || {};
+      upsert({ id: `dpm-${orderId}-${dpHash(dpKey(spec))}`, kind: "dp_mark", size: spec, orderIds: [orderId], label: patch.hi !== void 0 ? patch.hi : was.hi || null, note: patch.note !== void 0 ? patch.note : was.note || null, deleted: false });
+    };
+    const days = dpWorkDays(5);
+    const dayKeys = days.map(dpDayKey);
+    const bonds = tweaks.filter((t) => t.kind === "dp_bond" && t.day).sort((a, b) => (Number(a.pos) || 0) - (Number(b.pos) || 0));
+    const firm = new Set(tweaks.filter((t) => t.kind === "dp_firm" && t.carry !== false).map((t) => String(t.day).slice(0, 10)));
+    const addBond = (orderId, spec, qty, day) => {
+      const n = Math.max(1, Math.round(Number(qty) || 0));
+      const pos = bonds.filter((b) => String(b.day).slice(0, 10) === day).length;
+      upsert({ id: uid("dpb"), kind: "dp_bond", size: spec, label: String(n), orderIds: [orderId], day, pos, deleted: false });
+    };
+    const removeBond = (b) => setData((prev) => ({ ...prev, scheduleTweaks: (prev.scheduleTweaks || []).map((t) => t && t.id === b.id ? { ...t, deleted: true, deletedAt: stamp(), updatedAt: stamp() } : t) }));
+    const moveBond = (b, dir) => {
+      const same = bonds.filter((x) => String(x.day).slice(0, 10) === String(b.day).slice(0, 10));
+      const i = same.findIndex((x) => x.id === b.id), j = i + dir;
+      if (j < 0 || j >= same.length) return;
+      const a = same[i], c = same[j];
+      setData((prev) => ({ ...prev, scheduleTweaks: (prev.scheduleTweaks || []).map((t) => t && t.id === a.id ? { ...t, pos: j, updatedAt: stamp() } : t && t.id === c.id ? { ...t, pos: i, updatedAt: stamp() } : t) }));
+    };
+    const toggleFirm = (day) => upsert({ id: `dpf-${day}`, kind: "dp_firm", size: "firm", label: "firm", day, carry: !firm.has(day), deleted: false });
+    const lineOf = (orderId, spec) => {
+      const L = lists.find((x) => x.o.id === orderId);
+      return L ? L.lines.find((l) => dpKey(l.spec) === dpKey(spec)) || null : null;
+    };
+    const [adding, setAdding] = useState(null);
+    const [addQ, setAddQ] = useState("");
+    const NAVY2 = NL.NAVY;
+    const card = { background: "#fff", border: `1px solid ${NL.LINE}`, borderRadius: 14 };
+    const chipBtn = (on) => ({ height: 34, padding: "0 12px", borderRadius: 9, border: on ? 0 : `1px solid ${NL.LINE}`, background: on ? NAVY2 : "#fff", color: on ? "#fff" : NL.INK, fontWeight: 600, fontSize: 13.5, cursor: "pointer", fontFamily: NLT.FONT });
+    const dayName = (d) => d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric" });
+    const todayKey = dayKeys[0], tomorrowKey = dayKeys[1];
+    const tabs = [["lists", "My lists"], ["board", "Week board"], ["all", "All orders by size"]];
+    return /* @__PURE__ */ React.createElement("div", { "data-planner": true, style: { fontFamily: NLT.FONT, color: NL.INK, maxWidth: 1400 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 12 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 26, fontWeight: 700 } }, "Dave's Planner"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: NL.SUB } }, "The app keeps the facts. You make the plan.")), /* @__PURE__ */ React.createElement("div", { style: { display: "inline-flex", background: "#fff", border: `1px solid ${NL.LINE}`, borderRadius: 11, padding: 3, marginLeft: 8 } }, tabs.map(([k, l]) => /* @__PURE__ */ React.createElement("button", { key: k, "data-dp-tab": k, onClick: () => {
+      if (k === "all") {
+        go && go("production");
+        return;
+      }
+      setTab(k);
+    }, style: { height: 34, padding: "0 14px", border: 0, borderRadius: 8, background: tab === k ? NAVY2 : "transparent", color: tab === k ? "#fff" : NL.SUB, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: NLT.FONT } }, l))), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }), tab === "lists" && cur && /* @__PURE__ */ React.createElement("button", { "data-dp-print": true, onClick: () => printLabelDoc(dpListDoc(cur.o, dpGrouped(cur.lines), marks, needs, short)), style: { height: 40, padding: "0 16px", borderRadius: 11, border: 0, background: NAVY2, color: "#fff", fontWeight: 700, fontSize: 14.5, cursor: "pointer", fontFamily: NLT.FONT } }, "\u{1F5A8} Print this list")), tab === "lists" && (lists.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { ...card, padding: 18, color: NL.SUB } }, "No live orders with boxes on them.") : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { "data-dp-orders": true, style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 } }, lists.map(({ o, lines }) => {
+      const left = lines.reduce((t, l) => t + l.make, 0);
+      const on = cur && cur.o.id === o.id;
+      return /* @__PURE__ */ React.createElement("button", { key: o.id, "data-dp-order": o.id, onClick: () => pick2(o.id), style: { ...chipBtn(false), height: 38, border: on ? `2px solid ${NAVY2}` : `1px solid ${NL.LINE}`, color: on ? NAVY2 : NL.INK, fontWeight: 700 } }, short(o.customer), " ", /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 500, color: NL.SUB, fontSize: 12.5 } }, "\xB7 ", left ? `${left.toLocaleString("en-GB")} left` : "all made \u2713"));
+    })), cur && (() => {
+      const g = dpGrouped(cur.lines);
+      const all = g.groups.flatMap((x) => x.lines);
+      const tot = all.reduce((t, l) => t + l.ordered, 0), left = all.reduce((t, l) => t + l.make, 0);
+      const lineRow = (l) => {
+        const k = `${cur.o.id}|${dpKey(l.spec)}`;
+        const mk = marks.get(k) || {};
+        const done = l.make === 0, part = !done && l.make < l.ordered;
+        const others = (needs.get(dpKey(l.spec)) || []).filter((x) => x.orderId !== cur.o.id);
+        const allN = (needs.get(dpKey(l.spec)) || []).reduce((t, x) => t + x.n, 0);
+        const ok = `${k}|${l.id || ""}`;
+        const isOpen = open === ok;
+        const planned = bonds.filter((b) => b.orderIds && b.orderIds[0] === cur.o.id && dpKey(b.size) === dpKey(l.spec));
+        return /* @__PURE__ */ React.createElement("div", { key: ok, "data-dp-line": dpSizeText(l.p, l.spec), "data-dp-done": done ? "1" : void 0, style: { borderBottom: `1px dotted #D5DAE3`, background: mk.hi && DP_HI[mk.hi] ? DP_HI[mk.hi] : void 0 } }, /* @__PURE__ */ React.createElement("div", { onClick: () => {
+          setOpen(isOpen ? null : ok);
+          setNoteDraft(mk.note || "");
+        }, style: { display: "flex", alignItems: "baseline", gap: 7, padding: "5px 4px", cursor: "pointer", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 16, fontWeight: 600, minWidth: 120, fontVariantNumeric: "tabular-nums", textDecoration: done ? "line-through" : "none", textDecorationThickness: 2, color: done ? "#9AA3B5" : NL.INK } }, dpSizeText(l.p, l.spec)), l.p.pt && /* @__PURE__ */ React.createElement("span", { "data-dp-pt": true, style: { fontSize: 11, fontWeight: 700, color: done ? "#B5BCCB" : NL.SUB, textDecoration: done ? "line-through" : "none" } }, l.p.pt), /* @__PURE__ */ React.createElement("span", { style: { color: "#8B94A8" } }, "\u2014"), /* @__PURE__ */ React.createElement("span", { "data-dp-qty": true, style: { fontSize: 16, fontWeight: 800, color: done ? "#9AA3B5" : NL.INK, textDecoration: done ? "line-through" : "none", textDecorationThickness: 2 } }, part ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("s", { style: { color: "#8B94A8", fontWeight: 500 } }, l.ordered), " ", l.make) : l.ordered), !done && l.bondReels && l.bondReels.length > 0 && /* @__PURE__ */ React.createElement("b", { "data-dp-r": true, title: `On the rack: ${l.bondReels.join(", ")}`, style: { fontSize: 11, fontWeight: 900, color: "#1E7F3C", border: "1.5px solid #1E7F3C", borderRadius: 4, padding: "0 4px" } }, "R"), !done && l.shelf > 0 && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, color: NL.SUB } }, l.shelf, " on the shelf"), planned.length > 0 && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11.5, fontWeight: 700, color: NAVY2, background: "#EEF2FA", borderRadius: 6, padding: "1px 6px" } }, "\u{1F4C5} ", planned.map((b) => `${days.find((d) => dpDayKey(d) === String(b.day).slice(0, 10)) ? dayName(days.find((d) => dpDayKey(d) === String(b.day).slice(0, 10))) : String(b.day).slice(5, 10)} ${b.label}`).join(" \xB7 ")), !done && others.length > 0 && /* @__PURE__ */ React.createElement("span", { "data-dp-others": true, style: { marginLeft: "auto", fontSize: 12, fontWeight: 600, color: NAVY2, background: "#EEF2FA", borderRadius: 999, padding: "1px 9px" } }, "also ", others.map((x) => `${short(x.customer)} ${x.n}`).join(" \xB7 "), " \xB7 all ", allN)), mk.note && !isOpen && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, fontStyle: "italic", color: "#3A4458", padding: "0 6px 5px" } }, "\u201C", mk.note, "\u201D"), isOpen && /* @__PURE__ */ React.createElement("div", { "data-dp-edit": true, style: { padding: "6px 6px 10px", display: "flex", flexDirection: "column", gap: 8, background: "#F8FAFD", borderTop: `1px solid ${NL.LINE}` } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, fontWeight: 700, color: NL.SUB } }, "Highlight"), Object.keys(DP_HI).map((c) => /* @__PURE__ */ React.createElement("button", { key: c, "data-dp-hi": c, "aria-label": DP_HI_NAMES[c], onClick: () => setMark(cur.o.id, l.spec, { hi: mk.hi === c ? null : c }), style: { width: 30, height: 26, borderRadius: 7, border: mk.hi === c ? `2px solid ${NAVY2}` : `1px solid #C5CBD6`, background: DP_HI[c], cursor: "pointer" } })), mk.hi && /* @__PURE__ */ React.createElement("button", { onClick: () => setMark(cur.o.id, l.spec, { hi: null }), style: { ...chipBtn(false), height: 26, fontSize: 12 } }, "none")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6 } }, /* @__PURE__ */ React.createElement("input", { "data-dp-note": true, value: noteDraft, onChange: (e) => setNoteDraft(e.target.value), placeholder: "A note on this line\u2026", style: { flex: 1, height: 34, border: `1px solid ${NL.LINE}`, borderRadius: 8, padding: "0 10px", fontSize: 14, fontFamily: NLT.FONT } }), /* @__PURE__ */ React.createElement("button", { "data-dp-note-save": true, onClick: () => {
+          setMark(cur.o.id, l.spec, { note: noteDraft.trim() || null });
+          setOpen(null);
+        }, style: chipBtn(true) }, "Save note")), !done && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, fontWeight: 700, color: NL.SUB } }, "Make ", l.make, " on"), days.map((d) => /* @__PURE__ */ React.createElement("button", { key: dpDayKey(d), "data-dp-plan": dpDayKey(d), onClick: () => {
+          addBond(cur.o.id, l.spec, l.make, dpDayKey(d));
+          setOpen(null);
+        }, style: chipBtn(false) }, dpDayKey(d) === todayKey ? "Today" : dayName(d)))), others.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: NL.SUB } }, "Also wanted by: ", others.map((x) => `${x.orderId} ${x.customer} \u2014 ${x.n}`).join(" \xB7 "))));
+      };
+      const half = Math.ceil(all.length / 2);
+      let n = 0;
+      const colA = [], colB = [];
+      for (const grp of g.groups) {
+        const el = /* @__PURE__ */ React.createElement("div", { key: grp.key, style: { marginBottom: 6 } }, /* @__PURE__ */ React.createElement("div", { style: grp.sec ? { display: "inline-block", fontSize: 11.5, fontWeight: 800, letterSpacing: 0.8, background: "#FFD28A", color: "#5A3A00", borderRadius: 4, padding: "1px 7px", margin: "12px 0 3px" } : { fontSize: 11.5, fontWeight: 800, letterSpacing: 0.8, color: NL.SUB, margin: "10px 0 2px", borderBottom: `1px solid ${NL.LINE}`, paddingBottom: 2 } }, grp.label.toUpperCase()), grp.lines.map(lineRow));
+        (n < half ? colA : colB).push(el);
+        n += grp.lines.length;
+      }
+      return /* @__PURE__ */ React.createElement("div", { "data-dp-sheet": cur.o.id, style: { ...card, padding: "16px 20px" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-end", gap: 10, borderBottom: `2px solid ${NL.INK}`, paddingBottom: 6, marginBottom: 6, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 26, fontWeight: 800 } }, short(cur.o.customer)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: NL.SUB } }, cur.o.customer, " \xB7 ", cur.o.id, cur.o.dueDate ? ` \xB7 due ${cur.o.dueDate}` : "", cur.o.boxType ? ` \xB7 ${cur.o.boxType} cartons` : "", cur.o.strongTape ? " \xB7 strong tape" : "")), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: NL.SUB } }, /* @__PURE__ */ React.createElement("b", { style: { color: "#1E7F3C", border: "1.5px solid #1E7F3C", borderRadius: 4, padding: "0 4px" } }, "R"), " reel on the rack \xB7 struck = made \xB7 tap a line to highlight, note or plan it")), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))", gap: "0 28px" } }, /* @__PURE__ */ React.createElement("div", null, colA), /* @__PURE__ */ React.createElement("div", null, colB)), cur.extras.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: NL.SUB, marginTop: 10 } }, "Also on the order: ", cur.extras.map((x) => `${x.ordered} \xD7 ${x.spec}`).join(" \xB7 ")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", borderTop: `2px solid ${NL.INK}`, marginTop: 10, paddingTop: 6 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: NL.SUB } }, (tot - left).toLocaleString("en-GB"), " of ", tot.toLocaleString("en-GB"), " done"), /* @__PURE__ */ React.createElement("span", { "data-dp-left": true, style: { fontSize: 22, fontWeight: 800 } }, left.toLocaleString("en-GB"), " boxes to complete")));
+    })())), tab === "board" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { "data-dp-firmbar": true, style: { ...card, display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", marginBottom: 12, borderLeft: `5px solid ${firm.has(tomorrowKey) ? "#1E7F3C" : "#B45309"}` } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, fontWeight: 800, borderRadius: 999, padding: "3px 9px", background: firm.has(tomorrowKey) ? "#E8F3EC" : "#FDF3E3", color: firm.has(tomorrowKey) ? "#1E7F3C" : "#B45309" } }, firm.has(tomorrowKey) ? "\u{1F512} FIRM" : "NOT FIRM YET"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 14 } }, /* @__PURE__ */ React.createElement("b", null, "Tomorrow (", dayName(days[1]), ")"), " ", firm.has(tomorrowKey) ? "is firm \u2014 the office can plan round it." : "\u2014 make it firm by 4 pm so Chris and the office know what's coming."), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }), /* @__PURE__ */ React.createElement("button", { "data-dp-firm": tomorrowKey, onClick: () => toggleFirm(tomorrowKey), style: chipBtn(!firm.has(tomorrowKey)) }, firm.has(tomorrowKey) ? "Unlock tomorrow" : "Make tomorrow firm")), /* @__PURE__ */ React.createElement("div", { style: { ...card, padding: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, fontSize: 15, margin: "0 4px 8px" } }, "Bonding line \u2014 Dave"), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 8 } }, days.map((d) => {
+      const k = dpDayKey(d);
+      const mine = bonds.filter((b) => String(b.day).slice(0, 10) === k);
+      const boxes = mine.reduce((t, b) => t + (Number(b.label) || 0), 0);
+      const isFirm = firm.has(k);
+      return /* @__PURE__ */ React.createElement("div", { key: k, "data-dp-day": k, style: { background: isFirm ? "#EDF5EF" : NL.PANEL, boxShadow: isFirm ? "inset 0 0 0 2px #A8D5B6" : "none", borderRadius: 10, padding: 7, minHeight: 280 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 13.5, fontWeight: 700, marginBottom: 6 } }, /* @__PURE__ */ React.createElement("span", null, k === todayKey ? "Today" : dayName(d), isFirm ? " \u{1F512}" : ""), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, color: NL.SUB, fontWeight: 600 } }, boxes, " boxes")), mine.map((b, i) => {
+        const oId = b.orderIds && b.orderIds[0];
+        const o = (data.orders || []).find((x) => x.id === oId);
+        const l = lineOf(oId, b.size);
+        const p = dpParse(b.size);
+        const done = !l || l.make === 0;
+        const onRack = l && l.bondReels && l.bondReels.length > 0;
+        return /* @__PURE__ */ React.createElement("div", { key: b.id, "data-dp-card": b.id, style: { background: done ? "#E8F3EC" : "#fff", border: `1px solid ${NL.LINE}`, borderLeft: `4px solid ${done ? "#1E7F3C" : NAVY2}`, borderRadius: 8, padding: "6px 8px", marginBottom: 6 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 4, alignItems: "baseline" } }, /* @__PURE__ */ React.createElement("span", { style: { flex: 1, fontSize: 13.5, fontWeight: 700 } }, dpSizeText(p, b.size), " ", /* @__PURE__ */ React.createElement("span", { style: { fontSize: 10.5, color: NL.SUB } }, p.pt || ""), " \u2192 ", b.label, done ? " \u2713" : ""), /* @__PURE__ */ React.createElement("button", { "aria-label": "Up", onClick: () => moveBond(b, -1), disabled: i === 0, style: { border: 0, background: "none", cursor: "pointer", color: NL.SUB } }, "\u25B2"), /* @__PURE__ */ React.createElement("button", { "aria-label": "Down", onClick: () => moveBond(b, 1), disabled: i === mine.length - 1, style: { border: 0, background: "none", cursor: "pointer", color: NL.SUB } }, "\u25BC"), /* @__PURE__ */ React.createElement("button", { "data-dp-remove": b.id, "aria-label": "Take off", onClick: () => removeBond(b), style: { border: 0, background: "none", cursor: "pointer", color: "#9A2A1C" } }, "\u2715")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: NL.SUB } }, o ? short(o.customer) : oId, o && o.strongTape ? " \xB7 strong tape" : ""), !done && /* @__PURE__ */ React.createElement("span", { style: { display: "inline-block", marginTop: 4, fontSize: 10.5, fontWeight: 800, borderRadius: 5, padding: "2px 6px", background: onRack ? "#E8F3EC" : "#FDF3E3", color: onRack ? "#1E7F3C" : "#B45309" } }, onRack ? `ON THE RACK \xB7 ${l.bondReels.join(", ")}` : "NEEDS GLUING"));
+      }), /* @__PURE__ */ React.createElement("button", { "data-dp-add": k, onClick: () => {
+        setAdding(k);
+        setAddQ("");
+      }, style: { width: "100%", height: 36, border: "2px dashed #9FB0D8", borderRadius: 8, background: "#F6F8FD", color: "#5D72AA", fontWeight: 700, cursor: "pointer", fontFamily: NLT.FONT } }, "+ Add"), k !== todayKey && /* @__PURE__ */ React.createElement("button", { onClick: () => toggleFirm(k), style: { width: "100%", marginTop: 6, height: 30, border: 0, background: "none", color: isFirm ? "#1E7F3C" : NL.SUB, fontSize: 12.5, fontWeight: 700, cursor: "pointer" } }, isFirm ? "\u{1F512} Firm \u2014 unlock" : "Make firm"));
+    }))), adding && ReactDOM.createPortal(/* @__PURE__ */ React.createElement("div", { "data-dp-picker": true, style: { position: "fixed", inset: 0, zIndex: 1200, background: "rgba(20,26,40,.4)", display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: 60 }, onClick: () => setAdding(null) }, /* @__PURE__ */ React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { ...card, width: 620, maxWidth: "94vw", maxHeight: "80vh", display: "flex", flexDirection: "column", fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("div", { style: { padding: "12px 14px", borderBottom: `1px solid ${NL.LINE}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, fontSize: 16 } }, "Add to ", days.find((d) => dpDayKey(d) === adding) ? dayName(days.find((d) => dpDayKey(d) === adding)) : adding), /* @__PURE__ */ React.createElement("input", { "data-dp-search": true, autoFocus: true, value: addQ, onChange: (e) => setAddQ(e.target.value), placeholder: "Search a size or customer\u2026", style: { marginTop: 8, width: "100%", height: 36, border: `1px solid ${NL.LINE}`, borderRadius: 8, padding: "0 10px", fontSize: 14, fontFamily: NLT.FONT } })), /* @__PURE__ */ React.createElement("div", { style: { overflowY: "auto" } }, lists.flatMap(({ o, lines }) => lines.filter((l) => l.make > 0).map((l) => ({ o, l }))).filter(({ o, l }) => {
+      const q = addQ.trim().toLowerCase();
+      return !q || `${o.customer} ${o.id} ${l.spec}`.toLowerCase().includes(q);
+    }).slice(0, 80).map(({ o, l }) => {
+      const p = dpParse(l.spec);
+      return /* @__PURE__ */ React.createElement("button", { key: o.id + l.id, "data-dp-pick": `${o.id}|${l.spec}`, onClick: () => {
+        addBond(o.id, l.spec, l.make, adding);
+        setAdding(null);
+      }, style: { display: "flex", width: "100%", gap: 10, alignItems: "center", padding: "9px 14px", border: 0, borderTop: `1px solid ${NL.LINE}`, background: "#fff", textAlign: "left", cursor: "pointer", fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 700, minWidth: 140 } }, dpSizeText(p, l.spec), " ", /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: NL.SUB } }, p.pt || "")), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, color: NL.SUB, fontSize: 13.5 } }, short(o.customer), " \xB7 ", o.id), /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 800 } }, l.make), l.bondReels && l.bondReels.length > 0 && /* @__PURE__ */ React.createElement("b", { style: { fontSize: 11, color: "#1E7F3C", border: "1.5px solid #1E7F3C", borderRadius: 4, padding: "0 4px" } }, "R"));
+    })))), document.body)));
+  }
   function nlLineFigures(data, o, plan) {
     const lines = tapeLast((data.lineItems || []).filter((l) => l && !l.deleted && l.orderId === o.id));
     const moves = (data.movements || []).filter((m) => m && !m.deleted && m.orderId === o.id);
@@ -42617,7 +42894,8 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     { key: "labels", label: "Labels", icon: IconDiamond },
     // box labels by the app (23 Sep 2026)
     { key: "caselabels", label: "Case Labels", icon: IconDiamond },
-    // the address label on each case (8 Oct 2026)
+    { key: "planner", label: "Dave's Planner", icon: IconClock },
+    // Dave's own bonding plan (9 Oct 2026)   // the address label on each case (8 Oct 2026)
     { key: "admin", label: "Admin", icon: IconAlert },
     /* Reachable, but not in the sidebar. New Orders, Completed Orders and
        Customers are buttons on the Orders page; "Ordered by Eva Size" is now
@@ -42656,6 +42934,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     { label: null, keys: ["products"] },
     { label: null, keys: ["tooling"] },
     { label: null, keys: ["labels", "caselabels"] },
+    { label: null, keys: ["planner"] },
     // box labels by the app (23 Sep 2026); case labels (8 Oct 2026)
     { label: null, keys: ["admin"] }
   ];
@@ -42723,6 +43002,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
   }
   function screenAllowed(key) {
     if (key === "caselabels") return caseLabelsHere();
+    if (key === "planner") return plannerHere();
     if (!key || isAdminLogin() || key === "home" || key === "everything") return true;
     const mine = screenAccessMine();
     if (!mine) return true;
@@ -45168,6 +45448,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       tooling: /* @__PURE__ */ React.createElement(BaselineToolingView, { data, setData }),
       labels: /* @__PURE__ */ React.createElement(LabelsHome, { data, setData }),
       caselabels: /* @__PURE__ */ React.createElement(CaseLabelsView, { data, setData }),
+      planner: /* @__PURE__ */ React.createElement(DavesPlanner, { data, setData, go: navigateTo }),
       ncr: /* @__PURE__ */ React.createElement(NcrLogView, { data, setData }),
       register: /* @__PURE__ */ React.createElement(IssuesRegisterView, { data, setData }),
       products: /* @__PURE__ */ React.createElement(ProductsView, { data, setData }),
@@ -45451,7 +45732,20 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
         style: deskNewScreens(newLayout) ? { background: "linear-gradient(180deg,#1B2B6B 0%,#1E3279 100%)", color: "#fff", margin: 12, borderRadius: 26, minHeight: 0, height: "calc(100vh - 24px)", position: "sticky", top: 12, overflowY: "auto", boxShadow: "0 12px 34px rgba(20,33,82,.25)", fontFamily: NLT.FONT } : { background: NAVY_DEEP, color: "#fff" }
       },
       /* @__PURE__ */ React.createElement("div", { className: "mb-6 p-3", style: { background: "#fff", borderRadius: deskNewScreens(newLayout) ? 16 : 3 } }, /* @__PURE__ */ React.createElement("img", { src: "data:image/png;base64," + LOGO_B64, alt: "Matrix Engineering", className: "mb-2", style: { height: 50, display: "block" } }), /* @__PURE__ */ React.createElement("div", { className: "text-sm font-semibold font-display", style: { color: NAVY } }, "Matrix Engineering"), /* @__PURE__ */ React.createElement("div", { className: "text-xs", style: { color: INK_MUTED } }, "Production Control")),
-      /* @__PURE__ */ React.createElement("div", { onClick: toggleFloorMode, className: "flex items-center gap-2 mb-4 px-1 cursor-pointer" }, /* @__PURE__ */ React.createElement(ToggleSwitch, { on: floorMode, onChange: toggleFloorMode, labelOn: "On", labelOff: "Off" }), /* @__PURE__ */ React.createElement("span", { className: "text-xs font-semibold", style: { color: "#C7CCE8" } }, "Floor Mode")),
+      String(nlEmail() || "").toLowerCase() === "dave@creasingmatrix.com" ? /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          "data-sidebar-planner": true,
+          onClick: () => {
+            navigateTo("planner");
+            setMobileMenuOpen(false);
+          },
+          className: "w-full flex items-center gap-2 mb-4 px-3 cursor-pointer",
+          style: { height: 44, borderRadius: 12, border: 0, background: view === "planner" ? "#fff" : "rgba(255,255,255,0.12)", color: view === "planner" ? NAVY : "#fff", fontWeight: 800, fontSize: 15, textAlign: "left" }
+        },
+        /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true" }, "\u{1F4CB}"),
+        " Dave's Planner"
+      ) : /* @__PURE__ */ React.createElement("div", { onClick: toggleFloorMode, className: "flex items-center gap-2 mb-4 px-1 cursor-pointer" }, /* @__PURE__ */ React.createElement(ToggleSwitch, { on: floorMode, onChange: toggleFloorMode, labelOn: "On", labelOff: "Off" }), /* @__PURE__ */ React.createElement("span", { className: "text-xs font-semibold", style: { color: "#C7CCE8" } }, "Floor Mode")),
       floorMode ? /* @__PURE__ */ React.createElement("nav", { className: "space-y-1.5 mb-6" }, ["dashboard", "extrusion", "glueline", "bonding"].filter((k) => screenAllowed(k)).map((k) => {
         const n = NAV.find((x) => x.key === k);
         const Icon = n.icon;
