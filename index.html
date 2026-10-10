@@ -4532,8 +4532,8 @@
       return [...net].filter(([, q]) => q > 0);
     };
     const fromLedger = (box) => {
-      const ms = (movements || []).filter((m2) => m2 && !m2.deleted && m2.boxNumber === box && m2.formId);
-      const m = ms.find((x) => x.orderId === orderId && x.kind === "placed") || ms.find((x) => x.kind === "made") || ms[0];
+      const ms2 = (movements || []).filter((m2) => m2 && !m2.deleted && m2.boxNumber === box && m2.formId);
+      const m = ms2.find((x) => x.orderId === orderId && x.kind === "placed") || ms2.find((x) => x.kind === "made") || ms2[0];
       return m ? { formId: m.formId, productSize: String(m.spec || "").replace(/\s*\(\d+(\.\d+)?m\)\s*$/, "") || void 0 } : {};
     };
     const entryFor = (h, rows, qty) => {
@@ -10392,6 +10392,8 @@ ${line}` : line;
     // box labels by the app (23 Sep 2026)
     gapTraces: [],
     // the gap camera's trace of each glue line reel (9 Oct 2026)
+    lineEvents: [],
+    // the glue line portal's stops (and why) and the stretches it watched (10 Oct 2026)
     printJobs: []
     // labels asked for on any device, printed on the PC switched on as the print station (25 Sep 2026)
   };
@@ -10756,6 +10758,26 @@ ${line}` : line;
       lineSpeed: "line_speed",
       startedAt: "started_at",
       endedAt: "ended_at",
+      deletedAt: "deleted_at",
+      updatedAt: "updated_at",
+      updatedBy: "updated_by"
+    } },
+    /* LINE EVENTS (10 Oct 2026) — every stop the glue line portal's camera sees, with the reason tapped and, for a die or
+       width change, the first good metre after it; and every stretch the portal watched the line, with the metres run. */
+    lineEvents: { table: "line_events", cols: {
+      startedAt: "started_at",
+      endedAt: "ended_at",
+      atM: "at_m",
+      reelCode: "reel_code",
+      productSize: "product_size",
+      toSize: "to_size",
+      planMin: "plan_min",
+      goodAt: "good_at",
+      runupM: "runup_m",
+      chainOf: "chain_of",
+      answeredAt: "answered_at",
+      answeredBy: "answered_by",
+      createdAt: "created_at",
       deletedAt: "deleted_at",
       updatedAt: "updated_at",
       updatedBy: "updated_by"
@@ -12182,8 +12204,8 @@ ${line}` : line;
   function activityDay(iso, nowMs) {
     const d = new Date(iso);
     if (isNaN(d)) return "";
-    const startOf = (ms) => {
-      const x = new Date(ms);
+    const startOf = (ms2) => {
+      const x = new Date(ms2);
       x.setHours(0, 0, 0, 0);
       return x.getTime();
     };
@@ -12738,6 +12760,331 @@ ${line}` : line;
     let s = 0;
     for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]);
     return s / a.length;
+  }
+  var HAUL_MIN_LEARN_M = 20;
+  function haulFactor(matches) {
+    const ks = (matches || []).filter((m) => m && m.k > 0).slice(-6).map((m) => m.k).sort((a, b) => a - b);
+    if (!ks.length) return 1;
+    const mid = ks.length >> 1, med = ks.length % 2 ? ks[mid] : (ks[mid - 1] + ks[mid]) / 2;
+    return Math.round(med * 1e4) / 1e4;
+  }
+  function haulMatch({ haul, sinceValue = 0, raw, matches = [], factor = 1, now = Date.now() }) {
+    const H2 = Number(haul);
+    if (!(H2 >= 0) || String(haul).trim() === "") return { ok: false, why: "Type the metres the haul-off counter shows." };
+    const d = H2 - (Number(sinceValue) || 0), R = Number(raw) || 0;
+    const expected = (Number(sinceValue) || 0) + R * (Number(factor) || 1);
+    if ((R < HAUL_MIN_LEARN_M || d <= 0) && Math.abs(H2 - expected) > Math.max(5, 0.25 * R * (Number(factor) || 1)))
+      return { ok: false, why: `The haul-off says ${H2.toFixed(1)} m and the portal has ${expected.toFixed(1)} m \u2014 too far apart. Check the figure, or zero both and start again.` };
+    if (R < HAUL_MIN_LEARN_M || d <= 0) return { ok: true, learned: false, matches, factor: haulFactor(matches), why: R < HAUL_MIN_LEARN_M ? `Set to ${H2.toFixed(1)} m. Under ${HAUL_MIN_LEARN_M} m since the last zero or match, so it isn't learned from.` : null };
+    const k = d / R;
+    if (k < 0.8 || k > 1.25) return { ok: false, why: `The haul-off has ${d.toFixed(1)} m and the portal ${R.toFixed(1)} m since the last zero or match \u2014 too far apart. Was the haul-off zeroed at the same moment?` };
+    const next = [...matches || [], { k: Math.round(k * 1e4) / 1e4, raw: Math.round(R * 10) / 10, haul: Math.round(H2 * 10) / 10, at: now }].slice(-12);
+    return { ok: true, learned: true, k: Math.round(k * 1e4) / 1e4, matches: next, factor: haulFactor(next) };
+  }
+  function capability(points, lim, n = 50) {
+    const v = (points || []).filter((p) => p && p[1] > 0).slice(-n).map((p) => p[1]);
+    if (v.length < 5) return null;
+    const mean = v.reduce((a, x) => a + x, 0) / v.length;
+    const sd = Math.sqrt(v.reduce((a, x) => a + (x - mean) * (x - mean), 0) / (v.length - 1));
+    const cpk = lim && sd > 0 ? Math.min(lim.max - mean, mean - lim.min) / (3 * sd) : null;
+    return { mean: Math.round(mean * 1e3) / 1e3, sd: Math.round(sd * 1e4) / 1e4, cpk: cpk === null ? null : Math.round(cpk * 10) / 10, n: v.length };
+  }
+  function rowProfile(px, w, h, rgb, n = 160) {
+    if (!px || !rgb || !w || !h) return null;
+    const sigOf = stripSignal(rgb), y = h >> 1, raw = new Float32Array(w);
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      raw[x] = sigOf(px[i], px[i + 1], px[i + 2]);
+    }
+    const s = Array.from(raw).sort((a, b) => a - b), lo = s[Math.floor(w * 0.05)], hi = s[Math.floor(w * 0.95)];
+    if (!(hi - lo > 1)) return null;
+    const out = [];
+    for (let k = 0; k < n; k++) {
+      const a = Math.floor(k * w / n), b = Math.max(a + 1, Math.floor((k + 1) * w / n));
+      let t = 0;
+      for (let x = a; x < b; x++) t += raw[x];
+      out.push(Math.max(0, Math.min(1, (t / (b - a) - lo) / (hi - lo))));
+    }
+    return out;
+  }
+
+  // mx_linestops.js
+  var STOP_MIN_MS = 3e4;
+  var GOOD_HOLD_MS = 5e3;
+  var CHANGE_CAP_MS = 90 * 6e4;
+  var WATCH_TICK_MS = 12e4;
+  var STOP_REASONS = [
+    { key: "die", label: "Die change", sub: "starts the changeover clock", chip: "#60A5FA", letter: "D", kind: "change" },
+    { key: "width", label: "Width change", sub: "7 \xB7 10 \xB7 12mm \u2014 changeover clock", chip: "#60A5FA", letter: "W", kind: "change" },
+    { key: "reel", label: "Reel / splice", sub: "reel change, join, PET restock", chip: "#A78BFA", letter: "R", kind: "lost" },
+    { key: "strip", label: "Strip break", sub: "the strip snapped or ran off", chip: "#FB923C", letter: "B", kind: "lost" },
+    { key: "material", label: "Waiting for material", sub: "PVC, glue, PET, reels", chip: "#FBBF24", letter: "M", kind: "lost" },
+    { key: "fault", label: "Machine fault", sub: "something broke or tripped", chip: "#F87171", letter: "F", kind: "lost" },
+    { key: "clean", label: "Cleaning", sub: "die, wheel, glue pot", chip: "#34D399", letter: "C", kind: "lost" },
+    { key: "break", label: "Break", sub: "tea, lunch \u2014 planned, not lost", chip: "#94A3B8", letter: "T", kind: "planned" },
+    { key: "other", label: "Something else", sub: "say what in the box", chip: "#64748B", letter: "?", kind: "lost" }
+  ];
+  var NOT_SAID = { key: "notsaid", label: "Not said", chip: "#64748B", kind: "lost" };
+  function reasonOf(key) {
+    return STOP_REASONS.find((r) => r.key === key) || NOT_SAID;
+  }
+  function isChangeReason(key) {
+    return reasonOf(key).kind === "change";
+  }
+  function changePlanMin(reason, cfg) {
+    if (reason === "width") return Number(cfg && cfg.widthChangeMin) || 25;
+    if (reason === "die") return Number(cfg && cfg.sizeChangeMin) || 20;
+    return null;
+  }
+  function lineStopStep(prev, obs) {
+    const st = prev ? { ...prev } : { lastMoveT: null, cand: null, stop: null, pend: null, goodSince: null };
+    const out = [], t = Number(obs.t);
+    const stoppedNow = !!obs.recording && (!!obs.paused || !!obs.trusted && obs.moving === false);
+    const movingNow = !!obs.recording && !obs.paused && (obs.trusted ? obs.moving !== false : true);
+    if (!obs.recording) {
+      if (st.stop) out.push({ type: "close", id: st.stop.id, endT: t, why: "recording stopped" });
+      const ids = [...st.pend ? st.pend.ids : [], ...st.stop ? [st.stop.id] : []];
+      if (ids.length) out.push({ type: "good", ids, goodT: null, runM: null, toSpec: obs.spec || null, timedOut: false, why: "recording stopped" });
+      return { st: { lastMoveT: null, cand: null, stop: null, pend: null, goodSince: null }, out };
+    }
+    if (movingNow) st.lastMoveT = t;
+    if (stoppedNow) {
+      if (!st.stop) {
+        const byMotion = !obs.paused, lag = byMotion ? Math.max(0, Number(obs.stillLagMs) || 0) : 0;
+        if (!st.cand) st.cand = { startT: st.lastMoveT != null ? Math.max(st.lastMoveT - lag, st.lastStopEnd || -Infinity) : t, atM: obs.reelM, spec: obs.spec || null, reel: obs.reel || null, byMotion };
+        if (t - st.cand.startT >= (Number(obs.minMs) > 0 ? Number(obs.minMs) : STOP_MIN_MS)) {
+          const id = obs.newId || `ls_${Math.round(st.cand.startT)}`;
+          const chainOf = st.pend ? st.pend.ids[0] : null;
+          st.stop = { id, startT: st.cand.startT, chainOf, byMotion: st.cand.byMotion };
+          out.push({ type: "open", id, startT: st.cand.startT, atM: st.cand.atM, spec: st.cand.spec, reel: st.cand.reel, chainOf });
+          st.cand = null;
+          st.goodSince = null;
+        }
+      }
+    } else {
+      st.cand = null;
+      if (st.stop) {
+        const endT = st.stop.byMotion && !obs.paused ? Math.max(st.stop.startT, t - Math.max(0, Number(obs.resumeLagMs) || 0)) : t;
+        out.push({ type: "close", id: st.stop.id, endT });
+        st.lastStopEnd = endT;
+        const ids = st.pend ? [...st.pend.ids, st.stop.id] : [st.stop.id];
+        st.pend = { ids, endT: t, endM: Number(obs.runM) || 0 };
+        st.stop = null;
+        st.goodSince = null;
+      }
+    }
+    if (st.pend && !st.stop) {
+      if (movingNow && obs.inLimits) {
+        if (st.goodSince == null) st.goodSince = { t, m: Number(obs.runM) || 0 };
+        if (t - st.goodSince.t >= GOOD_HOLD_MS) {
+          out.push({ type: "good", ids: st.pend.ids, goodT: st.goodSince.t, runM: Math.max(0, Math.round((st.goodSince.m - st.pend.endM) * 10) / 10), toSpec: obs.spec || null, timedOut: false });
+          st.pend = null;
+          st.goodSince = null;
+        }
+      } else st.goodSince = null;
+      if (st.pend && t - st.pend.endT > CHANGE_CAP_MS) {
+        out.push({ type: "good", ids: st.pend.ids, goodT: null, runM: null, toSpec: obs.spec || null, timedOut: true });
+        st.pend = null;
+        st.goodSince = null;
+      }
+    }
+    return { st, out };
+  }
+  var MIN = 6e4;
+  var ms = (v) => {
+    if (v == null || v === "") return null;
+    const n = typeof v === "number" ? v : Date.parse(v);
+    return isFinite(n) ? n : null;
+  };
+  function mergeIntervals(xs) {
+    const v = xs.filter((x) => x && x[1] > x[0]).map((x) => [x[0], x[1]]).sort((a, b) => a[0] - b[0]);
+    const out = [];
+    for (const x of v) {
+      const l = out[out.length - 1];
+      if (l && x[0] <= l[1]) l[1] = Math.max(l[1], x[1]);
+      else out.push(x);
+    }
+    return out;
+  }
+  function spanOf(xs) {
+    return xs.reduce((t, x) => t + (x[1] - x[0]), 0);
+  }
+  function clipTo(xs, a, b) {
+    return xs.map((x) => [Math.max(a, x[0]), Math.min(b, x[1])]).filter((x) => x[1] > x[0]);
+  }
+  function intersect(xs, ys) {
+    const out = [];
+    for (const y of ys) for (const c of clipTo(xs, y[0], y[1])) out.push(c);
+    return mergeIntervals(out);
+  }
+  function stopEndMs(ev, { nowMs, openId = null, watches = [] } = {}) {
+    const e = ms(ev.endedAt);
+    if (e != null) return e;
+    const s = ms(ev.startedAt);
+    if (s == null) return null;
+    if (openId && ev.id === openId) return nowMs;
+    const w = watches.find((w2) => w2[0] <= s && s <= w2[1] + MIN);
+    return w ? Math.max(s, w[1]) : s;
+  }
+  function changeoverTimes(events, { fromMs = null, toMs = null } = {}) {
+    const out = { die: [], width: [] };
+    for (const ev of events || []) {
+      if (!ev || ev.deleted || ev.kind !== "stop" || !isChangeReason(ev.reason) || ev.chainOf) continue;
+      const s = ms(ev.startedAt), g = ms(ev.goodAt);
+      if (s == null || g == null || g <= s) continue;
+      if (fromMs != null && s < fromMs) continue;
+      if (toMs != null && s >= toMs) continue;
+      out[ev.reason].push({ id: ev.id, min: (g - s) / MIN, plan: Number(ev.planMin) || null, runupM: Number(ev.runupM) || 0, from: ev.productSize || null, to: ev.toSize || null, at: s });
+    }
+    const sum = (xs) => {
+      if (!xs.length) return { n: 0, avg: null, plan: null, runupM: 0 };
+      const avg = xs.reduce((t, x) => t + x.min, 0) / xs.length;
+      const pl = xs.filter((x) => x.plan);
+      const plan = pl.length ? pl.reduce((t, x) => t + x.plan, 0) / pl.length : null;
+      return { n: xs.length, avg: Math.round(avg * 10) / 10, plan: plan != null ? Math.round(plan * 10) / 10 : null, runupM: Math.round(xs.reduce((t, x) => t + x.runupM, 0) * 10) / 10, list: xs };
+    };
+    return { die: sum(out.die), width: sum(out.width) };
+  }
+  function weekStartOf(d, back = 0) {
+    const x = new Date(d);
+    x.setHours(0, 0, 0, 0);
+    const dow = (x.getDay() + 6) % 7;
+    x.setDate(x.getDate() - dow - back * 7);
+    return x;
+  }
+  function efficiencyWeek({ events = [], traces = [], cal, rate = 11, weekStart, nowMs = Date.now(), openId = null, line = "glue" }) {
+    const w0 = new Date(weekStart).getTime(), w1 = w0 + 7 * 864e5, end = Math.min(w1, nowMs);
+    const evs = (events || []).filter((e) => e && !e.deleted && (e.line || "glue") === line);
+    const watchesAll = mergeIntervals(evs.filter((e) => e.kind === "watch").map((e) => [ms(e.startedAt), ms(e.endedAt) ?? ms(e.startedAt)]).filter((x) => x[0] != null));
+    const watches = clipTo(watchesAll, w0, end);
+    const stopRows = evs.filter((e) => e.kind === "stop" && ms(e.startedAt) != null).map((e) => ({ ...e, s: ms(e.startedAt), e: stopEndMs(e, { nowMs, openId, watches: watchesAll }) })).filter((e) => e.e > e.s && e.e > w0 && e.s < end);
+    const days = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(w0);
+      d.setDate(d.getDate() + i);
+      const d0 = d.getTime(), d1 = new Date(d0).setDate(new Date(d0).getDate() + 1);
+      if (d0 >= end) break;
+      const h = cal ? hoursOn(cal, d) : null;
+      const calIv = h ? [[new Date(d0).setHours(Math.floor(h[0]), Math.round(h[0] % 1 * 60), 0, 0), new Date(d0).setHours(Math.floor(h[1]), Math.round(h[1] % 1 * 60), 0, 0)]] : [];
+      const watched = clipTo(watches, d0, Math.min(d1, end));
+      const planned = mergeIntervals([...clipTo(calIv, d0, Math.min(d1, end)), ...watched]);
+      if (!planned.length && !watched.length) {
+        if (h) days.push({ key: localDateKey(d), d0, planned: [], watched: [], stops: [], cal: calIv });
+        continue;
+      }
+      const stops = stopRows.map((e) => ({ ...e, iv: clipTo([[e.s, e.e]], d0, Math.min(d1, end)) })).filter((e) => e.iv.length);
+      days.push({ key: localDateKey(d), d0, planned, watched, stops, cal: calIv });
+    }
+    let plannedMs = 0, watchedMs = 0, breakMs = 0, lostMs = 0;
+    const byReason = /* @__PURE__ */ new Map();
+    for (const day of days) {
+      plannedMs += spanOf(day.planned);
+      watchedMs += spanOf(day.watched);
+      const br = mergeIntervals(day.stops.filter((e) => e.reason === "break").flatMap((e) => e.iv));
+      const lost = mergeIntervals(day.stops.filter((e) => e.reason !== "break").flatMap((e) => e.iv));
+      const brW = intersect(br, day.watched), lostW = intersect(lost.length ? lost : [], day.watched);
+      const lostOnly = lostW.length && brW.length ? subtract(lostW, brW) : lostW;
+      breakMs += spanOf(brW);
+      lostMs += spanOf(lostOnly);
+      day.runningMs = Math.max(0, spanOf(day.watched) - spanOf(mergeIntervals([...brW, ...lostOnly])));
+      day.stopMs = spanOf(lostOnly);
+      day.breakMs = spanOf(brW);
+      for (const e of day.stops) {
+        const k = e.reason || "notsaid", dur = spanOf(intersect(e.iv, day.watched.length ? day.watched : e.iv));
+        const r = byReason.get(k) || { key: k, ms: 0, n: 0, ids: /* @__PURE__ */ new Set() };
+        r.ms += dur;
+        if (!r.ids.has(e.id)) {
+          r.ids.add(e.id);
+          r.n++;
+        }
+        byReason.set(k, r);
+      }
+    }
+    const runningMs = Math.max(0, watchedMs - breakMs - lostMs);
+    const metres = evs.filter((e) => e.kind === "watch" && ms(e.startedAt) != null && ms(e.startedAt) >= w0 && ms(e.startedAt) < end).reduce((t, e) => t + (Number(e.metres) || 0), 0);
+    let readM = 0, goodM = 0;
+    for (const tr of traces || []) {
+      if (!tr || tr.deleted) continue;
+      const te = ms(tr.endedAt) ?? ms(tr.startedAt);
+      if (te == null || te < w0 || te >= end) continue;
+      const m = Number(tr.metres) || 0, pct = tr.stats && tr.stats.inPct != null ? Number(tr.stats.inPct) : null;
+      if (!(m > 0) || pct == null) continue;
+      readM += m;
+      goodM += m * pct / 100;
+    }
+    const avail = watchedMs - breakMs > 0 ? runningMs / (watchedMs - breakMs) : null;
+    const perf = runningMs > 0 && rate > 0 && metres > 0 ? metres / (runningMs / MIN * rate) : null;
+    const qual = readM > 0 ? goodM / readM : null;
+    const oee = avail != null && perf != null && qual != null ? avail * perf * qual : null;
+    const changes = changeoverTimes(evs, { fromMs: w0, toMs: end });
+    const reasons = [...byReason.values()].map((r) => ({ key: r.key, label: reasonOf(r.key === "notsaid" ? null : r.key).label, chip: reasonOf(r.key === "notsaid" ? null : r.key).chip, kind: reasonOf(r.key === "notsaid" ? null : r.key).kind, min: r.ms / MIN, n: r.n })).sort((a, b) => b.min - a.min);
+    const notSaid = stopRows.filter((e) => !e.reason).length;
+    return {
+      from: w0,
+      to: w1,
+      upTo: end,
+      days,
+      plannedMin: plannedMs / MIN,
+      watchedMin: watchedMs / MIN,
+      breakMin: breakMs / MIN,
+      lostMin: lostMs / MIN,
+      runningMin: runningMs / MIN,
+      notWatchedMin: Math.max(0, (plannedMs - watchedMs) / MIN),
+      metres: Math.round(metres * 10) / 10,
+      readM: Math.round(readM * 10) / 10,
+      goodM: Math.round(goodM * 10) / 10,
+      outM: Math.round((readM - goodM) * 10) / 10,
+      rate,
+      avail,
+      perf,
+      qual,
+      oee,
+      reasons,
+      changes,
+      notSaid,
+      stops: stopRows.sort((a, b) => b.s - a.s),
+      possibleM: plannedMs / MIN * rate
+    };
+  }
+  function subtract(xs, ys) {
+    let out = xs.map((x) => [x[0], x[1]]);
+    for (const y of ys) {
+      const nx = [];
+      for (const x of out) {
+        if (y[1] <= x[0] || y[0] >= x[1]) {
+          nx.push(x);
+          continue;
+        }
+        if (y[0] > x[0]) nx.push([x[0], y[0]]);
+        if (y[1] < x[1]) nx.push([y[1], x[1]]);
+      }
+      out = nx;
+    }
+    return out;
+  }
+  function biggestWins(wk) {
+    const out = [];
+    for (const k of ["die", "width"]) {
+      const c = wk.changes[k];
+      if (!c.n || c.plan == null || c.avg == null || c.avg <= c.plan) continue;
+      out.push({ key: `change_${k}`, what: `${k === "die" ? "Die" : "Width"} changes back to ${Math.round(c.plan)} min`, min: (c.avg - c.plan) * c.n });
+    }
+    const lost = wk.reasons.filter((r) => r.kind === "lost" && r.key !== "notsaid")[0];
+    if (lost && lost.min >= 1) out.push({ key: `reason_${lost.key}`, what: `Fewer ${lost.label.toLowerCase()} stops`, min: lost.min });
+    if (wk.notSaid) out.push({ key: "notsaid", what: `Give ${wk.notSaid === 1 ? "the 1 stop" : `the ${wk.notSaid} stops`} with no reason one`, min: null });
+    return out.sort((a, b) => (b.min || 0) - (a.min || 0)).slice(0, 4);
+  }
+  function fmtMin(m) {
+    if (m == null || !isFinite(m)) return "\u2014";
+    if (m < 90) return `${Math.round(m)} min`;
+    return `${(m / 60).toFixed(1)} h`;
+  }
+  function fmtClock(msv) {
+    const s = Math.max(0, Math.floor(msv / 1e3)), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
+    return h ? `${h}:${String(m).padStart(2, "0")}:${String(x).padStart(2, "0")}` : `${m}:${String(x).padStart(2, "0")}`;
+  }
+  function fmtLen(msv) {
+    return !(msv >= 0) ? "\u2014" : msv < 9e4 ? fmtClock(msv) : fmtMin(msv / 6e4);
   }
 
   // mx_pickwalk.js
@@ -14161,16 +14508,16 @@ ${line}` : line;
     const sizes = [5, 10, 15, 20], fits = sizes.find((s) => s >= need) || need;
     let base = { ...prev, cases: (prev.cases || []).map((c) => c && !c.deleted && c.orderId === orderId && Number(c.caseNum) === to && !isReelCase(c) && Number(c.maxSize || CASE_MAX_SIZE_DEFAULT) < need ? { ...c, maxSize: fits, updatedAt: (/* @__PURE__ */ new Date()).toISOString() } : c) };
     const note = `Put right from the admin's photos of ${orderId}: case ${from} \u2192 case ${to}`;
-    const ms = [];
-    for (const m of moves) ms.push(moveUnplaced({ boxNumber: m.code, spec: boxSpecOf(prev, m.code), qty: m.n, orderId, caseNum: from, source: "photo-check", note }));
-    for (const m of moves) ms.push(movePlaced({ boxNumber: m.code, spec: boxSpecOf(prev, m.code), qty: m.n, orderId, caseNum: to, source: "photo-check", note }));
+    const ms2 = [];
+    for (const m of moves) ms2.push(moveUnplaced({ boxNumber: m.code, spec: boxSpecOf(prev, m.code), qty: m.n, orderId, caseNum: from, source: "photo-check", note }));
+    for (const m of moves) ms2.push(movePlaced({ boxNumber: m.code, spec: boxSpecOf(prev, m.code), qty: m.n, orderId, caseNum: to, source: "photo-check", note }));
     let trial = base;
-    for (const m of ms) {
+    for (const m of ms2) {
       const why = movementRefusal(trial, m);
       if (why) return { error: why };
       trial = recordMovement(trial, m);
     }
-    let next = recordMovements(base, ms);
+    let next = recordMovements(base, ms2);
     const contents = recordedByCase(next, orderId);
     const plansBefore = {};
     next = { ...next, cases: (next.cases || []).map((c) => {
@@ -14188,7 +14535,7 @@ ${line}` : line;
       entityId: orderId,
       summary,
       before: { plans: plansBefore },
-      after: { moves: ms.map((m) => ({ kind: m.kind, boxNumber: m.boxNumber, spec: m.spec, qty: m.qty, orderId: m.orderId, caseNum: m.caseNum })), changed: [from, to] }
+      after: { moves: ms2.map((m) => ({ kind: m.kind, boxNumber: m.boxNumber, spec: m.spec, qty: m.qty, orderId: m.orderId, caseNum: m.caseNum })), changed: [from, to] }
     };
     return { patch: { ...next, ...appendLog(next, entry) }, summary, n };
   }
@@ -14559,7 +14906,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-10.152";
+  var APP_VERSION = "2026-10-10.154";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -19544,7 +19891,8 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     };
   }
   var GT_VERDICT_TONE = { onset: ["#E7F5EC", "#14532D"], inrange: ["#EEF2F7", "#1E293B"], over: ["#FCE3D3", "#7C2D12"], under: ["#FCE3D3", "#7C2D12"] };
-  function GapChart({ points, lim, headM = null, reelM = null, marks = [], focus = null }) {
+  function GapChart({ points, lim, headM = null, reelM = null, marks = [], focus = null, dark = false }) {
+    const C = dark ? { bg: "#0A1117", edge: "#1F2C39", grid: "#16212C", set: "#173B2C", out: "#4A2A14", lim: "#FB923C", env: "rgba(96,165,250,0.16)", line: "#60A5FA", mark: "#C084FC", head: "#E6EDF3", sub: "#8FA1B3", tagBg: "#0A1117", setInk: "#6EE7B7" } : { bg: "#FBFCFD", edge: "#C3CBD3", grid: "#E3E8ED", set: GT_SETFILL, out: GT_OUTFILL, lim: GT_ORANGE, env: "rgba(29,78,216,0.12)", line: GT_BLUE, mark: GT_PURPLE, head: GT_PURPLE, sub: GT_SUB, tagBg: "#fff", setInk: "#1E3A8A" };
     const W = 1e3, H2 = 380, X0 = 58, X1 = 984, Y0 = 14, Y1 = 330;
     const pts = points || [];
     const endM = Math.max(50, reelM || 0, headM || 0, pts.length ? pts[pts.length - 1][0] + 1 : 0);
@@ -19579,9 +19927,9 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     for (let v = Math.ceil(lo / ys - 1e-9) * ys; v <= hi + 1e-9; v += ys) yt.push(Math.round(v * 100) / 100);
     const grid = yt.map((v) => `M${X0} ${yv(v).toFixed(1)} H${X1}`).join(" ") + " " + xt.map((m) => `M${xm(m).toFixed(1)} ${Y0} V${Y1}`).join(" ");
     const pct = (n, d) => `${(n / d * 100).toFixed(2)}%`;
-    const lab = { position: "absolute", fontFamily: GT_MONO, fontSize: 12, color: GT_SUB };
-    const tag = (v, word, color, below) => /* @__PURE__ */ React.createElement("div", { style: { ...lab, right: "1.8%", top: pct(yv(v), H2), transform: below ? "translateY(15%)" : "translateY(-115%)", color, background: "#fff", padding: "0 4px", fontSize: 11 } }, word, " ", v.toFixed(2));
-    return /* @__PURE__ */ React.createElement("div", { "data-gt-chart": true, style: { position: "relative", width: "100%", aspectRatio: `${W} / ${H2 + 26}` } }, /* @__PURE__ */ React.createElement("svg", { viewBox: `0 0 ${W} ${H2 + 26}`, style: { position: "absolute", inset: 0, width: "100%", height: "100%" }, role: "img", "aria-label": "Gap along the reel, in millimetres against metres" }, /* @__PURE__ */ React.createElement("rect", { x: X0, y: Y0, width: X1 - X0, height: Y1 - Y0, fill: "#FBFCFD", stroke: "#C3CBD3" }), /* @__PURE__ */ React.createElement("path", { d: grid, stroke: "#E3E8ED", strokeWidth: "1", fill: "none" }), lim && /* @__PURE__ */ React.createElement("rect", { x: X0, width: X1 - X0, y: yv(lim.setHi), height: Math.max(1, yv(lim.setLo) - yv(lim.setHi)), fill: GT_SETFILL }), bands && /* @__PURE__ */ React.createElement("path", { d: bands, fill: GT_OUTFILL }), lim && /* @__PURE__ */ React.createElement("line", { x1: X0, x2: X1, y1: yv(lim.max), y2: yv(lim.max), stroke: GT_ORANGE, strokeWidth: "1.5", strokeDasharray: "7 5" }), lim && /* @__PURE__ */ React.createElement("line", { x1: X0, x2: X1, y1: yv(lim.min), y2: yv(lim.min), stroke: GT_ORANGE, strokeWidth: "1.5", strokeDasharray: "7 5" }), env && /* @__PURE__ */ React.createElement("path", { d: env, fill: "rgba(29,78,216,0.12)", stroke: "none" }), line && /* @__PURE__ */ React.createElement("path", { "data-gt-trace": true, d: line, stroke: GT_BLUE, strokeWidth: "1.6", fill: "none", strokeLinejoin: "round" }), (marks || []).filter((mk) => mk.m >= span[0] && mk.m <= span[1]).map((mk, i) => /* @__PURE__ */ React.createElement("line", { key: i, x1: xm(mk.m), x2: xm(mk.m), y1: Y0, y2: Y1, stroke: GT_PURPLE, strokeWidth: "1.2", strokeDasharray: "3 4" })), headM !== null && headM >= span[0] && headM <= span[1] && /* @__PURE__ */ React.createElement("line", { x1: xm(headM), x2: xm(headM), y1: Y0, y2: Y1, stroke: GT_PURPLE, strokeWidth: "2" })), yt.map((v) => /* @__PURE__ */ React.createElement("div", { key: v, style: { ...lab, left: 0, width: "5.2%", textAlign: "right", top: pct(yv(v), H2 + 26), transform: "translateY(-50%)" } }, v.toFixed(2))), xt.map((m) => /* @__PURE__ */ React.createElement("div", { key: m, style: { ...lab, top: pct(Y1 + 6, H2 + 26), left: pct(xm(m), W), transform: "translateX(-50%)" } }, m)), lim && tag(lim.max, "MAX", GT_ORANGE, false), lim && /* @__PURE__ */ React.createElement("div", { style: { ...lab, left: "6.6%", top: pct((yv(lim.setHi) + yv(lim.setLo)) / 2, H2 + 26), transform: "translateY(-50%)", color: "#1E3A8A", padding: "0 4px", fontSize: 11 } }, "SET ", lim.setLo.toFixed(2), "\u2013", lim.setHi.toFixed(2)), lim && tag(lim.min, "MIN", GT_ORANGE, true), !pts.length && /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: "8%", right: "4%", top: "38%", textAlign: "center", color: GT_SUB, fontFamily: NLT.FONT, fontSize: 15 } }, "The trace draws here as the reel runs."));
+    const lab = { position: "absolute", fontFamily: GT_MONO, fontSize: 12, color: C.sub };
+    const tag = (v, word, color, below) => /* @__PURE__ */ React.createElement("div", { style: { ...lab, right: "1.8%", top: pct(yv(v), H2), transform: below ? "translateY(15%)" : "translateY(-115%)", color, background: C.tagBg, padding: "0 4px", fontSize: 11 } }, word, " ", v.toFixed(2));
+    return /* @__PURE__ */ React.createElement("div", { "data-gt-chart": true, style: { position: "relative", width: "100%", aspectRatio: `${W} / ${H2 + 26}` } }, /* @__PURE__ */ React.createElement("svg", { viewBox: `0 0 ${W} ${H2 + 26}`, style: { position: "absolute", inset: 0, width: "100%", height: "100%" }, role: "img", "aria-label": "Gap along the reel, in millimetres against metres" }, /* @__PURE__ */ React.createElement("rect", { x: X0, y: Y0, width: X1 - X0, height: Y1 - Y0, fill: C.bg, stroke: C.edge }), /* @__PURE__ */ React.createElement("path", { d: grid, stroke: C.grid, strokeWidth: "1", fill: "none" }), lim && /* @__PURE__ */ React.createElement("rect", { x: X0, width: X1 - X0, y: yv(lim.setHi), height: Math.max(1, yv(lim.setLo) - yv(lim.setHi)), fill: C.set }), bands && /* @__PURE__ */ React.createElement("path", { d: bands, fill: C.out }), lim && /* @__PURE__ */ React.createElement("line", { x1: X0, x2: X1, y1: yv(lim.max), y2: yv(lim.max), stroke: C.lim, strokeWidth: "1.5", strokeDasharray: "7 5" }), lim && /* @__PURE__ */ React.createElement("line", { x1: X0, x2: X1, y1: yv(lim.min), y2: yv(lim.min), stroke: C.lim, strokeWidth: "1.5", strokeDasharray: "7 5" }), env && /* @__PURE__ */ React.createElement("path", { d: env, fill: C.env, stroke: "none" }), line && /* @__PURE__ */ React.createElement("path", { "data-gt-trace": true, d: line, stroke: C.line, strokeWidth: "1.6", fill: "none", strokeLinejoin: "round" }), (marks || []).filter((mk) => mk.m >= span[0] && mk.m <= span[1]).map((mk, i) => /* @__PURE__ */ React.createElement("line", { key: i, x1: xm(mk.m), x2: xm(mk.m), y1: Y0, y2: Y1, stroke: C.mark, strokeWidth: "1.2", strokeDasharray: "3 4" })), headM !== null && headM >= span[0] && headM <= span[1] && /* @__PURE__ */ React.createElement("line", { x1: xm(headM), x2: xm(headM), y1: Y0, y2: Y1, stroke: C.head, strokeWidth: "2" })), yt.map((v) => /* @__PURE__ */ React.createElement("div", { key: v, style: { ...lab, left: 0, width: "5.2%", textAlign: "right", top: pct(yv(v), H2 + 26), transform: "translateY(-50%)" } }, v.toFixed(2))), xt.map((m) => /* @__PURE__ */ React.createElement("div", { key: m, style: { ...lab, top: pct(Y1 + 6, H2 + 26), left: pct(xm(m), W), transform: "translateX(-50%)" } }, m)), lim && tag(lim.max, "MAX", C.lim, false), lim && /* @__PURE__ */ React.createElement("div", { style: { ...lab, left: "6.6%", top: pct((yv(lim.setHi) + yv(lim.setLo)) / 2, H2 + 26), transform: "translateY(-50%)", color: C.setInk, padding: "0 4px", fontSize: 11 } }, "SET ", lim.setLo.toFixed(2), "\u2013", lim.setHi.toFixed(2)), lim && tag(lim.min, "MIN", C.lim, true), !pts.length && /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: "8%", right: "4%", top: "38%", textAlign: "center", color: C.sub, fontFamily: NLT.FONT, fontSize: 15 } }, "The trace draws here as the reel runs."));
   }
   var GT_REC = typeof window !== "undefined" && window.__mxGapRec || {
     stream: null,
@@ -19602,6 +19950,21 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     saving: false,
     motion: { moving: null, trusted: false },
     mot: { A: null, B: null, Bg: null, gate: motionGate(), canvas: null },
+    camRes: null,
+    readTs: [],
+    log: [],
+    profile: null,
+    profileAt: 0,
+    stopSt: null,
+    stopQ: [],
+    mine: /* @__PURE__ */ new Set(),
+    runM: 0,
+    segRun0: 0,
+    lastStepT: null,
+    watch: null,
+    snooze: /* @__PURE__ */ new Set(),
+    coDone: null,
+    stopMinMs: null,
     cfg: { lineY: 0.5, rgb: null, widthMm: null, calib: 1, calibRec: null, spec: "", lim: null, speed: 11 }
   };
   if (typeof window !== "undefined") window.__mxGapRec = GT_REC;
@@ -19650,17 +20013,75 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       M.A = A;
       M.B = B;
       M.Bg = Bg;
-      if (dA != null && dB != null) GT_REC.motion = M.gate.step((dA + dB) / 2, dBg);
+      if (dA != null && dB != null) {
+        const was = GT_REC.motion;
+        GT_REC.motion = M.gate.step((dA + dB) / 2, dBg);
+        if (GT_REC.motion.trusted && was.trusted && was.moving !== GT_REC.motion.moving) gtLog(GT_REC.motion.moving ? "Line moving again" : "Line stopped \u2014 metres held", GT_REC.motion.moving ? "#60A5FA" : "#94A3B8");
+      }
     } else {
       M.A = M.B = M.Bg = null;
     }
     const now = Date.now(), moving = GT_REC.motion.moving;
-    GT_REC.last = { ...r, g, y0, bh, colour, w, h, at: now };
+    GT_REC.readTs.push(now);
+    if (GT_REC.readTs.length > 30) GT_REC.readTs.shift();
+    if (colour && now - GT_REC.profileAt > 250) {
+      GT_REC.profile = rowProfile(px, w, bh, colour);
+      GT_REC.profileAt = now;
+    }
+    const mmPerPx = r.ok && r.edges && widthMm ? widthMm * (calib || 1) / Math.max(1, r.edges.b1 - r.edges.a0) : null;
+    GT_REC.last = { ...r, g, y0, bh, colour, w, h, at: now, mmPerPx };
     if (GT_REC.recording) {
       const prev = GT_REC.samples[GT_REC.samples.length - 1];
       if (prev && now - prev.t > 5e3) GT_REC.marks.push({ t: prev.t + 1, note: `No readings for ${Math.round((now - prev.t) / 1e3)} s` });
       GT_REC.samples.push({ t: now, g: r.ok ? r.gap : null, run: !!(r.ok && !GT_REC.paused && moving !== false), stopped: moving === false });
     }
+    gtLineStep(now, g);
+  }
+  function gtLineStep(now, g) {
+    const rec = !!GT_REC.recording, cfg = GT_REC.cfg, lim = cfg.lim, mo = GT_REC.motion || {};
+    if (rec) {
+      const dt = GT_REC.lastStepT ? Math.min(1e3, Math.max(0, now - GT_REC.lastStepT)) : 0;
+      if (!GT_REC.paused && mo.moving !== false) GT_REC.runM += dt / 6e4 * (Number(cfg.speed) || 11);
+    }
+    GT_REC.lastStepT = rec ? now : null;
+    const W = GT_REC.watch;
+    if (rec && !W) {
+      GT_REC.watch = { id: uid("lw"), startT: now, m0: GT_REC.runM, tickT: now };
+      GT_REC.stopQ.push({ type: "watchOpen", id: GT_REC.watch.id, startT: now });
+    } else if (W && (!rec || now - W.tickT >= WATCH_TICK_MS)) {
+      GT_REC.stopQ.push({ type: "watchTick", id: W.id, endT: rec ? now : W.lastT || now, metres: Math.round((GT_REC.runM - W.m0) * 10) / 10 });
+      if (rec) W.tickT = now;
+      else GT_REC.watch = null;
+    }
+    if (GT_REC.watch) GT_REC.watch.lastT = now;
+    if (!rec && !GT_REC.stopSt) return;
+    const inLimits = !!(lim && g > 0 && g >= lim.min - 1e-9 && g <= lim.max + 1e-9);
+    const { st, out } = lineStopStep(GT_REC.stopSt, {
+      t: now,
+      recording: rec,
+      paused: !!GT_REC.paused,
+      trusted: !!mo.trusted,
+      moving: mo.moving,
+      inLimits,
+      runM: GT_REC.runM,
+      reelM: Math.round((GT_REC.runM - GT_REC.segRun0) * 10) / 10,
+      spec: cfg.spec || null,
+      reel: cfg.reel || null,
+      newId: uid("ls"),
+      minMs: GT_REC.stopMinMs,
+      stillLagMs: 2e3,
+      resumeLagMs: 300
+    });
+    GT_REC.stopSt = rec ? st : null;
+    for (const o of out) {
+      GT_REC.stopQ.push(o);
+      if (o.type === "open") GT_REC.mine.add(o.id);
+      if (o.type === "open") gtLog(o.chainOf ? "Stopped again \u2014 part of the same change" : "Line stopped 30 s \u2014 why?", "#94A3B8");
+    }
+  }
+  function gtLog(text, ink = "#94A3B8") {
+    GT_REC.log.push({ t: Date.now(), text, ink });
+    if (GT_REC.log.length > 40) GT_REC.log.shift();
   }
   function gtStopTicks() {
     if (GT_REC.timer) clearInterval(GT_REC.timer);
@@ -19722,6 +20143,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     GT_REC.stream = null;
     GT_REC.last = null;
     GT_REC.recording = false;
+    gtLineStep(Date.now(), null);
   }
   async function gtStartCamera(id) {
     gtStopTicks();
@@ -19740,6 +20162,12 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     });
     const tr = s.getVideoTracks()[0];
     GT_REC.camLabel = tr && tr.label || null;
+    try {
+      const st = tr && tr.getSettings ? tr.getSettings() : {};
+      GT_REC.camRes = { w: st.width || null, h: st.height || null, fps: st.frameRate ? Math.round(st.frameRate) : null };
+    } catch (e) {
+      GT_REC.camRes = null;
+    }
     GT_REC.mot.gate.reset();
     GT_REC.mot.A = GT_REC.mot.B = GT_REC.mot.Bg = null;
     GT_REC.motion = { moving: null, trusted: false };
@@ -19780,16 +20208,91 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     GT_REC.marks = GT_REC.marks.filter((mk) => mk.t > untilMs);
     GT_REC.samples = rest;
     GT_REC.segStart = rest.length ? rest[0].t : Date.now();
+    GT_REC.segRun0 = GT_REC.runM;
     const differs = reel && row.notes ? ` \u2014 logged as ${reel.productSize}, the camera was set to ${spec}` : "";
     setData((prev) => ({
       ...prev,
       gapTraces: [...prev.gapTraces || [], row],
       ...appendLog(prev, { action: "add", entity: "gapTrace", entityId: id, summary: `Gap trace saved${row.reelCode ? ` to reel ${row.reelCode}` : ""}: ${row.metres} m of ${spec || "matrix"}, ${row.stats ? row.stats.inPct : "\u2014"}% in range${differs}` })
     }));
+    gtLog(`Saved${row.reelCode ? ` to reel ${row.reelCode}` : ""} \xB7 ${row.metres} m`, "#34D399");
     GT_REC.flash = { id, warn: !!differs, text: `Saved${row.reelCode ? ` to reel ${row.reelCode}` : ""} \xB7 ${row.metres} m \xB7 ${row.stats ? `${row.stats.inPct}% in range` : "no readings"}${row.events.length ? ` \xB7 ${row.events.length} out of limits` : ""}${differs}` };
     return row;
   }
+  function gtApplyLineQ(prev, q) {
+    const rows = [...prev.lineEvents || []], idx = new Map(rows.map((r, i) => [r.id, i]));
+    const put = (id, patch, base = null) => {
+      const i = idx.get(id);
+      if (i == null) {
+        if (!base) return;
+        rows.push({ ...base, ...patch });
+        idx.set(id, rows.length - 1);
+      } else rows[i] = { ...rows[i], ...patch };
+    };
+    const iso = (t) => new Date(t).toISOString(), who = currentActor() || null, dev = currentDevice() || null;
+    for (const o of q) {
+      if (o.type === "watchOpen") put(o.id, {}, { id: o.id, line: "glue", kind: "watch", startedAt: iso(o.startT), endedAt: iso(o.startT), metres: 0, device: dev, updatedBy: who, createdAt: iso(Date.now()), deleted: false });
+      else if (o.type === "watchTick") put(o.id, { endedAt: iso(o.endT), metres: o.metres });
+      else if (o.type === "open") {
+        const head = o.chainOf && idx.has(o.chainOf) ? rows[idx.get(o.chainOf)] : null, inherit = !!(head && isChangeReason(head.reason));
+        put(o.id, {}, {
+          id: o.id,
+          line: "glue",
+          kind: "stop",
+          startedAt: iso(o.startT),
+          endedAt: null,
+          reason: inherit ? head.reason : null,
+          note: inherit ? `Part of the ${reasonOf(head.reason).label.toLowerCase()}` : null,
+          atM: o.atM != null ? o.atM : null,
+          reelCode: o.reel || null,
+          productSize: o.spec || null,
+          toSize: null,
+          planMin: null,
+          goodAt: null,
+          runupM: null,
+          chainOf: o.chainOf || null,
+          metres: null,
+          answeredAt: inherit ? iso(o.startT) : null,
+          answeredBy: inherit ? "the change" : null,
+          device: dev,
+          updatedBy: who,
+          createdAt: iso(Date.now()),
+          deleted: false
+        });
+      } else if (o.type === "close") put(o.id, { endedAt: iso(o.endT) });
+      else if (o.type === "good") for (const id of o.ids) put(id, { goodAt: o.goodT ? iso(o.goodT) : null, runupM: o.goodT ? o.runM : null, toSize: o.toSpec || null });
+    }
+    return { ...prev, lineEvents: rows };
+  }
   function GapTraceKeeper({ data, setData }) {
+    const dataRef = useRef(data);
+    dataRef.current = data;
+    useEffect(() => {
+      const iv = setInterval(() => {
+        if (!GT_REC.stopQ.length) return;
+        const q = GT_REC.stopQ.splice(0, GT_REC.stopQ.length);
+        for (const o of q) if (o.type === "good" && o.goodT) {
+          const head = (dataRef.current.lineEvents || []).find((r) => r && r.id === o.ids[0]);
+          if (head && isChangeReason(head.reason)) {
+            const min = (o.goodT - Date.parse(head.startedAt)) / 6e4;
+            GT_REC.coDone = { reason: head.reason, min, plan: Number(head.planMin) || null, runupM: o.runM, at: Date.now() };
+            gtLog(`${reasonOf(head.reason).label} done: first good metre after ${fmtClock(min * 6e4)}`, "#34D399");
+          }
+        }
+        setData((prev) => gtApplyLineQ(prev, q));
+      }, 1e3);
+      return () => clearInterval(iv);
+    }, [setData]);
+    useEffect(() => {
+      const t = setTimeout(() => {
+        const d = dataRef.current, dev = currentDevice() || null, live = GT_REC.stopSt && GT_REC.stopSt.stop ? GT_REC.stopSt.stop.id : null;
+        const watches = (d.lineEvents || []).filter((e) => e && !e.deleted && e.kind === "watch").map((e) => [Date.parse(e.startedAt), Date.parse(e.endedAt || e.startedAt)]);
+        const stale = (d.lineEvents || []).filter((e) => e && !e.deleted && e.kind === "stop" && !e.endedAt && e.id !== live && (e.device || null) === dev);
+        if (!stale.length) return;
+        setData((prev) => ({ ...prev, lineEvents: (prev.lineEvents || []).map((e) => stale.some((x) => x.id === e.id) && !e.endedAt ? { ...e, endedAt: new Date(stopEndMs(e, { nowMs: Date.now(), watches })).toISOString(), note: e.note || "The portal was closed during this stop" } : e) }));
+      }, 15e3);
+      return () => clearTimeout(t);
+    }, [setData]);
     useEffect(() => {
       if (!GT_REC.recording || GT_REC.segStart === null) return;
       const taken = new Set((data.gapTraces || []).filter((t) => t && !t.deleted && t.reelCode).map((t) => t.reelCode));
@@ -19939,7 +20442,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 1600, margin: "0 auto", display: "flex", flexDirection: "column", gap: 20, minHeight: "100%" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 14, minWidth: 0, flexWrap: "wrap" } }, colour && /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { width: 22, height: 22, borderRadius: 4, background: `rgb(${colour.join(",")})`, display: "inline-block" } }), /* @__PURE__ */ React.createElement("span", { "data-gt-floor-size": true, style: { fontSize: "clamp(22px, 2.4vw, 32px)", fontWeight: 600 } }, spec || "No size set"), reelCode && /* @__PURE__ */ React.createElement("span", { style: { fontSize: "clamp(20px, 2vw, 26px)", color: "#94A3B8", fontFamily: GT_MONO } }, "\xB7 ", reelCode)), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 16 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: "clamp(20px, 2vw, 26px)", color: motion.trusted && motion.moving === false ? "#FDBA74" : "#CBD5E1", fontFamily: GT_MONO } }, recording ? `${(head || 0).toFixed(1)} m${paused ? " \xB7 paused" : motion.trusted && motion.moving === false ? " \xB7 line stopped" : ""}` : "not recording"), /* @__PURE__ */ React.createElement("button", { "data-gt-floor-close": true, onClick: onClose, style: { fontFamily: NLT.FONT, fontSize: 16, fontWeight: 600, minHeight: 44, padding: "8px 16px", borderRadius: 10, border: "1px solid #475569", background: "#18212B", color: "#F1F5F9", cursor: "pointer" } }, "Close"))), warn && /* @__PURE__ */ React.createElement("div", { "data-gt-floor-warn": true, style: { background: "#3B1D0C", border: "2px solid #F97316", color: "#FDBA74", borderRadius: 12, padding: "12px 18px", fontSize: 22, fontWeight: 600 } }, "Check the size: ", warn), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 20, alignItems: "stretch" } }, /* @__PURE__ */ React.createElement("div", { "data-gt-floor-panel": verdict || "none", style: { flex: "3 1 560px", borderRadius: 16, background: bg, border: `3px solid ${edge}`, padding: "26px 34px", display: "flex", flexDirection: "column", justifyContent: "center", gap: 8 } }, /* @__PURE__ */ React.createElement("div", { "data-gt-floor-status": true, style: { fontSize: "clamp(24px, 2.6vw, 36px)", fontWeight: 700, letterSpacing: "0.06em", color: ink } }, status), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 14 } }, /* @__PURE__ */ React.createElement("span", { "data-gt-floor-gap": true, style: { fontFamily: GT_MONO, fontSize: "clamp(110px, 15vw, 240px)", fontWeight: 600, lineHeight: 0.95, letterSpacing: "-0.04em" } }, g ? g.toFixed(3) : "\u2014"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: "clamp(28px, 3.3vw, 48px)", color: "#CBD5E1" } }, "mm")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: "clamp(18px, 1.8vw, 26px)", color: "#CBD5E1" } }, advice)), /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 280px", display: "flex", flexDirection: "column", gap: 20 } }, tile("Max", lim ? lim.max.toFixed(2) : "\u2014"), tile("Set", lim ? `${lim.setLo.toFixed(2)}\u2013${lim.setHi.toFixed(2)}` : "\u2014"), tile("Min \xB7 nominal", lim ? lim.min.toFixed(2) : "\u2014"))), /* @__PURE__ */ React.createElement("div", { style: { background: "#18212B", borderRadius: 16, padding: "16px 22px 10px" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 18, color: "#94A3B8", marginBottom: 6 } }, /* @__PURE__ */ React.createElement("span", null, "Last 30 metres"), /* @__PURE__ */ React.createElement("span", null, "gap, mm")), /* @__PURE__ */ React.createElement("div", { style: { position: "relative", aspectRatio: `${W} / ${H2}` } }, /* @__PURE__ */ React.createElement("svg", { viewBox: `0 0 ${W} ${H2}`, style: { position: "absolute", inset: 0, width: "100%", height: "100%" }, role: "img", "aria-label": "The last 30 metres of the gap" }, lim && /* @__PURE__ */ React.createElement("rect", { x: "0", y: yv(lim.max), width: W, height: Math.max(1, yv(lim.min) - yv(lim.max)), fill: "#1E3A5F" }), lim && /* @__PURE__ */ React.createElement("rect", { x: "0", y: yv(lim.setHi), width: W, height: Math.max(1, yv(lim.setLo) - yv(lim.setHi)), fill: "#2D5A8F" }), path && /* @__PURE__ */ React.createElement("path", { "data-gt-floor-trace": true, d: path, stroke: traceInk, strokeWidth: "4", fill: "none", strokeLinejoin: "round", strokeLinecap: "round" })), !path && /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "#94A3B8", fontSize: 20 } }, recording ? "The line draws here as the reel runs." : "Start the trace on the Gap trace screen to draw the last 30 metres."))))
     );
   }
-  function GapTraceView({ data, setData }) {
+  function GapTraceView({ data, setData, portal = false }) {
     const [cams, setCams] = useState([]);
     const [camId, setCamId] = useState(() => GT_LS("mxGapCam", ""));
     const [camErr, setCamErr] = useState(null), [, setTick] = useState(0);
@@ -19986,13 +20489,31 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       const f = row && row.glueEntry && row.glueEntry.form;
       return f && f.batchNumber || "";
     }, [data.scheduleSettings]);
+    const glueEntryForm = useMemo(() => {
+      const row = (data.scheduleSettings || []).find((r) => r && r.id === "default");
+      return row && row.glueEntry && row.glueEntry.form || {};
+    }, [data.scheduleSettings]);
     const spec = specPick || glueEntrySpec || "";
     const widthMm = widthMmFor(spec), lim = gapLimitsFor(spec, offsets);
-    const speed = Number(((data.productionRates || []).find((r) => r && r.line === "glue") || {}).metersPerMin) || 11;
+    const [haul, setHaulState] = useState(() => {
+      try {
+        const h = JSON.parse(GT_LS("mxHaulOff", "null"));
+        return h && typeof h === "object" ? { factor: Number(h.factor) > 0 ? Number(h.factor) : 1, matches: Array.isArray(h.matches) ? h.matches : [], anchor: h.anchor || null } : { factor: 1, matches: [], anchor: null };
+      } catch (e) {
+        return { factor: 1, matches: [], anchor: null };
+      }
+    });
+    const setHaul = (h) => {
+      setHaulState(h);
+      GT_SET("mxHaulOff", JSON.stringify(h));
+    };
+    const baseSpeed = Number(((data.productionRates || []).find((r) => r && r.line === "glue") || {}).metersPerMin) || 11;
+    const speed = Math.round(baseSpeed * (haul.factor || 1) * 1e3) / 1e3;
     useEffect(() => {
-      GT_REC.cfg = { ...GT_REC.cfg, lineY, rgb, widthMm, calib, calibRec, spec, specPick, lim, speed };
+      GT_REC.cfg = { ...GT_REC.cfg, lineY, rgb, widthMm, calib, calibRec, spec, specPick, lim, speed, reel: glueEntryReel || null };
       GT_REC.recent = [];
-    }, [lineY, rgb, widthMm, calib, calibRec, spec, specPick, JSON.stringify(lim), speed]);
+    }, [lineY, rgb, widthMm, calib, calibRec, spec, specPick, JSON.stringify(lim), speed, glueEntryReel]);
+    const [ppanel, setPpanel] = useState(null), [haulIn, setHaulIn] = useState(""), [haulMsg, setHaulMsg] = useState(null), [doneOpen, setDoneOpen] = useState(false);
     const recentSizes = useMemo(() => {
       const cut = Date.now() - 90 * 864e5, seen = /* @__PURE__ */ new Set();
       return (data.glueLineBatches || []).filter((b) => b && !b.deleted && b.productSize && Date.parse(b.date || b.updatedAt || "") > cut).sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))).map((b) => b.productSize).filter((s) => !seen.has(s) && seen.add(s));
@@ -20053,6 +20574,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       GT_REC.samples = [];
       GT_REC.marks = [];
       GT_REC.segStart = Date.now();
+      GT_REC.segRun0 = GT_REC.runM;
       GT_REC.paused = false;
       GT_REC.recording = true;
       GT_REC.flash = null;
@@ -20160,6 +20682,218 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     const unreeled = (data.glueLineBatches || []).filter((b) => b && !b.deleted && b.batchNumber && String(b.date || "") >= new Date(Date.now() - 2 * 864e5).toISOString().slice(0, 10) && !traced.has(b.batchNumber)).sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))).slice(0, 12);
     const sugg = live && live.ok && !specPick ? suggestSizes(live.ratio, colourNameOf(live.colour), [...recentSizes, ...glueEntrySpec ? [glueEntrySpec] : []]).slice(0, 3) : [];
     const ed = live && live.edges, sx = (x) => x, bandY = live ? live.y0 + live.bh / 2 : lineY * (vid.h || 1);
+    const anchorHere = haul.anchor && GT_REC.segStart !== null && haul.anchor.seg === GT_REC.segStart ? haul.anchor : null;
+    const rawSince = (() => {
+      const S = GT_REC.samples;
+      const i = anchorHere ? S.findIndex((x) => x.t >= anchorHere.t) : 0;
+      const part = i < 0 ? [] : S.slice(i);
+      const M = metresAlong(part, baseSpeed);
+      return M.length ? M[M.length - 1] : 0;
+    })();
+    const counter = recording ? anchorHere ? anchorHere.value + rawSince * (haul.factor || 1) : liveTrace.head : 0;
+    const zeroBoth = () => {
+      if (!GT_REC.recording) return;
+      setHaul({ ...haul, anchor: { seg: GT_REC.segStart, t: Date.now(), value: 0 } });
+      gtLog("Haul-off and portal zeroed together", "#60A5FA");
+      setHaulMsg({ bad: false, t: "Both at 0.0 m. Type the haul-off's figure any time to match." });
+      setTick((t) => t + 1);
+    };
+    const doMatch = () => {
+      if (!GT_REC.recording) {
+        setHaulMsg({ bad: true, t: "Start the trace first \u2014 the counter runs with the trace." });
+        return;
+      }
+      const res = haulMatch({ haul: haulIn, sinceValue: anchorHere ? anchorHere.value : 0, raw: rawSince, matches: haul.matches, factor: haul.factor || 1 });
+      if (!res.ok) {
+        setHaulMsg({ bad: true, t: res.why });
+        return;
+      }
+      const H2 = Number(haulIn);
+      setHaul({ factor: res.factor, matches: res.matches, anchor: { seg: GT_REC.segStart, t: Date.now(), value: H2 } });
+      gtLog(res.learned ? `Matched to the haul-off: ${H2.toFixed(1)} m (\xD7${res.k.toFixed(4)})` : `Counter set to the haul-off: ${H2.toFixed(1)} m`, "#60A5FA");
+      setHaulMsg({ bad: false, t: res.learned ? `Matched. This stretch \xD7${res.k.toFixed(4)} \u2014 the counter now uses \xD7${res.factor.toFixed(4)}.` : res.why });
+      setHaulIn("");
+      setTick((t) => t + 1);
+    };
+    const cap = capability(liveTrace.points, lim, 50), reelStats = traceStats(liveTrace.points, lim);
+    const rts = GT_REC.readTs || [], rate = rts.length > 2 && rts[rts.length - 1] > rts[0] ? (rts.length - 1) * 1e3 / (rts[rts.length - 1] - rts[0]) : 0;
+    const pEvents = (() => {
+      const S = GT_REC.samples, M = liveTrace.M;
+      const tAt = (m) => {
+        const i = M.findIndex((x) => x >= m);
+        return i >= 0 && S[i] ? S[i].t : 0;
+      };
+      const ev = lim ? traceEvents(liveTrace.points, lim).map((e) => ({ t: tAt(e.from), title: `E${e.n} \xB7 ${e.kind === "over" ? "Over max" : "Under min"}`, sub: `${e.from.toFixed(1)}\u2013${e.to.toFixed(1)} m \xB7 worst ${Number(e.worst).toFixed(3)}`, ink: "#FB923C" })) : [];
+      const mk = gtMarksAt(GT_REC.marks, S, M).map((m, i) => ({ t: m.t, title: `M${i + 1} \xB7 ${m.note}`, sub: `At ${Number(m.m).toFixed(1)} m`, ink: "#C084FC" }));
+      const lg = (GT_REC.log || []).map((l) => ({ t: l.t, title: l.text, sub: "", ink: l.ink }));
+      return [...ev, ...mk, ...lg].sort((a, b) => b.t - a.t).slice(0, 12);
+    })();
+    const doneTrace = flash ? traces.find((t) => t.id === flash.id) || null : null;
+    const go = (view) => window.dispatchEvent(new CustomEvent("mx-go", { detail: { view } }));
+    const cfgS = scheduleSettingsOf(data);
+    const lineRows = useMemo(() => (data.lineEvents || []).filter((e) => e && !e.deleted && (e.line || "glue") === "glue"), [data.lineEvents]);
+    const evById = new Map(lineRows.map((e) => [e.id, e]));
+    const sst = GT_REC.stopSt, openId = sst && sst.stop ? sst.stop.id : null, pendIds = sst && sst.pend ? sst.pend.ids : [];
+    const headRow = evById.get(pendIds[0] || openId) || null;
+    const changeRow = headRow && isChangeReason(headRow.reason) ? headRow : null;
+    const chainedToChange = (e) => {
+      const h = e.chainOf ? evById.get(e.chainOf) : null;
+      return !!(h && isChangeReason(h.reason));
+    };
+    const asks = (e) => e && e.kind === "stop" && !e.reason && !chainedToChange(e);
+    const dayStart = /* @__PURE__ */ new Date();
+    dayStart.setHours(0, 0, 0, 0);
+    const todayStops = lineRows.filter((e) => e.kind === "stop" && Date.parse(e.startedAt) >= dayStart.getTime()).sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
+    const promptRow = [evById.get(openId), todayStops.find((e) => GT_REC.mine.has(e.id))].find((e) => asks(e) && !GT_REC.snooze.has(e.id)) || null;
+    const needs = todayStops.filter((e) => asks(e) && (!promptRow || e.id !== promptRow.id));
+    const stopLen = (e) => {
+      const end = e.endedAt ? Date.parse(e.endedAt) : e.id === openId ? Date.now() : sst && sst.pend && sst.pend.ids[sst.pend.ids.length - 1] === e.id ? sst.pend.endT : stopEndMs(e, { nowMs: Date.now(), openId });
+      return end != null ? Math.max(0, end - Date.parse(e.startedAt)) : 0;
+    };
+    const weekChanges = changeoverTimes(lineRows, { fromMs: weekStartOf(/* @__PURE__ */ new Date()).getTime() });
+    const [whyNote, setWhyNote] = useState("");
+    const setStopReason = (id, key, note = "") => {
+      const at = (/* @__PURE__ */ new Date()).toISOString(), who = currentActor() || null, label = reasonOf(key).label.toLowerCase();
+      setData((prev) => ({ ...prev, lineEvents: (prev.lineEvents || []).map((r) => r.id === id ? { ...r, reason: key, note: String(note || "").trim() || r.note || null, planMin: isChangeReason(key) ? changePlanMin(key, cfgS) : null, answeredAt: at, answeredBy: who } : r.chainOf === id && (!r.reason || r.answeredBy === "the change") ? isChangeReason(key) ? { ...r, reason: key, note: `Part of the ${label}`, answeredAt: at, answeredBy: "the change" } : { ...r, reason: null, note: null, answeredAt: null, answeredBy: null } : r) }));
+      const row = evById.get(id);
+      if (row && isChangeReason(key) && row.goodAt) {
+        const min = (Date.parse(row.goodAt) - Date.parse(row.startedAt)) / 6e4;
+        GT_REC.coDone = { reason: key, min, plan: changePlanMin(key, cfgS), runupM: Number(row.runupM) || 0, at: Date.now() };
+      }
+      GT_REC.snooze.delete(id);
+      setWhyNote("");
+      setTick((x) => x + 1);
+    };
+    if (portal) {
+      const P = { bg: "#080D12", panel: "#0E151D", panel2: "#0B1218", line: "#1F2C39", ink: "#E6EDF3", sub: "#8FA1B3", sub2: "#A8B5C2" };
+      const lab = { fontSize: 11.5, letterSpacing: "0.13em", textTransform: "uppercase", color: P.sub, fontWeight: 600 };
+      const mono = { fontFamily: GT_MONO };
+      const card = (x = {}) => ({ background: P.panel, border: `1px solid ${P.line}`, borderRadius: 10, ...x });
+      const pbtn = (kind = "plain", x = {}) => ({
+        fontFamily: NLT.FONT,
+        fontSize: 15,
+        fontWeight: 700,
+        letterSpacing: "0.04em",
+        textTransform: "uppercase",
+        minHeight: 50,
+        padding: "0 15px",
+        borderRadius: 8,
+        cursor: "pointer",
+        border: `1px solid ${kind === "go" ? "#E2502F" : kind === "blue" ? "#3B82F6" : kind === "purple" ? "#A855F7" : "#334155"}`,
+        background: kind === "go" ? "#E2502F" : kind === "blue" ? "#0F2647" : kind === "purple" ? "#241338" : "#16212C",
+        color: kind === "go" ? "#fff" : kind === "blue" ? "#DBEAFE" : kind === "purple" ? "#F3E8FF" : P.ink,
+        ...x
+      });
+      const dot = (c) => /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { width: 8, height: 8, borderRadius: "50%", background: c, display: "inline-block", flexShrink: 0 } });
+      const chip = (key, c, name, val) => /* @__PURE__ */ React.createElement("div", { key, "data-pt-chip": key, style: { display: "flex", alignItems: "center", gap: 8, border: `1px solid ${P.line}`, background: "#111A23", borderRadius: 6, padding: "7px 11px", fontSize: 13 } }, dot(c), /* @__PURE__ */ React.createElement("span", { style: { color: P.sub, letterSpacing: "0.08em" } }, name), /* @__PURE__ */ React.createElement("span", { style: mono }, val));
+      const res = GT_REC.camRes, online = typeof navigator === "undefined" || navigator.onLine !== false;
+      const who = (() => {
+        const a = String(currentActor() || "");
+        if (a && a !== "Team") return a;
+        const n = String(nlEmail() || "").split("@")[0].replace(/[._]+/g, " ").trim();
+        return n ? n[0].toUpperCase() + n.slice(1) : "\u2014";
+      })();
+      const hhmm = (t2) => new Date(t2).toTimeString().slice(0, 5);
+      const sw = (productColourFor(spec) || {}).hex || "#64748B";
+      const tones = { onset: ["#0C1F17", "#34D399", "#6EE7B7", "ON SET"], inrange: ["#0E1C2E", "#60A5FA", "#BFDBFE", "IN RANGE"], over: ["#2A1508", "#F97316", "#FDBA74", "OVER MAX"], under: ["#2A1508", "#F97316", "#FDBA74", "UNDER MIN"] };
+      const t = !camOn ? ["#121A23", "#334155", "#CBD5E1", "CAMERA OFF"] : !live || !live.ok ? ["#121A23", "#334155", "#CBD5E1", "LOOKING FOR THE STRIPS"] : !lim ? ["#121A23", "#334155", "#CBD5E1", "NO SIZE SET"] : !cv.ok ? ["#2A1508", "#F97316", "#FDBA74", "NOT CALIBRATED"] : tones[verdict] || ["#121A23", "#334155", "#CBD5E1", "\u2014"];
+      const advice = !camOn ? "Turn the camera on to start reading." : !live || !live.ok ? `The camera can't see the two strips${live && live.why ? ` (${live.why})` : ""} \u2014 click the picture where they lie flat.` : !lim ? "Pick the size being run in Set-up." : !cv.ok ? `Measure the gap by hand and enter it \u2014 ${cv.why}.` : verdict === "over" ? `Over max ${lim.max.toFixed(2)} \u2014 the gap is too wide` : verdict === "under" ? `Under min ${lim.min.toFixed(2)} \u2014 the gap is too narrow` : verdict === "onset" ? `Running steady inside the set band ${lim.setLo.toFixed(2)}\u2013${lim.setHi.toFixed(2)}` : `Inside the limits, off the set band ${lim.setLo.toFixed(2)}\u2013${lim.setHi.toFixed(2)}`;
+      const odo = Math.max(0, counter).toFixed(1).padStart(6, "0").split("");
+      const prof = GT_REC.profile, profPath = prof && prof.length > 1 ? "M" + prof.map((v, i) => `${(i / (prof.length - 1) * 420).toFixed(1)} ${(104 - v * 92).toFixed(1)}`).join(" L") : "";
+      const ex = (x) => vid.w ? (x / vid.w * 420).toFixed(1) : 0;
+      const motionWord = motion.trusted ? motion.moving ? ["LINE MOVING", "#34D399", "#6EE7B7"] : ["LINE STOPPED", "#94A3B8", "#CBD5E1"] : ["CAN'T SEE THE LINE MOVE", "#475569", P.sub];
+      const progress = reelGuess && recording ? Math.min(100, counter / reelGuess * 100) : 0;
+      const minsLeft = reelGuess && recording && motion.moving !== false ? Math.max(0, (reelGuess - counter) / speed) : null;
+      const modal = (key, title, body) => /* @__PURE__ */ React.createElement("div", { "data-pt-panel": key, role: "dialog", "aria-modal": "true", "aria-label": title, onClick: () => setPpanel(null), style: { position: "fixed", inset: 0, zIndex: 9300, background: "rgba(3,6,9,.72)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", overflowY: "auto" } }, /* @__PURE__ */ React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { ...card({ padding: "18px 20px", background: "#0B1218" }), width: "100%", maxWidth: 1100, boxShadow: "0 30px 80px rgba(0,0,0,.6)" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 12 } }, /* @__PURE__ */ React.createElement("h2", { style: { margin: 0, fontSize: 22, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase" } }, title), /* @__PURE__ */ React.createElement("button", { onClick: () => setPpanel(null), style: pbtn("plain", { minHeight: 44 }) }, "Close")), body));
+      return /* @__PURE__ */ React.createElement("div", { "data-portal": true, style: { position: "fixed", inset: 0, zIndex: 8800, background: P.bg, color: P.ink, fontFamily: NLT.FONT, overflowY: "auto", display: "flex", flexDirection: "column" } }, /* @__PURE__ */ React.createElement("header", { style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: "12px 20px", padding: "10px 20px", background: P.panel, borderBottom: `1px solid ${P.line}` } }, /* @__PURE__ */ React.createElement("div", { style: { background: "#fff", borderRadius: 8, padding: "5px 10px", display: "flex" } }, /* @__PURE__ */ React.createElement("img", { src: `data:image/png;base64,${LOGO_B64}`, alt: "Matrix Engineering", style: { height: 32, width: "auto", display: "block" } })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { ...lab, letterSpacing: "0.16em" } }, "Glue line \xB7 station"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 700, letterSpacing: "0.05em" } }, "GAP TRACE")), /* @__PURE__ */ React.createElement("span", { style: { flex: "1 1 30px" } }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 8 } }, chip("camera", camOn ? "#34D399" : "#475569", "CAMERA", camOn ? res && res.w ? `${res.w}\xD7${res.h}${res.fps ? ` \xB7 ${res.fps} fps` : ""}` : "on" : "off"), chip("haul", anchorHere ? "#34D399" : haul.matches.length ? "#FBBF24" : "#475569", "HAUL-OFF", anchorHere ? `matched ${hhmm(anchorHere.t)}` : haul.matches.length ? `\xD7${haul.factor.toFixed(3)} \xB7 not zeroed` : "not matched"), chip("online", online ? "#34D399" : "#FB923C", online ? "ONLINE" : "OFFLINE", online ? "saving" : "saves when back"), chip("login", "#60A5FA", "LOGIN", who)), /* @__PURE__ */ React.createElement("div", { style: { ...mono, fontSize: 26, fontWeight: 700 } }, (/* @__PURE__ */ new Date()).toTimeString().slice(0, 8)), /* @__PURE__ */ React.createElement("button", { "data-pt-exit": true, onClick: () => go(isAdminLogin() || !screenAllowed("glueline") ? "dashboard" : "glueline"), "aria-label": "Leave the portal", style: pbtn("plain", { minHeight: 44, padding: "0 14px" }) }, "Leave")), /* @__PURE__ */ React.createElement("section", { style: { display: "flex", flexWrap: "wrap", gap: 1, background: P.line, borderBottom: `1px solid ${P.line}` } }, /* @__PURE__ */ React.createElement("div", { style: { flex: "2 1 320px", background: P.panel2, padding: "10px 20px", display: "flex", alignItems: "center", gap: 12 } }, /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { width: 14, height: 30, borderRadius: 3, background: sw, display: "inline-block" } }), /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: lab }, "Size being run", glueEntrySpec && !specPick ? " \xB7 from the glue line" : ""), /* @__PURE__ */ React.createElement("div", { "data-pt-size": true, style: { fontSize: 19, fontWeight: 700 } }, spec || "Not set \u2014 open Set-up"))), /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 140px", background: P.panel2, padding: "10px 16px" } }, /* @__PURE__ */ React.createElement("div", { style: lab }, "Reel"), /* @__PURE__ */ React.createElement("div", { style: { ...mono, fontSize: 18, fontWeight: 700 } }, glueEntryReel || "\u2014")), /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 160px", background: P.panel2, padding: "10px 16px" } }, /* @__PURE__ */ React.createElement("div", { style: lab }, "Glue die \xB7 PVC"), /* @__PURE__ */ React.createElement("div", { style: { ...mono, fontSize: 18, fontWeight: 700 } }, glueEntryForm.glueDie || "\u2014", " \xB7 ", glueEntryForm.extPvcCode || "\u2014")), /* @__PURE__ */ React.createElement("div", { style: { flex: "1.4 1 220px", background: P.panel2, padding: "10px 16px" } }, /* @__PURE__ */ React.createElement("div", { style: lab }, "Limits \xB7 same for every size"), /* @__PURE__ */ React.createElement("div", { style: { ...mono, fontSize: 18, fontWeight: 700 } }, lim ? /* @__PURE__ */ React.createElement(React.Fragment, null, lim.min.toFixed(2), " ", /* @__PURE__ */ React.createElement("span", { style: { color: P.sub } }, "/"), " ", /* @__PURE__ */ React.createElement("span", { style: { color: "#34D399" } }, lim.setLo.toFixed(2), "\u2013", lim.setHi.toFixed(2)), " ", /* @__PURE__ */ React.createElement("span", { style: { color: P.sub } }, "/"), " ", lim.max.toFixed(2)) : "\u2014")), /* @__PURE__ */ React.createElement("button", { "data-pt-calstrip": true, onClick: () => setPpanel("calib"), style: { flex: "1.6 1 260px", background: P.panel2, padding: "10px 16px", display: "flex", alignItems: "center", gap: 10, border: 0, color: P.ink, textAlign: "left", cursor: "pointer", fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { width: 22, height: 22, borderRadius: "50%", border: `2px solid ${cv.ok ? "#34D399" : "#F97316"}`, display: "inline-flex", alignItems: "center", justifyContent: "center", color: cv.ok ? "#34D399" : "#F97316", fontWeight: 700, fontSize: 13, flexShrink: 0 } }, cv.ok ? "\u2713" : "!"), /* @__PURE__ */ React.createElement("span", { style: { minWidth: 0 } }, /* @__PURE__ */ React.createElement("span", { style: { ...lab, display: "block", color: cv.ok ? P.sub : "#FDBA74" } }, cv.ok ? "Calibrated by hand" : "Not calibrated"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 14.5 } }, cv.ok && calibRec ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("b", { style: mono }, Number(calibRec.hand).toFixed(3), " mm"), " ", /* @__PURE__ */ React.createElement("span", { style: { color: P.sub2 } }, "\xB7 camera ", Number(calibRec.read).toFixed(3), " \xB7 \xD7", Number(calibRec.k).toFixed(3), " \xB7 ", hhmm(calibRec.at), calibRec.by ? ` ${String(calibRec.by).split("@")[0]}` : "")) : /* @__PURE__ */ React.createElement("span", { style: { color: "#FDBA74" } }, "Measure by hand \u2014 ", cv.why))))), flash && /* @__PURE__ */ React.createElement("div", { "data-pt-saved": true, style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px 16px", padding: "12px 20px", background: flash.warn ? "#2A1508" : "#0C1F17", borderBottom: `1px solid ${flash.warn ? "#9A3412" : "#065F46"}` } }, /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { width: 28, height: 28, borderRadius: "50%", background: flash.warn ? "#F97316" : "#34D399", color: "#052019", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 800 } }, flash.warn ? "!" : "\u2713"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 17, fontWeight: 700, color: flash.warn ? "#FDBA74" : "#A7F3D0" } }, flash.text), /* @__PURE__ */ React.createElement("span", { style: { flex: "1 1 20px" } }), doneTrace && /* @__PURE__ */ React.createElement("button", { "data-pt-print": true, onClick: () => printGapRecord(doneTrace, data), style: pbtn("go", { minHeight: 44 }) }, "Print A4 record"), doneTrace && /* @__PURE__ */ React.createElement("button", { "data-pt-show": true, onClick: () => setDoneOpen(true), style: pbtn("plain", { minHeight: 44 }) }, "Show the reel"), /* @__PURE__ */ React.createElement("button", { "data-pt-undo": true, onClick: () => {
+        undoSave(flash.id);
+        setFlash(null);
+      }, style: pbtn("plain", { minHeight: 44 }) }, "Undo"), /* @__PURE__ */ React.createElement("button", { onClick: () => setFlash(null), style: pbtn("plain", { minHeight: 44 }) }, "OK")), warnText && /* @__PURE__ */ React.createElement("div", { "data-pt-warn": true, role: "alert", style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, padding: "11px 20px", background: "#2A1508", borderBottom: "1px solid #9A3412" } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 700, color: "#FDBA74", fontSize: 16 } }, "Check the size: ", warnText, "."), /* @__PURE__ */ React.createElement("span", { style: { flex: 1 } }), entryClash && /* @__PURE__ */ React.createElement("button", { onClick: () => setSpecPick(""), style: pbtn("plain", { minHeight: 42 }) }, "Follow the glue line"), !entryClash && picShown && picShown.better && /* @__PURE__ */ React.createElement("button", { onClick: () => setSpecPick(picShown.better), style: pbtn("plain", { minHeight: 42 }) }, "Use ", picShown.better)), /* @__PURE__ */ React.createElement("main", { style: { flex: "1 1 auto", display: "flex", flexWrap: "wrap", gap: 14, padding: "14px 20px" } }, /* @__PURE__ */ React.createElement("section", { style: { flex: "1 1 400px", maxWidth: 470, display: "flex", flexDirection: "column", gap: 14, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: card({ overflow: "hidden" }) }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 14px", borderBottom: `1px solid ${P.line}` } }, /* @__PURE__ */ React.createElement("span", { style: lab }, "Camera \xB7 measuring line"), camOn ? /* @__PURE__ */ React.createElement("span", { style: { display: "flex", alignItems: "center", gap: 6, color: "#F87171", ...lab } }, dot("#F87171"), /* @__PURE__ */ React.createElement("span", { style: { color: "#F87171" } }, "Live")) : /* @__PURE__ */ React.createElement("span", { style: lab }, "Off")), /* @__PURE__ */ React.createElement("div", { onClick: camOn ? onPicture : void 0, style: { position: "relative", background: "#0A0D10", aspectRatio: vid.w ? `${vid.w} / ${vid.h}` : "16 / 9", cursor: camOn ? picking ? "copy" : "crosshair" : "default" } }, /* @__PURE__ */ React.createElement("video", { ref: viewVideo, muted: true, playsInline: true, style: { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "fill", display: camOn ? "block" : "none" } }), camOn && vid.w > 0 && /* @__PURE__ */ React.createElement("svg", { viewBox: `0 0 ${vid.w} ${vid.h}`, preserveAspectRatio: "none", style: { position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }, "aria-hidden": "true" }, /* @__PURE__ */ React.createElement("line", { x1: "0", x2: vid.w, y1: bandY, y2: bandY, stroke: "#fff", strokeWidth: Math.max(2, vid.w / 400), strokeDasharray: `${vid.w / 80} ${vid.w / 120}` }), live && live.ok && ed && /* @__PURE__ */ React.createElement(React.Fragment, null, [ed.a0, ed.b1].map((x, i) => /* @__PURE__ */ React.createElement("line", { key: i, x1: x, x2: x, y1: bandY - vid.h * 0.05, y2: bandY + vid.h * 0.05, stroke: "#fff", strokeWidth: Math.max(3, vid.w / 300) })), /* @__PURE__ */ React.createElement("rect", { x: ed.a1, y: bandY - vid.h * 0.04, width: Math.max(1, ed.b0 - ed.a1), height: vid.h * 0.08, fill: "#38BDF8", fillOpacity: "0.4" }), [ed.a1, ed.b0].map((x, i) => /* @__PURE__ */ React.createElement("line", { key: i, x1: x, x2: x, y1: bandY - vid.h * 0.07, y2: bandY + vid.h * 0.07, stroke: "#38BDF8", strokeWidth: Math.max(3, vid.w / 260) })))), !camOn && /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, padding: 16, textAlign: "center" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, color: "#CBD5E1" } }, camErr || "The camera isn't on."), /* @__PURE__ */ React.createElement("button", { "data-pt-cam-on": true, onClick: (e) => {
+        e.stopPropagation();
+        startCam();
+      }, style: pbtn("blue") }, "Turn the camera on")), camOn && /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: 10, top: 10, background: "rgba(8,13,18,.78)", borderRadius: 5, padding: "5px 8px", ...mono, fontSize: 12, color: "#CBD5E1" } }, picking ? "CLICK A STRIP TO PICK ITS COLOUR" : `LINE AT ${(lineY * 100).toFixed(1)}% \xB7 CLICK TO MOVE`), camOn && live && live.ok && live.mmPerPx && /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", right: 10, bottom: 10, background: "rgba(8,13,18,.78)", borderRadius: 5, padding: "5px 8px", ...mono, fontSize: 12, color: "#CBD5E1" } }, ed ? `${(ed.b0 - ed.a1).toFixed(1)} px \xB7 ` : "", live.mmPerPx.toFixed(4), " mm/px")), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 1, background: P.line, borderTop: `1px solid ${P.line}` } }, /* @__PURE__ */ React.createElement("div", { style: { background: P.panel, padding: "9px 12px" } }, /* @__PURE__ */ React.createElement("div", { style: lab }, "Rows read"), /* @__PURE__ */ React.createElement("div", { style: { ...mono, fontSize: 15, marginTop: 2 } }, live && live.rows != null ? `${live.rows} / ${GAP_BAND_ROWS}` : "\u2014")), /* @__PURE__ */ React.createElement("div", { style: { background: P.panel, padding: "9px 12px" } }, /* @__PURE__ */ React.createElement("div", { style: lab }, "Strip colour"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, marginTop: 2, fontSize: 15 } }, live && live.colour ? /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { width: 12, height: 12, borderRadius: 3, background: `rgb(${live.colour.join(",")})`, display: "inline-block" } }) : null, live && live.colour ? `${colourNameOf(live.colour) || "\u2014"} \xB7 ${rgb ? "picked" : "auto"}` : "\u2014")), /* @__PURE__ */ React.createElement("div", { style: { background: P.panel, padding: "9px 12px" } }, /* @__PURE__ */ React.createElement("div", { style: lab }, "Readings"), /* @__PURE__ */ React.createElement("div", { style: { ...mono, fontSize: 15, marginTop: 2 } }, rate ? `${rate.toFixed(1)}/s` : "\u2014")))), /* @__PURE__ */ React.createElement("div", { style: card({ padding: "12px 14px 8px" }) }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between" } }, /* @__PURE__ */ React.createElement("span", { style: lab }, "Edge profile \xB7 across the line"), /* @__PURE__ */ React.createElement("span", { style: { ...mono, fontSize: 12, color: P.sub } }, "half-level edges")), /* @__PURE__ */ React.createElement("svg", { viewBox: "0 0 420 112", style: { width: "100%", height: "auto", display: "block", marginTop: 6 }, role: "img", "aria-label": "The strip signal across the measuring line, with the four edges" }, /* @__PURE__ */ React.createElement("rect", { x: "0", y: "0", width: "420", height: "112", fill: P.panel2 }), /* @__PURE__ */ React.createElement("line", { x1: "0", x2: "420", y1: "58", y2: "58", stroke: "#475569", strokeDasharray: "4 4" }), profPath && /* @__PURE__ */ React.createElement("path", { d: profPath, fill: "none", stroke: "#F87171", strokeWidth: "2" }), live && live.ok && ed && vid.w > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, [ed.a0, ed.b1].map((x, i) => /* @__PURE__ */ React.createElement("line", { key: i, x1: ex(x), x2: ex(x), y1: "6", y2: "108", stroke: "#fff", strokeOpacity: "0.6" })), [ed.a1, ed.b0].map((x, i) => /* @__PURE__ */ React.createElement("line", { key: i, x1: ex(x), x2: ex(x), y1: "6", y2: "108", stroke: "#38BDF8" }))), !profPath && /* @__PURE__ */ React.createElement("text", { x: "210", y: "62", fill: P.sub, fontSize: "13", textAnchor: "middle" }, "The strips' signal shows here once the camera is on.")))), /* @__PURE__ */ React.createElement("section", { style: { flex: "999 1 460px", minWidth: 0, display: "flex", flexDirection: "column", gap: 14 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 14 } }, /* @__PURE__ */ React.createElement("div", { "data-pt-reading": verdict || "none", style: { flex: "3 1 420px", background: t[0], border: `2px solid ${t[1]}`, borderRadius: 12, padding: "16px 22px", display: "flex", flexDirection: "column", gap: 6, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 } }, /* @__PURE__ */ React.createElement("span", { "data-pt-status": true, style: { fontSize: 26, fontWeight: 800, letterSpacing: "0.08em", color: t[2] } }, t[3]), /* @__PURE__ */ React.createElement("span", { style: { ...lab, color: t[2] } }, "Gap now \xB7 median of the last second")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 12 } }, /* @__PURE__ */ React.createElement("span", { "data-pt-gap": true, style: { ...mono, fontSize: "clamp(84px, 9vw, 132px)", fontWeight: 700, lineHeight: 0.95, letterSpacing: "-0.04em" } }, g ? g.toFixed(3) : "\u2014"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 32, color: t[2] } }, "mm")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15.5, color: t[2] } }, advice), lim && /* @__PURE__ */ React.createElement("div", { style: { position: "relative", height: 56, marginTop: 4 } }, /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: 0, right: 0, top: 18, height: 16, borderRadius: 8, background: "#4A2A14" } }), /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: bp(lim.min), width: `calc(${bp(lim.max)} - ${bp(lim.min)})`, top: 18, height: 16, background: "#23364A" } }), /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: bp(lim.setLo), width: `calc(${bp(lim.setHi)} - ${bp(lim.setLo)})`, top: 18, height: 16, background: "#1F8F5F" } }), g ? /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: bp(g), top: 0, marginLeft: -9, width: 0, height: 0, borderLeft: "9px solid transparent", borderRight: "9px solid transparent", borderTop: "14px solid #fff" } }) : null, [lim.min, lim.setLo, lim.setHi, lim.max].map((v, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { position: "absolute", left: bp(v), top: 38, transform: "translateX(-50%)", ...mono, fontSize: 12, color: t[2] } }, v.toFixed(2))))), /* @__PURE__ */ React.createElement("div", { style: { ...card({ padding: "14px 16px" }), flex: "1 1 260px", display: "flex", flexDirection: "column", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 } }, /* @__PURE__ */ React.createElement("span", { style: lab }, "Metres on this reel"), /* @__PURE__ */ React.createElement("span", { "data-pt-motion": true, style: { display: "flex", alignItems: "center", gap: 6, ...lab, color: motionWord[2] } }, dot(motionWord[1]), recording ? motionWord[0] : "NOT RECORDING")), /* @__PURE__ */ React.createElement("div", { "data-pt-counter": counter.toFixed(1), style: { display: "flex", gap: 4 }, "aria-label": `${counter.toFixed(1)} metres` }, odo.map((c, i) => /* @__PURE__ */ React.createElement("span", { key: i, style: { flex: 1, textAlign: "center", background: "#05080B", border: "1px solid #263544", borderRadius: 6, padding: "6px 0", ...mono, fontSize: 38, fontWeight: 700, color: c === "." ? P.sub : i === 0 && c === "0" ? "#334155" : P.ink } }, c)), /* @__PURE__ */ React.createElement("span", { style: { alignSelf: "flex-end", fontSize: 18, color: P.sub, paddingLeft: 4 } }, "m")), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { height: 8, background: P.line, borderRadius: 4, overflow: "hidden" } }, /* @__PURE__ */ React.createElement("div", { style: { width: `${progress.toFixed(1)}%`, height: "100%", background: "linear-gradient(90deg,#2563EB,#60A5FA)" } })), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", ...mono, fontSize: 12, color: P.sub, marginTop: 4 } }, /* @__PURE__ */ React.createElement("span", null, reelGuess ? `${counter.toFixed(1)} of ~${reelGuess} m` : `${counter.toFixed(1)} m`), /* @__PURE__ */ React.createElement("span", null, minsLeft !== null ? `\u2248 ${Math.round(minsLeft)} min left` : ""))), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "8px 12px", borderTop: `1px solid ${P.line}`, paddingTop: 10 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: lab }, "Last match"), /* @__PURE__ */ React.createElement("div", { style: { ...mono, fontSize: 17 } }, anchorHere ? `${anchorHere.value.toFixed(1)} m \xB7 ${hhmm(anchorHere.t)}` : "\u2014")), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: lab }, "Counter factor"), /* @__PURE__ */ React.createElement("div", { style: { ...mono, fontSize: 17 } }, "\xD7", (haul.factor || 1).toFixed(3))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: lab }, "Line speed"), /* @__PURE__ */ React.createElement("div", { style: { ...mono, fontSize: 17 } }, speed.toFixed(2), " m/min")), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: lab }, "Matches kept"), /* @__PURE__ */ React.createElement("div", { style: { ...mono, fontSize: 17 } }, haul.matches.length))), /* @__PURE__ */ React.createElement("button", { "data-pt-match-open": true, onClick: () => setPpanel("calib"), style: pbtn("blue", { minHeight: 46 }) }, "Match the haul-off counter"))), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 1, background: P.line, border: `1px solid ${P.line}`, borderRadius: 10, overflow: "hidden" } }, [
+        ["Mean \xB7 reel", reelStats ? reelStats.mean.toFixed(3) : "\u2014", "mm so far", P.ink],
+        ["\u03C3 \xB7 last 50 m", cap ? cap.sd.toFixed(4) : "\u2014", "spread", P.ink],
+        ["Cpk \xB7 last 50 m", cap && cap.cpk !== null ? cap.cpk.toFixed(1) : "\u2014", "\u2265 1.33 holds the limits", cap && cap.cpk !== null && cap.cpk < 1.33 ? "#FDBA74" : "#6EE7B7"],
+        ["In limits", reelStats ? `${reelStats.inPct}%` : "\u2014", "of metres", P.ink],
+        ["On set", reelStats ? `${reelStats.onSetPct}%` : "\u2014", lim ? `${lim.setLo.toFixed(2)}\u2013${lim.setHi.toFixed(2)}` : "", "#6EE7B7"],
+        ["Readings", recording ? GT_REC.samples.filter((x) => x.g > 0).length.toLocaleString("en-GB") : "\u2014", "kept this reel", P.ink]
+      ].map(([l, v, sub, ink]) => /* @__PURE__ */ React.createElement("div", { key: l, style: { background: P.panel, padding: "10px 14px", minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: lab }, l), /* @__PURE__ */ React.createElement("div", { style: { ...mono, fontSize: 21, fontWeight: 700, color: ink } }, v), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: P.sub } }, sub)))), /* @__PURE__ */ React.createElement("div", { style: card({ padding: "12px 16px 8px" }) }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 6 } }, /* @__PURE__ */ React.createElement("span", { style: lab }, "Gap along the reel", glueEntryReel ? ` \xB7 ${glueEntryReel}` : ""), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6 } }, [["all", "Whole reel"], ["last50", "Last 50 m"]].map(([k, l]) => /* @__PURE__ */ React.createElement("button", { key: k, onClick: () => setZoom(k), style: pbtn(zoom === k ? "blue" : "plain", { minHeight: 34, padding: "0 12px", fontSize: 12.5 }) }, l)))), /* @__PURE__ */ React.createElement(GapChart, { points: liveTrace.points, lim, headM: recording ? liveTrace.head : null, reelM: reelGuess, marks: gtMarksAt(GT_REC.marks, GT_REC.samples, liveTrace.M), focus: zoom === "last50" && recording ? [Math.max(0, liveTrace.head - 50), liveTrace.head + 2] : null, dark: true }))), /* @__PURE__ */ React.createElement("section", { style: { flex: "1 1 300px", maxWidth: 360, display: "flex", flexDirection: "column", gap: 14, minWidth: 0 } }, changeRow && (() => {
+        const el = Date.now() - Date.parse(changeRow.startedAt), plan = Number(changeRow.planMin) || changePlanMin(changeRow.reason, cfgS), over = el > plan * 6e4, wkc = weekChanges[changeRow.reason];
+        return /* @__PURE__ */ React.createElement("div", { "data-pt-clock": changeRow.reason, style: { background: over ? "#2A1508" : "#0F1A2B", border: `2px solid ${over ? "#F97316" : "#3B82F6"}`, borderRadius: 12, padding: "14px 16px" } }, /* @__PURE__ */ React.createElement("div", { style: { ...lab, color: over ? "#FDBA74" : "#93C5FD" } }, "Changeover clock"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 20, fontWeight: 800, letterSpacing: "0.03em", marginTop: 2 } }, reasonOf(changeRow.reason).label.toUpperCase(), changeRow.productSize ? ` \xB7 ${changeRow.productSize}${spec && spec !== changeRow.productSize ? ` \u2192 ${spec}` : ""}` : ""), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, marginTop: 8 } }, /* @__PURE__ */ React.createElement("span", { "data-pt-clock-time": true, style: { ...mono, fontSize: 52, fontWeight: 700, lineHeight: 1 } }, fmtClock(el)), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 16, color: over ? "#FDBA74" : "#93C5FD" } }, "of ", plan, ":00 planned")), /* @__PURE__ */ React.createElement("div", { style: { height: 9, background: over ? "#4A2A14" : "#1E3A5F", borderRadius: 5, overflow: "hidden", marginTop: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { width: `${Math.min(100, el / (plan * 6e4) * 100).toFixed(1)}%`, height: "100%", background: over ? "#F97316" : "#60A5FA" } })), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: over ? "#FED7AA" : "#BFDBFE", marginTop: 8 } }, "Stops by itself at the first good metre \u2014 the line moving and the gap inside the limits for 5 seconds.", wkc && wkc.n ? ` This week's ${reasonOf(changeRow.reason).label.toLowerCase()}s averaged ${Math.round(wkc.avg)} min.` : ""));
+      })(), !changeRow && GT_REC.coDone && Date.now() - GT_REC.coDone.at < 12e4 && (() => {
+        const c = GT_REC.coDone, over = c.plan && c.min > c.plan;
+        return /* @__PURE__ */ React.createElement("div", { "data-pt-clock-done": true, style: { background: "#0C1F17", border: "2px solid #34D399", borderRadius: 12, padding: "12px 16px" } }, /* @__PURE__ */ React.createElement("div", { style: { ...lab, color: "#6EE7B7" } }, "First good metre"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 17, fontWeight: 700, marginTop: 4 } }, reasonOf(c.reason).label, " done in ", fmtClock(c.min * 6e4)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: "#A7F3D0", marginTop: 4 } }, c.plan ? over ? `${fmtClock((c.min - c.plan) * 6e4)} over the plan's ${c.plan} min.` : `Inside the plan's ${c.plan} min.` : "", c.runupM ? ` ${c.runupM} m run up to it.` : ""));
+      })(), /* @__PURE__ */ React.createElement("div", { style: { ...card({ padding: "12px 14px" }), flex: "1 1 auto" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 6 } }, /* @__PURE__ */ React.createElement("span", { style: lab }, "Events \xB7 this reel"), /* @__PURE__ */ React.createElement("span", { style: { ...mono, fontSize: 12, color: P.sub } }, pEvents.length)), /* @__PURE__ */ React.createElement("div", { "data-pt-events": true }, pEvents.length ? pEvents.map((e, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { display: "flex", gap: 10, padding: "9px 0", borderTop: `1px solid #16212C` } }, /* @__PURE__ */ React.createElement("span", { style: { ...mono, fontSize: 12, color: P.sub, width: 40, flexShrink: 0, paddingTop: 2 } }, e.t ? hhmm(e.t) : ""), /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { width: 4, borderRadius: 2, background: e.ink, flexShrink: 0 } }), /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: e.ink } }, e.title), e.sub && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: P.sub2 } }, e.sub)))) : /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: P.sub, padding: "8px 0" } }, "Nothing yet. Stretches out of limits, marks, stops and matches show here."))), recording && /* @__PURE__ */ React.createElement("div", { style: card({ padding: "12px 14px" }) }, /* @__PURE__ */ React.createElement("div", { style: { ...lab, marginBottom: 8 } }, "Add a mark here"), /* @__PURE__ */ React.createElement("label", { htmlFor: "pt-mark", style: { display: "block", fontSize: 12, color: P.sub, marginBottom: 4 } }, "What changed (optional)"), /* @__PURE__ */ React.createElement("input", { id: "pt-mark", "aria-label": "Note for the mark", value: markNote, onChange: (e) => setMarkNote(e.target.value), placeholder: "e.g. die cleaned, PVC temp up", style: { width: "100%", boxSizing: "border-box", background: "#05080B", border: "1px solid #263544", borderRadius: 8, color: P.ink, fontSize: 14, padding: "10px 12px", minHeight: 44, fontFamily: NLT.FONT } }), /* @__PURE__ */ React.createElement("button", { "data-pt-mark": true, onClick: addMark, style: pbtn("purple", { width: "100%", marginTop: 8, minHeight: 44 }) }, "Set mark at ", counter.toFixed(1), " m")))), /* @__PURE__ */ React.createElement("footer", { style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, padding: "12px 20px", background: P.panel, borderTop: `1px solid ${P.line}`, position: "sticky", bottom: 0 } }, /* @__PURE__ */ React.createElement("span", { "data-pt-recording": true, style: { display: "flex", alignItems: "center", gap: 8, fontWeight: 700, letterSpacing: "0.08em", color: recording ? paused ? "#FBBF24" : "#F87171" : P.sub } }, dot(recording ? paused ? "#FBBF24" : "#F87171" : "#475569"), recording ? paused ? "PAUSED" : "RECORDING" : "NOT RECORDING"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: P.sub2, flex: "1 1 120px", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, recording ? "Saves to the reel the moment the glue line logs it \xB7 screen kept awake" : !cv.ok ? "Measure the gap by hand before starting" : "Ready"), needs.length > 0 && /* @__PURE__ */ React.createElement("button", { "data-pt-needs": true, onClick: () => setPpanel("needs"), style: pbtn("plain", { borderColor: "#F59E0B", color: "#FDE68A", background: "#2A1F08" }) }, needs.length, " stop", needs.length === 1 ? "" : "s", " need", needs.length === 1 ? "s" : "", " a reason"), !recording && /* @__PURE__ */ React.createElement("button", { "data-pt-start": true, onClick: start, disabled: !camOn || !lim || !cv.ok, style: pbtn("go", { opacity: !camOn || !lim || !cv.ok ? 0.5 : 1 }) }, "Start the trace"), recording && /* @__PURE__ */ React.createElement("button", { "data-pt-pause": true, onClick: setPaused, style: pbtn() }, paused ? "Carry on" : "Pause"), /* @__PURE__ */ React.createElement("button", { "data-pt-calibrate": true, onClick: () => setPpanel("calib"), style: pbtn() }, "Calibrate"), /* @__PURE__ */ React.createElement("button", { "data-pt-setup": true, onClick: () => setPpanel("setup"), style: pbtn() }, "Set-up"), /* @__PURE__ */ React.createElement("button", { "data-pt-room": true, onClick: () => setFloor(true), style: pbtn() }, "Across the room"), screenAllowed("glueline") && /* @__PURE__ */ React.createElement("button", { "data-pt-glueline": true, onClick: () => go("glueline"), style: pbtn() }, "Log a reel"), recording && /* @__PURE__ */ React.createElement("button", { "data-pt-finish": true, onClick: () => setPpanel("finish"), style: pbtn("go") }, "Finish reel")), ppanel === "calib" && modal("calib", "Calibrate", /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 16 } }, /* @__PURE__ */ React.createElement("section", { style: { flex: "1 1 420px", minWidth: 0, ...card({ padding: 16, background: P.panel }), display: "flex", flexDirection: "column", gap: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("h3", { style: { margin: 0, fontSize: 18, letterSpacing: "0.04em" } }, "THE GAP, BY HAND"), /* @__PURE__ */ React.createElement("span", { style: { ...lab, color: cv.ok ? "#6EE7B7" : "#FDBA74" } }, cv.ok ? "Calibrated" : "Needed before a trace can start")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 180px", ...card({ padding: 14, background: P.panel2 }) } }, /* @__PURE__ */ React.createElement("div", { style: lab }, "The camera reads now"), /* @__PURE__ */ React.createElement("div", { style: { ...mono, fontSize: 48, fontWeight: 700, lineHeight: 1.05 } }, g > 0 ? (g / calib).toFixed(3) : "\u2014"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: P.sub2 } }, "before calibration")), /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 200px", ...card({ padding: 14, background: P.panel2, borderColor: "#E2502F" }), display: "flex", flexDirection: "column", gap: 8 } }, /* @__PURE__ */ React.createElement("label", { htmlFor: "pt-hand", style: { ...lab, color: "#FDBA74" } }, "You measured (mm)"), /* @__PURE__ */ React.createElement("input", { id: "pt-hand", "data-pt-calib-in": true, type: "number", step: "0.001", inputMode: "decimal", value: calibIn, onChange: (e) => {
+        setCalibIn(e.target.value);
+        setCalibErr(null);
+      }, style: { background: "#05080B", border: "1px solid #334155", borderRadius: 8, color: "#fff", ...mono, fontSize: 34, fontWeight: 700, padding: "6px 12px", minHeight: 54, width: "100%", boxSizing: "border-box" } }), /* @__PURE__ */ React.createElement("button", { "data-pt-calib-set": true, disabled: !(g > 0) || !(Number(calibIn) > 0), onClick: setCalibration, style: pbtn("go", { opacity: !(g > 0) || !(Number(calibIn) > 0) ? 0.5 : 1 }) }, "Set"))), calibErr && /* @__PURE__ */ React.createElement("div", { "data-pt-calib-err": true, style: { color: "#FDBA74", fontWeight: 700, fontSize: 14 } }, calibErr), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: cv.ok ? "#A7F3D0" : "#FDBA74" } }, cv.ok && calibRec ? `Calibrated by hand: ${Number(calibRec.hand).toFixed(3)} mm, the camera read ${Number(calibRec.read).toFixed(3)} (\xD7${Number(calibRec.k).toFixed(3)}) at ${hhmm(calibRec.at)}.` : `Measure the gap by hand before a trace can start \u2014 ${cv.why}.`), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: P.sub2, borderTop: `1px solid ${P.line}`, paddingTop: 10 } }, "Measured again when the size, the camera, the measuring line or the day changes. A number far from the camera's is refused.")), /* @__PURE__ */ React.createElement("section", { style: { flex: "1 1 420px", minWidth: 0, ...card({ padding: 16, background: P.panel }), display: "flex", flexDirection: "column", gap: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("h3", { style: { margin: 0, fontSize: 18, letterSpacing: "0.04em" } }, "METRES, AGAINST THE HAUL-OFF"), /* @__PURE__ */ React.createElement("span", { style: { ...lab, color: "#6EE7B7" } }, "Factor \xD7", (haul.factor || 1).toFixed(4), haul.matches.length ? ` \xB7 from ${Math.min(6, haul.matches.length)} match${Math.min(6, haul.matches.length) === 1 ? "" : "es"}` : "")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 180px", ...card({ padding: 14, background: P.panel2 }), display: "flex", flexDirection: "column", gap: 8 } }, /* @__PURE__ */ React.createElement("div", { style: lab }, "At the start of a reel"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: P.sub2 } }, "Reset the haul-off counter, and press this at the same moment."), /* @__PURE__ */ React.createElement("button", { "data-pt-zero": true, onClick: zeroBoth, disabled: !recording, style: pbtn("blue", { opacity: recording ? 1 : 0.5 }) }, "Zero both now")), /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 220px", ...card({ padding: 14, background: P.panel2, borderColor: "#3B82F6" }), display: "flex", flexDirection: "column", gap: 8 } }, /* @__PURE__ */ React.createElement("label", { htmlFor: "pt-haul", style: { ...lab, color: "#93C5FD" } }, "Any time \xB7 the haul-off says (m)"), /* @__PURE__ */ React.createElement("input", { id: "pt-haul", "data-pt-haul-in": true, type: "number", step: "0.1", inputMode: "decimal", value: haulIn, onChange: (e) => {
+        setHaulIn(e.target.value);
+        setHaulMsg(null);
+      }, style: { background: "#05080B", border: "1px solid #334155", borderRadius: 8, color: "#fff", ...mono, fontSize: 32, fontWeight: 700, padding: "6px 12px", minHeight: 52, width: "100%", boxSizing: "border-box" } }), /* @__PURE__ */ React.createElement("button", { "data-pt-match": true, onClick: doMatch, disabled: !recording || String(haulIn).trim() === "", style: pbtn("blue", { background: "#2563EB", color: "#fff", opacity: !recording || String(haulIn).trim() === "" ? 0.5 : 1 }) }, "Match", recording ? ` \xB7 portal ${counter.toFixed(1)}` : ""))), haulMsg && /* @__PURE__ */ React.createElement("div", { "data-pt-haul-msg": true, style: { fontSize: 14, fontWeight: 600, color: haulMsg.bad ? "#FDBA74" : "#A7F3D0" } }, haulMsg.t), !recording && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: P.sub2 } }, "The counter runs with the trace \u2014 start the trace to zero or match it."), haul.matches.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { ...mono, fontSize: 13, color: P.sub2 } }, "Last matches: ", haul.matches.slice(-6).map((m) => `\xD7${Number(m.k).toFixed(4)}`).join("  ")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10, border: "1px dashed #334155", borderRadius: 10, padding: "10px 12px", fontSize: 13, color: P.sub2 } }, /* @__PURE__ */ React.createElement("b", { style: { color: P.ink, whiteSpace: "nowrap" } }, "Encoder straight in \xB7 not connected."), /* @__PURE__ */ React.createElement("span", null, "The encoder box's pulse output can go to a small USB counter on this laptop later, so metres come straight off the wheel."))))), ppanel === "setup" && modal("setup", "Set-up", /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 16 } }, /* @__PURE__ */ React.createElement("section", { style: { flex: "1 1 380px", ...card({ padding: 16, background: P.panel }), display: "flex", flexDirection: "column", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: lab }, "Camera"), /* @__PURE__ */ React.createElement("select", { "data-pt-cam": true, value: camId, onChange: (e) => {
+        setCamId(e.target.value);
+        GT_SET("mxGapCam", e.target.value);
+        if (camOn) startCam(e.target.value);
+      }, style: { background: "#05080B", color: P.ink, border: "1px solid #334155", borderRadius: 8, padding: "10px", fontSize: 15, minHeight: 46, fontFamily: NLT.FONT } }, !cams.length && /* @__PURE__ */ React.createElement("option", { value: "" }, "Camera"), cams.map((c, i) => /* @__PURE__ */ React.createElement("option", { key: c.deviceId || i, value: c.deviceId }, c.label || `Camera ${i + 1}`))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 8 } }, !camOn ? /* @__PURE__ */ React.createElement("button", { onClick: () => startCam(), style: pbtn("blue", { minHeight: 44 }) }, "Turn the camera on") : !recording && /* @__PURE__ */ React.createElement("button", { onClick: () => {
+        gtStopCamera();
+        setTick((x) => x + 1);
+      }, style: pbtn("plain", { minHeight: 44 }) }, "Camera off"), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+        setPicking((p) => !p);
+        setPpanel(null);
+      }, disabled: !camOn, style: pbtn("plain", { minHeight: 44, opacity: camOn ? 1 : 0.5 }) }, "Pick strip colour"), rgb && /* @__PURE__ */ React.createElement("button", { onClick: () => {
+        setRgb(null);
+        GT_SET("mxGapRgb", "null");
+      }, style: pbtn("plain", { minHeight: 44 }) }, "Auto colour")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: P.sub2 } }, "Click the picture to put the measuring line where both strips lie flat. Moving it means measuring by hand again.")), /* @__PURE__ */ React.createElement("section", { style: { flex: "1 1 380px", ...card({ padding: 16, background: P.panel }), display: "flex", flexDirection: "column", gap: 10 } }, /* @__PURE__ */ React.createElement("label", { htmlFor: "pt-size", style: lab }, "Size being run"), /* @__PURE__ */ React.createElement("input", { id: "pt-size", "data-pt-size-in": true, list: "pt-sizes", value: specPick, placeholder: glueEntrySpec ? `${glueEntrySpec} (glue line entry)` : "Type a size", onChange: (e) => setSpecPick(e.target.value), style: { background: "#05080B", color: P.ink, border: "1px solid #334155", borderRadius: 8, padding: "10px 12px", fontSize: 15, minHeight: 46, fontFamily: NLT.FONT } }), /* @__PURE__ */ React.createElement("datalist", { id: "pt-sizes" }, [.../* @__PURE__ */ new Set([...recentSizes, ...catalogueSizes])].slice(0, 600).map((x) => /* @__PURE__ */ React.createElement("option", { key: x, value: x }))), specPick && /* @__PURE__ */ React.createElement("button", { onClick: () => setSpecPick(""), style: pbtn("plain", { minHeight: 42, alignSelf: "flex-start" }) }, "Follow the glue line", glueEntrySpec ? ` (${glueEntrySpec})` : ""), sugg.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: P.sub2 } }, "From the picture this looks like:"), sugg.map((x) => /* @__PURE__ */ React.createElement("button", { key: x.spec, onClick: () => setSpecPick(x.spec), style: pbtn("plain", { minHeight: 40, textAlign: "left", textTransform: "none", letterSpacing: 0 }) }, x.spec, " ", /* @__PURE__ */ React.createElement("span", { style: { ...mono, opacity: 0.8 } }, "\xB7 reads ", x.measured.toFixed(2))))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: P.sub2 } }, "Limits ", lim ? `${lim.min.toFixed(2)} / ${lim.setLo.toFixed(2)}\u2013${lim.setHi.toFixed(2)} / ${lim.max.toFixed(2)}` : "\u2014", " \u2014 the same for every size; the admin changes them on the Gap trace screen.")))), ppanel === "finish" && modal("finish", "Finish the reel", /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, color: P.sub2 } }, "Logging the reel on the glue line saves it by itself. To save it now, pick the reel \u2014 or save it without one."), /* @__PURE__ */ React.createElement("select", { "data-pt-finish-reel": true, value: finishReel, onChange: (e) => setFinishReel(e.target.value), style: { background: "#05080B", color: P.ink, border: "1px solid #334155", borderRadius: 8, padding: "10px", fontSize: 15, minHeight: 48, fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Not logged yet \u2014 save without a reel"), unreeled.map((b) => /* @__PURE__ */ React.createElement("option", { key: b.id, value: b.id }, b.batchNumber, " \xB7 ", b.productSize, " \xB7 ", b.meterage, " m"))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 10 } }, /* @__PURE__ */ React.createElement("button", { "data-pt-finish-save": true, onClick: () => {
+        const reel = unreeled.find((b) => b.id === finishReel) || null;
+        saveReel(reel ? { ...reel } : null);
+        setPpanel(null);
+        setFinishReel("");
+      }, style: pbtn("go") }, "Save this reel's trace"), /* @__PURE__ */ React.createElement("button", { "data-pt-stop": true, onClick: () => {
+        stop();
+        setPpanel(null);
+      }, style: pbtn("plain") }, "Stop recording")))), doneOpen && doneTrace && (() => {
+        const d = doneTrace, dl = gtLimOf(d), st = d.stats || {};
+        return modal("done", `Reel ${d.reelCode || "(no reel)"} saved`, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 14 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, color: P.sub2 } }, d.productSize, " \xB7 ", d.metres, " m", dl ? ` \xB7 min ${dl.min.toFixed(2)} \xB7 set ${dl.setLo.toFixed(2)}\u2013${dl.setHi.toFixed(2)} \xB7 max ${dl.max.toFixed(2)}` : ""), d.notes && /* @__PURE__ */ React.createElement("div", { style: { background: "#2A1508", color: "#FDBA74", borderRadius: 8, padding: "8px 12px", fontWeight: 700 } }, d.notes), /* @__PURE__ */ React.createElement("div", { style: card({ padding: "10px 14px 6px", background: P.panel }) }, /* @__PURE__ */ React.createElement(GapChart, { points: d.points || [], lim: dl, reelM: Number(d.metres) || null, marks: d.marks || [], dark: true })), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 1, background: P.line, border: `1px solid ${P.line}`, borderRadius: 10, overflow: "hidden" } }, [
+          ["Mean", st.mean != null ? Number(st.mean).toFixed(3) : "\u2014"],
+          ["Lowest", st.lowest != null ? Number(st.lowest).toFixed(3) : "\u2014"],
+          ["Highest", st.highest != null ? Number(st.highest).toFixed(3) : "\u2014"],
+          ["In limits", st.inPct != null ? `${st.inPct}%` : "\u2014"],
+          ["On set", st.onSetPct != null ? `${st.onSetPct}%` : "\u2014"],
+          ["Out of limits", st.outM != null ? `${st.outM} m` : "\u2014"],
+          ["Logged \xB7 counted", `${d.metres} \xB7 ${st.countedM != null ? st.countedM : "\u2014"} m`],
+          ["Line stopped", st.stoppedS ? `${st.stoppedS} s` : "0 s"]
+        ].map(([l, v]) => /* @__PURE__ */ React.createElement("div", { key: l, style: { background: P.panel, padding: "10px 14px" } }, /* @__PURE__ */ React.createElement("div", { style: lab }, l), /* @__PURE__ */ React.createElement("div", { style: { ...mono, fontSize: 21, fontWeight: 700 } }, v)))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 10 } }, /* @__PURE__ */ React.createElement("button", { onClick: () => printGapRecord(d, data), style: pbtn("go") }, "Print A4 record"), /* @__PURE__ */ React.createElement("button", { onClick: () => setDoneOpen(false), style: pbtn("plain") }, "Back to the live reel"))));
+      })(), floor && /* @__PURE__ */ React.createElement(
+        GapFloorView,
+        {
+          spec,
+          reelCode: glueEntryReel,
+          lim,
+          g,
+          verdict,
+          live,
+          camOn,
+          recording,
+          paused,
+          head: recording ? liveTrace.head : null,
+          samples: GT_REC.samples,
+          metres: liveTrace.M,
+          colour: live && live.ok ? live.colour : rgb,
+          warn: warnText,
+          onClose: () => setFloor(false),
+          calibOk: cv.ok,
+          calibWhy: cv.why,
+          motion
+        }
+      ), ppanel === "needs" && modal("needs", "Stops that need a reason", /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 12 } }, !needs.length && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, color: P.sub2 } }, "Every stop today has its reason."), needs.map((e) => /* @__PURE__ */ React.createElement("div", { key: e.id, "data-pt-need": e.id, style: card({ padding: "12px 14px", background: P.panel }) }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 10, alignItems: "baseline" } }, /* @__PURE__ */ React.createElement("b", { style: { ...mono, fontSize: 17 } }, hhmm(Date.parse(e.startedAt))), /* @__PURE__ */ React.createElement("span", { style: { ...mono, color: P.sub2 } }, fmtLen(stopLen(e))), /* @__PURE__ */ React.createElement("span", { style: { color: P.sub2, fontSize: 14 } }, e.reelCode ? `on ${e.reelCode}` : "", e.atM != null ? ` at ${Number(e.atM).toFixed(1)} m` : "", e.productSize ? ` \xB7 ${e.productSize}` : "")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 } }, STOP_REASONS.map((r) => /* @__PURE__ */ React.createElement("button", { key: r.key, "data-pt-need-reason": r.key, onClick: () => setStopReason(e.id, r.key), style: pbtn("plain", { minHeight: 44, fontSize: 13, display: "inline-flex", alignItems: "center", gap: 8 }) }, /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { width: 10, height: 10, borderRadius: 3, background: r.chip } }), r.label))))))), promptRow && (() => {
+        const e = promptRow, isOpen = e.id === openId, len = stopLen(e), wasPaused = isOpen && paused;
+        const dayTotal = todayStops.filter((x) => x.reason !== "break").reduce((t2, x) => t2 + stopLen(x), 0);
+        return /* @__PURE__ */ React.createElement("div", { "data-pt-why": e.id, role: "dialog", "aria-modal": "true", "aria-label": "Why did the line stop", style: { position: "fixed", inset: 0, zIndex: 9600, background: "rgba(3,6,9,.66)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "56px 16px 16px", overflowY: "auto" } }, /* @__PURE__ */ React.createElement("div", { style: { width: "100%", maxWidth: 1180, display: "flex", flexWrap: "wrap", gap: 16, alignItems: "flex-start" } }, /* @__PURE__ */ React.createElement("section", { style: { flex: "999 1 620px", minWidth: 0, background: "#0B1218", border: "2px solid #94A3B8", borderRadius: 14, padding: "20px 22px", boxShadow: "0 30px 80px rgba(0,0,0,.6)", display: "flex", flexDirection: "column", gap: 16 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "flex-start", gap: 12 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { ...lab, fontSize: 13 } }, wasPaused ? "The trace was paused" : isOpen ? "The camera saw the line stop" : "The line stopped \u2014 it's running again"), /* @__PURE__ */ React.createElement("h2", { style: { margin: "4px 0 0", fontSize: 36, fontWeight: 800, letterSpacing: "0.03em" } }, "WHY DID IT STOP?")), /* @__PURE__ */ React.createElement("div", { style: { textAlign: "right" } }, /* @__PURE__ */ React.createElement("div", { "data-pt-why-time": true, style: { ...mono, fontSize: 44, fontWeight: 700, lineHeight: 1 } }, fmtClock(len)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: P.sub2 } }, isOpen ? "stopped since" : "stopped", " ", new Date(Date.parse(e.startedAt)).toTimeString().slice(0, 8), !isOpen && e.endedAt ? `\u2013${new Date(Date.parse(e.endedAt)).toTimeString().slice(0, 8)}` : "", e.atM != null ? ` \xB7 at ${Number(e.atM).toFixed(1)} m` : "", e.reelCode ? ` on ${e.reelCode}` : ""))), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 12 } }, STOP_REASONS.map((r) => /* @__PURE__ */ React.createElement("button", { key: r.key, "data-pt-reason": r.key, onClick: () => setStopReason(e.id, r.key, whyNote), style: { display: "flex", alignItems: "center", gap: 14, minHeight: 92, padding: "12px 16px", borderRadius: 12, border: "2px solid #263544", background: "#111A23", color: P.ink, cursor: "pointer", textAlign: "left", fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { width: 44, height: 44, borderRadius: 10, background: r.chip, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0, ...mono, fontSize: 18, fontWeight: 700, color: "#0B1218" } }, r.letter), /* @__PURE__ */ React.createElement("span", { style: { display: "flex", flexDirection: "column", gap: 2, minWidth: 0 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 21, fontWeight: 800, letterSpacing: "0.03em", textTransform: "uppercase" } }, r.label), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: P.sub2 } }, r.sub))))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-end" } }, /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 340px", display: "flex", flexDirection: "column", gap: 6 } }, /* @__PURE__ */ React.createElement("label", { htmlFor: "pt-why-note", style: lab }, "Anything to add (optional)"), /* @__PURE__ */ React.createElement("input", { id: "pt-why-note", "data-pt-why-note": true, value: whyNote, onChange: (ev) => setWhyNote(ev.target.value), placeholder: "e.g. PVC hopper ran low", style: { background: "#05080B", border: "1px solid #263544", borderRadius: 8, color: P.ink, fontSize: 16, padding: "12px 14px", minHeight: 50, fontFamily: NLT.FONT } })), /* @__PURE__ */ React.createElement("button", { "data-pt-why-later": true, onClick: () => {
+          GT_REC.snooze.add(e.id);
+          setTick((x) => x + 1);
+        }, style: pbtn("plain", { minHeight: 50, color: P.sub2 }) }, "Ask me later")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: P.sub, borderTop: `1px solid ${P.line}`, paddingTop: 12 } }, 'One tap is all it needs. Ask me later puts it on the list at the bottom of the screen; left without a reason it goes down as "not said" \u2014 the stop is still counted. A die or width change starts the changeover clock, which runs until the first good metre after it.')), /* @__PURE__ */ React.createElement("aside", { style: { flex: "1 1 320px", minWidth: 0, display: "flex", flexDirection: "column", gap: 16 } }, /* @__PURE__ */ React.createElement("div", { style: { background: "#0F1A2B", border: "2px solid #3B82F6", borderRadius: 14, padding: "16px 18px" } }, /* @__PURE__ */ React.createElement("div", { style: { ...lab, color: "#93C5FD" } }, "Die or width change?"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15, color: "#DBEAFE", marginTop: 6, lineHeight: 1.45 } }, "The changeover clock starts from when the line stopped (", hhmm(Date.parse(e.startedAt)), ") and stops at the first good metre. The plan allows ", cfgS.sizeChangeMin, " min for a die change and ", cfgS.widthChangeMin, " min for a width change."), (weekChanges.die.n > 0 || weekChanges.width.n > 0) && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: "#BFDBFE", marginTop: 8 } }, "This week: ", [weekChanges.die.n ? `die changes ${Math.round(weekChanges.die.avg)} min (${weekChanges.die.n})` : null, weekChanges.width.n ? `width changes ${Math.round(weekChanges.width.avg)} min (${weekChanges.width.n})` : null].filter(Boolean).join(" \xB7 "), ".")), /* @__PURE__ */ React.createElement("div", { style: card({ padding: "14px 16px", borderRadius: 14 }) }, /* @__PURE__ */ React.createElement("div", { style: { ...lab, marginBottom: 6 } }, "Today's stops \xB7 glue line"), todayStops.slice(0, 7).map((x) => /* @__PURE__ */ React.createElement("div", { key: x.id, style: { display: "flex", gap: 10, padding: "7px 0", borderTop: "1px solid #16212C", alignItems: "center" } }, /* @__PURE__ */ React.createElement("span", { style: { ...mono, fontSize: 13, color: P.sub, width: 44 } }, hhmm(Date.parse(x.startedAt))), /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { width: 10, height: 10, borderRadius: 3, background: reasonOf(x.reason).chip, flexShrink: 0 } }), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, fontSize: 14.5 } }, x.id === e.id ? "This one" : x.reason ? reasonOf(x.reason).label : "Not said yet"), /* @__PURE__ */ React.createElement("span", { style: { ...mono, fontSize: 14 } }, fmtLen(stopLen(x))))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", borderTop: `1px solid ${P.line}`, paddingTop: 8, marginTop: 4, fontSize: 14 } }, /* @__PURE__ */ React.createElement("span", { style: { color: P.sub } }, "Stopped today (not counting breaks)"), /* @__PURE__ */ React.createElement("span", { style: { ...mono, fontWeight: 700 } }, fmtLen(dayTotal)))))));
+      })());
+    }
     return /* @__PURE__ */ React.createElement("div", { "data-gt-screen": true, style: { fontFamily: NLT.FONT, color: GT_INK, display: "flex", flexDirection: "column", gap: 14 } }, /* @__PURE__ */ React.createElement(
       DeskBand,
       {
@@ -20363,7 +21097,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       });
       return o ? `${nlsShort(o.customer)} next` : null;
     })();
-    return /* @__PURE__ */ React.createElement("div", { "data-desk-nav-list": true, style: { margin: "4px -6px 8px" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, margin: "4px 6px 8px" } }, quick("neworders", "New order", "plus"), quick("glueline", "Log glue line", "glueline"), quick("bonding", "Log bonding", "bonding"), quick("labels", "Print labels", "labels")), head("AT A GLANCE"), item("home", "Today"), item("dashboard", "Orders", live.length || null), item("finish", "Plan"), item("production", "Production list"), item("stock", "Stock"), head("ON THE FLOOR"), item("extrusion", "Baseline extrusion"), item("eva", "EVA"), item("pick", "Pick", counts.pick || null, false, firstPick), item("packing", "Packing", counts.ship || null), item("caselabels", "Case Labels"), item("stocktake", "Stock take"), item("gaptrace", "Gap trace"), head("SET-UP"), item("tooling", "Tooling"), /* @__PURE__ */ React.createElement("button", { "data-desk-more": true, onClick: () => setMore((v) => !v), style: { display: "flex", alignItems: "center", gap: 8, margin: "12px 22px 4px", background: "none", border: 0, color: "rgba(255,255,255,.6)", fontSize: 12.5, fontWeight: 600, fontFamily: NLT.FONT, cursor: "pointer", padding: 0 } }, more ? "\u25BE" : "\u25B8", " More", alerts ? /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, padding: "0 7px", borderRadius: 999, background: DESK_OR, color: "#fff" } }, alerts) : null), more && /* @__PURE__ */ React.createElement(React.Fragment, null, item("metrics", "Metrics"), item("materials", "Materials"), item("gluelineschedule", "Glue line schedule"), item("batches", "Batches to bond"), item("ncr", "NCR log"), item("register", "Register"), item("messages", "Messages"), item("products", "Products"), item("admin", "Admin", alerts || null, true)), /* @__PURE__ */ React.createElement("button", { "data-desk-old": true, onClick: () => setDeskOld(true), style: { display: "block", margin: "14px 22px 0", background: "none", border: 0, padding: 0, color: "rgba(255,255,255,.5)", fontSize: 12, fontFamily: NLT.FONT, cursor: "pointer" } }, "Use the old look on this PC"));
+    return /* @__PURE__ */ React.createElement("div", { "data-desk-nav-list": true, style: { margin: "4px -6px 8px" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, margin: "4px 6px 8px" } }, quick("neworders", "New order", "plus"), quick("glueline", "Log glue line", "glueline"), quick("bonding", "Log bonding", "bonding"), quick("labels", "Print labels", "labels")), head("AT A GLANCE"), item("home", "Today"), item("dashboard", "Orders", live.length || null), item("finish", "Plan"), item("production", "Production list"), item("stock", "Stock"), head("ON THE FLOOR"), item("extrusion", "Baseline extrusion"), item("eva", "EVA"), item("pick", "Pick", counts.pick || null, false, firstPick), item("packing", "Packing", counts.ship || null), item("caselabels", "Case Labels"), item("stocktake", "Stock take"), item("gaptrace", "Gap trace"), item("portal", "Glue line portal"), item("efficiency", "Line efficiency"), head("SET-UP"), item("tooling", "Tooling"), /* @__PURE__ */ React.createElement("button", { "data-desk-more": true, onClick: () => setMore((v) => !v), style: { display: "flex", alignItems: "center", gap: 8, margin: "12px 22px 4px", background: "none", border: 0, color: "rgba(255,255,255,.6)", fontSize: 12.5, fontWeight: 600, fontFamily: NLT.FONT, cursor: "pointer", padding: 0 } }, more ? "\u25BE" : "\u25B8", " More", alerts ? /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, padding: "0 7px", borderRadius: 999, background: DESK_OR, color: "#fff" } }, alerts) : null), more && /* @__PURE__ */ React.createElement(React.Fragment, null, item("metrics", "Metrics"), item("materials", "Materials"), item("gluelineschedule", "Glue line schedule"), item("batches", "Batches to bond"), item("ncr", "NCR log"), item("register", "Register"), item("messages", "Messages"), item("products", "Products"), item("admin", "Admin", alerts || null, true)), /* @__PURE__ */ React.createElement("button", { "data-desk-old": true, onClick: () => setDeskOld(true), style: { display: "block", margin: "14px 22px 0", background: "none", border: 0, padding: 0, color: "rgba(255,255,255,.5)", fontSize: 12, fontFamily: NLT.FONT, cursor: "pointer" } }, "Use the old look on this PC"));
   }
   function DeskBand({ title, sub, right = null, tiles = null, children = null }) {
     return /* @__PURE__ */ React.createElement("div", { "data-desk-band": true, style: { borderRadius: 24, background: DESK_BAND, color: "#fff", padding: "18px 24px 20px", position: "relative", overflow: "hidden", marginBottom: 14, fontFamily: NLT.FONT } }, /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { position: "absolute", right: -60, top: -90, width: 260, height: 260, borderRadius: "50%", background: "rgba(255,255,255,.06)" } }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-start", gap: 12, position: "relative" } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 30, fontWeight: 700, letterSpacing: -0.5 } }, title), sub && /* @__PURE__ */ React.createElement("div", { style: { opacity: 0.85, fontSize: 14 } }, sub)), right && /* @__PURE__ */ React.createElement("div", { style: { marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" } }, right)), children && /* @__PURE__ */ React.createElement("div", { style: { position: "relative" } }, children), tiles && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10, marginTop: 14, position: "relative" } }, tiles.map((t, i) => /* @__PURE__ */ React.createElement("button", { key: i, onClick: t.onClick, style: { flex: t.wide ? 1.4 : 1, background: "rgba(255,255,255,.1)", borderRadius: 14, padding: "10px 14px", borderTop: `3px solid ${t.col}`, border: 0, borderTopStyle: "solid", borderTopWidth: 3, borderTopColor: t.col, color: "#fff", textAlign: "left", fontFamily: NLT.FONT, cursor: t.onClick ? "pointer" : "default" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: String(t.v).length > 5 ? 16 : 24, fontWeight: 700, lineHeight: 1.4 } }, t.v), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, opacity: 0.8 } }, t.l)))));
@@ -20385,6 +21119,94 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
   .desk-skin input:not([type=checkbox]):not([type=radio]), .desk-skin select, .desk-skin textarea { border-radius: 10px; }
 `;
   var deskBtn = (primary) => ({ background: primary ? DESK_OR : "rgba(255,255,255,.14)", border: 0, borderRadius: 12, padding: "9px 14px", fontWeight: primary ? 700 : 500, fontSize: 14, color: "#fff", fontFamily: NLT.FONT, cursor: "pointer" });
+  function isoWeekOf(d) {
+    const x = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+    const day = x.getUTCDay() || 7;
+    x.setUTCDate(x.getUTCDate() + 4 - day);
+    const y0 = new Date(Date.UTC(x.getUTCFullYear(), 0, 1));
+    return Math.ceil(((x - y0) / 864e5 + 1) / 7);
+  }
+  function LineEfficiencyView({ data, setData }) {
+    const [back, setBack] = useState(0), [, setTick] = useState(0);
+    useEffect(() => {
+      const iv = setInterval(() => setTick((t) => t + 1), 3e4);
+      return () => clearInterval(iv);
+    }, []);
+    const ws = weekStartOf(/* @__PURE__ */ new Date(), back);
+    const cfg = scheduleSettingsOf(data);
+    const cal = useMemo(() => workCalendar(cfg.saturdayGlueHours, data.lineDowntime, "glue"), [cfg.saturdayGlueHours, data.lineDowntime]);
+    const rate = Number(((data.productionRates && data.productionRates.length ? data.productionRates : DEFAULT_PRODUCTION_RATES).find((r) => r && r.line === "glue") || {}).metersPerMin) || 11;
+    const openId = GT_REC.stopSt && GT_REC.stopSt.stop ? GT_REC.stopSt.stop.id : null;
+    const wk = efficiencyWeek({ events: data.lineEvents || [], traces: data.gapTraces || [], cal, rate, weekStart: ws, nowMs: Date.now(), openId });
+    const wins = biggestWins(wk);
+    const pct = (v) => v == null ? "\u2014" : `${(v * 100).toFixed(1)}%`;
+    const h1 = (m) => `${(m / 60).toFixed(1)} h`;
+    const C = { ink: "#0F1B2D", sub: "#5B6B80", line: "#DCE2EA", soft: "#EEF1F5", run: "#22A06B", stop: "#E5484D", change: "#3B82F6", brk: "#CBD5E1", amber: "#F59E0B" };
+    const card = (x = {}) => ({ background: "#fff", border: `1px solid ${C.line}`, borderRadius: 16, padding: "16px 20px", boxShadow: "0 1px 2px rgba(27,43,107,.05)", minWidth: 0, ...x });
+    const lab = { fontSize: 12, letterSpacing: "0.12em", textTransform: "uppercase", color: C.sub, fontWeight: 600 };
+    const mono = { fontFamily: GT_MONO };
+    const we = new Date(ws);
+    we.setDate(we.getDate() + 6);
+    const weekWords = `Wk ${isoWeekOf(ws)} \xB7 ${ws.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })} \u2013 ${we.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })}`;
+    const watchedAny = wk.watchedMin > 0;
+    const proposals = ["die", "width"].map((k) => {
+      const c = wk.changes[k], cur = k === "die" ? cfg.sizeChangeMin : cfg.widthChangeMin;
+      return c.n >= 3 && c.avg != null && Math.abs(Math.round(c.avg) - cur) >= 2 ? { k, cur, to: Math.round(c.avg), n: c.n } : null;
+    }).filter(Boolean);
+    const usePlan = () => {
+      if (!proposals.length) return;
+      const patch = {};
+      for (const p of proposals) patch[p.k === "die" ? "sizeChangeMin" : "widthChangeMin"] = p.to;
+      const words3 = proposals.map((p) => `${p.k === "die" ? "die change" : "width change"} ${p.cur} \u2192 ${p.to} min (${p.n} changes)`).join(", ");
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      setData((prev) => {
+        const rows = prev.scheduleSettings || [];
+        const base = { ...DEFAULT_SCHEDULE_SETTINGS, ...rows.find((x) => x.id === "default") || {} };
+        const row = { ...base, ...patch, id: "default", deleted: false };
+        const rr = prev.scheduleRules || [];
+        const ri = rr.findIndex((r) => r && !r.deleted && r.kind === "change_times" && (r.attr || "") === "");
+        const rule = { state: "on", source: "the portal camera", note: `${weekWords}: ${words3}`, decidedAt: now };
+        return {
+          ...prev,
+          scheduleSettings: rows.some((x) => x.id === "default") ? rows.map((x) => x.id === "default" ? row : x) : [...rows, row],
+          scheduleRules: ri >= 0 ? rr.map((r, j) => j === ri ? { ...r, ...rule } : r) : [...rr, { id: uid("sr"), kind: "change_times", attr: null, value: null, createdAt: now, deleted: false, ...rule }],
+          ...appendLog(prev, { action: "update", entity: "scheduleSettings", entityId: "default", summary: `Changeover times from the glue line portal's camera: ${words3}` })
+        };
+      });
+    };
+    const setReason = (id, key) => {
+      const at = (/* @__PURE__ */ new Date()).toISOString(), who = currentActor() || null;
+      setData((prev) => ({ ...prev, lineEvents: (prev.lineEvents || []).map((r) => r.id === id ? { ...r, reason: key || null, planMin: key && isChangeReason(key) ? changePlanMin(key, cfg) : null, answeredAt: key ? at : null, answeredBy: key ? who : null } : r) }));
+    };
+    const days = wk.days;
+    const hrs = days.flatMap((d) => [...d.planned, ...d.cal].map((iv) => [new Date(iv[0]).getHours() + new Date(iv[0]).getMinutes() / 60, new Date(iv[1]).getHours() + new Date(iv[1]).getMinutes() / 60 + (new Date(iv[1]).getDate() !== new Date(iv[0]).getDate() ? 24 : 0)]));
+    const ax0 = hrs.length ? Math.floor(Math.min(...hrs.map((x) => x[0]))) : 8, ax1 = hrs.length ? Math.ceil(Math.max(...hrs.map((x) => x[1]))) : 17;
+    const xp = (t, d0) => Math.max(0, Math.min(100, ((t - d0) / 36e5 - ax0) / Math.max(1, ax1 - ax0) * 100));
+    const segOf = (d, iv, ink, title, extra = {}) => ({ left: xp(iv[0], d.d0), width: Math.max(0.15, xp(iv[1], d.d0) - xp(iv[0], d.d0)), ink, title, ...extra });
+    const hhmm = (t) => new Date(t).toTimeString().slice(0, 5);
+    const inkOf = (e) => e.reason === "break" ? C.brk : isChangeReason(e.reason) ? C.change : C.stop;
+    const factor = (key, name, v, ink, line, lost) => /* @__PURE__ */ React.createElement("div", { key, "data-eff-factor": key, style: { ...card({ borderTop: `5px solid ${ink}` }), flex: "1 1 230px", display: "flex", flexDirection: "column", gap: 8 } }, /* @__PURE__ */ React.createElement("div", { style: lab }, name), /* @__PURE__ */ React.createElement("div", { style: { ...mono, fontSize: 42, fontWeight: 700, lineHeight: 1 } }, pct(v)), /* @__PURE__ */ React.createElement("div", { style: { height: 10, background: C.soft, borderRadius: 5, overflow: "hidden" } }, /* @__PURE__ */ React.createElement("div", { style: { width: `${v == null ? 0 : Math.min(100, v * 100)}%`, height: "100%", background: ink } })), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 15 } }, line), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: C.sub, borderTop: `1px solid ${C.soft}`, paddingTop: 8, marginTop: "auto" } }, lost));
+    const maxReason = Math.max(1, ...wk.reasons.map((r) => r.min));
+    return /* @__PURE__ */ React.createElement("div", { "data-eff-screen": true, style: { fontFamily: NLT.FONT, color: C.ink, display: "flex", flexDirection: "column", gap: 16 } }, /* @__PURE__ */ React.createElement(
+      DeskBand,
+      {
+        title: "Glue line efficiency",
+        sub: `${weekWords} \xB7 from the glue line portal's camera`,
+        right: /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { "data-eff-prev": true, onClick: () => setBack((b) => b + 1), style: deskBtn(false) }, "\u25C2 Week before"), back > 0 && /* @__PURE__ */ React.createElement("button", { "data-eff-this": true, onClick: () => setBack(0), style: deskBtn(false) }, "This week"), back > 0 && /* @__PURE__ */ React.createElement("button", { "data-eff-next": true, onClick: () => setBack((b) => Math.max(0, b - 1)), style: deskBtn(false) }, "Next week \u25B8"))
+      }
+    ), !watchedAny && /* @__PURE__ */ React.createElement("div", { "data-eff-empty": true, style: card({ background: "#FFFBEB", borderColor: "#FDE68A" }) }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, fontSize: 16 } }, "The portal hasn't watched the glue line ", back ? "that week" : "this week", " yet."), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14.5, color: "#5B4B1A", marginTop: 4 } }, "Start the trace on the glue line portal and every stop, changeover and metre lands here. ", wk.plannedMin ? `${h1(wk.plannedMin)} of glue line hours were planned ${back ? "that week" : "so far this week"}.` : "")), /* @__PURE__ */ React.createElement("section", { style: { display: "flex", flexWrap: "wrap", gap: 16, alignItems: "stretch" } }, /* @__PURE__ */ React.createElement("div", { "data-eff-oee": true, style: { ...card(), flex: "1 1 320px", display: "flex", flexDirection: "column", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: lab }, "OEE \xB7 how much of the time it watched was good strip"), /* @__PURE__ */ React.createElement("div", { "data-eff-oee-value": true, style: { ...mono, fontSize: 76, fontWeight: 700, lineHeight: 0.95, letterSpacing: "-0.03em", color: DESK_NAVY } }, pct(wk.oee)), /* @__PURE__ */ React.createElement("div", { style: { ...mono, fontSize: 15, color: "#334155" } }, pct(wk.avail), " \xD7 ", pct(wk.perf), " \xD7 ", pct(wk.qual)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: C.sub } }, "Time running \xD7 speed while running \xD7 metres inside the gap. 85% is world class."), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 13, color: C.sub, marginBottom: 5 } }, /* @__PURE__ */ React.createElement("span", null, "Metres made against possible"), /* @__PURE__ */ React.createElement("span", { style: { ...mono, color: C.ink } }, Math.round(wk.metres).toLocaleString("en-GB"), " / ", Math.round(wk.possibleM).toLocaleString("en-GB"), " m")), /* @__PURE__ */ React.createElement("div", { style: { height: 14, background: C.soft, borderRadius: 7, overflow: "hidden" } }, /* @__PURE__ */ React.createElement("div", { style: { width: `${wk.possibleM ? Math.min(100, wk.metres / wk.possibleM * 100) : 0}%`, height: "100%", background: DESK_NAVY } })), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: "#64748B", marginTop: 5 } }, "Possible = ", h1(wk.plannedMin), " planned at ", rate, " m/min. Metres are the portal's counter", wk.watchedMin < wk.plannedMin - 1 ? `; ${h1(wk.notWatchedMin)} planned weren't watched` : "", "."))), factor("avail", "Availability \xB7 was it running?", wk.avail, C.run, watchedAny ? `Running ${h1(wk.runningMin)} of ${h1(wk.watchedMin - wk.breakMin)} watched` : "Nothing watched yet", watchedAny ? `Stopped ${fmtMin(wk.lostMin)}${wk.reasons[0] && wk.reasons[0].kind !== "planned" ? ` \u2014 ${wk.reasons[0].label.toLowerCase()} the biggest` : ""}.${wk.breakMin >= 1 ? ` Tea and lunch (${fmtMin(wk.breakMin)}) don't count.` : ""}` : "\u2014"), factor("perf", "Performance \xB7 at full speed?", wk.perf, C.change, wk.metres ? `${Math.round(wk.metres).toLocaleString("en-GB")} m of ${Math.round(wk.runningMin * rate).toLocaleString("en-GB")} m it could make while running` : "No metres counted yet", `At ${rate} m/min, the glue line's rate on the plan.`), factor("qual", "Quality \xB7 inside the gap?", wk.qual, C.amber, wk.readM ? `${Math.round(wk.goodM).toLocaleString("en-GB")} m inside the limits of ${Math.round(wk.readM).toLocaleString("en-GB")} m read` : "No reels traced yet", wk.readM ? `${Math.round(wk.outM).toLocaleString("en-GB")} m out of the gap, from the reels' traces.` : "From the gap trace of each reel.")), /* @__PURE__ */ React.createElement("section", { "data-eff-week": true, style: card() }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 18, fontWeight: 700 } }, "The week, minute by minute"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 14, fontSize: 13, color: "#475569" } }, [["Running", C.run], ["Stopped", C.stop], ["Changeover", C.change], ["Tea / lunch", C.brk], ["Not watched", "repeating-linear-gradient(135deg,#E2E8F0 0 4px,#F8FAFC 4px 8px)"]].map(([l, ink]) => /* @__PURE__ */ React.createElement("span", { key: l, style: { display: "inline-flex", alignItems: "center", gap: 6 } }, /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { width: 14, height: 14, borderRadius: 3, background: ink, border: l === "Not watched" ? "1px solid #CBD5E1" : 0 } }), l)))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 12, alignItems: "flex-end", ...mono, fontSize: 12, color: "#64748B" } }, /* @__PURE__ */ React.createElement("div", { style: { width: 46, flexShrink: 0 } }), /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 auto", position: "relative", height: 16 } }, Array.from({ length: ax1 - ax0 + 1 }, (_, i) => /* @__PURE__ */ React.createElement("span", { key: i, style: { position: "absolute", left: `${i / Math.max(1, ax1 - ax0) * 100}%`, transform: "translateX(-50%)" } }, String(ax0 + i).padStart(2, "0")))), /* @__PURE__ */ React.createElement("div", { style: { width: 150, flexShrink: 0, display: "flex", justifyContent: "space-between" } }, /* @__PURE__ */ React.createElement("span", null, "running"), /* @__PURE__ */ React.createElement("span", null, "stops"))), !days.length && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: C.sub, padding: "10px 0" } }, "No working days yet this week."), days.map((d) => {
+      const segs = [
+        ...d.planned.map((iv) => segOf(d, iv, "repeating-linear-gradient(135deg,#E2E8F0 0 4px,#F8FAFC 4px 8px)", "Planned, not watched")),
+        ...d.watched.map((iv) => segOf(d, iv, C.run, `Watched ${hhmm(iv[0])}\u2013${hhmm(iv[1])}`)),
+        ...d.stops.flatMap((e) => e.iv.map((iv) => segOf(d, iv, inkOf(e), `${hhmm(iv[0])} \xB7 ${reasonOf(e.reason).label} \xB7 ${fmtMin((iv[1] - iv[0]) / 6e4)}`, { id: e.id })))
+      ];
+      const n = new Set(d.stops.filter((e) => e.reason !== "break").map((e) => e.id)).size;
+      return /* @__PURE__ */ React.createElement("div", { key: d.key, "data-eff-day": d.key, style: { display: "flex", gap: 12, alignItems: "center", marginTop: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { width: 46, flexShrink: 0, fontWeight: 600 } }, new Date(d.d0).toLocaleDateString("en-GB", { weekday: "short" })), /* @__PURE__ */ React.createElement("div", { role: "img", "aria-label": `${new Date(d.d0).toLocaleDateString("en-GB", { weekday: "long" })}: running ${h1(d.runningMs / 6e4 || 0)}, ${n} stops`, style: { flex: "1 1 auto", position: "relative", height: 32, background: C.soft, borderRadius: 6, overflow: "hidden" } }, segs.map((sg, i) => /* @__PURE__ */ React.createElement("div", { key: i, title: sg.title, "data-eff-seg": sg.id || void 0, style: { position: "absolute", top: 0, bottom: 0, left: `${sg.left}%`, width: `${sg.width}%`, background: sg.ink, borderLeft: sg.id ? "1px solid rgba(255,255,255,.7)" : 0 } }))), /* @__PURE__ */ React.createElement("div", { style: { width: 150, flexShrink: 0, display: "flex", justifyContent: "space-between", ...mono, fontSize: 14 } }, /* @__PURE__ */ React.createElement("span", null, h1((d.runningMs || 0) / 6e4)), /* @__PURE__ */ React.createElement("span", null, n)));
+    }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: "#64748B", marginTop: 12 } }, "The glue line's working hours are the plan's (with Saturday and any line-down days). Green is the camera seeing the strip move; every gap in it is a stop, coloured by the reason given at the portal or below.")), /* @__PURE__ */ React.createElement("section", { style: { display: "flex", flexWrap: "wrap", gap: 16, alignItems: "stretch" } }, /* @__PURE__ */ React.createElement("div", { "data-eff-reasons": true, style: { ...card(), flex: "1 1 360px" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 18, fontWeight: 700 } }, "Where the ", fmtMin(wk.lostMin + wk.breakMin), " went"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: C.sub } }, "stops")), !wk.reasons.length && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: C.sub } }, "No stops seen", watchedAny ? " \u2014 the line ran the whole time it was watched" : "", "."), wk.reasons.map((r) => /* @__PURE__ */ React.createElement("div", { key: r.key, "data-eff-reason": r.key, style: { display: "flex", alignItems: "center", gap: 10, padding: "5px 0" } }, /* @__PURE__ */ React.createElement("span", { style: { width: 150, flexShrink: 0, fontSize: 14 } }, r.label, r.kind === "planned" ? " (planned)" : ""), /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 auto", height: 16, background: C.soft, borderRadius: 4, overflow: "hidden" } }, /* @__PURE__ */ React.createElement("div", { style: { width: `${r.min / maxReason * 100}%`, height: "100%", background: r.chip } })), /* @__PURE__ */ React.createElement("span", { style: { width: 58, textAlign: "right", ...mono, fontSize: 14, fontWeight: 600 } }, fmtMin(r.min)), /* @__PURE__ */ React.createElement("span", { style: { width: 30, textAlign: "right", ...mono, fontSize: 13, color: C.sub } }, "\xD7", r.n)))), /* @__PURE__ */ React.createElement("div", { "data-eff-changes": true, style: { ...card(), flex: "1 1 360px", display: "flex", flexDirection: "column" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 18, fontWeight: 700 } }, "Changeovers \u2014 real against the plan"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: C.sub } }, "average")), ["die", "width"].map((k) => {
+      const c = wk.changes[k], plan = k === "die" ? cfg.sizeChangeMin : cfg.widthChangeMin, over = c.avg != null && c.avg > plan, top = Math.max(40, plan * 1.6, (c.avg || 0) * 1.1);
+      return /* @__PURE__ */ React.createElement("div", { key: k, "data-eff-change": k, style: { padding: "9px 0", borderTop: `1px solid ${C.soft}` } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 15, fontWeight: 600 } }, k === "die" ? "Die change" : "Width change", " ", /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 400, color: C.sub, fontSize: 13 } }, "\xD7 ", c.n)), /* @__PURE__ */ React.createElement("span", { style: { ...mono, fontSize: 15 } }, /* @__PURE__ */ React.createElement("b", null, c.avg != null ? Math.round(c.avg) : "\u2014"), " ", /* @__PURE__ */ React.createElement("span", { style: { color: C.sub } }, "vs ", plan, " min"))), /* @__PURE__ */ React.createElement("div", { style: { position: "relative", height: 12, background: C.soft, borderRadius: 4, marginTop: 6 } }, c.avg != null && /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: 0, top: 0, bottom: 0, width: `${Math.min(100, c.avg / top * 100)}%`, background: over ? C.amber : C.change, borderRadius: 4 } }), /* @__PURE__ */ React.createElement("div", { "aria-hidden": "true", style: { position: "absolute", top: -3, bottom: -3, left: `${plan / top * 100}%`, width: 2, background: C.ink } })), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: c.n ? over ? "#B45309" : "#15803D" : C.sub, marginTop: 5 } }, !c.n ? "None timed yet \u2014 pick Die change or Width change when the portal asks." : over ? `${Math.round(c.avg - plan)} min over each time \u2014 ${fmtMin((c.avg - plan) * c.n)} this week` : "Inside the plan", c.runupM ? ` \xB7 ${Math.round(c.runupM)} m run up after them` : ""));
+    }), /* @__PURE__ */ React.createElement("div", { style: { marginTop: "auto", paddingTop: 10 } }, proposals.length ? /* @__PURE__ */ React.createElement("button", { "data-eff-useplan": true, onClick: usePlan, style: { border: 0, borderRadius: 12, background: DESK_NAVY, color: "#fff", fontWeight: 600, fontSize: 14.5, padding: "11px 16px", cursor: "pointer", fontFamily: NLT.FONT } }, "Plan with these: ", proposals.map((p) => `${p.k === "die" ? "die" : "width"} ${p.to} min`).join(", ")) : /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: C.sub } }, "The plan uses ", cfg.sizeChangeMin, " min for a die change and ", cfg.widthChangeMin, " min for a width change. After three timed changes that disagree by 2 min or more, a button here puts the real times into the plan."))), /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 300px", display: "flex", flexDirection: "column", gap: 16 } }, /* @__PURE__ */ React.createElement("div", { "data-eff-scrap": true, style: card() }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 18, fontWeight: 700 } }, wk.readM ? `${Math.round(wk.outM).toLocaleString("en-GB")} m out of the gap` : "Out of the gap"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: C.sub } }, wk.readM ? `${(wk.outM / wk.readM * 100).toFixed(1)}% of read` : "")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, lineHeight: 1.5 } }, wk.readM ? /* @__PURE__ */ React.createElement(React.Fragment, null, "From ", Math.round(wk.readM).toLocaleString("en-GB"), " m traced on the reels.", wk.changes.die.runupM + wk.changes.width.runupM > 0 ? /* @__PURE__ */ React.createElement(React.Fragment, null, " Run-up after changes: ", /* @__PURE__ */ React.createElement("b", null, Math.round(wk.changes.die.runupM + wk.changes.width.runupM), " m"), " before the first good metre.") : null) : /* @__PURE__ */ React.createElement("span", { style: { color: C.sub } }, "Each reel's gap trace says how many metres went outside the limits."))), /* @__PURE__ */ React.createElement("div", { "data-eff-wins": true, style: { background: DESK_NAVY, color: "#fff", borderRadius: 16, padding: "16px 20px", flex: "1 1 auto" } }, /* @__PURE__ */ React.createElement("div", { style: { ...lab, color: "#A9C1E3", marginBottom: 8 } }, "What would move it most"), !wins.length && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, opacity: 0.85 } }, watchedAny ? "Nothing stands out yet." : "Once the portal has watched a few shifts, the biggest wins show here."), wins.map((w) => /* @__PURE__ */ React.createElement("div", { key: w.key, style: { display: "flex", justifyContent: "space-between", gap: 10, padding: "7px 0", borderTop: "1px solid rgba(255,255,255,.14)", fontSize: 14 } }, /* @__PURE__ */ React.createElement("span", null, w.what), /* @__PURE__ */ React.createElement("span", { style: { ...mono, fontWeight: 600, color: "#86EFAC", whiteSpace: "nowrap" } }, w.min != null ? `+${fmtMin(w.min)}` : "")))))), /* @__PURE__ */ React.createElement("section", { "data-eff-stops": true, style: card() }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 18, fontWeight: 700 } }, "Every stop ", back ? "that week" : "this week"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: C.sub } }, wk.notSaid ? `${wk.notSaid} without a reason \u2014 give it one here` : "change a reason here if it was wrong")), !wk.stops.length && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: C.sub } }, "No stops."), wk.stops.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 14 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { textAlign: "left", color: C.sub, fontSize: 12.5 } }, ["When", "How long", "Why", "Reel \xB7 size", "Back to good", "Note"].map((h) => /* @__PURE__ */ React.createElement("th", { key: h, style: { padding: "6px 8px", fontWeight: 600, borderBottom: `1px solid ${C.line}` } }, h)))), /* @__PURE__ */ React.createElement("tbody", null, wk.stops.slice(0, 120).map((e) => /* @__PURE__ */ React.createElement("tr", { key: e.id, "data-eff-stop": e.id, style: { borderBottom: `1px solid ${C.soft}` } }, /* @__PURE__ */ React.createElement("td", { style: { padding: "7px 8px", whiteSpace: "nowrap", ...mono } }, new Date(e.s).toLocaleDateString("en-GB", { weekday: "short" }), " ", hhmm(e.s)), /* @__PURE__ */ React.createElement("td", { style: { padding: "7px 8px", ...mono } }, fmtLen(e.e - e.s)), /* @__PURE__ */ React.createElement("td", { style: { padding: "7px 8px" } }, e.chainOf && e.answeredBy === "the change" ? /* @__PURE__ */ React.createElement("span", { style: { color: C.sub } }, e.note || "Part of the change") : /* @__PURE__ */ React.createElement("select", { "data-eff-stop-reason": e.id, "aria-label": "Why it stopped", value: e.reason || "", onChange: (ev) => setReason(e.id, ev.target.value), style: { fontFamily: NLT.FONT, fontSize: 14, padding: "6px 8px", borderRadius: 8, border: `1px solid ${e.reason ? C.line : "#F59E0B"}`, background: e.reason ? "#fff" : "#FFFBEB" } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Not said"), STOP_REASONS.map((r) => /* @__PURE__ */ React.createElement("option", { key: r.key, value: r.key }, r.label)))), /* @__PURE__ */ React.createElement("td", { style: { padding: "7px 8px", color: "#334155" } }, [e.reelCode, e.productSize].filter(Boolean).join(" \xB7 ") || "\u2014", e.toSize && e.toSize !== e.productSize ? ` \u2192 ${e.toSize}` : ""), /* @__PURE__ */ React.createElement("td", { style: { padding: "7px 8px", ...mono } }, e.goodAt ? fmtLen(Date.parse(e.goodAt) - e.s) : "\u2014"), /* @__PURE__ */ React.createElement("td", { style: { padding: "7px 8px", color: "#334155" } }, e.chainOf && e.answeredBy === "the change" ? "" : e.note || ""))))))));
+  }
   function Dashboard({ data, jumpToOrder, goTo, skin = false }) {
     const [sortBy, setSortBy] = useState("urgent");
     const [stageFilter, setStageFilter] = useState("all");
@@ -22042,8 +22864,8 @@ ${recent}` : null });
       if (isReelCase(caseRow)) return "mat-case-reel";
       const rec = (data.cases || []).find((c) => c && !c.deleted && c.orderId === caseRow.orderId && Number(c.caseNum) === Number(caseRow.caseNum));
       if (rec && rec.kind === "reel") return "mat-case-reel";
-      const ms = rec ? Number(rec.maxSize) || 0 : 0;
-      if (ms > 0) return ms <= 5 ? "mat-case-5" : ms <= 10 ? "mat-case-10" : ms <= 15 ? "mat-case-15" : "mat-case-20";
+      const ms2 = rec ? Number(rec.maxSize) || 0 : 0;
+      if (ms2 > 0) return ms2 <= 5 ? "mat-case-5" : ms2 <= 10 ? "mat-case-10" : ms2 <= 15 ? "mat-case-15" : "mat-case-20";
       const contentCount = caseRow.contributions.reduce((s, c) => s + (Number(c.qty) || 0), 0);
       if (contentCount <= 5) return "mat-case-5";
       if (contentCount <= 10) return "mat-case-10";
@@ -42097,7 +42919,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     }
   }
   var NL_CALM = { current: false };
-  function useNLCount(value, ms = 600) {
+  function useNLCount(value, ms2 = 600) {
     const target = Number(value) || 0;
     const [n, setN] = useState(nlMotionOK() && !NL_CALM.current ? 0 : target);
     const shownRef = useRef(n);
@@ -42112,7 +42934,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       let raf = 0;
       const t0 = performance.now();
       const step = (t) => {
-        const k = Math.min(1, (t - t0) / ms);
+        const k = Math.min(1, (t - t0) / ms2);
         const e = 1 - Math.pow(1 - k, 3);
         setN(Math.round(from + (target - from) * e));
         if (k < 1) raf = requestAnimationFrame(step);
@@ -44448,7 +45270,9 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     { key: "caselabels", label: "Case Labels", icon: IconDiamond },
     { key: "planner", label: "Dave's Planner", icon: IconClock },
     { key: "gaptrace", label: "Gap trace", icon: IconChart },
-    // camera on the glue line (9 Oct 2026), admin login only for now   // Dave's own bonding plan (9 Oct 2026)   // the address label on each case (8 Oct 2026)
+    { key: "portal", label: "Glue line portal", icon: IconChart },
+    { key: "efficiency", label: "Line efficiency", icon: IconChart },
+    // the glue line week from the portal camera (10 Oct 2026)   // the gap trace, full screen at the machine (10 Oct 2026)   // camera on the glue line (9 Oct 2026), admin login only for now   // Dave's own bonding plan (9 Oct 2026)   // the address label on each case (8 Oct 2026)
     { key: "admin", label: "Admin", icon: IconAlert },
     /* Reachable, but not in the sidebar. New Orders, Completed Orders and
        Customers are buttons on the Orders page; "Ordered by Eva Size" is now
@@ -44488,7 +45312,7 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     { label: null, keys: ["tooling"] },
     { label: null, keys: ["labels", "caselabels"] },
     { label: null, keys: ["planner"] },
-    { label: null, keys: ["gaptrace"] },
+    { label: null, keys: ["gaptrace", "portal", "efficiency"] },
     // box labels by the app (23 Sep 2026); case labels (8 Oct 2026)
     { label: null, keys: ["admin"] }
   ];
@@ -44505,6 +45329,8 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
     production: ["what needs making", "left to make", "remaining", "outstanding", "top 2", "priority sizes", "combined priority", "eva die", "ordered by eva", "what to bond"],
     gluelineschedule: ["glue schedule", "what to glue"],
     gaptrace: ["gap", "camera", "measure the gap", "trace"],
+    portal: ["glue line portal", "machine side", "haul-off", "haul off", "metre counter"],
+    efficiency: ["oee", "efficiency", "downtime", "stops", "why did it stop", "changeover", "changeovers", "availability", "the week"],
     schedule: ["eva die", "what to bond", "production schedule", "ordered by eva"],
     dashboard: ["orders", "order list", "new order", "completed orders", "customers", "shipped orders"],
     eva: ["eva made", "make eva", "eva production", "eva run", "log eva", "eva reels", "screw speed", "line speed", "eva rack"]
@@ -44512,7 +45338,8 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
   var SCREEN_ACCESS_KEY = "mxScreenAccess";
   var SCREEN_FOLLOWS = { neworders: "dashboard", completed: "dashboard", clientorders: "dashboard", schedule: "production" };
   var SCREEN_ACCESS_GROUPS = [
-    { label: "The line", keys: ["dashboard", "extrusion", "eva", "glueline", "bonding", "packing", "pick"] },
+    { label: "The line", keys: ["portal", "dashboard", "extrusion", "eva", "glueline", "gaptrace", "efficiency", "bonding", "packing", "pick"] },
+    // portal first: a login whose list starts there opens on it
     { label: "Stock", keys: ["stock", "stocktake", "materials"] },
     { label: "Planning", keys: ["daily", "finish", "production", "gluelineschedule", "batches"] },
     { label: "Customers", keys: ["customers", "messages"] },
@@ -44558,7 +45385,11 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
   function screenAllowed(key) {
     if (key === "caselabels") return caseLabelsHere();
     if (key === "planner") return plannerHere();
-    if (key === "gaptrace") return isAdminLogin();
+    if (key === "gaptrace" || key === "portal" || key === "efficiency") {
+      if (isAdminLogin()) return true;
+      const mine2 = screenAccessMine();
+      return !!(mine2 && mine2.includes(key));
+    }
     if (!key || isAdminLogin() || key === "home" || key === "everything") return true;
     const mine = screenAccessMine();
     if (!mine) return true;
@@ -46596,9 +47427,9 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       const POLL_MS_BACKGROUND = 6e4;
       const startPolling = () => {
         if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-        const ms = document.visibilityState === "visible" ? POLL_MS_ACTIVE : POLL_MS_BACKGROUND;
-        pollRateRef.current = ms;
-        pollIntervalRef.current = setInterval(pullAndMerge, ms);
+        const ms2 = document.visibilityState === "visible" ? POLL_MS_ACTIVE : POLL_MS_BACKGROUND;
+        pollRateRef.current = ms2;
+        pollIntervalRef.current = setInterval(pullAndMerge, ms2);
       };
       if (pollRatePitchRef.current) document.removeEventListener("visibilitychange", pollRatePitchRef.current);
       pollRatePitchRef.current = () => {
@@ -46991,6 +47822,8 @@ Delete anyway?` : `Delete reel batch ${target?.batchNumber || "?"} (${target?.me
       schedule: /* @__PURE__ */ React.createElement(ProductionScheduleView, { data }),
       gluelineschedule: /* @__PURE__ */ React.createElement(GlueLineScheduleView, { data, setData }),
       gaptrace: /* @__PURE__ */ React.createElement(GapTraceView, { data, setData }),
+      portal: /* @__PURE__ */ React.createElement(GapTraceView, { data, setData, portal: true }),
+      efficiency: /* @__PURE__ */ React.createElement(LineEfficiencyView, { data, setData }),
       bonding: /* @__PURE__ */ React.createElement(BondingLineView, { data, setData, jumpToPacking }),
       eva: /* @__PURE__ */ React.createElement(EvaLineView, { data, setData }),
       stock: newLayout && !stockTab && !(searchJump?.view === "stock" && searchJump.query) ? /* @__PURE__ */ React.createElement(NLDeskWrap, { on: !newLayout, view: "stock", data }, /* @__PURE__ */ React.createElement(NLStock, { key: nlStockQ ? nlStockQ.at : "nlstock", initialQ: nlStockQ ? nlStockQ.q : null, data, setData, go: navigateTo, openBox: (code) => jumpToSearchResult({ type: "box", value: code }), openStockTab: (t, query) => {
