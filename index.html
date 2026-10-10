@@ -12551,7 +12551,7 @@ ${line}` : line;
     const done = taken instanceof Set ? taken : new Set(taken || []);
     return (glueLineBatches || []).filter((b) => b && !b.deleted && b.batchNumber && Number(b.meterage) > 0 && !done.has(b.batchNumber)).map((b) => ({ b, at: Date.parse(b.endedAt || b.createdAt || b.updatedAt || "") })).filter((x) => x.at > sinceMs).sort((p, q) => p.at - q.at).map((x) => ({ ...x.b, loggedAt: x.at }))[0] || null;
   }
-  function gapTraceRow({ id, reel, spec, lim, widthMm, samples, metres, metresPerMin, marks, startedAt, endedAt, camera, calib, by }) {
+  function gapTraceRow({ id, reel, spec, lim, widthMm, samples, metres, metresPerMin, marks, startedAt, endedAt, camera, calib, by, calibRec = null }) {
     const counted = metres.length ? metres[metres.length - 1] : 0;
     const logged = reel && Number(reel.meterage) > 0 ? Number(reel.meterage) : null;
     const whole = logged && counted >= logged * 0.5;
@@ -12576,7 +12576,14 @@ ${line}` : line;
       points,
       events: traceEvents(points, lim),
       marks: (marks || []).map((mk) => ({ note: mk.note || "Mark", m: Math.round(((Number(mk.m) || 0) * scale + offset) * 10) / 10 })),
-      stats: { ...traceStats(points, lim) || {}, countedM: Math.round(counted * 10) / 10, fromM: Math.round(offset * 10) / 10, readings: (samples || []).filter((s) => s && s.g > 0).length },
+      stats: {
+        ...traceStats(points, lim) || {},
+        countedM: Math.round(counted * 10) / 10,
+        fromM: Math.round(offset * 10) / 10,
+        readings: (samples || []).filter((s) => s && s.g > 0).length,
+        stoppedS: Math.round((samples || []).reduce((a, s, i, all) => a + (i && s && s.stopped && all[i - 1] && s.t - all[i - 1].t < 5e3 ? s.t - all[i - 1].t : 0), 0) / 1e3),
+        calib: calibRec ? { hand: calibRec.hand, read: calibRec.read, k: calibRec.k, at: calibRec.at, by: calibRec.by || null, spec: calibRec.spec || null } : null
+      },
       camera: camera || null,
       calibration: calib || 1,
       deleted: false,
@@ -12653,6 +12660,7 @@ ${line}` : line;
     h2 { font-size: 11.5pt; margin: 0 0 4px; } table { width: 100%; border-collapse: collapse; font-size: 9.5pt; }
     th { text-align: left; border-bottom: 1px solid #000; padding: 3px 5px; } td { border-bottom: 1px solid #ccc; padding: 4px 5px; } tr { break-inside: avoid; }
     .note { border: 1.5px solid #000; padding: 6px 8px; margin-bottom: 12px; font-weight: 700; }
+    .calib { font-size: 9.5pt; margin-top: 12px; }
     .foot { display: flex; justify-content: space-between; font-size: 8.5pt; border-top: 1px solid #000; padding-top: 5px; margin-top: 14px; }
   </style></head><body>
     <div class="top"><div><div class="co">MATRIX ENGINEERING LTD</div><h1>Reel gap record</h1></div><div class="code m">${esc2(t.reelCode || "No reel")}</div></div>
@@ -12666,8 +12674,70 @@ ${line}` : line;
     <div class="stats">${[["Mean", n3(st.mean)], ["Lowest", n3(st.lowest)], ["Highest", n3(st.highest)], ["In tolerance", st.inPct != null ? `${st.inPct}%` : "\u2014"], ["Out", st.outM != null ? `${st.outM} m` : "\u2014"]].map(([l, v]) => `<div><div class="l">${l}</div><div class="v m">${v}</div></div>`).join("")}</div>
     <h2>Events</h2>
     <table><thead><tr><th>#</th><th>What</th><th>From</th><th>To</th><th>Length</th><th>Worst</th></tr></thead><tbody>${evRows}</tbody></table>
-    <div class="foot"><span>Measured by ${esc2(t.camera || "the camera")} on the glue line \xB7 ${esc2(how)}${Number(t.calibration) && Math.abs(Number(t.calibration) - 1) > 5e-4 ? ` \xB7 calibrated \xD7${Number(t.calibration).toFixed(3)}` : ""}</span><span>Printed from Matrix Sync ${esc2(day(when))} ${esc2(hm(when))}</span></div>
+    <div class="calib">${st.calib && Number(st.calib.hand) > 0 ? `Calibrated by hand: <b>${Number(st.calib.hand).toFixed(3)} mm</b> measured, the camera read ${Number(st.calib.read).toFixed(3)} (\xD7${Number(st.calib.k).toFixed(3)})${st.calib.at ? `, ${esc2(day(new Date(st.calib.at)))} ${esc2(hm(new Date(st.calib.at)))}` : ""}${st.calib.by ? ` by ${esc2(String(st.calib.by).split("@")[0])}` : ""}.` : "<b>Not calibrated by hand</b> \u2014 saved before calibration was required."}${Number(st.stoppedS) > 0 ? ` Line stopped for ${Number(st.stoppedS) >= 90 ? `${Math.round(Number(st.stoppedS) / 60)} min` : `${Number(st.stoppedS)} s`} \u2014 not counted in the metres.` : ""}</div>
+    <div class="foot"><span>Measured by ${esc2(t.camera || "the camera")} on the glue line \xB7 ${esc2(how)}</span><span>Printed from Matrix Sync ${esc2(day(when))} ${esc2(hm(when))}</span></div>
   </body></html>`;
+  }
+  var GAP_CALIB_LINE_MOVE = 0.02;
+  function calibValid(rec, { spec, camId, lineY, now = Date.now() } = {}) {
+    if (!rec || !(Number(rec.k) > 0) || !(Number(rec.hand) > 0)) return { ok: false, why: "the gap hasn't been measured by hand on this PC yet" };
+    const day = (t) => {
+      const d = new Date(t);
+      return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    };
+    if (day(rec.at) !== day(now)) return { ok: false, why: `it was last calibrated ${new Date(rec.at).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })} \u2014 it's done each day` };
+    if (spec && rec.spec && sizesDiffer(spec, rec.spec)) return { ok: false, why: `the size has changed since it was calibrated on ${rec.spec}` };
+    if (camId && rec.camId && camId !== rec.camId) return { ok: false, why: "the camera has changed since it was calibrated" };
+    if (lineY != null && rec.lineY != null && Math.abs(Number(lineY) - Number(rec.lineY)) > GAP_CALIB_LINE_MOVE) return { ok: false, why: "the measuring line has moved since it was calibrated" };
+    return { ok: true, why: null };
+  }
+  function calibFrom(hand, rawRead) {
+    const h = Number(hand), r = Number(rawRead);
+    if (!(h > 0.2 && h < 6)) return { ok: false, why: "Enter the gap you measured, in millimetres (for example 1.15)." };
+    if (!(r > 0)) return { ok: false, why: "The camera has to be reading the gap while you enter the hand measurement." };
+    const k = h / r;
+    if (k < 0.7 || k > 1.3) return { ok: false, why: `The camera reads ${r.toFixed(3)} and you measured ${h.toFixed(3)} \u2014 too far apart to be the same gap. Check the measuring line is across both strips, then measure again.` };
+    return { ok: true, k: Math.round(k * 1e4) / 1e4 };
+  }
+  function motionGate({ moveReads = 10, stillReads = 20, resumeReads = 3 } = {}) {
+    let trusted = false, moving = null, runMove = 0, runStill = 0;
+    return {
+      step(stripDiff, bgDiff) {
+        const s = Number(stripDiff), noise = Math.max(Number(bgDiff) > 0 ? Number(bgDiff) : 0, 0.8);
+        if (!(s >= 0)) {
+          runMove = 0;
+          runStill = 0;
+          return { moving, trusted };
+        }
+        const isMove = s > Math.max(2.5 * noise, noise + 2), isStill = s <= Math.max(1.6 * noise, noise + 1);
+        runMove = isMove ? runMove + 1 : 0;
+        runStill = isStill ? runStill + 1 : 0;
+        if (!trusted && runMove >= moveReads) {
+          trusted = true;
+          moving = true;
+        }
+        if (trusted) {
+          if (moving && runStill >= stillReads) moving = false;
+          else if (!moving && runMove >= resumeReads) moving = true;
+        }
+        return { moving, trusted };
+      },
+      reset() {
+        trusted = false;
+        moving = null;
+        runMove = 0;
+        runStill = 0;
+      },
+      get state() {
+        return { moving, trusted };
+      }
+    };
+  }
+  function patchDiff(a, b) {
+    if (!a || !b || a.length !== b.length || !a.length) return null;
+    let s = 0;
+    for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]);
+    return s / a.length;
   }
 
   // mx_pickwalk.js
@@ -14489,7 +14559,7 @@ ${line}` : line;
   }
   var SUPABASE_URL = "https://bjoneyilyyvoemeiojzl.supabase.co";
   var SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
-  var APP_VERSION = "2026-10-09.151";
+  var APP_VERSION = "2026-10-10.152";
   var __syncClient = null;
   function makeSyncClient() {
     if (__syncClient) return __syncClient;
@@ -19518,6 +19588,8 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     video: null,
     canvas: null,
     timer: null,
+    worker: null,
+    wake: null,
     camLabel: null,
     samples: [],
     marks: [],
@@ -19528,12 +19600,28 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     recent: [],
     flash: null,
     saving: false,
-    cfg: { lineY: 0.5, rgb: null, widthMm: null, calib: 1, spec: "", lim: null, speed: 11 }
+    motion: { moving: null, trusted: false },
+    mot: { A: null, B: null, Bg: null, gate: motionGate(), canvas: null },
+    cfg: { lineY: 0.5, rgb: null, widthMm: null, calib: 1, calibRec: null, spec: "", lim: null, speed: 11 }
   };
   if (typeof window !== "undefined") window.__mxGapRec = GT_REC;
+  function gtPatch(v, x0, x1, py, ph) {
+    const w = v.videoWidth, sx = Math.max(0, Math.round(x0)), sw = Math.round(x1 - x0);
+    if (sw < 2 || sx + sw > w) return null;
+    const c = GT_REC.mot.canvas || (GT_REC.mot.canvas = document.createElement("canvas"));
+    c.width = 16;
+    c.height = 48;
+    const ctx = c.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(v, sx, py, sw, ph, 0, 0, 16, 48);
+    const d = ctx.getImageData(0, 0, 16, 48).data, g = new Uint8Array(768);
+    for (let i = 0; i < 768; i++) g[i] = (d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2]) / 3;
+    return g;
+  }
   function gtReadOnce() {
     const v = GT_REC.video;
     if (!v || !v.videoWidth) return;
+    if (v.paused && GT_REC.stream) v.play().catch(() => {
+    });
     const c = GT_REC.canvas || (GT_REC.canvas = document.createElement("canvas"));
     const { lineY, rgb, widthMm, calib } = GT_REC.cfg;
     const w = v.videoWidth, h = v.videoHeight, bh = Math.max(9, Math.round(h * 0.025)), y0 = Math.max(0, Math.min(h - bh, Math.round(lineY * h - bh / 2)));
@@ -19552,13 +19640,79 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       const s = rec.slice().sort((a, b) => a - b);
       g = s[s.length >> 1];
     } else GT_REC.recent = [];
-    const now = Date.now();
+    const M = GT_REC.mot, e = r.ok && r.edges;
+    if (e) {
+      const ph = Math.max(24, Math.round(h * 0.16)), py = Math.max(0, Math.min(h - ph, Math.round(lineY * h - ph / 2)));
+      const sa = e.a1 - e.a0, sb = e.b1 - e.b0, bw = Math.max(sa, sb) * 0.6;
+      const A = gtPatch(v, e.a0 + sa * 0.2, e.a1 - sa * 0.2, py, ph), B = gtPatch(v, e.b0 + sb * 0.2, e.b1 - sb * 0.2, py, ph);
+      const Bg = e.a0 - bw * 1.3 > 0 ? gtPatch(v, e.a0 - bw * 1.3, e.a0 - bw * 0.3, py, ph) : e.b1 + bw * 1.3 < w ? gtPatch(v, e.b1 + bw * 0.3, e.b1 + bw * 1.3, py, ph) : null;
+      const dA = patchDiff(M.A, A), dB = patchDiff(M.B, B), dBg = patchDiff(M.Bg, Bg);
+      M.A = A;
+      M.B = B;
+      M.Bg = Bg;
+      if (dA != null && dB != null) GT_REC.motion = M.gate.step((dA + dB) / 2, dBg);
+    } else {
+      M.A = M.B = M.Bg = null;
+    }
+    const now = Date.now(), moving = GT_REC.motion.moving;
     GT_REC.last = { ...r, g, y0, bh, colour, w, h, at: now };
-    if (GT_REC.recording) GT_REC.samples.push({ t: now, g: r.ok ? r.gap : null, run: !!(r.ok && !GT_REC.paused) });
+    if (GT_REC.recording) {
+      const prev = GT_REC.samples[GT_REC.samples.length - 1];
+      if (prev && now - prev.t > 5e3) GT_REC.marks.push({ t: prev.t + 1, note: `No readings for ${Math.round((now - prev.t) / 1e3)} s` });
+      GT_REC.samples.push({ t: now, g: r.ok ? r.gap : null, run: !!(r.ok && !GT_REC.paused && moving !== false), stopped: moving === false });
+    }
   }
-  function gtStopCamera() {
+  function gtStopTicks() {
     if (GT_REC.timer) clearInterval(GT_REC.timer);
     GT_REC.timer = null;
+    if (GT_REC.worker) {
+      try {
+        GT_REC.worker.terminate();
+      } catch (e) {
+      }
+      GT_REC.worker = null;
+    }
+  }
+  function gtStartTicks() {
+    gtStopTicks();
+    try {
+      const url = URL.createObjectURL(new Blob(["let t=null;onmessage=function(e){clearInterval(t);if(e.data>0)t=setInterval(function(){postMessage(1)},e.data)}"], { type: "text/javascript" }));
+      const wk = new Worker(url);
+      wk.onmessage = () => gtReadOnce();
+      wk.postMessage(100);
+      GT_REC.worker = wk;
+    } catch (e) {
+      GT_REC.timer = setInterval(gtReadOnce, 100);
+    }
+  }
+  async function gtWakeLock(on) {
+    try {
+      if (on) {
+        if (!GT_REC.wake && navigator.wakeLock && document.visibilityState === "visible") {
+          const l = await navigator.wakeLock.request("screen");
+          GT_REC.wake = l;
+          l.addEventListener("release", () => {
+            if (GT_REC.wake === l) GT_REC.wake = null;
+          });
+        }
+      } else if (GT_REC.wake) {
+        const l = GT_REC.wake;
+        GT_REC.wake = null;
+        await l.release();
+      }
+    } catch (e) {
+      GT_REC.wakeErr = String(e && e.message || e);
+    }
+  }
+  if (typeof document !== "undefined" && typeof window !== "undefined" && typeof document.addEventListener === "function" && !window.__mxGapWakeHooked) {
+    window.__mxGapWakeHooked = true;
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && GT_REC.recording) gtWakeLock(true);
+    });
+  }
+  function gtStopCamera() {
+    gtStopTicks();
+    gtWakeLock(false);
     if (GT_REC.stream) GT_REC.stream.getTracks().forEach((t) => {
       try {
         t.stop();
@@ -19570,8 +19724,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     GT_REC.recording = false;
   }
   async function gtStartCamera(id) {
-    if (GT_REC.timer) clearInterval(GT_REC.timer);
-    GT_REC.timer = null;
+    gtStopTicks();
     if (GT_REC.stream) GT_REC.stream.getTracks().forEach((t) => {
       try {
         t.stop();
@@ -19587,7 +19740,10 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     });
     const tr = s.getVideoTracks()[0];
     GT_REC.camLabel = tr && tr.label || null;
-    GT_REC.timer = setInterval(gtReadOnce, 100);
+    GT_REC.mot.gate.reset();
+    GT_REC.mot.A = GT_REC.mot.B = GT_REC.mot.Bg = null;
+    GT_REC.motion = { moving: null, trusted: false };
+    gtStartTicks();
     return tr && tr.getSettings ? tr.getSettings().deviceId : "";
   }
   function gtMarksAt(marks, samples, M) {
@@ -19601,7 +19757,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     const all = GT_REC.samples;
     const cut = all.findIndex((s) => s.t > untilMs);
     const mine = cut < 0 ? all : all.slice(0, cut), rest = cut < 0 ? [] : all.slice(cut);
-    const { spec, lim, widthMm, speed, calib } = GT_REC.cfg;
+    const { spec, lim, widthMm, speed, calib, calibRec } = GT_REC.cfg;
     if (!mine.some((s) => s.g > 0)) return null;
     const M = metresAlong(mine, speed), id = uid("gt");
     const row = gapTraceRow({
@@ -19618,6 +19774,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       endedAt: mine[mine.length - 1].t,
       camera: GT_REC.camLabel,
       calib,
+      calibRec,
       by: currentActor() || null
     });
     GT_REC.marks = GT_REC.marks.filter((mk) => mk.t > untilMs);
@@ -19729,7 +19886,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     under: ["#3B1D0C", "#F97316", "#FDBA74", "#FB923C"],
     none: ["#18212B", "#334155", "#CBD5E1", "#94A3B8"]
   };
-  function GapFloorView({ spec, reelCode, lim, g, verdict, live, camOn, recording, paused, head, samples, metres, colour, warn, onClose }) {
+  function GapFloorView({ spec, reelCode, lim, g, verdict, live, camOn, recording, paused, head, samples, metres, colour, warn, onClose, calibOk = true, calibWhy = null, motion = {} }) {
     const ref = useRef(null);
     useEffect(() => {
       const el = ref.current;
@@ -19752,8 +19909,8 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       };
     }, []);
     const [bg, edge, ink, traceInk] = GT_FLOOR_TONE[verdict] || GT_FLOOR_TONE.none;
-    const status = !camOn ? "CAMERA OFF" : !live || !live.ok ? "LOOKING FOR THE STRIPS" : !lim ? "NO SIZE SET" : GAP_VERDICT_WORDS[verdict] || "\u2014";
-    const advice = !camOn ? "Turn the camera on from the Gap trace screen." : !live || !live.ok ? live && live.why ? `The camera can't see the two strips (${live.why}).` : "The camera can't see the two strips." : !lim ? "Pick the size being run on the Gap trace screen to set the limits." : verdict === "over" ? `Over max ${lim.max.toFixed(2)} \u2014 the gap is too wide` : verdict === "under" ? `Under min ${lim.min.toFixed(2)} \u2014 the gap is too narrow` : verdict === "onset" ? `Running steady inside the set band ${lim.setLo.toFixed(2)}\u2013${lim.setHi.toFixed(2)}` : `Inside the limits, off the set band ${lim.setLo.toFixed(2)}\u2013${lim.setHi.toFixed(2)}`;
+    const status = !camOn ? "CAMERA OFF" : !live || !live.ok ? "LOOKING FOR THE STRIPS" : !lim ? "NO SIZE SET" : !calibOk ? "NOT CALIBRATED" : GAP_VERDICT_WORDS[verdict] || "\u2014";
+    const advice = !camOn ? "Turn the camera on from the Gap trace screen." : !live || !live.ok ? live && live.why ? `The camera can't see the two strips (${live.why}).` : "The camera can't see the two strips." : !lim ? "Pick the size being run on the Gap trace screen to set the limits." : !calibOk ? `Measure the gap by hand and enter it on the Gap trace screen \u2014 ${calibWhy || "it hasn't been calibrated"}.` : verdict === "over" ? `Over max ${lim.max.toFixed(2)} \u2014 the gap is too wide` : verdict === "under" ? `Under min ${lim.min.toFixed(2)} \u2014 the gap is too narrow` : verdict === "onset" ? `Running steady inside the set band ${lim.setLo.toFixed(2)}\u2013${lim.setHi.toFixed(2)}` : `Inside the limits, off the set band ${lim.setLo.toFixed(2)}\u2013${lim.setHi.toFixed(2)}`;
     const W = 1e3, H2 = 170, from = Math.max(0, (head || 0) - 30), span = Math.max(30, head || 0) - from || 30;
     let lo = lim ? lim.min - 0.05 : 0.9, hi = lim ? lim.max + 0.05 : 1.6;
     const win = [];
@@ -19779,7 +19936,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
         "aria-label": "Gap reading, across the room",
         style: { position: "fixed", inset: 0, zIndex: 9500, background: "#0E141B", color: "#F1F5F9", fontFamily: NLT.FONT, overflowY: "auto", padding: "24px 28px", boxSizing: "border-box" }
       },
-      /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 1600, margin: "0 auto", display: "flex", flexDirection: "column", gap: 20, minHeight: "100%" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 14, minWidth: 0, flexWrap: "wrap" } }, colour && /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { width: 22, height: 22, borderRadius: 4, background: `rgb(${colour.join(",")})`, display: "inline-block" } }), /* @__PURE__ */ React.createElement("span", { "data-gt-floor-size": true, style: { fontSize: "clamp(22px, 2.4vw, 32px)", fontWeight: 600 } }, spec || "No size set"), reelCode && /* @__PURE__ */ React.createElement("span", { style: { fontSize: "clamp(20px, 2vw, 26px)", color: "#94A3B8", fontFamily: GT_MONO } }, "\xB7 ", reelCode)), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 16 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: "clamp(20px, 2vw, 26px)", color: "#CBD5E1", fontFamily: GT_MONO } }, recording ? `${(head || 0).toFixed(1)} m${paused ? " \xB7 paused" : ""}` : "not recording"), /* @__PURE__ */ React.createElement("button", { "data-gt-floor-close": true, onClick: onClose, style: { fontFamily: NLT.FONT, fontSize: 16, fontWeight: 600, minHeight: 44, padding: "8px 16px", borderRadius: 10, border: "1px solid #475569", background: "#18212B", color: "#F1F5F9", cursor: "pointer" } }, "Close"))), warn && /* @__PURE__ */ React.createElement("div", { "data-gt-floor-warn": true, style: { background: "#3B1D0C", border: "2px solid #F97316", color: "#FDBA74", borderRadius: 12, padding: "12px 18px", fontSize: 22, fontWeight: 600 } }, "Check the size: ", warn), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 20, alignItems: "stretch" } }, /* @__PURE__ */ React.createElement("div", { "data-gt-floor-panel": verdict || "none", style: { flex: "3 1 560px", borderRadius: 16, background: bg, border: `3px solid ${edge}`, padding: "26px 34px", display: "flex", flexDirection: "column", justifyContent: "center", gap: 8 } }, /* @__PURE__ */ React.createElement("div", { "data-gt-floor-status": true, style: { fontSize: "clamp(24px, 2.6vw, 36px)", fontWeight: 700, letterSpacing: "0.06em", color: ink } }, status), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 14 } }, /* @__PURE__ */ React.createElement("span", { "data-gt-floor-gap": true, style: { fontFamily: GT_MONO, fontSize: "clamp(110px, 15vw, 240px)", fontWeight: 600, lineHeight: 0.95, letterSpacing: "-0.04em" } }, g ? g.toFixed(3) : "\u2014"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: "clamp(28px, 3.3vw, 48px)", color: "#CBD5E1" } }, "mm")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: "clamp(18px, 1.8vw, 26px)", color: "#CBD5E1" } }, advice)), /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 280px", display: "flex", flexDirection: "column", gap: 20 } }, tile("Max", lim ? lim.max.toFixed(2) : "\u2014"), tile("Set", lim ? `${lim.setLo.toFixed(2)}\u2013${lim.setHi.toFixed(2)}` : "\u2014"), tile("Min \xB7 nominal", lim ? lim.min.toFixed(2) : "\u2014"))), /* @__PURE__ */ React.createElement("div", { style: { background: "#18212B", borderRadius: 16, padding: "16px 22px 10px" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 18, color: "#94A3B8", marginBottom: 6 } }, /* @__PURE__ */ React.createElement("span", null, "Last 30 metres"), /* @__PURE__ */ React.createElement("span", null, "gap, mm")), /* @__PURE__ */ React.createElement("div", { style: { position: "relative", aspectRatio: `${W} / ${H2}` } }, /* @__PURE__ */ React.createElement("svg", { viewBox: `0 0 ${W} ${H2}`, style: { position: "absolute", inset: 0, width: "100%", height: "100%" }, role: "img", "aria-label": "The last 30 metres of the gap" }, lim && /* @__PURE__ */ React.createElement("rect", { x: "0", y: yv(lim.max), width: W, height: Math.max(1, yv(lim.min) - yv(lim.max)), fill: "#1E3A5F" }), lim && /* @__PURE__ */ React.createElement("rect", { x: "0", y: yv(lim.setHi), width: W, height: Math.max(1, yv(lim.setLo) - yv(lim.setHi)), fill: "#2D5A8F" }), path && /* @__PURE__ */ React.createElement("path", { "data-gt-floor-trace": true, d: path, stroke: traceInk, strokeWidth: "4", fill: "none", strokeLinejoin: "round", strokeLinecap: "round" })), !path && /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "#94A3B8", fontSize: 20 } }, recording ? "The line draws here as the reel runs." : "Start the trace on the Gap trace screen to draw the last 30 metres."))))
+      /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 1600, margin: "0 auto", display: "flex", flexDirection: "column", gap: 20, minHeight: "100%" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 14, minWidth: 0, flexWrap: "wrap" } }, colour && /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { width: 22, height: 22, borderRadius: 4, background: `rgb(${colour.join(",")})`, display: "inline-block" } }), /* @__PURE__ */ React.createElement("span", { "data-gt-floor-size": true, style: { fontSize: "clamp(22px, 2.4vw, 32px)", fontWeight: 600 } }, spec || "No size set"), reelCode && /* @__PURE__ */ React.createElement("span", { style: { fontSize: "clamp(20px, 2vw, 26px)", color: "#94A3B8", fontFamily: GT_MONO } }, "\xB7 ", reelCode)), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 16 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: "clamp(20px, 2vw, 26px)", color: motion.trusted && motion.moving === false ? "#FDBA74" : "#CBD5E1", fontFamily: GT_MONO } }, recording ? `${(head || 0).toFixed(1)} m${paused ? " \xB7 paused" : motion.trusted && motion.moving === false ? " \xB7 line stopped" : ""}` : "not recording"), /* @__PURE__ */ React.createElement("button", { "data-gt-floor-close": true, onClick: onClose, style: { fontFamily: NLT.FONT, fontSize: 16, fontWeight: 600, minHeight: 44, padding: "8px 16px", borderRadius: 10, border: "1px solid #475569", background: "#18212B", color: "#F1F5F9", cursor: "pointer" } }, "Close"))), warn && /* @__PURE__ */ React.createElement("div", { "data-gt-floor-warn": true, style: { background: "#3B1D0C", border: "2px solid #F97316", color: "#FDBA74", borderRadius: 12, padding: "12px 18px", fontSize: 22, fontWeight: 600 } }, "Check the size: ", warn), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 20, alignItems: "stretch" } }, /* @__PURE__ */ React.createElement("div", { "data-gt-floor-panel": verdict || "none", style: { flex: "3 1 560px", borderRadius: 16, background: bg, border: `3px solid ${edge}`, padding: "26px 34px", display: "flex", flexDirection: "column", justifyContent: "center", gap: 8 } }, /* @__PURE__ */ React.createElement("div", { "data-gt-floor-status": true, style: { fontSize: "clamp(24px, 2.6vw, 36px)", fontWeight: 700, letterSpacing: "0.06em", color: ink } }, status), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 14 } }, /* @__PURE__ */ React.createElement("span", { "data-gt-floor-gap": true, style: { fontFamily: GT_MONO, fontSize: "clamp(110px, 15vw, 240px)", fontWeight: 600, lineHeight: 0.95, letterSpacing: "-0.04em" } }, g ? g.toFixed(3) : "\u2014"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: "clamp(28px, 3.3vw, 48px)", color: "#CBD5E1" } }, "mm")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: "clamp(18px, 1.8vw, 26px)", color: "#CBD5E1" } }, advice)), /* @__PURE__ */ React.createElement("div", { style: { flex: "1 1 280px", display: "flex", flexDirection: "column", gap: 20 } }, tile("Max", lim ? lim.max.toFixed(2) : "\u2014"), tile("Set", lim ? `${lim.setLo.toFixed(2)}\u2013${lim.setHi.toFixed(2)}` : "\u2014"), tile("Min \xB7 nominal", lim ? lim.min.toFixed(2) : "\u2014"))), /* @__PURE__ */ React.createElement("div", { style: { background: "#18212B", borderRadius: 16, padding: "16px 22px 10px" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 18, color: "#94A3B8", marginBottom: 6 } }, /* @__PURE__ */ React.createElement("span", null, "Last 30 metres"), /* @__PURE__ */ React.createElement("span", null, "gap, mm")), /* @__PURE__ */ React.createElement("div", { style: { position: "relative", aspectRatio: `${W} / ${H2}` } }, /* @__PURE__ */ React.createElement("svg", { viewBox: `0 0 ${W} ${H2}`, style: { position: "absolute", inset: 0, width: "100%", height: "100%" }, role: "img", "aria-label": "The last 30 metres of the gap" }, lim && /* @__PURE__ */ React.createElement("rect", { x: "0", y: yv(lim.max), width: W, height: Math.max(1, yv(lim.min) - yv(lim.max)), fill: "#1E3A5F" }), lim && /* @__PURE__ */ React.createElement("rect", { x: "0", y: yv(lim.setHi), width: W, height: Math.max(1, yv(lim.setLo) - yv(lim.setHi)), fill: "#2D5A8F" }), path && /* @__PURE__ */ React.createElement("path", { "data-gt-floor-trace": true, d: path, stroke: traceInk, strokeWidth: "4", fill: "none", strokeLinejoin: "round", strokeLinecap: "round" })), !path && /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "#94A3B8", fontSize: 20 } }, recording ? "The line draws here as the reel runs." : "Start the trace on the Gap trace screen to draw the last 30 metres."))))
     );
   }
   function GapTraceView({ data, setData }) {
@@ -19795,7 +19952,16 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       }
     });
     const [picking, setPicking] = useState(false);
-    const [calib, setCalib] = useState(() => Number(GT_LS("mxGapCalib", "1")) || 1);
+    const [calibRec, setCalibRec] = useState(() => {
+      try {
+        const r = JSON.parse(GT_LS("mxGapCalibRec", "null"));
+        return r && Number(r.k) > 0 ? r : null;
+      } catch (e) {
+        return null;
+      }
+    });
+    const [calibErr, setCalibErr] = useState(null);
+    const calib = calibRec ? Number(calibRec.k) : 1;
     const offsets = useMemo(() => {
       const row = (data.scheduleSettings || []).find((r) => r && r.id === "default");
       const gl = row && row.gapLimits;
@@ -19824,9 +19990,9 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     const widthMm = widthMmFor(spec), lim = gapLimitsFor(spec, offsets);
     const speed = Number(((data.productionRates || []).find((r) => r && r.line === "glue") || {}).metersPerMin) || 11;
     useEffect(() => {
-      GT_REC.cfg = { ...GT_REC.cfg, lineY, rgb, widthMm, calib, spec, specPick, lim, speed };
+      GT_REC.cfg = { ...GT_REC.cfg, lineY, rgb, widthMm, calib, calibRec, spec, specPick, lim, speed };
       GT_REC.recent = [];
-    }, [lineY, rgb, widthMm, calib, spec, specPick, JSON.stringify(lim), speed]);
+    }, [lineY, rgb, widthMm, calib, calibRec, spec, specPick, JSON.stringify(lim), speed]);
     const recentSizes = useMemo(() => {
       const cut = Date.now() - 90 * 864e5, seen = /* @__PURE__ */ new Set();
       return (data.glueLineBatches || []).filter((b) => b && !b.deleted && b.productSize && Date.parse(b.date || b.updatedAt || "") > cut).sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))).map((b) => b.productSize).filter((s) => !seen.has(s) && seen.add(s));
@@ -19878,7 +20044,12 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       return { points: binTrace(S, M), head: M.length ? M[M.length - 1] : 0, M };
     })();
     const flash = GT_REC.flash;
+    const cv = calibValid(calibRec, { spec, camId, lineY });
     const start = () => {
+      if (!cv.ok) {
+        setPanel("calib");
+        return;
+      }
       GT_REC.samples = [];
       GT_REC.marks = [];
       GT_REC.segStart = Date.now();
@@ -19886,13 +20057,33 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       GT_REC.recording = true;
       GT_REC.flash = null;
       setViewId(null);
+      gtWakeLock(true);
       setTick((t) => t + 1);
     };
     const stop = () => {
       GT_REC.recording = false;
       GT_REC.paused = false;
+      gtWakeLock(false);
       setTick((t) => t + 1);
     };
+    const setCalibration = () => {
+      const now = GT_REC.last && GT_REC.last.g, raw = now > 0 ? now / calib : null;
+      const res = calibFrom(calibIn, raw);
+      if (!res.ok) {
+        setCalibErr(res.why);
+        return;
+      }
+      const rec = { k: res.k, hand: Math.round(Number(calibIn) * 1e3) / 1e3, read: Math.round(raw * 1e3) / 1e3, spec, camId, lineY, at: Date.now(), by: currentActor() || null };
+      GT_SET("mxGapCalibRec", JSON.stringify(rec));
+      setCalibRec(rec);
+      setCalibErr(null);
+      setCalibIn("");
+      setPanel(null);
+      GT_REC.recent = [];
+      if (GT_REC.recording) GT_REC.marks.push({ t: Date.now(), note: `Calibrated by hand: ${rec.hand.toFixed(3)}` });
+      setData((prev) => ({ ...prev, ...appendLog(prev, { action: "update", entity: "gapTrace", entityId: "calibration", summary: `Gap trace calibrated by hand on ${spec || "\u2014"}: measured ${rec.hand.toFixed(3)} mm, the camera read ${rec.read.toFixed(3)} (\xD7${rec.k.toFixed(3)})${currentDevice() ? ` on ${currentDevice()}` : ""}` }) }));
+    };
+    const motion = GT_REC.motion || {};
     const setPaused = () => {
       GT_REC.paused = !GT_REC.paused;
       setTick((t) => t + 1);
@@ -19974,7 +20165,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
       {
         title: "Gap trace",
         sub: spec ? `${spec}${widthMm ? ` \xB7 ${widthMm}mm wide` : ""}${glueEntrySpec && !specPick ? " \xB7 from the glue line entry" : ""}` : "Camera on the glue line \u2014 pick the size being run",
-        right: /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { "data-gt-floor-open": true, onClick: () => setFloor(true), style: gtBtn(false) }, "Across the room"), !recording && /* @__PURE__ */ React.createElement("button", { "data-gt-start": true, onClick: start, disabled: !camOn || !lim, style: gtBtn(false, { background: "#fff", opacity: !camOn || !lim ? 0.6 : 1 }) }, "Start the trace"), recording && /* @__PURE__ */ React.createElement("button", { "data-gt-pause": true, onClick: setPaused, style: gtBtn(false) }, paused ? "Carry on" : "Pause"), recording && /* @__PURE__ */ React.createElement("button", { "data-gt-finish": true, onClick: () => setPanel((p) => p === "finish" ? null : "finish"), style: gtBtn(false) }, "Finish reel"), recording && /* @__PURE__ */ React.createElement("button", { "data-gt-stop": true, onClick: stop, style: gtBtn(false) }, "Stop"))
+        right: /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { "data-gt-floor-open": true, onClick: () => setFloor(true), style: gtBtn(false) }, "Across the room"), !recording && /* @__PURE__ */ React.createElement("button", { "data-gt-start": true, onClick: start, disabled: !camOn || !lim || !cv.ok, title: !cv.ok ? "Measure the gap by hand and enter it first" : void 0, style: gtBtn(false, { background: "#fff", opacity: !camOn || !lim || !cv.ok ? 0.6 : 1 }) }, "Start the trace"), recording && /* @__PURE__ */ React.createElement("button", { "data-gt-pause": true, onClick: setPaused, style: gtBtn(false) }, paused ? "Carry on" : "Pause"), recording && /* @__PURE__ */ React.createElement("button", { "data-gt-finish": true, onClick: () => setPanel((p) => p === "finish" ? null : "finish"), style: gtBtn(false) }, "Finish reel"), recording && /* @__PURE__ */ React.createElement("button", { "data-gt-stop": true, onClick: stop, style: gtBtn(false) }, "Stop"))
       }
     ), flash && /* @__PURE__ */ React.createElement("div", { "data-gt-flash": true, style: { ...gtCard({ padding: "12px 16px", background: flash.warn ? "#FCE3D3" : "#E7F5EC", borderColor: flash.warn ? "#F0B48C" : "#B7DFC5" }), display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 600, color: flash.warn ? "#7C2D12" : "#14532D" } }, flash.text), /* @__PURE__ */ React.createElement("span", { style: { flex: 1 } }), /* @__PURE__ */ React.createElement("button", { "data-gt-undo": true, onClick: () => {
       undoSave(flash.id);
@@ -19997,7 +20188,7 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     }, style: gtBtn(false, { minHeight: 40, padding: "6px 12px", fontSize: 14 }) }, "Camera off"), /* @__PURE__ */ React.createElement("button", { onClick: () => setPicking((p) => !p), disabled: !camOn, style: gtBtn(picking, { minHeight: 40, padding: "6px 12px", fontSize: 14 }) }, picking ? "Cancel" : "Pick strip colour"), rgb && /* @__PURE__ */ React.createElement("button", { onClick: () => {
       setRgb(null);
       GT_SET("mxGapRgb", "null");
-    }, title: "Find the strip colour by itself", style: gtBtn(false, { minHeight: 40, padding: "6px 12px", fontSize: 14 }) }, /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { display: "inline-block", width: 12, height: 12, borderRadius: 3, background: `rgb(${rgb.join(",")})`, marginRight: 6, verticalAlign: -1 } }), "Auto colour"))), /* @__PURE__ */ React.createElement("div", { "data-gt-reading": true, style: gtCard({ padding: 16, display: "flex", flexDirection: "column", gap: 12 }) }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, color: GT_SUB, textTransform: "uppercase", letterSpacing: 0.6 } }, "Gap now"), recording && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: GT_SUB } }, "at ", /* @__PURE__ */ React.createElement("span", { style: { fontFamily: GT_MONO, color: GT_INK } }, liveTrace.head.toFixed(1), " m"), paused ? " \xB7 paused" : "")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 8 } }, /* @__PURE__ */ React.createElement("span", { "data-gt-gap": true, style: { fontFamily: GT_MONO, fontSize: 60, fontWeight: 600, lineHeight: 1, letterSpacing: -1 } }, g ? g.toFixed(3) : "\u2014"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 20, color: GT_SUB } }, "mm")), lim && /* @__PURE__ */ React.createElement("div", { style: { position: "relative", height: 52 } }, /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: 0, right: 0, top: 16, height: 14, borderRadius: 7, background: GT_OUTFILL } }), /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: bp(lim.min), width: `calc(${bp(lim.max)} - ${bp(lim.min)})`, top: 16, height: 14, background: "#EEF2F7" } }), /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: bp(lim.setLo), width: `calc(${bp(lim.setHi)} - ${bp(lim.setLo)})`, top: 16, height: 14, background: "#93B4F0" } }), g ? /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: bp(g), top: 2, marginLeft: -8, width: 0, height: 0, borderLeft: "8px solid transparent", borderRight: "8px solid transparent", borderTop: `12px solid ${GT_INK}` } }) : null, /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: bp(lim.min), top: 34, transform: "translateX(-50%)", fontFamily: GT_MONO, fontSize: 12, color: GT_SUB } }, lim.min.toFixed(2)), /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: bp(lim.max), top: 34, transform: "translateX(-50%)", fontFamily: GT_MONO, fontSize: 12, color: GT_SUB } }, lim.max.toFixed(2))), /* @__PURE__ */ React.createElement("div", { "data-gt-verdict": true, style: { fontSize: 14, fontWeight: 600, background: tone[0], color: tone[1], borderRadius: 10, padding: "10px 12px" } }, !camOn ? "Turn the camera on to start reading." : !live || !live.ok ? `Looking for the two strips on the line\u2026 ${live && live.why ? `(${live.why})` : ""}` : !lim ? "Pick the size being run to set the limits." : `${GAP_VERDICT_WORDS[verdict]} \xB7 min ${lim.min.toFixed(2)} \xB7 set ${lim.setLo.toFixed(2)}\u2013${lim.setHi.toFixed(2)} \xB7 max ${lim.max.toFixed(2)}`), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 8 } }, /* @__PURE__ */ React.createElement("button", { onClick: () => setPanel((p) => p === "limits" ? null : "limits"), style: gtBtn(false, { minHeight: 38, padding: "6px 12px", fontSize: 14 }) }, "Change the limits"), /* @__PURE__ */ React.createElement("button", { onClick: () => setPanel((p) => p === "calib" ? null : "calib"), style: gtBtn(false, { minHeight: 38, padding: "6px 12px", fontSize: 14 }) }, "Calibrate", calib !== 1 ? ` (\xD7${calib.toFixed(3)})` : "")), panel === "limits" && /* @__PURE__ */ React.createElement("div", { "data-gt-limits": true, style: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 } }, [["setLo", "Set from +"], ["setHi", "Set to +"], ["max", "Max +"]].map(([k, l]) => /* @__PURE__ */ React.createElement("label", { key: k, style: { display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: GT_SUB } }, l, /* @__PURE__ */ React.createElement("input", { "data-gt-limit": k, type: "number", step: "0.01", min: "0", value: (limDraft || offsets)[k], onChange: (e) => {
+    }, title: "Find the strip colour by itself", style: gtBtn(false, { minHeight: 40, padding: "6px 12px", fontSize: 14 }) }, /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { display: "inline-block", width: 12, height: 12, borderRadius: 3, background: `rgb(${rgb.join(",")})`, marginRight: 6, verticalAlign: -1 } }), "Auto colour"))), /* @__PURE__ */ React.createElement("div", { "data-gt-reading": true, style: gtCard({ padding: 16, display: "flex", flexDirection: "column", gap: 12 }) }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, color: GT_SUB, textTransform: "uppercase", letterSpacing: 0.6 } }, "Gap now"), recording && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: GT_SUB } }, "at ", /* @__PURE__ */ React.createElement("span", { style: { fontFamily: GT_MONO, color: GT_INK } }, liveTrace.head.toFixed(1), " m"), paused ? " \xB7 paused" : "")), camOn && live && live.ok && /* @__PURE__ */ React.createElement("div", { "data-gt-motion": motion.trusted ? motion.moving ? "moving" : "stopped" : "unknown", style: { fontSize: 13, fontWeight: 600, color: motion.trusted && motion.moving === false ? GT_ORANGE : GT_SUB, marginTop: -6 } }, motion.trusted ? motion.moving ? "The line is moving." : "The line has stopped \u2014 the metres are held until it moves." : "Can't see the line move yet \u2014 press Pause if it stops before then."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 8 } }, /* @__PURE__ */ React.createElement("span", { "data-gt-gap": true, style: { fontFamily: GT_MONO, fontSize: 60, fontWeight: 600, lineHeight: 1, letterSpacing: -1 } }, g ? g.toFixed(3) : "\u2014"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 20, color: GT_SUB } }, "mm")), lim && /* @__PURE__ */ React.createElement("div", { style: { position: "relative", height: 52 } }, /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: 0, right: 0, top: 16, height: 14, borderRadius: 7, background: GT_OUTFILL } }), /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: bp(lim.min), width: `calc(${bp(lim.max)} - ${bp(lim.min)})`, top: 16, height: 14, background: "#EEF2F7" } }), /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: bp(lim.setLo), width: `calc(${bp(lim.setHi)} - ${bp(lim.setLo)})`, top: 16, height: 14, background: "#93B4F0" } }), g ? /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: bp(g), top: 2, marginLeft: -8, width: 0, height: 0, borderLeft: "8px solid transparent", borderRight: "8px solid transparent", borderTop: `12px solid ${GT_INK}` } }) : null, /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: bp(lim.min), top: 34, transform: "translateX(-50%)", fontFamily: GT_MONO, fontSize: 12, color: GT_SUB } }, lim.min.toFixed(2)), /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: bp(lim.max), top: 34, transform: "translateX(-50%)", fontFamily: GT_MONO, fontSize: 12, color: GT_SUB } }, lim.max.toFixed(2))), /* @__PURE__ */ React.createElement("div", { "data-gt-verdict": true, style: { fontSize: 14, fontWeight: 600, background: tone[0], color: tone[1], borderRadius: 10, padding: "10px 12px" } }, !camOn ? "Turn the camera on to start reading." : !live || !live.ok ? `Looking for the two strips on the line\u2026 ${live && live.why ? `(${live.why})` : ""}` : !lim ? "Pick the size being run to set the limits." : `${GAP_VERDICT_WORDS[verdict]} \xB7 min ${lim.min.toFixed(2)} \xB7 set ${lim.setLo.toFixed(2)}\u2013${lim.setHi.toFixed(2)} \xB7 max ${lim.max.toFixed(2)}`), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 8 } }, /* @__PURE__ */ React.createElement("button", { onClick: () => setPanel((p) => p === "limits" ? null : "limits"), style: gtBtn(false, { minHeight: 38, padding: "6px 12px", fontSize: 14 }) }, "Change the limits"), cv.ok && /* @__PURE__ */ React.createElement("button", { onClick: () => setPanel((p) => p === "calib" ? null : "calib"), style: gtBtn(false, { minHeight: 38, padding: "6px 12px", fontSize: 14 }) }, "Calibrate again")), panel === "limits" && /* @__PURE__ */ React.createElement("div", { "data-gt-limits": true, style: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 } }, [["setLo", "Set from +"], ["setHi", "Set to +"], ["max", "Max +"]].map(([k, l]) => /* @__PURE__ */ React.createElement("label", { key: k, style: { display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: GT_SUB } }, l, /* @__PURE__ */ React.createElement("input", { "data-gt-limit": k, type: "number", step: "0.01", min: "0", value: (limDraft || offsets)[k], onChange: (e) => {
       setLimErr(null);
       setLimDraft({ ...limDraft || offsets, [k]: e.target.value });
     }, style: { fontFamily: GT_MONO, fontSize: 15, padding: 8, borderRadius: 8, border: "1px solid #C3CBD3" } }))), /* @__PURE__ */ React.createElement("div", { style: { gridColumn: "1 / -1", fontSize: 12, color: GT_SUB } }, "Over each size's own gap, which is the minimum. The same for every size, on every PC."), limErr && /* @__PURE__ */ React.createElement("div", { style: { gridColumn: "1 / -1", fontSize: 13, color: "#7C2D12", fontWeight: 600 } }, limErr), limDraft && /* @__PURE__ */ React.createElement("div", { style: { gridColumn: "1 / -1", display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement("button", { "data-gt-limits-save": true, onClick: () => {
@@ -20026,19 +20217,10 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
     }, style: gtBtn(true, { minHeight: 38, padding: "6px 14px", fontSize: 14 }) }, "Save for every PC"), /* @__PURE__ */ React.createElement("button", { onClick: () => {
       setLimDraft(null);
       setLimErr(null);
-    }, style: gtBtn(false, { minHeight: 38, padding: "6px 14px", fontSize: 14 }) }, "Cancel"))), panel === "calib" && /* @__PURE__ */ React.createElement("div", { "data-gt-calib": true, style: { display: "flex", flexWrap: "wrap", gap: 8, alignItems: "flex-end" } }, /* @__PURE__ */ React.createElement("label", { style: { display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: GT_SUB, flex: "1 1 140px" } }, "The gap measured by hand right now (mm)", /* @__PURE__ */ React.createElement("input", { type: "number", step: "0.001", value: calibIn, onChange: (e) => setCalibIn(e.target.value), style: { fontFamily: GT_MONO, fontSize: 15, padding: 8, borderRadius: 8, border: "1px solid #C3CBD3" } })), /* @__PURE__ */ React.createElement("button", { disabled: !(g > 0) || !(Number(calibIn) > 0), onClick: () => {
-      const raw = g / calib, k = Number(calibIn) / raw;
-      if (k > 0.5 && k < 1.5) {
-        setCalib(k);
-        GT_SET("mxGapCalib", String(k));
-        setPanel(null);
-        setCalibIn("");
-        GT_REC.recent = [];
-      }
-    }, style: gtBtn(true, { minHeight: 40 }) }, "Set"), calib !== 1 && /* @__PURE__ */ React.createElement("button", { onClick: () => {
-      setCalib(1);
-      GT_SET("mxGapCalib", "1");
-    }, style: gtBtn(false, { minHeight: 40 }) }, "Clear"))), /* @__PURE__ */ React.createElement("div", { style: gtCard({ padding: 16, display: "flex", flexDirection: "column", gap: 10 }) }, /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12, color: GT_SUB, textTransform: "uppercase", letterSpacing: 0.6 }, htmlFor: "gt-size" }, "Size being run"), /* @__PURE__ */ React.createElement(
+    }, style: gtBtn(false, { minHeight: 38, padding: "6px 14px", fontSize: 14 }) }, "Cancel"))), cv.ok && calibRec && /* @__PURE__ */ React.createElement("div", { "data-gt-calib-info": true, style: { fontSize: 13, color: GT_SUB } }, "Calibrated by hand: ", /* @__PURE__ */ React.createElement("b", { style: { color: GT_INK } }, Number(calibRec.hand).toFixed(3), " mm"), ", the camera read ", Number(calibRec.read).toFixed(3), " (\xD7", Number(calibRec.k).toFixed(3), ") at ", new Date(calibRec.at).toTimeString().slice(0, 5)), (panel === "calib" || !cv.ok) && /* @__PURE__ */ React.createElement("div", { "data-gt-calib": true, "data-gt-calib-need": cv.ok ? void 0 : "1", style: { display: "flex", flexDirection: "column", gap: 8, ...cv.ok ? {} : { background: "#FCE3D3", border: "1px solid #F0B48C", borderRadius: 10, padding: 12 } } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: cv.ok ? GT_INK : "#7C2D12" } }, cv.ok ? "Measure the gap by hand and enter it to calibrate again." : recording ? `The hand measurement no longer fits \u2014 ${cv.why}. Measure the gap by hand and enter it; the trace carries on.` : `Measure the gap by hand before the trace can start \u2014 ${cv.why}.`), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 8, alignItems: "flex-end" } }, /* @__PURE__ */ React.createElement("label", { style: { display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: GT_SUB, flex: "1 1 140px" } }, "The gap measured by hand right now (mm)", /* @__PURE__ */ React.createElement("input", { "data-gt-calib-in": true, type: "number", step: "0.001", inputMode: "decimal", value: calibIn, onChange: (e) => {
+      setCalibIn(e.target.value);
+      setCalibErr(null);
+    }, style: { fontFamily: GT_MONO, fontSize: 15, padding: 8, borderRadius: 8, border: "1px solid #C3CBD3", background: "#fff" } })), /* @__PURE__ */ React.createElement("button", { "data-gt-calib-set": true, disabled: !(g > 0) || !(Number(calibIn) > 0), onClick: setCalibration, style: gtBtn(true, { minHeight: 40 }) }, "Set")), !(g > 0) && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: GT_SUB } }, "The camera has to be reading the gap while you enter it."), calibErr && /* @__PURE__ */ React.createElement("div", { "data-gt-calib-err": true, style: { fontSize: 13, color: "#7C2D12", fontWeight: 600 } }, calibErr))), /* @__PURE__ */ React.createElement("div", { style: gtCard({ padding: 16, display: "flex", flexDirection: "column", gap: 10 }) }, /* @__PURE__ */ React.createElement("label", { style: { fontSize: 12, color: GT_SUB, textTransform: "uppercase", letterSpacing: 0.6 }, htmlFor: "gt-size" }, "Size being run"), /* @__PURE__ */ React.createElement(
       "input",
       {
         id: "gt-size",
@@ -20066,7 +20248,10 @@ Cancel = no, add ${typed} as a new customer`)) c = near;
         metres: liveTrace.M,
         colour: live && live.ok ? live.colour : rgb,
         warn: warnText,
-        onClose: () => setFloor(false)
+        onClose: () => setFloor(false),
+        calibOk: cv.ok,
+        calibWhy: cv.why,
+        motion
       }
     ));
   }
