@@ -145,10 +145,15 @@ async function inChunks<T>(list: T[], size: (x: T) => number, fn: (part: T[]) =>
    was stopped ("CPU Time exceeded"). The run reads the inputs once, then asks this same function for the answer in pieces —
    each its own call with its own 2 seconds, all from the same inputs and the same clock — and publishes only when every
    piece is in. The pieces together are the whole answer exactly (selectTruth, opts.parts). */
-const PARTS: { parts: string[]; slice?: number; of?: number }[] = [
-  { parts: ["needs", "cards"] }, { parts: ["plan", "rack"] },
-  ...[0, 1, 2, 3].map(i => ({ parts: ["orders"], slice: i, of: 4 })),
-];
+/* The live orders are shared out about three to a piece (2 to 10 pieces), so the pieces stay small as the work grows.
+   Any number of pieces gives the same answer: each live order is in exactly one of them. */
+const ORDERS_PER_PIECE = 3;
+// deno-lint-ignore no-explicit-any
+function partsFor(stored: any) {
+  const live = (stored.orders || []).filter((o: Row) => o && !o.deleted && o.stage !== "Shipped" && o.stage !== "Cancelled").length;
+  const n = Math.min(10, Math.max(2, Math.ceil(live / ORDERS_PER_PIECE)));
+  return [{ parts: ["needs", "cards"] }, { parts: ["plan", "rack"] }, ...Array.from({ length: n }, (_, i) => ({ parts: ["orders"], slice: i, of: n }))];
+}
 const partName = (p: { parts: string[]; slice?: number; of?: number }) => p.parts.join("+") + (p.of ? ` ${(p.slice || 0) + 1}/${p.of}` : "");
 // deno-lint-ignore no-explicit-any
 async function askPart(p: { parts: string[]; slice?: number; of?: number }, payload: Uint8Array, key: string, runId: string): Promise<any> {
@@ -165,8 +170,9 @@ async function part(p: { parts: string[]; slice?: number; of?: number }, bytes: 
   const ms: Record<string, number> = {}; let t = performance.now();
   const m = await code(); ms.code = Math.round(performance.now() - t); t = performance.now();
   const v = JSON.parse(await gunzip(bytes)); ms.read = Math.round(performance.now() - t); t = performance.now();
-  if (!v || v.v !== 1 || !v.tables || !v.now) throw new Error("no inputs sent");
-  const stored = storedFrom(m, { tables: v.tables, marks: {}, savedAt: 0, changedSinceSave: 0 }); ms.shape = Math.round(performance.now() - t); t = performance.now();
+  /* the data already shaped by the run (once, not once per piece): the same as tablesToData gives, through JSON unchanged */
+  if (!v || v.v !== 2 || !v.stored || !v.now) throw new Error("no inputs sent");
+  const stored = v.stored;
   const out = m.selectTruth(stored, new Date(v.now), CODE_BUILD, { parts: p.parts, slice: p.slice, of: p.of });
   ms.compute = Math.round(performance.now() - t);
   return { ok: true, rows: out.rows, problems: out.problems || [], asOf: out.asOf, ms: { ...ms, ...Object.fromEntries(Object.entries(out.ms || {}).map(([k, x]) => [`c_${k}`, x])) } };
@@ -189,13 +195,17 @@ async function run(reason: string, key: string) {
     t = performance.now();
     const pulled = await pullInputs(inputTables(m)); ms.pull = Math.round(performance.now() - t);
     if (!key) throw new Error("no key to ask for the pieces with");
+    t = performance.now(); const stored = storedFrom(m, pulled.inputs); ms.shape = Math.round(performance.now() - t);
     t = performance.now();
-    const payload = await gzip(JSON.stringify({ v: 1, tables: pulled.inputs.tables, now: new Date().toISOString() })); ms.pack = Math.round(performance.now() - t);
+    const payload = await gzip(JSON.stringify({ v: 2, stored, now: new Date().toISOString() })); ms.pack = Math.round(performance.now() - t);
+    const PARTS = partsFor(stored); ms.pieces = PARTS.length;
     t = performance.now();
     const answers = await Promise.all(PARTS.map(p => askPart(p, payload, key, runId)));
     ms.parts = Math.round(performance.now() - t);
     const out = { asOf: answers[0].asOf as string, rows: answers.flatMap(a => a.rows) as TRow[], problems: answers.flatMap(a => a.problems || []) as string[] };
-    answers.forEach((a, i) => { for (const k of ["code", "read", "shape", "compute"]) if (a.ms && a.ms[k] != null) ms[`p${i + 1}_${k}`] = a.ms[k]; });
+    answers.forEach((a, i) => { for (const k of ["code", "read", "compute"]) if (a.ms && a.ms[k] != null) ms[`p${i + 1}_${k}`] = a.ms[k]; });
+    /* the slowest piece, start to finish — the figure to watch against the 2 seconds */
+    ms.slowest = Math.max(...answers.map(a => (Number(a.ms && a.ms.code) || 0) + (Number(a.ms && a.ms.read) || 0) + (Number(a.ms && a.ms.compute) || 0)));
     ms.compute = Math.max(...answers.map(a => Number(a.ms && a.ms.compute) || 0));
     // the answer is published only when it's whole: with a problem in it, the last good answer stays
     if (out.problems && out.problems.length) throw new Error(`worked out with problems: ${out.problems.slice(0, 3).join(" | ")}`);
