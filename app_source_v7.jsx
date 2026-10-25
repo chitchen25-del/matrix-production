@@ -38,6 +38,7 @@ import { deriveData, TRUTH_SCHEMA, TRUTH_INPUT_KEYS } from "./mx_truth.js";
 import { setCloudTruth, cloudTruthDecision, TRUTH_STORE } from "./mx_truthstore.js";
 import { TRUTH_CODE_SHA } from "./mx_truthcode.js";
 import { gsSwitchOn, gsSwitchSet } from "./mx_gapsimple.js";
+import { readBandNew, focusGate, lightGate, gapScaleNow, expoFlickerSafe, gapScaleDoubt, gapProofVerdict, gapProofDue, gapProofStreak, GAP_PROOF_PASS, GAP_PROOF_EARN } from "./mx_gapread.js";
 
 const { useState, useEffect, useMemo, useRef, useCallback } = React;
 
@@ -581,7 +582,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-10-25.2";
+const APP_VERSION = "2026-10-25.3";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -6979,6 +6980,7 @@ function gtPatch(v, x0, x1, py, ph) {
 /* WHY THERE'S NO STEADY READING (14 Oct 2026, 08:29: "hasn't got 5 seconds of readings yet" while every picture was being put
    aside as a gap that couldn't be right for the size on the camera). Said in words, with what to check. */
 function gtNoReadingWhy(L, st) {
+  if (L && L.ok && L.gate) return L.gate === "focusing" ? "The camera is focusing — its pictures are soft, so they're not being used. It comes back by itself when it settles." : "The light just changed — the reading waits a second for the camera and the strips to settle.";
   if (L && L.ok && L.refused) return `The camera's pictures are being put aside — ${L.refused}. Check the size on the camera is the one being run${/wrong edges/.test(L.refused) ? ", and that nothing is across the strips" : ""}.`;
   if (L && !L.ok && L.why) return `The camera can't find the two strips (${L.why}) — tap the picture on the strips, or pick the strip colour.`;
   return (st && st.why) || "The camera hasn't settled yet — hold on a moment.";
@@ -6987,6 +6989,11 @@ const GT_LOGGED_SHOW_MS = 8000, GT_LABEL_AFTER_MS = 1500;
 const GT_AUTO_START_MS = 10000;   /* the line seen moving this long, set-up done and not recording: the trace starts itself (21 Oct 2026) */
 /* on for every PC; "off" in mxGapAutoStart turns it off on one PC. The test copy keeps the old way unless a suite asks for it. */
 function gtAutoStartOn() { try { const v = localStorage.getItem("mxGapAutoStart"); if (v === "off") return false; if (v === "on") return true;
+  if (window.__MX_TEST_MIRROR__ && localStorage.getItem("__mxRealDefaults") !== "1") return false; } catch (e) { /* private mode */ } return true; }
+/* THE NEW GAP READER (25 Oct 2026, Chris: "Build it completely and make it the new system please"). On for every PC;
+   "old" in mxGapReader puts the old reader back on one PC (the Calibrate panel says how). The test copy keeps the old way
+   unless a suite asks for it. */
+function gtReaderNew() { try { const v = localStorage.getItem("mxGapReader"); if (v === "old") return false; if (v === "new") return true;
   if (window.__MX_TEST_MIRROR__ && localStorage.getItem("__mxRealDefaults") !== "1") return false; } catch (e) { /* private mode */ } return true; }
 function gtLightNow() { return gapLightOf(GT_REC.sigKeep || (GT_REC.last && GT_REC.last.signal) || "brightness"); }
 /* BACKLIGHT HELP (Chris, 20 Oct 2026, fitting a backlight to the microscope: "Build 1-3 but make it so I can choose between what is
@@ -7061,7 +7068,7 @@ async function gtBackExpoRelease(why) {
   const mine = !!(GT_REC.backLocked || GT_REC.backExpo || (h && h.slidBack));
   if (!mine) return false;
   if (h && h.slidBack) { if (h.slid) delete h.slid.exposureTime; delete h.slidBack; try { localStorage.setItem("mxGapCamHold", JSON.stringify(h)); } catch (e) {} }
-  GT_REC.backLocked = null; GT_REC.backExpo = null; GT_REC.backLockTry = 0;
+  GT_REC.backLocked = null; GT_REC.backExpo = null; GT_REC.backLockTry = 0; GT_REC.steadyLock = null;
   const tr = GT_REC.stream && GT_REC.stream.getVideoTracks()[0];
   if (tr) { try { await tr.applyConstraints({ advanced: [{ exposureMode: "continuous" }] }); } catch (e) { /* camera without it */ }
     if (h && h.on) setTimeout(() => { gtHoldCamera(true, h.slid || null).then(r => { GT_REC.hold = r; gtCamWatch(); }).catch(() => {}); }, 2000); }
@@ -7100,7 +7107,7 @@ function gtCorr() {
 const GT_FPS_LOW = 7;
 function gtFrameCount(px) {
   let sg = 0; for (let i = 0; i < px.length; i += 211) sg = (sg * 31 + px[i]) | 0;
-  const now = Date.now(), fresh = sg !== GT_REC.frameSig; GT_REC.frameSig = sg;
+  const now = Date.now(), fresh = sg !== GT_REC.frameSig; GT_REC.frameSig = sg; GT_REC.frameFresh = fresh;
   const h = GT_REC.frameHist || (GT_REC.frameHist = []); h.push({ t: now, f: fresh }); while (h.length && now - h[0].t > 3000) h.shift();
   const span = h.length > 1 ? (now - h[0].t) / 1000 : 0;
   GT_REC.fps = span >= 2 ? Math.round(h.filter(x => x.f).length / span * 10) / 10 : null;
@@ -7123,13 +7130,39 @@ function gtReadOnce() {
   ctx.drawImage(v, 0, y0, w, bh, 0, 0, w, bh);
   const px = ctx.getImageData(0, 0, w, bh).data;
   gtFrameCount(px);
+  /* ONLY FRESH PICTURES (the new reader, 25 Oct 2026): the app reads ten times a second and the camera often sends fewer —
+     19–53 % of readings were the picture before again. A repeat is not read at all; the metres still count. */
+  const newOn = gtReaderNew();
+  if (newOn && GT_REC.frameFresh === false) { GT_REC.repeatSkip = (GT_REC.repeatSkip || 0) + 1; gtLineStep(Date.now(), GT_REC.last && GT_REC.last.g > 0 ? GT_REC.last.g : null); return; }
   const colour = rgb || guessStripColour(px, w, bh);
   /* light against dark first; the strip colour is only a fallback (and names the strips for the size check) — 12 Oct 2026 */
   /* the way the strips were last read (light strips, or dark strips on a backlight) is tried first — kept once it has read
      20 pictures running, so a run doesn't flip between the two */
   /* the size's own share of the width, so the right pair of strips is taken when there's a choice (14 Oct 2026) */
   const expShare = GT_REC.cfg.lim && widthMm > 0 ? nomOf(GT_REC.cfg.lim) / widthMm : null;
-  const r = readBand(px, w, bh, colour, widthMm, GT_REC.sigKeep || null, expShare, gtBackHelp());
+  const nowR = Date.now();
+  let r = newOn ? readBandNew(px, w, bh, { prefer: GT_REC.sigKeep || null, expect: expShare, prev: GT_REC.rdPrev || null, now: nowR, widthMm })
+    : readBand(px, w, bh, colour, widthMm, GT_REC.sigKeep || null, expShare, gtBackHelp());
+  /* strips that only their colour tells apart (12 Oct 2026) — the old reader's colour fall-back */
+  if (newOn && !r.ok && rgb) { const o = readBand(px, w, bh, colour, widthMm, GT_REC.sigKeep || null, expShare, gtBackHelp()); if (o.ok && o.signal === "colour") r = o; }
+  if (newOn && r.ok && r.reader === "new") GT_REC.rdPrev = { edges: r.edges, signal: r.signal, at: nowR, track: r.track };
+  /* FOCUS AND LIGHT, WATCHED (the new reader): a picture well softer than the last 30 s' usual (the camera hunting for focus)
+     or one just after a sudden jump in the light isn't used — the screen says which, and the reading comes back by itself */
+  let gate = null;
+  if (newOn) {
+    const fg = focusGate(GT_REC.focusSt, r.ok && r.reader === "new" ? r.sharp : 0, nowR); GT_REC.focusSt = fg.st;
+    const lgt = lightGate(GT_REC.lightSt, r.ok ? r.level : 0, nowR); GT_REC.lightSt = lgt.st;
+    if (r.ok && fg.soft) gate = "focusing"; else if (r.ok && lgt.hold) gate = "light";
+    GT_REC.quality = { at: nowR, gate, focusing: fg.focusing, lightHold: lgt.hold, sharp: r.ok ? r.sharp || null : null, usual: fg.usual, contrast: r.ok ? r.contrast || null : null, clipped: !!(r.ok && r.clipped) };
+    if (gate === "focusing" && !GT_REC.focusSaidAt) { GT_REC.focusSaidAt = nowR; gtLog("The camera is focusing — its pictures are soft, so they're not being used until it settles", "#F59E0B"); }
+    if (!fg.focusing && GT_REC.focusSaidAt && nowR - GT_REC.focusSaidAt > 3000) GT_REC.focusSaidAt = null;
+    /* the strips seen steadily for 2.5 s → the light held (gtSteadyLock); a held light that has since changed so much the strips
+       can't be seen for 5 s → let go and held again once the camera has settled */
+    if (r.ok) { GT_REC.readFailSince = null; if (!GT_REC.readOkSince) GT_REC.readOkSince = nowR; } else { GT_REC.readOkSince = null; if (!GT_REC.readFailSince) GT_REC.readFailSince = nowR; }
+    if (r.ok && !GT_REC.steadyLock && !GT_REC.backUserAuto && !gtHoldOnHere() && nowR - GT_REC.readOkSince >= 2500 && !(GT_REC.steadyLockTry && nowR - GT_REC.steadyLockTry < 5000)) { GT_REC.steadyLockTry = nowR; gtSteadyLock(px).catch(() => {}); }
+    if (!r.ok && GT_REC.steadyLock && GT_REC.steadyLock.to && GT_REC.readFailSince && nowR - GT_REC.readFailSince >= 5000) { const bm = gtBandMean(px), was = GT_REC.steadyLock.band;
+      if (was > 0 && Math.abs(bm - was) / was > 0.4) gtSteadyRelease(`the light changed a lot (the picture ${bm > was ? "brighter" : "darker"} by ${Math.round(Math.abs(bm - was) / was * 100)} %) and the strips couldn't be seen`).catch(() => {}); }
+  }
   /* Backlight help (4): no strips and the band nearly white → washed out → a shorter exposure (once every 5 s) */
   if (!r.ok && gtBackHelp() && (GT_REC.sigKeep === "darkness" || GT_REC.lightSeen === "backlight")) { let sum = 0, cnt = 0; for (let i = 0; i < px.length; i += 4 * 37) { sum += (px[i] + px[i + 1] + px[i + 2]) / 3; cnt++; }
     const tNow = Date.now(); if (cnt && sum / cnt >= 235 && !(GT_REC.backExpoAt && tNow - GT_REC.backExpoAt < 5000)) { GT_REC.backExpoAt = tNow; gtBackExpoShorten("the picture was washed out and the strips couldn't be seen"); } }
@@ -7145,7 +7178,7 @@ function gtReadOnce() {
           try { window.dispatchEvent(new CustomEvent("mx-gt-hold")); } catch (e) {} }
         GT_REC.backSeenAt = Date.now(); } } }
   /* Backlight help (6): the exposure fixed 2.5 s after the backlight is seen, tried again every 5 s while the camera still adjusts it */
-  if (gtBackExpoOn() && GT_REC.sigKeep === "darkness" && !GT_REC.backUserAuto) { const tL = Date.now();
+  if (!newOn && gtBackExpoOn() && GT_REC.sigKeep === "darkness" && !GT_REC.backUserAuto) { const tL = Date.now();
     if (tL - (GT_REC.backSeenAt || 0) >= 2500 && !(GT_REC.backLockTry && tL - GT_REC.backLockTry < 5000)) { GT_REC.backLockTry = tL; gtBackExpoLock().catch(() => {}); } }
   /* a steady reading: the scale from a minute of overall widths, the shown gap the middle of the last 2 s (gapSteady) */
   const corr = gtCorr(), stTot = GT_REC.steady && GT_REC.steady.tot && GT_REC.steady.tot.length >= 30 ? medianOf(GT_REC.steady.tot) : (r.ok && r.edges ? r.edges.b1 - r.edges.a0 : null);
@@ -7155,24 +7188,27 @@ function gtReadOnce() {
   GT_REC.levelNow = GT_REC.lvlHist && GT_REC.lvlHist.length >= 5 ? medianOf(GT_REC.lvlHist.map(x => x.v)) : null;
   /* the camera's scale for this picture (18 Oct 2026); none → the reading is "not calibrated", shown grey and judged by nobody */
   const scaleWay = gapScaleHere();
-  const cal = scaleWay ? gapScaleFor(gtCalAll(), { totNow: stTot, light: gtLightNow(), cam: GT_REC.camLabel || null, spec: GT_REC.cfg.spec || null, ...gtScaleOpts(gtLightNow()) }) : null;
+  const cal = scaleWay ? gapScaleFor(gtCalAll(), { totNow: stTot, light: gtLightNow(), cam: GT_REC.camLabel || null, spec: GT_REC.cfg.spec || null, ...gtScaleOpts(gtLightNow()), latest: newOn }) : null;
+  const scaleUse = cal && cal.ok ? (newOn ? gapScaleNow(cal, stTot) : cal.scale) : null;
   GT_REC.cal = cal; const uncal = !!(scaleWay && !(cal && cal.ok));
   /* a new scale (a check just taught it) — the last seconds' readings were on the old one, so the steady reading starts again */
   const scaleKey = cal && cal.ok ? cal.scale : null; if (GT_REC.calScaleSeen !== scaleKey) { GT_REC.calScaleSeen = scaleKey; GT_REC.rawHist = []; }
   const cs = scaleWay ? { on: false, why: null } : gapCorrStands(corr, stTot, GT_REC.levelNow), corrPx = cs.on && corr ? corr.px : 0; GT_REC.corrState = cs;
-  const sd = gapSteady(GT_REC.steady, r.ok ? r.edges : null, widthMm, `${widthMm}|${lineY}|${GT_REC.cfg.spec || ""}|${w}x${h}${cal && cal.ok ? `|${cal.scale}` : ""}`, Date.now(), { nominal: GT_REC.cfg.lim ? nomOf(GT_REC.cfg.lim) : null, offsetPx: corrPx, scale: cal && cal.ok ? cal.scale : null,
+  const sd = gapSteady(GT_REC.steady, r.ok && !gate ? r.edges : null, widthMm, `${widthMm}|${lineY}|${GT_REC.cfg.spec || ""}|${w}x${h}${cal && cal.ok ? `|${cal.scale}` : ""}`, Date.now(), { nominal: GT_REC.cfg.lim ? nomOf(GT_REC.cfg.lim) : null, offsetPx: corrPx, scale: scaleUse,
     /* never on the set-up page or while a new size is being set up (19 Oct 2026, 11:42 — "Won't allow me to enter caliper size
        in": a scale learned from checks taken on the wrong size made every picture "can't be right", so no reading to check
        against, so no hand check could put the scale right). Only a running trace throws pictures away for the size. */
     uncal: uncal || !GT_REC.recording || !!GT_REC.settingUp });
   GT_REC.steady = sd.st;
   if (r.ok && sd.gap > 0) r.gap = sd.gap;
+  /* a picture the focus or light watch held back: the strips are still drawn, nothing is counted from it */
+  if (r.ok && gate) { r.gap = null; r.gate = gate; r.refused = gate === "focusing" ? "the camera is focusing" : "the light just changed"; }
   /* THE GLUE BEAD (15 Oct 2026): a strip read wider than it ever is has a bead against it — its extra is given back to the
      gap (gapSteady) and the edge is drawn at the strip. Said on the screen while it lasts, and on the log when it starts. */
   if (r.ok && sd.bead && sd.edges) r.edges = sd.edges;
   if (sd.beadRebased) gtLog(`The ${sd.beadRebased === "a" ? "left" : "right"} strip has read wider for 10 minutes — taken as its width now`, "#94A3B8");
   /* a picture whose edges can't be right is no reading at all — nothing goes on the trace from it (12 Oct 2026) */
-  else if (r.ok && sd.refused) { r.gap = null; r.refused = sd.refused; }   // the strips are still in view; this picture just isn't counted
+  else if (r.ok && sd.refused && !gate) { r.gap = null; r.refused = sd.refused; }   // the strips are still in view; this picture just isn't counted
   const g = sd.shown;
   /* is the line moving? the middle of each strip, a tenth of a second apart, against the still background beside them */
   const M = GT_REC.mot, e = r.ok && r.edges;
@@ -7221,7 +7257,7 @@ function gtReadOnce() {
      clip can be read again and compared reading for reading (12 Oct 2026) */
   if (GT_REC.clip && GT_REC.clip.reads && GT_REC.clip.reads.length < 3000) { const r1 = (x) => Math.round(x * 10) / 10;
     GT_REC.clip.reads.push({ t: now - GT_REC.clip.started, vt: Math.round((v.currentTime || 0) * 1000), e: r.ok && r.edges ? [r1(r.edges.a0), r1(r.edges.a1), r1(r.edges.b0), r1(r.edges.b1)] : null,
-      g: r.ok && r.gap > 0 ? Math.round(r.gap * 1000) / 1000 : null, sh: g > 0 ? Math.round(g * 1000) / 1000 : null, cp: corrPx || 0, ref: r.refused || null, mm: mmPerPx ? Math.round(mmPerPx * 1e6) / 1e6 : null, mv: moving, sig: r.signal || null }); }
+      g: r.ok && r.gap > 0 ? Math.round(r.gap * 1000) / 1000 : null, sh: g > 0 ? Math.round(g * 1000) / 1000 : null, cp: corrPx || 0, ref: r.refused || null, mm: mmPerPx ? Math.round(mmPerPx * 1e6) / 1e6 : null, mv: moving, sig: r.signal || null, ...(r.reader === "new" ? { rd: "new", shp: r.sharp, ct: r.contrast, q: gate || null } : {}) }); }
   if (GT_REC.recording) {
     /* readings that stopped (the PC asleep, the browser held back) are said on the trace, not hidden */
     const prev = GT_REC.samples[GT_REC.samples.length - 1];
@@ -7237,7 +7273,7 @@ function gtReadOnce() {
     GT_REC.mr = mr.state; const gKeep = r.ok && r.gap > 0 && mr.ok ? r.gap : null;
     /* the pixels go with each reading, and a reading before the camera was calibrated says so (18 Oct 2026) */
     const pxNow = gKeep && sd.gapPx > 0 && sd.totPx > 0 ? { gp: Math.round(sd.gapPx * 10) / 10, tp: Math.round(sd.totPx * 10) / 10 } : {};
-    if (!GT_REC.settingUp && !GT_REC.blockOn) GT_REC.samples.push({ t: now, g: r.ok ? gKeep : null, run: !!(r.ok && !GT_REC.paused), stopped: moving === false, ...(mr.ok ? {} : { mis: true }), ...(glNow ? { gl: glNow } : {}), ...pxNow, ...(uncal ? { u: 1 } : {}) });
+    if (!GT_REC.settingUp && !GT_REC.blockOn) GT_REC.samples.push({ t: now, g: r.ok ? gKeep : null, run: !!(r.ok && !GT_REC.paused), stopped: moving === false, ...(mr.ok ? {} : { mis: true }), ...(glNow ? { gl: glNow } : {}), ...pxNow, ...(uncal ? { u: 1 } : {}), ...(gate ? { q: gate === "focusing" ? "f" : "l" } : {}) });
     gtGlueWatch(now);
     /* THE READOUT'S LAST TEN MINUTES (14 Oct 2026, the Sikora-style readout): every picture's gap by the clock, across Reel
        off and a new size's set-up, with the line's running metres — readoutTrend slices it for the chart */
@@ -7245,6 +7281,35 @@ function gtReadOnce() {
       while (tb.length && now - tb[0].t > READOUT_SPAN_MS + 10000) tb.shift(); }
   }
   gtLineStep(now, g);
+}
+/* THE LIGHT HELD (the new reader, 25 Oct 2026 — the plan's step 3). 2.5 s after the strips are seen steadily, the camera's exposure
+   and colour stop adjusting themselves: the exposure at what the camera had chosen, put on a whole number of hundredths of a
+   second so the lights' mains flicker evens out (expoFlickerSafe) — or exactly where it is if this size has been checked today,
+   so the light the checks saw doesn't move. Not with Hold on (that holds them already), and not after "Let it adjust itself". */
+function gtHoldOnHere() { try { const h = JSON.parse(localStorage.getItem("mxGapCamHold") || "null"); return !!(h && h.on); } catch (e) { return false; } }
+function gtBandMean(px) { let sum = 0, cnt = 0; for (let i = 0; i < px.length; i += 4 * 37) { sum += (px[i] + px[i + 1] + px[i + 2]) / 3; cnt++; } return cnt ? sum / cnt : 0; }
+async function gtSteadyLock(px) {
+  const tr = GT_REC.stream && GT_REC.stream.getVideoTracks()[0]; if (!tr || !tr.getCapabilities) return false;
+  let caps = {}, st = {}; try { caps = tr.getCapabilities() || {}; st = tr.getSettings() || {}; } catch (e) { return false; }
+  if (!(caps.exposureMode || []).includes("manual")) { GT_REC.steadyLock = { at: Date.now(), none: true }; return false; }
+  const now = Number(st.exposureTime), checked = gtSizeChecked();
+  let want = now > 0 ? (checked ? now : expoFlickerSafe(now, caps.exposureTime)) : null;
+  if (want && gtBackHelp() && gtLightNow() === "backlight" && want > GT_BACK_EXPO_MAX && !checked) want = expoFlickerSafe(GT_BACK_EXPO_MAX - 33, caps.exposureTime);
+  try { await tr.applyConstraints({ advanced: [want ? { exposureMode: "manual", exposureTime: gtExpoFit(tr, want) } : { exposureMode: "manual" }] }); } catch (e) { GT_REC.steadyLock = { at: Date.now(), none: true, why: (e && e.message) || "refused" }; return false; }
+  if ((caps.whiteBalanceMode || []).includes("manual")) { try { await tr.applyConstraints({ advanced: [{ whiteBalanceMode: "manual" }] }); } catch (e) { /* colour keeps adjusting — the reader doesn't use colour */ } }
+  let took = {}; try { took = tr.getSettings() || {}; } catch (e) { /* older browser */ }
+  if (took.exposureMode && took.exposureMode !== "manual") { GT_REC.steadyLock = { at: Date.now(), none: true, why: "still adjusting" }; gtLog("The camera wouldn't hold its light — it is still adjusting itself. The reader allows for slow changes.", "#F59E0B"); return false; }
+  const to = Number(took.exposureTime) || want;
+  GT_REC.steadyLock = { at: Date.now(), to, from: now > 0 ? now : null, band: px ? gtBandMean(px) : null };
+  gtLog(`Light held: the camera's exposure fixed at 1/${Math.round(10000 / to)} s${to >= 100 && Math.abs(to / 100 - Math.round(to / 100)) < 1e-6 ? " (whole hundredths — no mains flicker)" : ""}${now > 0 && Math.abs(to - now) / now > 0.02 ? `, the camera had 1/${Math.round(10000 / now)} s` : ""}`, "#60A5FA");
+  gtCamWatch();
+  return true;
+}
+async function gtSteadyRelease(why) {
+  const tr = GT_REC.stream && GT_REC.stream.getVideoTracks()[0]; GT_REC.steadyLock = null; GT_REC.steadyLockTry = Date.now();
+  if (tr) { try { await tr.applyConstraints({ advanced: [{ exposureMode: "continuous" }] }); } catch (e) { /* camera without it */ } try { await tr.applyConstraints({ advanced: [{ whiteBalanceMode: "continuous" }] }); } catch (e) { /* none */ } }
+  gtLog(`Light let go — ${why}. It is held again once the camera has settled; check the gap by hand once after.`, "#F59E0B");
+  return true;
 }
 /* WHY DID IT STOP (10 Oct 2026). Every reading goes through the stop watcher (mx_linestops.js): 30 seconds still is a stop,
    saved from when the line last moved; the first good metre after it closes a die or width change. What it finds is queued
@@ -7324,6 +7389,7 @@ async function gtStartCamera(id) {
   const tr = s.getVideoTracks()[0]; GT_REC.camLabel = (tr && tr.label) || null;
   try { const st = tr && tr.getSettings ? tr.getSettings() : {}; GT_REC.camRes = { w: st.width || null, h: st.height || null, fps: st.frameRate ? Math.round(st.frameRate) : null }; } catch (e) { GT_REC.camRes = null; }
   GT_REC.mot.gate.reset(); GT_REC.mot.A = GT_REC.mot.B = GT_REC.mot.Bg = null; GT_REC.motion = { moving: null, trusted: false };
+  GT_REC.steadyLock = null; GT_REC.steadyLockTry = 0; GT_REC.readOkSince = null; GT_REC.readFailSince = null; GT_REC.focusSt = null; GT_REC.lightSt = null; GT_REC.rdPrev = null; GT_REC.quality = null; GT_REC.frameSig = null;
   /* held settings go back on as the camera opens (a short wait: some cameras take a moment to report what they can do) */
   /* put back only the freeze and what was SLID by hand — never the values read off the camera at the time (12 Oct 2026, .179
      on the line: "sees the camera for a second then goes off" — the read-back exposure, sent at start, stopped the picture) */
@@ -8749,10 +8815,23 @@ function GlueLinePortalView({ data, setData }) {
   const setupOk = !!(setupS && setupS.spec && !sizesDiffer(setupS.spec, spec || "") && setupS.day === new Date().toDateString() && wv.ok && setupS.widthAt === (widthRec && widthRec.at));
   const setupChecks = setupOk ? setupS.checks : [];
   const setupPending = setupChecks.find(c => c.odd && !c.kept) || null, setupGood = setupChecks.filter(c => !c.odd || c.kept);
-  const setupDone = setupGood.length >= GAP_SETUP_CHECKS && !setupPending;
+  const setupDoubt = !!(setupOk && setupS.doubt && !setupS.doubtOk);   /* the safety net held the three back (gapScaleDoubt) */
+  const setupDone = setupGood.length >= GAP_SETUP_CHECKS && !setupPending && !setupDoubt;
   /* three stand: their average becomes this range-and-light's correction, and they go on the reel with the trace */
-  const finishSetup = (list) => {
+  const finishSetup = (list, opt = {}) => {
     const good = list.filter(c => !c.odd || c.kept); if (good.length < GAP_SETUP_CHECKS) return;
+    /* THE SAFETY NET (the new reader, 25 Oct 2026): three that put the camera's span more than 9 % from where this camera and light
+       usually sit are held back — the width typed or the measuring line is usually wrong (19 Oct 09:23: +0.41) */
+    if (scaleWay && gtReaderNew() && !opt.doubtOk) {
+      const set = good.slice(-GAP_SETUP_CHECKS).filter(c => c.gapPx > 0 && c.totPx > 0).map(c => ({ at: c.at, hand: c.hand, gapPx: c.gapPx, totPx: c.totPx, spec: c.spec || spec, light: c.light || gtLightNow(), cam: c.cam || GT_REC.camLabel || null, kind: "setup" }));
+      const dbt = set.length ? gapScaleDoubt(gtCalAll(), set, { light: set[0].light, cam: GT_REC.camLabel || null }) : null;
+      if (dbt && dbt.doubt) {
+        setSetupS({ spec, day: new Date().toDateString(), widthAt: widthRec ? widthRec.at : null, checks: list, doubt: dbt });
+        setSetupMsg({ bad: true, doubt: true, t: `These three don't match what this camera usually sees under this light — about ${Math.abs(dbt.mm).toFixed(2)} mm ${dbt.mm > 0 ? "more" : "less"} than it would expect on this gap. Usually the width typed in, or the measuring line, is wrong: check both, then measure again. If they're right, keep them.` });
+        gtLog(`Set-up held back: the three put the camera ${Math.abs(dbt.mm).toFixed(2)} mm from its usual on this gap — check the width and the measuring line`, "#F59E0B");
+        return;
+      }
+    }
     /* the three join the day's checks on this size and picture (15 Oct 2026: they used to replace them, and each set-up
        moved the correction by whatever its three callipers said) — gapCorrection averages the day's */
     const key = good[good.length - 1].key, { sets } = gtCorrSetsRead(), last3 = good.slice(-GAP_SETUP_CHECKS), tp = Number(last3[last3.length - 1].totPx) || 0, today = new Date().toDateString();
@@ -8796,11 +8875,12 @@ function GlueLinePortalView({ data, setData }) {
     if (before.length) gtLog(`Set-up: ${before.length} earlier check${before.length === 1 ? "" : "s"} put aside — taken in another light (the exposure or the light changed since). ${Math.min(next.filter(x => !x.odd || x.kept).length, GAP_SETUP_CHECKS)} of ${GAP_SETUP_CHECKS} now.`, "#F59E0B");
     setSetupS({ spec, day: new Date().toDateString(), widthAt: widthRec.at, checks: next }); setSetupIn("");
     gtLog(`Gap by hand ${c.hand.toFixed(3)} · camera steady ${c.read.toFixed(3)}${odd ? ` — ${odd.toFixed(3)} from the others` : ""}`, odd ? "#F59E0B" : "#60A5FA");
-    setSetupMsg(odd ? { bad: true, odd: true, t: `This one is ${odd.toFixed(3)} away from the ${setupGood.length === 1 ? "other one" : "others"}. Measure again, or keep it.` } : null);
+    setSetupMsg(odd ? { bad: true, odd: true, t: `This one is ${odd.toFixed(3)} away from the ${setupGood.length === 1 ? "other one" : "others"}. It's left out — measure once more (or keep it if you're sure).` } : null);
     if (!odd) finishSetup(next);
   };
   const setupAgain = () => { const next = setupChecks.filter(c => !(c.odd && !c.kept)); setSetupS({ ...setupS, checks: next }); setSetupMsg(null); };
   const setupKeep = () => { const next = setupChecks.map(c => c.odd && !c.kept ? { ...c, kept: true } : c); setSetupS({ ...setupS, checks: next }); setSetupMsg(null); finishSetup(next); };
+  const setupDoubtKeep = () => { const next = setupChecks; setSetupS({ ...setupS, doubtOk: true }); setSetupMsg(null); gtLog("Set-up kept as measured, though it didn't match the camera's usual", "#94A3B8"); finishSetup(next, { doubtOk: true }); };
   const setupRestart = () => { setSetupS({ spec, day: new Date().toDateString(), widthAt: widthRec ? widthRec.at : null, checks: [] }); setSetupMsg(null); };
   const start = () => { if (!wv.ok) { setPpanel("calib"); return; } if (!setupDone) { setSetupMsg({ bad: true, t: `Measure the gap by hand ${GAP_SETUP_CHECKS} times first.` }); return; } GT_REC.samples = []; GT_REC.marks = []; GT_REC.liveId = null; GT_REC.carry = null; GT_REC.settingUp = false; GT_REC.segStart = Date.now(); GT_REC.segRun0 = GT_REC.runM; GT_REC.paused = false; GT_REC.recording = true; GT_REC.trial = !!trialOn; GT_REC.flash = null; GT_REC.traceNo = trialOn ? null : gapNextTraceNo(data.gapTraces || []);
     /* CARRY ON THE SAME REEL (15 Oct 2026): the trace left open by the restart is carried in front, under its own number and row */
@@ -8831,7 +8911,43 @@ function GlueLinePortalView({ data, setData }) {
     setData(prev => ({ ...prev, ...appendLog(prev, { action: "update", entity: "gapTrace", entityId: "width", summary: `Gap trace width measured by hand on ${spec || "—"}: ${rec.mm.toFixed(2)} mm across both strips (a ${widthMm} mm size)${currentDevice() ? ` on ${currentDevice()}` : ""}` }) }));
   };
   /* THE GAP, CHECKED BY HAND (optional): set against what the camera reads now, kept for the trace, never used to change it */
+  /* THE PROOF CHECK AND CORRECT (the new reader, 25 Oct 2026 — the plan's "The three calliper checks"). Check PROVES the camera:
+     it changes nothing and is kept as a pass (within GAP_PROOF_PASS of what the camera showed) or a miss. Correct the camera
+     sets its scale from this check (with any others in the last 20 minutes — gapScaleFor latest), never blended with older ones. */
+  const camFigure = () => { const L = GT_REC.last || {}, st = L.steady; if (!camOn || !L.ok || !st) return { why: gtNoReadingWhy(L, st) }; if (!st.ok) return { why: st.why }; return { L, st }; };
+  const doProof = () => {
+    const cf = camFigure(); if (cf.why) { setCheckMsg({ bad: true, t: cf.why }); return; }
+    const { L, st } = cf, res = gapCheck(checkIn, st.value); if (!res.ok) { setCheckMsg({ bad: true, t: res.why }); return; }
+    const v = gapProofVerdict(res.hand, res.read), light = gtLightNow();
+    const c = { hand: res.hand, read: res.read, diff: v.diff, pass: v.pass, at: Date.now(), by: currentActor() || null, kind: "proof", raw: st.value, spec: spec || null, mmPerPx: L.mmPerPx || null, level: GT_REC.levelNow || null, light,
+      ...(L.mmPerPx > 0 && L.totPx > 0 ? { gapPx: Math.round(st.value / L.mmPerPx * 10) / 10, totPx: Math.round(L.totPx * 10) / 10, cam: GT_REC.camLabel || null, ...(L.cal && L.cal.ok ? { scale: L.cal.scale } : {}) } : {}), ...(GT_REC.quality && GT_REC.quality.sharp ? { sharp: GT_REC.quality.sharp } : {}) };
+    GT_REC.checks = [...(GT_REC.checks || []), c].slice(-20);
+    if (GT_REC.recording) GT_REC.marks.push({ t: c.at, note: `Proof check: ${c.hand.toFixed(3)} by hand · camera ${c.read.toFixed(3)} — ${v.pass ? "pass" : "miss"}` });
+    gtLog(`Proof check: ${c.hand.toFixed(3)} by hand · camera ${c.read.toFixed(3)} — ${v.pass ? "pass" : `missed by ${Math.abs(v.diff).toFixed(3)}`}`, v.pass ? "#34D399" : "#F59E0B");
+    setData(prev => ({ ...prev, ...appendLog(prev, { action: "update", entity: "gapTrace", entityId: "gapproof", summary: `Gap proof check on ${spec || "—"}: measured ${c.hand.toFixed(3)} mm, the camera showed ${c.read.toFixed(3)} (${v.diff >= 0 ? "+" : ""}${v.diff.toFixed(3)}) — ${v.pass ? "pass" : "miss"}${currentDevice() ? ` on ${currentDevice()}` : ""}` }) }));
+    setCheckIn("");
+    const msg = v.pass ? { bad: false, t: `Proof check passed: you measured ${c.hand.toFixed(3)}, the camera showed ${c.read.toFixed(3)} — within ${GAP_PROOF_PASS.toFixed(2)}. Nothing was changed.` }
+      : { bad: true, miss: c.hand, t: `Proof check missed: you measured ${c.hand.toFixed(3)}, the camera showed ${c.read.toFixed(3)} — ${Math.abs(v.diff).toFixed(3)} apart. Measure again to be sure; if it's right, correct the camera to it.` };
+    setCheckMsg(msg); GT_REC.proofFlash = { ...msg, at: Date.now() };
+    setTick(x => x + 1);
+  };
+  const doTeach = (handIn) => {
+    const cf = camFigure(); if (cf.why) { setCheckMsg({ bad: true, t: cf.why }); return; }
+    const { L, st } = cf, res = gapCorrCheck(handIn, st.value, L.mmPerPx, L.totPx, L.mmPerPx > 0 ? 0.5 / L.mmPerPx : undefined); if (!res.ok) { setCheckMsg({ bad: true, t: res.why }); return; }
+    const light = gtLightNow();
+    const c = { hand: res.hand, read: st.value, diff: Math.round((st.value - res.hand) * 1000) / 1000, at: Date.now(), by: currentActor() || null, kind: "correct", raw: st.value, spec: spec || null, mmPerPx: L.mmPerPx || null, level: GT_REC.levelNow || null, light,
+      gapPx: Math.round(st.value / L.mmPerPx * 10) / 10, totPx: Math.round(L.totPx * 10) / 10, cam: GT_REC.camLabel || null };
+    GT_REC.checks = [...(GT_REC.checks || []), c].slice(-20);
+    if (GT_REC.recording) GT_REC.marks.push({ t: c.at, note: `Camera corrected to the callipers: ${c.hand.toFixed(3)} (camera ${c.read.toFixed(3)} before)` });
+    const cal2 = gapScaleFor(gapCalChecks(GT_REC.calTraces || [], GT_REC.checks || [], GT_REC.cfg.spec || null), { totNow: L.totPx, light, ...gtScaleOpts(light), cam: GT_REC.camLabel || null, spec: GT_REC.cfg.spec || null, latest: true });
+    gtLog(`Camera corrected to the callipers: ${c.hand.toFixed(3)} (it showed ${c.read.toFixed(3)})${cal2.ok ? ` — scale ${cal2.scale.toFixed(5)} mm a pixel` : ""}`, "#60A5FA");
+    setData(prev => ({ ...prev, ...appendLog(prev, { action: "update", entity: "gapTrace", entityId: "correction", summary: `Gap camera corrected to the callipers on ${spec || "—"}: measured ${c.hand.toFixed(3)} mm, the camera showed ${c.read.toFixed(3)}${cal2.ok ? ` — its scale now ${cal2.scale.toFixed(5)} mm a pixel from ${cal2.n} check${cal2.n === 1 ? "" : "s"}` : ""}${currentDevice() ? ` on ${currentDevice()}` : ""}` }) }));
+    setCheckIn("");
+    setCheckMsg({ bad: false, t: `Camera corrected to the callipers: ${c.hand.toFixed(3)} (it showed ${c.read.toFixed(3)}).${cal2.ok ? ` Its scale is now ${cal2.scale.toFixed(5)} mm a pixel, from this check${cal2.n > 1 ? ` and ${cal2.n - 1} other${cal2.n === 2 ? "" : "s"} in the last 20 minutes` : ""}.` : ""}` });
+    setTick(x => x + 1);
+  };
   const doCheck = () => {
+    if (scaleWay && gtReaderNew()) { doProof(); return; }
     /* against the camera's STEADY reading, corrected as it is shown (12 Oct 2026 evening) — never one picture */
     const L = GT_REC.last || {}, st = L.steady;
     if (L.ok && st && !st.ok) { setCheckMsg({ bad: true, t: st.why }); return; }
@@ -8860,7 +8976,7 @@ function GlueLinePortalView({ data, setData }) {
   /* CORRECT THE CAMERA TO THE CALLIPERS (12 Oct 2026): the gap measured by hand against what the camera reads before any
      correction, turned into pixels at each edge and kept on this PC; the middle of the last 5 is used. */
   const doCorrect = () => {
-    if (scaleWay) { doCheck(); return; }   /* no corrections with the camera's scale — a check teaches it (18 Oct 2026) */
+    if (scaleWay) { if (gtReaderNew()) { doTeach(checkIn); return; } doCheck(); return; }   /* no corrections with the camera's scale — a check teaches it (18 Oct 2026); with the new reader, Correct sets it (25 Oct 2026) */
     const L = GT_REC.last || {}, st = L.steady;
     if (L.ok && st && !st.ok) { setCheckMsg({ bad: true, t: st.why }); return; }
     const res = gapCorrCheck(checkIn, L.ok && st && st.ok ? st.value : null, L.mmPerPx, L.totPx);
@@ -9141,7 +9257,9 @@ function GlueLinePortalView({ data, setData }) {
     const corrSt = GT_REC.corrState || {}, lightNow = gtLightNow(), holdSt = GT_REC.holdState, backHelp = gtBackHelp();
     const pill = (key, tone, text) => { const c = tone === "good" ? ["#E8F3EC", "#C8E6D2", "#1E7F3C"] : tone === "warn" ? ["#FDF6E3", "#F5D98B", "#B45309"] : ["#F4F6FA", P.line, P.sub];
       return <span data-pt-pill={key} data-pt-pill-tone={tone} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600, padding: "3px 10px", borderRadius: 999, border: `1px solid ${c[1]}`, background: c[0], color: c[2], whiteSpace: "nowrap" }}>{dot(c[2])}{text}</span>; };
-    const lightPill = live && live.ok ? pill("light", corrSt.light ? "warn" : "good", `Light: ${(GAP_LIGHT_WORDS[lightNow] || lightNow).toLowerCase()}${corrSt.light ? ", changed since the check" : ""}${backHelp && lightNow === "backlight" && GT_REC.fps != null ? ` · ${GT_REC.fps} new pictures a second` : ""}`) : null;
+    const qNow = GT_REC.quality, slk = GT_REC.steadyLock, readerNew = gtReaderNew();
+    const lightPill = live && live.ok ? pill("light", corrSt.light || (readerNew && qNow && qNow.lightHold) ? "warn" : "good", `Light: ${(GAP_LIGHT_WORDS[lightNow] || lightNow).toLowerCase()}${corrSt.light ? ", changed since the check" : ""}${readerNew && qNow && qNow.lightHold ? ", just changed — waiting" : readerNew && slk && slk.to ? `, held at 1/${Math.round(10000 / slk.to)} s` : ""}${(backHelp && lightNow === "backlight") || readerNew ? (GT_REC.fps != null ? ` · ${GT_REC.fps} new pictures a second` : "") : ""}`) : null;
+    const focusPill = readerNew && live && live.ok && qNow && qNow.sharp ? pill("focus", qNow.focusing ? "warn" : "good", qNow.focusing ? "Focus: the camera is focusing — waiting" : `Focus: sharp${qNow.usual ? ` (${Math.round(qNow.sharp / qNow.usual * 100)} % of usual)` : ""}`) : null;
     /* THE CAMERA'S HEALTH, ONE LINE (18 Oct 2026): its scale and how well the checks agree, and the width it sees */
     const calNow = live && live.cal;
     const calText = scaleWay && camOn && live && live.ok ? (calNow && calNow.ok ? `Camera scale ${calNow.scale.toFixed(5)} mm/px · ${calNow.n} check${calNow.n === 1 ? "" : "s"}${calNow.borrowed ? " on another size — check this size by hand" : ""} ±${calNow.rms.toFixed(3)}${live.widthSeen ? ` · sees ${live.widthSeen.seen.toFixed(2)} mm across${live.widthSeen.hand != null ? ` (callipers ${live.widthSeen.hand.toFixed(2)})` : ""}` : ""}` : calNow && calNow.why === "notset" ? "Backlight — not set for this size yet: Block calibration (More…), or three checks by hand" : "Camera not calibrated for this picture — check one gap") : null;
@@ -9151,9 +9269,9 @@ function GlueLinePortalView({ data, setData }) {
       : pill("cal", "warn", calNow && calNow.why === "notset" ? "Camera: backlight — not set for this size yet (Block calibration, or three checks)" : "Camera: not calibrated for this picture — check one gap")) : null;
     const holdPill = !holdOn ? pill("hold", "plain", "Hold: off") : holdSt && holdSt.notTook && holdSt.notTook.length ? pill("hold", "warn", `Hold: asked, camera still adjusting its ${holdSt.notTook.join(" and ")}`) : holdSt ? pill("hold", "good", `Hold: on, checked ${hhmm(holdSt.at)}`) : pill("hold", "plain", "Hold: on");
     const tones = { onset: ["#E8F3EC", "#1E7F3C", "#1E7F3C", "ON NOM"], inrange: ["#E8F3EC", "#86C49B", "#1E7F3C", "IN RANGE"], over: ["#FEE2E2", "#FCA5A5", "#B91C1C", "OVER MAX"], under: ["#FEE2E2", "#FCA5A5", "#B91C1C", "UNDER MIN"] };
-    const t = !camOn ? ["#F1F3F6", "#CBD2DC", "#334155", "CAMERA OFF"] : !live || !live.ok ? ["#F1F3F6", "#CBD2DC", "#334155", "LOOKING FOR THE STRIPS"] : !lim ? ["#F1F3F6", "#CBD2DC", "#334155", "NO SIZE SET"] : !wv.ok ? ["#FDF0E7", "#F97316", "#B45309", "MEASURE THE WIDTH"] : live.uncal ? ["#F1F3F6", "#CBD2DC", "#64748B", "NOT CALIBRATED"] : tones[verdict] || ["#F1F3F6", "#CBD2DC", "#334155", "—"];
+    const t = !camOn ? ["#F1F3F6", "#CBD2DC", "#334155", "CAMERA OFF"] : !live || !live.ok ? ["#F1F3F6", "#CBD2DC", "#334155", "LOOKING FOR THE STRIPS"] : !lim ? ["#F1F3F6", "#CBD2DC", "#334155", "NO SIZE SET"] : !wv.ok ? ["#FDF0E7", "#F97316", "#B45309", "MEASURE THE WIDTH"] : live.uncal ? ["#F1F3F6", "#CBD2DC", "#64748B", "NOT CALIBRATED"] : !(g > 0) && live.gate === "focusing" ? ["#FDF6E3", "#F5D98B", "#B45309", "FOCUSING"] : !(g > 0) && live.gate === "light" ? ["#FDF6E3", "#F5D98B", "#B45309", "LIGHT CHANGING"] : tones[verdict] || ["#F1F3F6", "#CBD2DC", "#334155", "—"];
     const advice = !camOn ? "Turn the camera on to start reading." : !live || !live.ok ? `The camera can't see the two strips${live && live.why ? ` (${live.why})` : ""} — click the picture where they lie flat.` : !lim ? "Pick the size being run in Set-up." : !wv.ok ? `Measure the overall width by hand and enter it — ${wv.why}.`
-      : gtVerdictWords(verdict, lim);
+      : !(g > 0) && live.gate ? gtNoReadingWhy(live, null) : gtVerdictWords(verdict, lim);
     const odo = (Math.max(0, counter).toFixed(1)).padStart(6, "0").split("");
     const prof = GT_REC.profile, profPath = prof && prof.length > 1 ? "M" + prof.map((v, i) => `${(i / (prof.length - 1) * 420).toFixed(1)} ${(104 - v * 92).toFixed(1)}`).join(" L") : "";
     const ex = (x) => vid.w ? (x / vid.w * 420).toFixed(1) : 0;
@@ -9174,6 +9292,10 @@ function GlueLinePortalView({ data, setData }) {
             {holdMsg && holdMsg.why && <div data-pt-hold-msg style={{ fontSize: 14, fontWeight: 600, color: "#B45309", marginTop: 6 }}>{holdMsg.why}</div>}
             {holdMsg && holdMsg.ok && holdMsg.missing && holdMsg.missing.length > 0 && <div style={{ fontSize: 13, color: P.sub, marginTop: 4 }}>This camera won't hold its {holdMsg.missing.join(" or ")} — keep the light steady for that.</div>}</div>
           <button data-pt-hold-btn disabled={!camOn} onClick={holdToggle} style={pbtn(holdOn ? "plain" : "go", { minHeight: 48, opacity: camOn ? 1 : 0.5 })}>{holdOn ? "Let it adjust again" : "Hold them as they are now"}</button>
+          {gtReaderNew() && !holdOn && camOn && <div data-pt-steadylock={GT_REC.steadyLock && GT_REC.steadyLock.to ? "held" : GT_REC.backUserAuto ? "auto" : "waiting"} style={{ flex: "1 1 100%", fontSize: 14, color: P.sub2, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ flex: "1 1 300px" }}>{GT_REC.steadyLock && GT_REC.steadyLock.to ? `The light is held by itself: exposure 1/${Math.round(10000 / GT_REC.steadyLock.to)} s, so a cloud or a light switched on doesn't move the edges.` : GT_REC.backUserAuto ? "The camera is adjusting its own light (you let it)." : GT_REC.steadyLock && GT_REC.steadyLock.none ? "This camera won't let the app hold its light — the reader allows for slow changes." : "The light is held by itself once the strips have been seen steadily for a few seconds."}</span>
+            {GT_REC.steadyLock && GT_REC.steadyLock.to ? <button data-pt-steadylock-free onClick={() => { GT_REC.backUserAuto = true; gtSteadyRelease("you let the camera adjust its own light").catch(() => {}); setTick(x => x + 1); }} style={pbtn("plain", { minHeight: 42 })}>Let it adjust itself</button>
+              : GT_REC.backUserAuto ? <button data-pt-steadylock-again onClick={() => { GT_REC.backUserAuto = false; GT_REC.steadyLockTry = 0; setTick(x => x + 1); }} style={pbtn("plain", { minHeight: 42 })}>Hold the light again</button> : null}</div>}
           {holdOn && camOn && <div style={{ flex: "1 1 100%", display: "flex", flexWrap: "wrap", gap: 16, alignItems: "stretch" }}>
             <div style={{ flex: "2 1 420px", minWidth: 0 }}><GtLivePreview maxH={340} lineY={lineY} /></div>
             <div style={{ flex: "1 1 220px", display: "flex", flexDirection: "column", justifyContent: "center", gap: 6 }}>
@@ -9213,20 +9335,25 @@ function GlueLinePortalView({ data, setData }) {
           <div style={{ fontSize: 14, color: wv.ok ? "#166534" : "#B45309" }}>{wv.ok ? (scaleWay ? `Measured by hand: ${Number(widthRec.mm).toFixed(2)} mm across both strips at ${hhmm(widthRec.at)}. The camera measures the gap on its own scale; this width is kept to compare with the width the camera sees${live && live.widthSeen ? ` (${live.widthSeen.seen.toFixed(2)} mm)` : ""}.` : `Measured by hand: ${Number(widthRec.mm).toFixed(2)} mm across both strips at ${hhmm(widthRec.at)}. The camera reads the gap as a share of this width.`) : `Measure the overall width before a trace can start — ${wv.why}.`}</div>
           <div style={{ fontSize: 13, color: P.sub2, borderTop: `1px solid ${P.line}`, paddingTop: 10 }}>{widthMm ? `A ${widthMm} mm size: ${widthMm.toFixed(2)} to ${(widthMm + 0.3).toFixed(2)} mm. ` : ""}Measured again when the size or the day changes — and any time the die is adjusted; mid-reel it goes on the trace as a mark.</div>
           <div style={{ ...card({ padding: 14, background: P.panel2 }), display: "flex", flexDirection: "column", gap: 8 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}><div style={{ fontSize: 15, fontWeight: 600 }}>Check the gap by hand</div><span style={lab}>{scaleWay ? "Every check teaches the camera its scale" : "Check · or Correct the camera to it"}</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}><div style={{ fontSize: 15, fontWeight: 600 }}>Check the gap by hand</div><span style={lab}>{scaleWay && gtReaderNew() ? "Check proves it · Correct sets it" : scaleWay ? "Every check teaches the camera its scale" : "Check · or Correct the camera to it"}</span></div>
             <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <span style={{ fontSize: 14, color: P.sub2 }}>The camera reads <b style={{ ...mono, color: P.ink }}>{g > 0 ? g.toFixed(3) : "—"}</b></span>
               <input data-pt-check-in type="number" step="0.001" inputMode="decimal" aria-label="The gap you measured, mm" placeholder="you measured, mm" value={checkIn} onChange={e => { setCheckIn(e.target.value); setCheckMsg(null); }} style={{ flex: "1 1 140px", minWidth: 0, background: "#FFFFFF", border: "1px solid #CBD2DC", borderRadius: 8, color: P.ink, ...mono, fontSize: 20, fontWeight: 600, padding: "6px 12px", minHeight: 46, boxSizing: "border-box" }} />
               <button data-pt-check-set disabled={!(g > 0) || String(checkIn).trim() === ""} onClick={doCheck} style={pbtn("plain", { minHeight: 46, opacity: !(g > 0) || String(checkIn).trim() === "" ? 0.5 : 1 })}>Check</button>
-              {!scaleWay && <button data-pt-correct disabled={!(g > 0) || String(checkIn).trim() === ""} onClick={doCorrect} style={pbtn("go", { minHeight: 46, opacity: !(g > 0) || String(checkIn).trim() === "" ? 0.5 : 1 })}>Correct the camera</button>}</div>
+              {(!scaleWay || gtReaderNew()) && <button data-pt-correct disabled={!(g > 0) || String(checkIn).trim() === ""} onClick={doCorrect} style={pbtn("go", { minHeight: 46, opacity: !(g > 0) || String(checkIn).trim() === "" ? 0.5 : 1 })}>Correct the camera</button>}</div>
             {(() => { const k = GT_REC.corr, cs = GT_REC.corrState || {}, mpp = GT_REC.last && GT_REC.last.mmPerPx; if (!k) return null;
               return <div data-pt-corr style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", fontSize: 14, color: cs.on === false ? "#B45309" : "#166534", fontWeight: 600 }}>
                 <span style={{ flex: 1, minWidth: 200 }}>{cs.on === false ? cs.why : `Corrected to the callipers: ${k.px >= 0 ? "+" : ""}${k.px.toFixed(1)} px${mpp ? ` (${k.px * mpp >= 0 ? "+" : ""}${(k.px * mpp).toFixed(3)} mm)` : ""} from ${k.n} check${k.n === 1 ? "" : "s"}${k.n > 1 ? `, ${k.spread > 2 ? `disagreeing by ${k.spread.toFixed(1)} px — measure again` : "agreeing"}` : ""}.`}</span>
                 <button data-pt-corr-clear onClick={() => clearCorrect()} style={pbtn("plain", { minHeight: 40 })}>Remove</button></div>; })()}
             {checkMsg && <div data-pt-check-msg style={{ fontSize: 14, fontWeight: 600, color: checkMsg.bad ? "#B45309" : "#166534" }}>{checkMsg.t}</div>}
+            {checkMsg && checkMsg.miss && <button data-pt-proof-correct onClick={() => doTeach(checkMsg.miss)} style={pbtn("go", { minHeight: 44, alignSelf: "flex-start" })}>Correct the camera to {checkMsg.miss.toFixed(3)}</button>}
+            {scaleWay && gtReaderNew() && (() => { const sk = gapProofStreak(gtCalAll()); return sk.total ? <div data-pt-proof-streak={sk.n} style={{ fontSize: 13, color: sk.earned ? "#166534" : P.sub, fontWeight: sk.earned ? 600 : 400 }}>Proof checks: {sk.passed} of {sk.total} within {GAP_PROOF_PASS.toFixed(2)}{sk.n ? ` · the last ${sk.n} in a row` : ""}{sk.earned ? ` — ${GAP_PROOF_EARN} in a row: the set-up could drop to one check (admin's call)` : ""}</div> : null; })()}
             <div data-pt-scale-way={scaleWay ? "camera" : "width"} style={{ fontSize: 13, color: P.sub, borderTop: `1px solid ${P.line}`, paddingTop: 8 }}>{scaleWay ? "The ruler is the camera's own scale, learned from the checks by hand." : "The ruler is the width typed in (the old way)."}{" "}
               <button data-pt-scale-switch onClick={() => { try { localStorage.setItem("mxGapScale", scaleWay ? "old" : "new"); } catch (e) { /* private mode */ } GT_REC.steady = null; gtLog(scaleWay ? "The typed width is the ruler again (the old way)" : "The camera's own scale is the ruler", "#60A5FA"); setCheckMsg(null); setTick(x => x + 1); }}
-                style={{ font: "inherit", background: "none", border: 0, padding: 0, color: "#1B2B6B", textDecoration: "underline", cursor: "pointer" }}>{scaleWay ? "Use the typed width instead" : "Use the camera's scale"}</button></div></div>
+                style={{ font: "inherit", background: "none", border: 0, padding: 0, color: "#1B2B6B", textDecoration: "underline", cursor: "pointer" }}>{scaleWay ? "Use the typed width instead" : "Use the camera's scale"}</button>
+              {" "}<span data-pt-reader={gtReaderNew() ? "new" : "old"}>{gtReaderNew() ? "Gap reader: the new one (25 Oct)." : "Gap reader: the old one, on this PC."}</span>{" "}
+              <button data-pt-reader-switch onClick={() => { const nw = !gtReaderNew(); try { localStorage.setItem("mxGapReader", nw ? "new" : "old"); } catch (e) { /* private mode */ } GT_REC.steady = null; GT_REC.rdPrev = null; GT_REC.focusSt = null; GT_REC.lightSt = null; if (!nw && GT_REC.steadyLock && GT_REC.steadyLock.to) gtSteadyRelease("the old reader is back").catch(() => {}); gtLog(nw ? "The new gap reader is on" : "The old gap reader is back on this PC", "#60A5FA"); setCheckMsg(null); setTick(x => x + 1); }}
+                style={{ font: "inherit", background: "none", border: 0, padding: 0, color: "#1B2B6B", textDecoration: "underline", cursor: "pointer" }}>{gtReaderNew() ? "Use the old one on this PC" : "Back to the new one"}</button></div></div>
         </section>
         <section style={{ flex: "1 1 420px", minWidth: 0, ...card({ padding: 16, background: P.panel }), display: "flex", flexDirection: "column", gap: 12 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}><h3 style={{ margin: 0, fontSize: 18, letterSpacing: "0.04em" }}>METRES, AGAINST THE HAUL-OFF</h3>
@@ -9476,6 +9603,9 @@ function GlueLinePortalView({ data, setData }) {
       : corrSt.size ? { k: "size", t: "The picture has changed size since the gap was checked.", sub: "The zoom or the camera moved — the correction isn't being used.", btn: "Check by hand" }
       : GT_REC.corr && GT_REC.corrFrom ? { k: "borrowed", t: `Using ${String(GT_REC.corrFrom).split("|")[0]}'s correction until ${gapSizePart(spec) || "this size"} is checked by hand.`, sub: "Each size keeps its own — on 12–14 Oct they were 0.04 to 0.13 mm apart.", btn: "Check by hand" }
       : !GT_REC.corr ? { k: "none", t: `No correction for ${gapRangeOf(spec)} under the ${(GAP_LIGHT_WORDS[lightNow] || lightNow).toLowerCase()}.`, sub: "The gap shown is the camera's own reading. Check the gap by hand to set one.", btn: "Measure now" } : null) : null;
+    /* THE PROOF CHECK IS DUE (the new reader): half an hour after the set-up, once per run — asked here, on the running screen */
+    const proofDue = scaleWay && gtReaderNew() && !GT_REC.trial && !GT_REC.settingUp ? gapProofDue(gtCalAll(), { now: Date.now(), recording, spec }) : null;
+    const proofFlash = GT_REC.proofFlash && Date.now() - GT_REC.proofFlash.at < 20000 ? GT_REC.proofFlash : null;
     const bannersTop = <>
       {liveLeft.map(lt => <div key={lt.id} data-pt-live-left={lt.id} role="alert" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px 14px", padding: "11px 22px", background: "#FDF6E3", borderBottom: "1px solid #F5D98B", color: "#92400E" }}>
         <b style={{ fontSize: 16 }}>{(lt.stats && lt.stats.traceNo) || "A trace"} — {Number((lt.stats && lt.stats.countedM) || lt.metres || 0).toFixed(0)} m of {lt.productSize || "—"} was still recording at {hhmm(Date.parse(lt.endedAt))}{lt.stats && lt.stats.device && lt.stats.device !== currentDevice() ? ` on ${lt.stats.device}` : ""} and wasn't closed.</b>
@@ -9486,6 +9616,16 @@ function GlueLinePortalView({ data, setData }) {
       {corrBanner && <div data-pt-corr-banner={corrBanner.k} role="alert" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px 14px", padding: "11px 22px", background: "#FDF0E7", borderBottom: "1px solid #F7D9C4", color: "#B45309" }}>
         <b style={{ fontSize: 16 }}>{corrBanner.t}</b><span style={{ fontSize: 14 }}>{corrBanner.sub}</span><span style={{ flex: "1 1 20px" }} />
         <button data-pt-corr-banner-go onClick={() => setPpanel("calib")} style={pbtn("plain", { minHeight: 42 })}>{corrBanner.btn}</button></div>}
+      {proofDue && !corrBanner && <div data-pt-proof-due={proofDue.mins} role="status" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px 14px", padding: "11px 22px", background: "#EAF1FC", borderBottom: "1px solid #C9D7F2", color: "#1E3A8A" }}>
+        <b style={{ fontSize: 16 }}>Time for one check with the callipers.</b><span style={{ fontSize: 14 }}>It proves the camera — it changes nothing. {proofDue.mins} minutes since the set-up.</span><span style={{ flex: "1 1 20px" }} />
+        <input data-pt-proof-in type="number" step="0.001" inputMode="decimal" aria-label="The gap you measured, mm" placeholder="you measured, mm" value={checkIn} onChange={e => { setCheckIn(e.target.value); setCheckMsg(null); }} onKeyDown={e => { if (e.key === "Enter" && String(checkIn).trim() !== "") doCheck(); }}
+          style={{ width: 170, background: "#fff", border: "2px solid #1B2B6B", borderRadius: 10, color: P.ink, fontSize: 20, fontWeight: 600, padding: "0 12px", minHeight: 44, boxSizing: "border-box", fontFamily: NLT.FONT }} />
+        <button data-pt-proof-go disabled={String(checkIn).trim() === ""} onClick={doCheck} style={pbtn("navy", { minHeight: 44, opacity: String(checkIn).trim() === "" ? 0.5 : 1 })}>Check</button>
+        {checkMsg && checkMsg.bad && <span style={{ flex: "1 1 100%", fontSize: 14, fontWeight: 600, color: "#B45309" }}>{checkMsg.t}</span>}</div>}
+      {proofFlash && <div data-pt-proof-result={proofFlash.bad ? "miss" : "pass"} role="status" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px 14px", padding: "11px 22px", background: proofFlash.bad ? "#FDF0E7" : "#E8F3EC", borderBottom: `1px solid ${proofFlash.bad ? "#F7D9C4" : "#C8E6D2"}`, color: proofFlash.bad ? "#B45309" : "#166534" }}>
+        <b style={{ fontSize: 16 }}>{proofFlash.t}</b><span style={{ flex: "1 1 20px" }} />
+        {proofFlash.miss && <button data-pt-proof-flash-correct onClick={() => { GT_REC.proofFlash = null; doTeach(proofFlash.miss); }} style={pbtn("go", { minHeight: 42 })}>Correct the camera to {proofFlash.miss.toFixed(3)}</button>}
+        <button onClick={() => { GT_REC.proofFlash = null; setTick(x => x + 1); }} style={pbtn("plain", { minHeight: 42 })}>OK</button></div>}
       {warnText && <div data-pt-warn role="alert" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, padding: "11px 22px", background: "#FDF0E7", borderBottom: "1px solid #F7D9C4" }}>
         <span style={{ fontWeight: 600, color: "#B45309", fontSize: 16 }}>Check the size: {warnText}.</span><span style={{ flex: 1 }} />
         {entryClash && <button data-pt-warn-follow onClick={() => setSpecPick("")} style={pbtn("plain", { minHeight: 42 })}>Follow the glue line</button>}
@@ -9527,7 +9667,7 @@ function GlueLinePortalView({ data, setData }) {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}><span style={lab}>Edge profile · across the line</span>
             <span style={{ fontSize: 13.5, color: P.sub }}>Strip colour: <b style={{ color: P.ink }}>{live && live.colour ? colourNameOf(live.colour) || "—" : "—"}</b> · {rgb ? "picked" : "auto"}</span></div>
           {profileSvg(80)}
-          {camOn && <div data-pt-lightpills style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>{lightPill}{holdPill}{calPill}</div>}
+          {camOn && <div data-pt-lightpills style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>{lightPill}{focusPill}{holdPill}{calPill}</div>}
           <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
             <button onClick={() => setPicking(p => !p)} disabled={!camOn} style={pbtn(picking ? "blue" : "plain", { minHeight: 48, opacity: camOn ? 1 : 0.5 })}>{picking ? "Tap a strip…" : "Pick strip colour"}</button>
             {rgb && <button onClick={() => { setRgb(null); GT_SET("mxGapRgb", "null"); }} style={pbtn("plain", { minHeight: 48 })}>Auto colour</button>}
@@ -9571,8 +9711,8 @@ function GlueLinePortalView({ data, setData }) {
                 <b style={{ fontSize: 22, fontVariantNumeric: "tabular-nums", minWidth: 70, color: c.odd && !c.kept ? "#B45309" : P.ink }}>{c.hand.toFixed(3)}</b>
                 <span style={{ fontSize: 14, color: P.sub }}>camera steady <b style={{ color: P.ink }}>{c.read.toFixed(3)}</b> · {hhmm(c.at)}{c.odd ? (c.kept ? ` · ${c.odd.toFixed(3)} off, kept` : "") : " ✓"}</span></div>)}
               {setupPending ? <div data-pt-setup-flag style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px 12px", background: "#FDF6E3", border: "1px solid #F5D98B", borderRadius: 10, padding: "8px 12px", color: "#92400E", fontSize: 14 }}>
-                  <span style={{ flex: "1 1 220px" }}>That one is <b>{setupPending.odd.toFixed(3)}</b> away from the {setupGood.length === 1 ? "other one" : "others"}. If the camera didn't move, it's likely the callipers.</span>
-                  <button data-pt-setup-again onClick={setupAgain} style={pbtn("plain", { minHeight: 42, fontSize: 15, padding: "0 14px" })}>Measure again</button>
+                  <span style={{ flex: "1 1 220px" }}>That one is <b>{setupPending.odd.toFixed(3)}</b> away from the {setupGood.length === 1 ? "other one" : "others"}. If the camera didn't move, it's likely the callipers — it's left out; measure once more.</span>
+                  <button data-pt-setup-again onClick={setupAgain} style={pbtn("navy", { minHeight: 42, fontSize: 15, padding: "0 14px" })}>Measure once more</button>
                   <button data-pt-setup-keep onClick={setupKeep} style={pbtn("plain", { minHeight: 42, fontSize: 15, padding: "0 14px" })}>Keep it</button></div>
                 : !setupDone && <div style={{ display: "flex", gap: 10, alignItems: "center", paddingTop: setupChecks.length ? 8 : 0, borderTop: setupChecks.length ? `1px solid ${P.line}` : 0 }}>
                   <span style={{ width: 28, height: 28, borderRadius: "50%", background: P.bg, border: `1px solid ${P.line}`, display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 14, flexShrink: 0 }}>{setupGood.length + 1}</span>
@@ -9581,6 +9721,8 @@ function GlueLinePortalView({ data, setData }) {
                   <button data-pt-setup-add disabled={!wv.ok || String(setupIn).trim() === ""} onClick={doSetupCheck} style={pbtn("navy", { minHeight: 56, opacity: !wv.ok || String(setupIn).trim() === "" ? 0.5 : 1 })}>Enter</button></div>}
             </div>
             {!setupPending && setupMsg && <div data-pt-setup-msg style={{ fontSize: 14, fontWeight: 600, color: setupMsg.bad ? "#B45309" : "#166534" }}>{setupMsg.t}</div>}
+            {setupDoubt && <div data-pt-setup-doubt style={{ display: "flex", gap: 10, flexWrap: "wrap" }}><button data-pt-setup-doubt-again onClick={setupRestart} style={pbtn("navy", { minHeight: 46 })}>Measure the three again</button>
+              <button data-pt-setup-doubt-keep onClick={setupDoubtKeep} style={pbtn("plain", { minHeight: 46 })}>They're right — keep them</button></div>}
             {live && live.ok && !setupDone && wv.ok && <div data-pt-setup-steady style={{ fontSize: 13.5, color: live.steady && live.steady.ok ? "#166534" : "#B45309" }}>{live.steady && live.steady.ok ? `Camera settled · steady reading ${live.steady.value.toFixed(3)}${scaleWay ? (live.uncal ? " (not calibrated yet)" : "") : " before correction"}` : live.refused && !(live.steady && live.steady.n >= GAP_STEADY_MIN_N) ? gtNoReadingWhy(live, live.steady) : "Camera settling — wait for it before entering a figure"}</div>}
             {setupDone && (() => { const avg = (a) => a.reduce((x, y) => x + y, 0) / a.length, ah = avg(setupGood.map(c => c.hand)), ar = avg(setupGood.map(c => c.read)), k = GT_REC.corr, key = setupGood[setupGood.length - 1].key, [rg, lt] = key.split("|");
               return <div data-pt-setup-avg style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "6px 20px", padding: "12px 14px", borderRadius: 12, background: "#E8F3EC", border: "1px solid #C8E6D2" }}>
@@ -9783,9 +9925,11 @@ function GlueLinePortalView({ data, setData }) {
             {!setupDone && !setupPending && <button data-pt-ns-check-add disabled={String(setupIn).trim() === ""} onClick={doSetupCheck} style={pbtn("navy", { minHeight: 50, alignSelf: "flex-start", opacity: String(setupIn).trim() === "" ? 0.5 : 1 })}>Enter check {setupGood.length + 1}</button>}
             {setupPending && <div data-pt-ns-flag style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px 12px", background: "#FDF6E3", border: "1px solid #F5D98B", borderRadius: 10, padding: "8px 12px", color: "#92400E", fontSize: 14 }}>
               <span style={{ flex: "1 1 220px" }}>{setupPending.hand.toFixed(3)} is <b>{setupPending.odd.toFixed(3)}</b> away from the {setupGood.length === 1 ? "other one" : "others"}.</span>
-              <button data-pt-ns-again onClick={setupAgain} style={pbtn("plain", { minHeight: 42, fontSize: 15 })}>Measure again</button>
+              <button data-pt-ns-again onClick={setupAgain} style={pbtn("navy", { minHeight: 42, fontSize: 15 })}>Measure once more</button>
               <button data-pt-ns-keep onClick={setupKeep} style={pbtn("plain", { minHeight: 42, fontSize: 15 })}>Keep it</button></div>}
             {!setupPending && setupMsg && <div style={{ fontSize: 14, fontWeight: 600, color: setupMsg.bad ? "#B45309" : "#166534" }}>{setupMsg.t}</div>}
+            {setupDoubt && <div data-pt-ns-doubt style={{ display: "flex", gap: 10, flexWrap: "wrap" }}><button onClick={setupRestart} style={pbtn("navy", { minHeight: 46 })}>Measure the three again</button>
+              <button onClick={setupDoubtKeep} style={pbtn("plain", { minHeight: 46 })}>They're right — keep them</button></div>}
             <div style={{ fontSize: 14, color: "#3F4A60" }}>{live && live.ok ? (live.steady && live.steady.ok ? `Camera settled — steady reading ${live.steady.value.toFixed(3)}.` : "Camera settling — wait for it before entering a figure.") : "The camera has to see both strips while you measure."} The correction is kept for {gapRangeOf(ns.to)} under the {(GAP_LIGHT_WORDS[lightNow] || lightNow).toLowerCase()}.</div></>}</> : null)}
         <div style={{ flex: "1 1 auto" }} />
         <button data-pt-ns-go disabled={!s3} onClick={nsCarryOn} style={pbtn("navy", { minHeight: 72, fontSize: 22, fontWeight: 700, borderRadius: 12, opacity: s3 ? 1 : 0.55 })}>{ns.to ? `Carry on with ${toWord}${s3 ? "" : ` — after check ${GAP_SETUP_CHECKS}`}` : "Carry on — pick the new size"}</button>
