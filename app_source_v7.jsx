@@ -14,7 +14,7 @@ import { ackVatKey, EMPTY_CASE_KG, glueSheetDoc, manifestWeights, officeSummary,
 import { ALL_GLUE_DIES, dpCardsState, dpClearReelEstimate, DEFAULT_SCHEDULE_SETTINGS, GLUE_DIES_10MM, GLUE_DIES_12MM, GLUE_DIES_7MM, GLUE_DIES_7MM_OS, GLUE_DIE_12_DOUBLE, GLUE_DIE_GROUPS, SMALL_KEYWORDS, ULTRA_SR_COLOURS, WORK_HOURS, addWorkHours, addWorkingDays, batchMeterageUsed, glueReelHours, planDayAmount, workDayFraction, rackReels, reelIsCleared, reelState, reelUsedByCode, scrappedReelCodes, buildDailyPlan, classifySize, dueDateLabel, dueDateRows, formatOrderBreakdown, gapFromSpec, glueDiesForSpec, glueLineSequence, glueSizeOfProduct, glueReelPool, glueUsableFrom, scheduleTweaksOf, glueChangeBetween, scheduleRulesOf, glueChangeoverStats, learnFromTweaks, glueRangeOf, LEARN_AFTER, glueReelOffAt, SAME_PVC_CHANGE_MIN, hoursOn, isDelivery, isSmallItem, localDateKey, measuredRates, nextWorkMoment, nextWorkingMorning, orderDialSegments, orderFinishDates, planOrderCompare, glueListOrdersFor, packingReadyRows, packingReadyRowsStored, planDaysUntil, planDueReason, planScore, planSlips, planSnapshotRow, promiseOptions, readyToShip, schedulePrep, scheduleSettingsOf, sizeKeyOfProduct, top2PriorityOrders, top2SizeRows, unrankableOrders, workCalendar } from "./mx_planning.js";
 import { pvcCodeCheck, BONDING_BOXES_PER_DAY_MIN, DERIVED_RUN_GAP_HOURS, DERIVED_RUN_KEYS, EVA_YIELD_MIN_SAMPLE, GLUE_MEASURE_TOLERANCE_PCT, PVC_COLOUR_BY_HEIGHT, PVC_DEFAULT_COLOUR, REEL_METRES_TYPICAL, batchDeleteWarning, bondingOutputByDay, categoryLowest, categoryTotal, deriveRuntimeHours, derivedGlueRuns, evaDieForRow, evaRackRows, evaYieldByDie, extrudedReelCheck, extrudedReelsForSize, extrudedReelsForSpec, extrudedReelsMatching, extrusionScheduleRows, glueDieByLabel, glueDiesForWidthOf, glueLineScheduleRows, glueLineScheduleRowsFresh, glueRunReels, glueRunTarget, glueRunTotals, glueSizeKey, glueSpecMalformed, lastGlueBatchUsed, lastToolingUse, toolingUseHistory, learnedReelMetres, materialBatchCode, materialStockFrom, materialsGroupedByCategory, metersPerBoxWarning, minutesSinceLastReel, normalWeightFor, productPipeline, pvcCodeForSpec, pvcColourForSpec, recommendedBatch, recordMaterialMovement, reelCapacityWarning, reelDiscrepancy, reelIsIndirect, reelOverConsumption, runningReelDiscrepancy, samePin, toolingUnplaced, unknownReelWarning, withGlueRunSettings, withMaterialFigures, withPrefixFor, evaOutlook, evaDieForSpec, evaCodeFacts, EXTRUDED_REEL_SOFT_DAYS, extrudedOn } from "./mx_production.js";
 // (mx_promises.js — the retired promise readers — removed 24 Sep 2026)
-import { CARTON_MEMO, CORRECTED_OUT, CORRECTED_RUNS, DEFAULT_BOX_TYPE, GLUE_REEL_FROM_RUN_KEYS, GLUE_RUN_SETTING_KEYS, INDIRECT_HISTORY_SAMPLE, KEN_BOX_TYPE, MEMO_STATS, MEMO_STORE, METERS_PER_BOX_DEFAULT, NO_PROMISES, SPEC_REF_CACHE, batchesAvailableRowsStored, bondingOffer, boxTypeNameOf, kPinEquivalent, boxedStockAvailable, boxedStockAvailableFresh, boxedStockAvailableStored, cartonStockFor, cartonStockForFresh, doubleGapOf, evaDiesForGap, extractMeterageSuffix, formById, formIdFor, fullerSpec, glueLineScheduleRowsStored, glueRunOf, glueSettingsFor, groupAssignedRunsByLineItem, isExceed, isKenPin, isMini, isOffCentre, isReelSpec, ledgerCorrectedRuns, ledgerCorrectedRunsFresh, ledgerView, localISO, looseSpecMatch, memoCall, memoDeepFreeze, memoGlobals, memoSameArg, mergeSplitRuns, normalizeSpec, orderBoxTypeFor, orderLineItems, orderMadeQty, orderOutstanding, orderPctComplete, orderPctCompleteStored, orderProgress, orderStageNow, stageNow, dueStateOf, dueCounts, isLiveOrder, isLiveWork, isWebsiteRequest, lineNeeds, reelYieldStats, reelBoxesHonest, orderPickable, orderPickablePercent, orderPickablePercentStored, orderTotalItems, orderTotalValue, otherStockBalance, otherStockUsed, pickableNow, pickableNowFresh, predictRunDestinations, productKey, productParts, productRowKey, sameProductParts, productionOutstandingRows, productionOutstandingRowsFresh, productionOutstandingRowsStored, ptOf, rangeBoxFor, refsEquivalent, resolveProduct, runCustomer, runMatchesLine, runsForOrder, runsIndirect, runsIndirectByRule, sameSizeSpec, shelfBoxFitsBoxType, specCandidateIndex, specDimensions, specIsReel, specMeterage, specRef, sizeSortPair, daysFromTodayISO, metresPerBoxFor, stockFormMatchesLine, todayISO, whatsLeftRows , glueLineNeedRowsAll, resolveOrderLine, planReels, uncheckedShelfStock, tapeLast } from "./mx_stock.js";
+import { CARTON_MEMO, CORRECTED_OUT, CORRECTED_RUNS, DEFAULT_BOX_TYPE, GLUE_REEL_FROM_RUN_KEYS, GLUE_RUN_SETTING_KEYS, INDIRECT_HISTORY_SAMPLE, KEN_BOX_TYPE, MEMO_STATS, MEMO_STORE, METERS_PER_BOX_DEFAULT, NO_PROMISES, SPEC_REF_CACHE, batchesAvailableRowsStored, bondingOffer, boxTypeNameOf, kPinEquivalent, boxedStockAvailable, boxedStockAvailableFresh, boxedStockAvailableStored, cartonStockFor, cartonStockForFresh, doubleGapOf, evaDiesForGap, extractMeterageSuffix, formById, formIdFor, fullerSpec, glueLineScheduleRowsStored, glueRunOf, glueSettingsFor, groupAssignedRunsByLineItem, isExceed, isKenPin, isMini, isOffCentre, isReelSpec, ledgerCorrectedRuns, ledgerCorrectedRunsFresh, ledgerView, localISO, looseSpecMatch, memoCall, memoDeepFreeze, memoGlobals, memoSameArg, mergeSplitRuns, normalizeSpec, orderBoxTypeFor, orderLineItems, orderMadeQty, orderOutstanding, orderPctComplete, orderPctCompleteStored, orderProgress, orderStageNow, stageNow, dueStateOf, dueCounts, isLiveOrder, isLiveWork, isWebsiteRequest, lineNeeds, reelPoolsOf, reelYieldStats, reelBoxesHonest, orderPickable, orderPickablePercent, orderPickablePercentStored, orderTotalItems, orderTotalValue, otherStockBalance, otherStockUsed, pickableNow, pickableNowFresh, predictRunDestinations, productKey, productParts, productRowKey, sameProductParts, productionOutstandingRows, productionOutstandingRowsFresh, productionOutstandingRowsStored, ptOf, rangeBoxFor, refsEquivalent, resolveProduct, runCustomer, runMatchesLine, runsForOrder, runsIndirect, runsIndirectByRule, sameSizeSpec, shelfBoxFitsBoxType, specCandidateIndex, specDimensions, specIsReel, specMeterage, specRef, sizeSortPair, daysFromTodayISO, metresPerBoxFor, stockFormMatchesLine, todayISO, whatsLeftRows , glueLineNeedRowsAll, resolveOrderLine, planReels, uncheckedShelfStock, tapeLast } from "./mx_stock.js";
 import { autoReloadDue, quietUpdateDue, mergeParked, parkUnsentRows, restoreParked } from "./mx_sync.js";
 import { DEFAULT_DATA, DEFAULT_PRODUCTION_RATES, lineRate, DEFAULT_TOOLING, TOOLING_LISTS, DEFAULT_WORK_CENTRES, DERIVED_BONDING_FIELDS, FOSSIL_ORDER_FIELDS, FOSSIL_RUN_FIELDS, IDB_STORE, KEN_TOOLING, LOCAL_KEEP_DAYS, MISSING_COLUMN_RE, NOT_NULL_BOOLEAN_COLUMNS, SYNC_TABLES, TOMBSTONED_TABLES, advancePrevForTables, appVersionRank, clearPendingColumns, rebasePendingColumns, cloudFieldsDiffer, lostOwedColumns, revivedOverTombstones, computeDeletedIdsByTable, countPendingChanges, dataToTables, dedupeProductForms, idbGet, idbPut, isNetworkFailure, isUpdateRequiredFailure, isFloorRefusal, floorRefusalWords, localBlobSizeKB, localOnly, mergeById, normalizeTooling, notePendingColumns, owedBase, owedCols, parseStored, patchRowsHealing, retireFossils, rowPatch, sameRowContent, seedData, stampRowsChanged, stampUpdatedAt, storableData, syncCamelToSnake, syncExtrusionFromRows, syncExtrusionToRows, syncSnakeToCamel, syncToCamelRow, syncToSnakeRow, syncToolingFromRows, syncToolingToRows, tablesToData, upsertHealingMissingColumns } from "./mx_sync.js";
 import { asAt, boxCodeFootprint, correctBoxCode, truthChecks } from "./mx_admin.js";
@@ -581,7 +581,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-10-25.1";
+const APP_VERSION = "2026-10-25.2";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -33944,6 +33944,23 @@ function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRun
                     <Button variant="accent" onClick={() => switchTo(a)}>Switch to {a.form === "Reel" ? "reels" : "boxes"}</Button>
                   </div>))}
               </div>)}
+          {(() => {
+            /* THE REEL POOL'S ONE WARNING (23 Oct 2026). Any reel can go on any order — but if this run's boxes go to an order
+               further down while a late, top-priority or due-this-week order above gets none, say so. A word, never a block. */
+            const sum = (form.allocations || []).reduce((t, a) => t + (Number(a.qty) || 0), 0); if (!(sum > 0)) return null;
+            const at = (id) => Number(((form.allocations || []).find(a => a.orderId === id) || {}).qty) || 0;
+            const lastGiven = rowsShown.reduce((k, r, i) => at(r.orderId) > 0 ? i : k, -1);
+            const urgent = rowsShown.slice(0, Math.max(0, lastGiven)).filter(r => {
+              if (at(r.orderId) > 0 || r.strong !== (rowsShown[lastGiven] || {}).strong) return false;
+              const need = (Number(r.toMake) || 0) + (Number(r.planShort) || 0); if (!(need > 0)) return false;
+              const o = (orders || []).find(x => x.id === r.orderId) || {}; const d = o.dueDate ? planDaysUntil(o.dueDate, todayISO()) : null;
+              return (d != null && d <= 5) || (o.priority && Number(o.priority) <= 2); });
+            if (!urgent.length) return null;
+            const word = (r) => { const o = (orders || []).find(x => x.id === r.orderId) || {}; const d = o.dueDate ? planDaysUntil(o.dueDate, todayISO()) : null;
+              return d != null && d < 0 ? "is late" : d != null && d <= 5 ? `is due ${new Date(String(o.dueDate).slice(0, 10) + "T12:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })}` : `is priority ${o.priority}`; };
+            return <div data-pool-warn style={{ fontSize: 14, border: `1.5px solid ${AMBER}`, borderRadius: 8, padding: "10px 12px", background: "#FFF8F0", marginBottom: 6 }}>
+              {urgent.map(r => <div key={r.orderId}><b>{r.customer} {r.orderId}</b> {word(r)} and still needs {(Number(r.toMake) || 0) + (Number(r.planShort) || 0)} of this size — nothing from this run is going to it.</div>)}
+              <div style={{ color: INK_MUTED, marginTop: 2 }}>That's fine if you mean it — it waits for the next reel or the glue line.</div></div>; })()}
           {rowsShown.map((r, i) => {
             const late = r.dueDate && planDaysUntil && planDaysUntil(r.dueDate, todayISO()) < 0;
             const bt = boxTypeFor(r.orderId);
@@ -42950,6 +42967,72 @@ function dpListDoc(o, grouped, marks, needs, short, more = {}) {
     ${extras.length ? `<div class="ex"><b>Also on the order (not boxes):</b> ${extras.map(x => `${x.ordered} × ${esc(x.spec)}`).join(" · ")}</div>` : ""}
     <div class="ft"><span>${tot - left} of ${tot} done</span><b>${left} boxes to complete</b></div></body></html>`;
 }
+/* REEL STOCK — WHAT'S LEFT TO MAKE, PER SIZE (Chris, 23 Oct 2026: "Dave must be allowed to use whatever reel he wants on
+   orders … a total amount of reel product to make, that Dave can draw from"). One card per size: what all the orders still
+   need off reels, what the reel rack holds for it (every reel, anyone's), and what is still to glue. The orders are listed in
+   the suggested order with that order's estimate — only an estimate: Dave can bond any of them first, the size total moves. */
+function ReelPoolView({ data }) {
+  const [q, setQ] = useState("");
+  const [E, err] = useMemo(() => { try { return [lineNeeds(data), null]; } catch (e) { return [null, String((e && e.message) || e)]; } },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [data.orders, data.lineItems, data.glueLineBatches, data.bondingRuns, data.ncrs, data.glueRuns, data.movements]);
+  const pools = useMemo(() => { try { return E ? [...reelPoolsOf(E).values()] : []; } catch (e) { return []; } }, [E]);
+  const orderBy = useMemo(() => new Map((data.orders || []).filter(o => o && o.id).map(o => [o.id, o])), [data.orders]);
+  if (err) return <div data-pool-error style={{ background: "#FDECEA", border: "2px solid #B42318", borderRadius: 12, padding: 16, color: "#7A1A12", fontWeight: 700 }}>The reel stock couldn't be worked out ({err}) — check the reel rack by hand.</div>;
+  const sizeOf = (spec) => { const m = String(spec || "").match(/(\d+(?:\.\d+)?\s*x\s*\d+(?:\.\d+)?\s*mm(?:\s+(?:O\/S|MINI))?)/i); return m ? m[1].replace(/\s+/g, " ") : String(spec || "").replace(/\s*\(\d+(\.\d+)?m\)$/, ""); };
+  const rangesOf = (g) => [...new Set(g.orders.flatMap(o => o.specs).map(sp => (String(sp).match(/^(PX Plus|Smart Formes|Ultra SR|Speedy Crease|PX)/i) || [""])[0]).filter(Boolean))];
+  const short = (c) => String(c || "").split(/[\s,(]/)[0];
+  const today = todayISO();
+  const wq = q.trim().toLowerCase();
+  const list = pools.filter(g => g.toMake > 0)
+    .filter(g => !wq || `${g.spec} ${g.orders.map(o => { const od = orderBy.get(o.orderId) || {}; return `${o.orderId} ${od.customer || ""}`; }).join(" ")} ${g.reels.map(r => r.code).join(" ")}`.toLowerCase().includes(wq))
+    .sort((a, b) => ((b.rackBoxes > 0) - (a.rackBoxes > 0)) || String(a.spec).localeCompare(String(b.spec), "en", { numeric: true }));
+  const onRack = list.filter(g => g.rackBoxes > 0).length;
+  const card = { background: "#fff", border: `1px solid ${NL.LINE}`, borderRadius: 14, padding: 16 };
+  const num = (v, colour) => <span style={{ fontSize: 28, fontWeight: 700, fontVariantNumeric: "tabular-nums", color: colour || NL.INK, lineHeight: 1.1 }}>{Number(v || 0).toLocaleString("en-GB")}</span>;
+  return (<div data-pool-view style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
+      <div style={{ fontSize: 14.5, color: NL.SUB, flex: "1 1 420px" }}>One total for each size. <b style={{ color: NL.INK }}>Any reel on the reel rack can go on any order</b> that needs its size — the orders are listed in the suggested order, and what each shows is only an estimate if you bond them in that order.</div>
+      <label style={{ display: "flex", flexDirection: "column", fontSize: 12.5, color: NL.SUB, gap: 4 }}>Find a size, order or reel
+        <input data-pool-search value={q} onChange={e => setQ(e.target.value)} placeholder="e.g. 0.40 x 1.30, JSC, PBLJ" style={{ height: 44, borderRadius: 10, border: `1px solid ${NL.LINE}`, padding: "0 12px", fontSize: 15, minWidth: 240 }} /></label>
+    </div>
+    <div style={{ fontSize: 13.5, color: NL.SUB }}>{list.length} size{list.length === 1 ? "" : "s"} still wanted · {onRack} with reels on the reel rack now</div>
+    {list.length === 0 && <div style={{ ...card, color: NL.SUB }}>{wq ? "Nothing matches that." : "No size needs bonding off a reel."}</div>}
+    {list.map(g => { const ranges = rangesOf(g); const shortN = g.boxesToGlue; const pct = g.toMake > 0 ? Math.min(100, Math.round(100 * Math.min(g.rackBoxes, g.toMake) / g.toMake)) : 0;
+      return (<div key={g.pool} data-pool={g.pool} data-pool-onrack={g.rackBoxes > 0 ? "1" : "0"} style={card}>
+        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+          <div><div style={{ fontSize: 20, fontWeight: 700 }}>{sizeOf(g.spec)}</div>
+            <div style={{ fontSize: 13, color: NL.SUB }}>{ranges.length > 1 ? `${ranges.join(" · ")} share these reels` : ranges[0] || ""}{g.mpb > 0 ? ` · ${g.mpbGuessed ? "≈ " : ""}${g.mpb} m a box` : ""}</div></div>
+          {shortN > 0 ? <span data-pool-short={shortN} style={{ fontSize: 13, fontWeight: 700, color: "#8A4B00", background: "#FCEBD2", borderRadius: 999, padding: "5px 12px" }}>Short by {shortN.toLocaleString("en-GB")} box{shortN === 1 ? "" : "es"} — the glue line makes them</span>
+            : <span style={{ fontSize: 13, fontWeight: 700, color: "#1E7F3C", background: "#E8F3EC", borderRadius: 999, padding: "5px 12px" }}>The reel rack covers it</span>}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10, marginTop: 12 }}>
+          <div><div style={{ fontSize: 13, color: NL.SUB }}>Still to bond</div>{num(g.toMake)} <span style={{ fontSize: 13, color: NL.SUB }}>boxes · {g.orders.length} order{g.orders.length === 1 ? "" : "s"}</span></div>
+          <div><div style={{ fontSize: 13, color: NL.SUB }}>On the reel rack</div>{num(g.rackBoxes, "#1D5BB8")} <span style={{ fontSize: 13, color: NL.SUB }}>boxes · {Math.round(g.rackMetres).toLocaleString("en-GB")} m</span>
+            {g.todayBoxes > 0 && <div style={{ fontSize: 12.5, color: NL.SUB }}>+ {g.todayBoxes} glued today — bonds tomorrow</div>}</div>
+          <div><div style={{ fontSize: 13, color: shortN > 0 ? "#6E3C00" : NL.SUB }}>Still to glue</div>{num(shortN, shortN > 0 ? "#8A4B00" : NL.SUB)} <span style={{ fontSize: 13, color: NL.SUB }}>boxes{g.metresToGlue > 0 ? ` · ${Math.ceil(g.metresToGlue).toLocaleString("en-GB")} m` : ""}</span></div>
+        </div>
+        <div role="img" aria-label={`${g.toMake} boxes wanted: ${Math.min(g.rackBoxes, g.toMake)} covered by the reel rack, ${shortN} still to glue`} style={{ display: "flex", height: 10, borderRadius: 5, overflow: "hidden", background: "#F6D6A8", marginTop: 10 }}>
+          <div style={{ width: `${pct}%`, background: "#1D5BB8" }} /></div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 12, alignItems: "center" }}>
+          <span style={{ fontSize: 13, color: NL.SUB, marginRight: 4 }}>{g.reels.length ? "Reels — anyone's:" : "No reel of this size on the reel rack."}</span>
+          {g.reels.map(r => <span key={r.code} data-pool-reel={r.code} title={r.forOrders ? `glued for ${r.forOrders.join(", ")} — anyone's now` : undefined} style={{ fontFamily: "ui-monospace, Menlo, monospace", fontSize: 13, fontWeight: 700, border: `1px solid ${NL.LINE}`, borderRadius: 8, padding: "4px 8px", background: r.gluedToday ? "#F4F6FA" : "#fff", color: r.gluedToday ? NL.SUB : NL.INK }}>
+            {r.code} <span style={{ fontWeight: 500, color: NL.SUB }}>{Math.round(r.metres)} m{r.unchecked ? " · not checked" : ""}{r.gluedToday ? " · glued today" : ""}</span></span>)}
+        </div>
+        <div style={{ marginTop: 12, borderTop: `1px solid ${NL.LINE}`, paddingTop: 8 }}>
+          {g.orders.map(o => { const od = orderBy.get(o.orderId) || {}; const late = od.dueDate && String(od.dueDate).slice(0, 10) < today;
+            return (<div key={o.orderId} data-pool-order={o.orderId} style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "baseline", padding: "6px 0" }}>
+              <span style={{ fontWeight: 700, minWidth: 150 }}>{short(od.customer) || o.orderId} <span style={{ fontWeight: 500, color: NL.SUB, fontSize: 13 }}>{o.orderId}</span></span>
+              {od.priority ? <span style={{ fontSize: 11, fontWeight: 800, color: "#fff", background: Number(od.priority) <= 2 ? "#B42318" : "#7A869E", borderRadius: 4, padding: "1px 5px" }}>P{od.priority}</span> : null}
+              {od.dueDate ? <span style={{ fontSize: 13, color: late ? "#B42318" : NL.SUB, fontWeight: late ? 700 : 500 }}>due {new Date(String(od.dueDate).slice(0, 10) + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })}{late ? " — late" : ""}</span> : null}
+              <span style={{ fontVariantNumeric: "tabular-nums" }}><b>{o.toMake}</b> wanted</span>
+              <span style={{ fontSize: 13, color: NL.SUB }}>in this order: {o.onReels > 0 ? <span style={{ color: "#1D5BB8", fontWeight: 600 }}>{o.onReels} off the reel rack</span> : null}{o.onReels > 0 && o.toGlue > 0 ? " · " : ""}{o.toGlue > 0 ? <span style={{ color: "#8A4B00", fontWeight: 600 }}>{o.toGlue} to glue</span> : null}</span>
+            </div>); })}
+        </div>
+      </div>); })}
+  </div>);
+}
+
 function DavesPlanner({ data, setData: setData0, go }) {
   /* every change Dave makes is held to 280 boxes a day (dpCapDays) */
   const setData = (fn) => setData0(prev => { const next = typeof fn === "function" ? fn(prev) : fn; if (!next || next === prev || next.scheduleTweaks === prev.scheduleTweaks) return next;
@@ -43044,7 +43127,7 @@ function DavesPlanner({ data, setData: setData0, go }) {
   const chipBtn = (on) => ({ height: 34, padding: "0 12px", borderRadius: 9, border: on ? 0 : `1px solid ${NL.LINE}`, background: on ? NAVY : "#fff", color: on ? "#fff" : NL.INK, fontWeight: 600, fontSize: 13.5, cursor: "pointer", fontFamily: NLT.FONT });
   const dayName = (d) => d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric" });
   const todayKey = dayKeys[0], tomorrowKey = dayKeys[1];
-  const tabs = [["lists", "My lists"], ["board", "Week board"], ["all", "All orders by size"]];
+  const tabs = [["lists", "My lists"], ["board", "Week board"], ["reels", "Reel stock"], ["all", "All orders by size"]];
   /* THE WEEK BOARD AS MOCKED UP (9 Oct 2026, Chris: "is that really the best you can do"): the plan's own bonding jobs
      pencilled in as suggestions, what's waiting to bond down the side to drag onto a day, hours per day against the
      line's real hours, each card saying where its reel is, and the glue line underneath showing which day it's for. */
@@ -43160,6 +43243,8 @@ function DavesPlanner({ data, setData: setData0, go }) {
               {!done && l.bondReels && l.bondReels.length > 0 && (() => { const rs = reelSay(cur.o.id, l); const on = Math.min(Number(l.bond) || 0, l.make);
                 return <span data-dp-rsay={rs ? rs.low : undefined} title={rs ? rs.text : undefined} style={{ display: "inline-flex", alignItems: "baseline", gap: 4, whiteSpace: "nowrap" }}><b data-dp-r title={`On the reel rack: ${l.bondReels.join(", ")}`} style={{ fontSize: 11, fontWeight: 900, color: "#1E7F3C", border: "1.5px solid #1E7F3C", borderRadius: 4, padding: "0 4px" }}>R</b>
                   <span style={{ fontSize: 12, color: on < l.make || rs ? "#B45309" : "#1E7F3C", fontWeight: 700 }}>≈ {on}{on < l.make ? ` · ${l.make - on} to glue` : ""}{rs ? ` · maybe only ${rs.low} off the reel` : ""}</span></span>; })()}
+              {!done && !(l.bondReels && l.bondReels.length > 0) && l.shareN > 0 && l.sharePool && <span data-dp-shared={l.shareN} title={`On the reel rack, anyone's: ${l.shareReels.join(", ")}`} style={{ fontSize: 12, fontWeight: 700, color: "#1E4FA0", background: "#EAF1FC", borderRadius: 6, padding: "1px 7px" }}>
+                reels on the reel rack, anyone's ({l.shareReels.slice(0, 2).join(", ")}{l.shareReels.length > 2 ? ` +${l.shareReels.length - 2}` : ""}) · ≈ {l.sharePool.boxes} of this size for {l.sharePool.need} wanted</span>}
               {!done && l.shelf > 0 && <span data-dp-shelf={l.shelf} style={{ fontSize: 12, color: pickOnly ? "#1E4FA0" : NL.SUB, fontWeight: pickOnly ? 700 : 400 }}>{pickOnly ? `nothing to make · ${l.shelf} to pick off the shelf` : `${l.shelf} on the shelf`}{l.checkN > 0 ? ` (${l.checkN} still to check)` : ""}</span>}
               {!done && l.cantPlace > 0 && <span data-dp-cant style={{ fontSize: 12, fontWeight: 700, color: "#B42318" }}>{l.cantPlace} can't be planned — size not in the catalogue</span>}
               {!done && l.noLengthN > 0 && <span data-dp-cant style={{ fontSize: 12, fontWeight: 700, color: "#B42318" }}>{l.noLengthN} can't be planned — reel length not in the catalogue</span>}
@@ -43210,6 +43295,7 @@ function DavesPlanner({ data, setData: setData0, go }) {
     {/* ALL ORDERS BY SIZE stays inside the planner (Chris, 9 Oct 2026, off a video of the button leaving for the
         Production list with no way back) — the same Production list, so the totals Dave learns to trust are the real ones. */}
     {tab === "all" && <div data-dp-all><ProductionListView data={data} /></div>}
+    {tab === "reels" && <ReelPoolView data={data} />}
     {tab === "board" && (() => {
       const fmtH = (h) => { const m = Math.round((Number(h) || 0) * 60); return m < 60 ? `${m} min` : `${Math.floor(m / 60)}h${m % 60 ? " " + String(m % 60).padStart(2, "0") : ""}`; };
       const dayShort = (t) => t ? new Date(t).toLocaleDateString("en-GB", { weekday: "short", day: "numeric" }) : "";
@@ -43226,6 +43312,9 @@ function DavesPlanner({ data, setData: setData0, go }) {
           return { t: late ? "splitlate" : "split", r: sh.r, g: sh.g, c: "#B45309", bg: "#FDF3E3",
             text: late ? `≈ ${sh.r} ON THE REEL RACK · ${sh.g} TO GLUE · PLAN SAYS READY ${dayShort(gi.ready).toUpperCase()}` : `≈ ${sh.r} ON THE REEL RACK · ${sh.g} TO GLUE${gi && gi.ready ? ` · READY ${dayShort(gi.ready).toUpperCase()}` : ""}` }; }
         if (sh ? sh.r > 0 && l.bondReels && l.bondReels.length : (l.bondReels && l.bondReels.length && (Number(l.bond) || 0) >= l.make)) return { t: "rack", text: `ON THE REEL RACK · ${l.bondReels.slice(0, 2).join(", ")}${l.bondReels.length > 2 ? ` +${l.bondReels.length - 2} MORE` : ""}`, c: "#1E7F3C", bg: "#E8F3EC" };
+        /* THE REEL POOL (23 Oct 2026): nothing on the rack is this order's in the suggested order, but the size's reels are there
+           and anyone's — Dave may bond these now (the card says the size's whole figure, so he sees what it leaves the others) */
+        if (l.shareN > 0 && !(Number(l.bond) > 0) && l.sharePool) return { t: "shared", text: `ON THE REEL RACK, SHARED · ${l.shareReels.slice(0, 2).join(", ")}${l.shareReels.length > 2 ? ` +${l.shareReels.length - 2}` : ""} · ≈ ${l.sharePool.boxes} OF THIS SIZE FOR ${l.sharePool.need} WANTED`, c: "#1E4FA0", bg: "#EAF1FC" };
         const gi = glueInfo(spec);
         if (gi && gi.readyKey) return !k || gi.readyKey <= k ? { t: "glued", text: gi.now ? `ON THE GLUE LINE NOW · READY ${dayShort(gi.ready).toUpperCase()}` : `GLUE LINE ${dayShort(gi.at).toUpperCase()} · READY ${dayShort(gi.ready).toUpperCase()}`, c: "#1E4FA0", bg: "#EAF1FC" }
           : { t: "late", text: `TO GLUE · PLAN SAYS READY ${dayShort(gi.ready).toUpperCase()}`, c: "#B45309", bg: "#FDF3E3" };
@@ -43239,7 +43328,7 @@ function DavesPlanner({ data, setData: setData0, go }) {
       const isLate = (o) => !!(o && o.dueDate && String(o.dueDate).slice(0, 10) < today);
       const waiting = lists.flatMap(({ o, lines }) => lines.filter(l => l.make > 0).map(l => ({ o, l, n: Math.max(0, l.make - (plannedN.get(`${o.id}|${dpKey(l.spec)}`) || 0)) }))).filter(x => x.n > 0);
       const wq = wQ.trim().toLowerCase();
-      const shown = waiting.filter(x => (wf === "rack" ? x.l.bondReels && x.l.bondReels.length > 0 : wf === "all" ? true : x.o.id === wf) && (!wq || `${x.o.customer} ${x.o.id} ${x.l.spec} ${dpSizeText(dpParse(x.l.spec), x.l.spec)}`.toLowerCase().includes(wq)));
+      const shown = waiting.filter(x => (wf === "rack" ? (x.l.bondReels && x.l.bondReels.length > 0) || x.l.shareN > 0 : wf === "all" ? true : x.o.id === wf) && (!wq || `${x.o.customer} ${x.o.id} ${x.l.spec} ${dpSizeText(dpParse(x.l.spec), x.l.spec)}`.toLowerCase().includes(wq)));
       /* every suggestion, even part of a box (audit item 22 — under half a box was dropped, so a box could go unplanned) */
       const suggFor = (k) => !showSug ? [] : sugg.filter(s => s.day === k && !daveHas.has(`${s.orderId}|${dpKey((lineOf(s.orderId, s.spec) || {}).spec || s.spec)}`) && s.boxes > 0.01);
       const specFor = (oId, spec) => { const l = lineOf(oId, spec); return l ? l.spec : spec; };
@@ -43580,7 +43669,14 @@ function nlLineFigures(data, o, plan) {
     const left = Math.max(0, ordered - packed - shelf - make);   // nothing the planner could place yet (a size it doesn't know, say)
     const why = [];
     for (const x of bondItems) why.push(`${x.needed} off reel${x.reels.length === 1 ? "" : "s"} ${x.reels.map(r => r.batchNumber).join(", ")}${x.reels.every(r => r.gluedToday) ? " — glued today, bond tomorrow" : x.reels.some(r => r.unchecked) ? " — a reel still unchecked" : " — on the reel rack, bonding can start"}`);
-    for (const x of glueItems) why.push(x.noLength ? `${x.boxesNeeded} with no length on record — the size needs its metres in the catalogue` : `${x.boxesNeeded} with nothing on the reel rack — ${x.metersNeeded ? `${x.metersNeeded.toLocaleString("en-GB")} m to glue` : "to the glue line first"}`);
+    /* THE REEL POOL (23 Oct 2026): this size's reels are on the reel rack and anyone's — say so beside "to glue", so Dave
+       knows he may bond these off them (the other orders then wait for the glue line instead) */
+    const sharedItems = forLine(plan.sharedItems, l);
+    const custOf = (id) => { const q = (data.orders || []).find(x => x && x.id === id); return q ? (String(q.customer || "").split(/[\s,(]/)[0] || id) : id; };
+    for (const x of glueItems) { const sh = sharedItems.find(y => y.lineId === x.lineId);
+      why.push(x.noLength ? `${x.boxesNeeded} with no length on record — the size needs its metres in the catalogue`
+        : sh ? `${x.boxesNeeded} to glue in the suggested order — but this size has ≈ ${sh.poolBoxes} on the reel rack (${sh.reels.slice(0, 3).map(r => r.batchNumber).join(", ")}${sh.reels.length > 3 ? ` +${sh.reels.length - 3}` : ""}), anyone's: bond them here if you like${sh.others.length ? ` — then ${sh.others.map(q => `${custOf(q.orderId)} (${q.toMake})`).join(", ")} wait${sh.others.length === 1 ? "s" : ""} for the glue line instead` : ""}`
+        : `${x.boxesNeeded} with nothing on the reel rack — ${x.metersNeeded ? `${x.metersNeeded.toLocaleString("en-GB")} m to glue` : "to the glue line first"}`); }
     for (const x of otherItems) why.push(`${x.needed} made by hand, not off a glue-line reel`);
     if (left) why.push(`${left} the planner can't place yet — check the size is in the catalogue`);
     const picks = shelfItems.flatMap(x => x.boxes || []);
@@ -43591,7 +43687,9 @@ function nlLineFigures(data, o, plan) {
     const noFormN = glueItems.filter(x => x.noForm).reduce((t, x) => t + (Number(x.boxesNeeded) || 0), 0);
     const guessMpb = ([...glueItems, ...bondItems].find(x => x.mpbGuessed) || {}).mpb || null;
     if (guessN) why.push(`${guessN} worked out at ${guessMpb ? `${guessMpb} m` : "the house rule's metres"} a box — the catalogue doesn't have this size's metres a box, so its metres are ≈`);
-    return { id: l.id, spec, ref: l.customerRef || "", amendment: l.amendmentLabel || null, sample: l.sample === true, delivery, tapeOrShim, ordered, packed, shelf, checkN, make: make + left, bond, glue: glue + other + left, why, picks, bondReels: bondItems.flatMap(x => x.reels.map(r => r.batchNumber)), glueM: glueItems.reduce((t, x) => t + (Number(x.metersNeeded) || 0), 0),
+    return { id: l.id, spec, ref: l.customerRef || "", amendment: l.amendmentLabel || null, sample: l.sample === true, delivery, tapeOrShim, ordered, packed, shelf, checkN, make: make + left, bond, glue: glue + other + left, why, picks, bondReels: bondItems.flatMap(x => x.reels.map(r => r.batchNumber)),
+      shareN: Math.min(glue, sharedItems.reduce((t, x) => t + (Number(x.needed) || 0), 0)), shareReels: [...new Set(sharedItems.flatMap(x => x.reels.map(r => r.batchNumber)))],
+      sharePool: sharedItems.length ? { boxes: sharedItems[0].poolBoxes, need: sharedItems[0].poolNeed, others: sharedItems[0].others } : null, glueM: glueItems.reduce((t, x) => t + (Number(x.metersNeeded) || 0), 0),
       cantPlace: left + noFormN, noLengthN, guessN, guessMpb, handN: other, packedUnknown };
   });
 }
