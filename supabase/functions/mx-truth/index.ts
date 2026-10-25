@@ -11,7 +11,8 @@
 // commit isn't missed), and a count per table so a row taken away for good is seen. What it has read is kept in this
 // worker's memory and, gzipped, in the mx-truth bucket, so a cold start doesn't read everything again.
 // Writes: only the rows whose answer changed. If a run fails, the last good answer stays published and the failure is logged.
-// Deployed through the Supabase connector when a build's truth code has changed (build_truth.sh says so); a device whose own
+// Worked out IN PARTS (25 Oct 2026): each piece is its own call to this function, so no call goes past the cloud's 2 seconds.
+// Deployed by the repo's GitHub automation whenever index.html (which carries the truth code) is uploaded; a device whose own
 // engines are newer than the cloud's keeps to its own sums until the cloud has them too (mx_truthstore, cloudTruthDecision).
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
@@ -140,7 +141,38 @@ async function inChunks<T>(list: T[], size: (x: T) => number, fn: (part: T[]) =>
   if (part.length) await fn(part);
 }
 
-async function run(reason: string) {
+/* IN PARTS (25 Oct 2026). The cloud gives each call 2 seconds of work and the whole answer took longer, so the first run
+   was stopped ("CPU Time exceeded"). The run reads the inputs once, then asks this same function for the answer in pieces —
+   each its own call with its own 2 seconds, all from the same inputs and the same clock — and publishes only when every
+   piece is in. The pieces together are the whole answer exactly (selectTruth, opts.parts). */
+const PARTS: { parts: string[]; slice?: number; of?: number }[] = [
+  { parts: ["needs", "cards"] }, { parts: ["plan", "rack"] },
+  ...[0, 1, 2, 3].map(i => ({ parts: ["orders"], slice: i, of: 4 })),
+];
+const partName = (p: { parts: string[]; slice?: number; of?: number }) => p.parts.join("+") + (p.of ? ` ${(p.slice || 0) + 1}/${p.of}` : "");
+// deno-lint-ignore no-explicit-any
+async function askPart(p: { parts: string[]; slice?: number; of?: number }, payload: Uint8Array, key: string, runId: string): Promise<any> {
+  const r = await fetch(`${URL_}/functions/v1/mx-truth`, { method: "POST", signal: AbortSignal.timeout(100_000),
+    headers: { "x-mx-key": key, "x-mx-part": JSON.stringify(p), "x-mx-run": runId, "content-type": "application/gzip" }, body: payload });
+  const text = await r.text();
+  if (!r.ok) throw new Error(`part ${partName(p)}: ${r.status} ${text.slice(0, 300)}`);
+  const j = JSON.parse(text);
+  if (!j || !j.ok || !Array.isArray(j.rows)) throw new Error(`part ${partName(p)}: ${String(j && j.error || "no answer").slice(0, 300)}`);
+  return j;
+}
+/* one piece of the answer, asked by a run: the inputs it was sent, the clock it was given */
+async function part(p: { parts: string[]; slice?: number; of?: number }, bytes: Uint8Array) {
+  const ms: Record<string, number> = {}; let t = performance.now();
+  const m = await code(); ms.code = Math.round(performance.now() - t); t = performance.now();
+  const v = JSON.parse(await gunzip(bytes)); ms.read = Math.round(performance.now() - t); t = performance.now();
+  if (!v || v.v !== 1 || !v.tables || !v.now) throw new Error("no inputs sent");
+  const stored = storedFrom(m, { tables: v.tables, marks: {}, savedAt: 0, changedSinceSave: 0 }); ms.shape = Math.round(performance.now() - t); t = performance.now();
+  const out = m.selectTruth(stored, new Date(v.now), CODE_BUILD, { parts: p.parts, slice: p.slice, of: p.of });
+  ms.compute = Math.round(performance.now() - t);
+  return { ok: true, rows: out.rows, problems: out.problems || [], asOf: out.asOf, ms: { ...ms, ...Object.fromEntries(Object.entries(out.ms || {}).map(([k, x]) => [`c_${k}`, x])) } };
+}
+
+async function run(reason: string, key: string) {
   const runId = `tr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   const nowIso = new Date().toISOString();
   // one run at a time: the lock is the state row's running_until
@@ -156,9 +188,15 @@ async function run(reason: string) {
     const TRUTH_BUILD = CODE_BUILD, TRUTH_SCHEMA = Number(m.TRUTH_SCHEMA) || 0;
     t = performance.now();
     const pulled = await pullInputs(inputTables(m)); ms.pull = Math.round(performance.now() - t);
-    t = performance.now(); const stored = storedFrom(m, pulled.inputs); ms.shape = Math.round(performance.now() - t);
-    t = performance.now(); const out = m.selectTruth(stored, new Date(), TRUTH_BUILD); ms.compute = Math.round(performance.now() - t);
-    for (const [k, v] of Object.entries(out.ms || {})) ms[`c_${k}`] = v as number;
+    if (!key) throw new Error("no key to ask for the pieces with");
+    t = performance.now();
+    const payload = await gzip(JSON.stringify({ v: 1, tables: pulled.inputs.tables, now: new Date().toISOString() })); ms.pack = Math.round(performance.now() - t);
+    t = performance.now();
+    const answers = await Promise.all(PARTS.map(p => askPart(p, payload, key, runId)));
+    ms.parts = Math.round(performance.now() - t);
+    const out = { asOf: answers[0].asOf as string, rows: answers.flatMap(a => a.rows) as TRow[], problems: answers.flatMap(a => a.problems || []) as string[] };
+    answers.forEach((a, i) => { for (const k of ["code", "read", "shape", "compute"]) if (a.ms && a.ms[k] != null) ms[`p${i + 1}_${k}`] = a.ms[k]; });
+    ms.compute = Math.max(...answers.map(a => Number(a.ms && a.ms.compute) || 0));
     // the answer is published only when it's whole: with a problem in it, the last good answer stays
     if (out.problems && out.problems.length) throw new Error(`worked out with problems: ${out.problems.slice(0, 3).join(" | ")}`);
     t = performance.now();
@@ -241,9 +279,15 @@ async function tidy() {
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
-  const body = await req.json().catch(() => ({}));
+  const partHdr = req.headers.get("x-mx-part");
+  const body = partHdr ? {} : await req.json().catch(() => ({}));
   const { data: secrets } = await db.rpc("mx_push_secrets");
   const isCron = !!secrets?.cron_key && req.headers.get("x-mx-key") === secrets.cron_key;
+  if (partHdr) {
+    if (!isCron) return json({ error: "not allowed" }, 403);
+    try { return json(await part(JSON.parse(partHdr), new Uint8Array(await req.arrayBuffer()))); }
+    catch (e) { return json({ ok: false, error: String((e as Error)?.message || e).slice(0, 800) }, 500); }
+  }
   if (!isCron) {
     const jwt = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
     const { data: u } = await db.auth.getUser(jwt);
@@ -254,6 +298,6 @@ Deno.serve(async (req) => {
   }
   if (isCron && body?.mode === "sha") { try { const m = await code(); return json({ build: CODE_BUILD, sha: CODE_SHA, schema: m.TRUTH_SCHEMA, ok: true }); } catch (e) { return json({ ok: false, error: String((e as Error)?.message || e) }, 500); } }
   if (isCron && body?.mode === "watch") { try { return json(await watch()); } catch (e) { return json({ ok: false, error: String((e as Error)?.message || e) }, 500); } }
-  try { return json(await run(String(body?.reason || (isCron ? "cron" : "admin")).slice(0, 40))); }
+  try { return json(await run(String(body?.reason || (isCron ? "cron" : "admin")).slice(0, 40), String(secrets?.cron_key || ""))); }
   catch (e) { return json({ ok: false, error: String((e as Error)?.message || e) }, 500); }
 });
