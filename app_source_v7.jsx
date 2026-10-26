@@ -9,7 +9,7 @@ import { CODE128_WIDTHS, code128Svg, code128Widths } from "./mx_barcode.js";
 import { classifyScan, decodeFrame, decodeRuns128, decodeRuns93 } from "./mx_scan.js";
 import { readBoxCodes, readWords } from "./mx_ocr.js";
 import { BOX_LOCATIONS, MOVEMENT_KINDS, SIGNED_MOVEMENT_KINDS, boxLinesFor, boxWhereabouts, cartonForNewEntry, cartonLedger, cartonOfEntry, caseProducts, casesHoldingBox, casesWithLedgerContents, freeInCartonFor, identityGateRefusal, inLiveCases, ledgerCaseContents, moveAdjusted, moveAllocated, moveCounted, moveMade, movePlaced, moveSampled, moveScrapped, moveShipped, moveUnallocated, moveUnplaced, movementRefusal, orderBoxes, orderCaseProducts, orderHoldings, placeLabel, placeOf, placeRefusalFor, runWhereabouts, placedBoxForm, placedBoxesByCase, projectBox, reconcileLedgerToStored, repackFacts, sizeWhereabouts, syncCaseRowsToLedger, takeOffOrder, traceLot, withLedgerFigures } from "./mx_ledger.js";
-import { fullCaseNums, BOX_CASE_SIZES, CASES_PER_PALLET, palletPlan, casePalletShown, ONE_PALLET_MAX_BOXES, onePalletCheck, CASE_BAND_ORDER, CASE_MAX_SIZE_DEFAULT, EMPTY_ON_PURPOSE, MONTH_LETTERS, PLAN_BAND_ORDER, STANDARD_BOX_TYPES, allocateCaseDetails, allocationRefusal, amendmentsFor, applyAmendmentReduction, arrangeBoxesThenReels, arrangeCases, arrangedCasesForOrder, backfillPlannedCases, batchesAvailableRows, batchesAvailableRowsFresh, boxOutOfOrderCases, buildCombinedCases, buildPackingPlan, cartonFor, cartonMismatch, caseContentLines, caseFill, caseKindOf, casePalletOf, casePlanLines, casePlanned, caseRangeLabel, caseRecordFor, caseRowId, caseRunsLabel, caseSortKey, caseState, caseView, caseWeightOf, caseWeightQuery, oddCaseWeights, compareCaseSort, computeMakeLists, dateFromReelCode, dedupeCaseRows, dismissalMap, findDiscrepancies, findDiscrepanciesFresh, hasCasePlan, isCaseClosed, isReelCase, isReelFulfilled, isStrongTapeOrder, liveMapEntries, mergePlannedRows, openCasesForOrder, openIssues, openPickSheets, orderBoxTypes, orderCaseCount, orderHasStarted, orderShortfall, ordersMissingPlan, ordersNeedingSpec, packedOutsideSpecs, packingShort, parseCodeDate, patchMapsFromCaseRecords, planAmendment, planBandFor, planCutForLine, planForMove, planOrderMismatches, planOrderRefusal, planRowsForNewOrder, planSpacesFor, plannableLines, plannedCasesFor, proposeCut, readDiscrepancyDismissals, reelsPerCase, refillCases, renumberAfterRemoval, resolveCaseContents, sameContents, shortCaseSpec, sortLinesForCases, specInCarton, specOfBoxInCase, subtractConfirmed, subtractPlanned, tapeFits, tapeRefusal, twinCartonSpec, bondedTwinSpecs, upBox, planVsOrder, discrepancyTriage, discrepancyWords, reelPlanInputs, orderMakePlan, caseWorkState } from "./mx_packing.js";
+import { fullCaseNums, orderPalletPlan, caseWeightsEstimate, palletPlanByWeight, BOX_CASE_SIZES, CASES_PER_PALLET, palletPlan, casePalletShown, ONE_PALLET_MAX_BOXES, onePalletCheck, CASE_BAND_ORDER, CASE_MAX_SIZE_DEFAULT, EMPTY_ON_PURPOSE, MONTH_LETTERS, PLAN_BAND_ORDER, STANDARD_BOX_TYPES, allocateCaseDetails, allocationRefusal, amendmentsFor, applyAmendmentReduction, arrangeBoxesThenReels, arrangeCases, arrangedCasesForOrder, backfillPlannedCases, batchesAvailableRows, batchesAvailableRowsFresh, boxOutOfOrderCases, buildCombinedCases, buildPackingPlan, cartonFor, cartonMismatch, caseContentLines, caseFill, caseKindOf, casePalletOf, casePlanLines, casePlanned, caseRangeLabel, caseRecordFor, caseRowId, caseRunsLabel, caseSortKey, caseState, caseView, caseWeightOf, caseWeightQuery, oddCaseWeights, compareCaseSort, computeMakeLists, dateFromReelCode, dedupeCaseRows, dismissalMap, findDiscrepancies, findDiscrepanciesFresh, hasCasePlan, isCaseClosed, isReelCase, isReelFulfilled, isStrongTapeOrder, liveMapEntries, mergePlannedRows, openCasesForOrder, openIssues, openPickSheets, orderBoxTypes, orderCaseCount, orderHasStarted, orderShortfall, ordersMissingPlan, ordersNeedingSpec, packedOutsideSpecs, packingShort, parseCodeDate, patchMapsFromCaseRecords, planAmendment, planBandFor, planCutForLine, planForMove, planOrderMismatches, planOrderRefusal, planRowsForNewOrder, planSpacesFor, plannableLines, plannedCasesFor, proposeCut, readDiscrepancyDismissals, reelsPerCase, refillCases, renumberAfterRemoval, resolveCaseContents, sameContents, shortCaseSpec, sortLinesForCases, specInCarton, specOfBoxInCase, subtractConfirmed, subtractPlanned, tapeFits, tapeRefusal, twinCartonSpec, bondedTwinSpecs, upBox, planVsOrder, discrepancyTriage, discrepancyWords, reelPlanInputs, orderMakePlan, caseWorkState } from "./mx_packing.js";
 import { ackVatKey, EMPTY_CASE_KG, glueSheetDoc, manifestWeights, officeSummary, money, bondingListDoc, caseLabelDoc, caseLabelInner, caseLabelRange, caseLabelLayoutKey, CASE_LABEL_CSS, CASE_LABEL_LAYOUTS, ACK_VAT_TREATMENTS, LOGO_B64, MATRIX_EORI, MATRIX_VAT_NUMBER, PAPER_CSS, boxContentsLine, lastPriceFor, manifestReadiness, orderAckDoc, orderShipmentWeight, orderThreads, ordersLeftDoc, pEsc, pN2, packingListRows, paperFoot, paperHead, paperRunHead, pickSheetDoc, portalOrdersWaiting, productionSheetDoc, shippingManifestDoc, shippingManifestEmail, suggestedVatTreatment, unreadFromCustomers, customerGaps, VAT_RECORD_VALUE, VAT_WORDS, correctedManifest, manifestBoughtIn } from "./mx_papers.js";
 import { ALL_GLUE_DIES, dpCardsState, dpClearReelEstimate, DEFAULT_SCHEDULE_SETTINGS, GLUE_DIES_10MM, GLUE_DIES_12MM, GLUE_DIES_7MM, GLUE_DIES_7MM_OS, GLUE_DIE_12_DOUBLE, GLUE_DIE_GROUPS, SMALL_KEYWORDS, ULTRA_SR_COLOURS, WORK_HOURS, addWorkHours, addWorkingDays, batchMeterageUsed, glueReelHours, planDayAmount, workDayFraction, rackReels, reelIsCleared, reelState, reelUsedByCode, scrappedReelCodes, buildDailyPlan, classifySize, dueDateLabel, dueDateRows, formatOrderBreakdown, gapFromSpec, glueDiesForSpec, glueLineSequence, glueSizeOfProduct, glueReelPool, glueUsableFrom, scheduleTweaksOf, glueChangeBetween, scheduleRulesOf, glueChangeoverStats, learnFromTweaks, glueRangeOf, LEARN_AFTER, glueReelOffAt, SAME_PVC_CHANGE_MIN, hoursOn, isDelivery, isSmallItem, localDateKey, measuredRates, nextWorkMoment, nextWorkingMorning, orderDialSegments, orderFinishDates, planOrderCompare, glueListOrdersFor, packingReadyRows, packingReadyRowsStored, planDaysUntil, planDueReason, planScore, planSlips, planSnapshotRow, promiseOptions, readyToShip, schedulePrep, scheduleSettingsOf, sizeKeyOfProduct, top2PriorityOrders, top2SizeRows, unrankableOrders, workCalendar } from "./mx_planning.js";
 import { pvcCodeCheck, BONDING_BOXES_PER_DAY_MIN, DERIVED_RUN_GAP_HOURS, DERIVED_RUN_KEYS, EVA_YIELD_MIN_SAMPLE, GLUE_MEASURE_TOLERANCE_PCT, PVC_COLOUR_BY_HEIGHT, PVC_DEFAULT_COLOUR, REEL_METRES_TYPICAL, batchDeleteWarning, bondingOutputByDay, categoryLowest, categoryTotal, deriveRuntimeHours, derivedGlueRuns, evaDieForRow, evaRackRows, evaYieldByDie, extrudedReelCheck, extrudedReelsForSize, extrudedReelsForSpec, extrudedReelsMatching, extrusionScheduleRows, glueDieByLabel, glueDiesForWidthOf, glueLineScheduleRows, glueLineScheduleRowsFresh, glueRunReels, glueRunTarget, glueRunTotals, glueSizeKey, glueSpecMalformed, lastGlueBatchUsed, lastToolingUse, toolingUseHistory, learnedReelMetres, materialBatchCode, materialStockFrom, materialsGroupedByCategory, metersPerBoxWarning, minutesSinceLastReel, normalWeightFor, productPipeline, pvcCodeForSpec, pvcColourForSpec, recommendedBatch, recordMaterialMovement, reelCapacityWarning, reelDiscrepancy, reelIsIndirect, reelOverConsumption, runningReelDiscrepancy, samePin, toolingUnplaced, unknownReelWarning, withGlueRunSettings, withMaterialFigures, withPrefixFor, evaOutlook, evaDieForSpec, evaCodeFacts, EXTRUDED_REEL_SOFT_DAYS, extrudedOn } from "./mx_production.js";
@@ -582,7 +582,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-10-26.1";
+const APP_VERSION = "2026-10-26.2";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -5238,10 +5238,15 @@ function caseLabelCustomer(data, order) {
    leaves its id here and opens Case Labels, which picks it up once. */
 const CASE_LABEL_ORDER_KEY = "mxCaseLabelOrder";
 function openCaseLabelsFor(go, orderId, range = null) { try { sessionStorage.setItem(CASE_LABEL_ORDER_KEY, orderId);
-    if (range && range.from > 0 && range.to > 0) sessionStorage.setItem(CASE_LABEL_ORDER_KEY + "Range", `${range.from}-${range.to}`); else sessionStorage.removeItem(CASE_LABEL_ORDER_KEY + "Range"); } catch (e) {} go && go("caselabels"); }
+    /* a pallet spread by weight holds cases that aren't in a run (26 Oct 2026): the list itself */
+    if (range && Array.isArray(range.list) && range.list.length) sessionStorage.setItem(CASE_LABEL_ORDER_KEY + "Range", range.list.map(Number).filter(n => n > 0).join(","));
+    else if (range && range.from > 0 && range.to > 0) sessionStorage.setItem(CASE_LABEL_ORDER_KEY + "Range", `${range.from}-${range.to}`); else sessionStorage.removeItem(CASE_LABEL_ORDER_KEY + "Range"); } catch (e) {} go && go("caselabels"); }
 function takeCaseLabelOrder() { try { const v = sessionStorage.getItem(CASE_LABEL_ORDER_KEY); sessionStorage.removeItem(CASE_LABEL_ORDER_KEY); return v || null; } catch (e) { return null; } }
 /* the cases a pallet's "Print pallet N labels" asked for (21 Oct 2026), once */
-function takeCaseLabelRange() { try { const v = sessionStorage.getItem(CASE_LABEL_ORDER_KEY + "Range"); sessionStorage.removeItem(CASE_LABEL_ORDER_KEY + "Range"); const m = /^(\d+)-(\d+)$/.exec(v || ""); return m ? { from: Number(m[1]), to: Number(m[2]) } : null; } catch (e) { return null; } }
+function takeCaseLabelRange() { try { const v = sessionStorage.getItem(CASE_LABEL_ORDER_KEY + "Range"); sessionStorage.removeItem(CASE_LABEL_ORDER_KEY + "Range"); const m = /^(\d+)-(\d+)$/.exec(v || "");
+    if (m) return { from: Number(m[1]), to: Number(m[2]) };
+    const list = /^\d+(,\d+)*$/.test(v || "") ? v.split(",").map(Number).filter(n => n > 0).sort((a, b) => a - b) : null;
+    return list && list.length ? { from: list[0], to: list[list.length - 1], list } : null; } catch (e) { return null; } }
 function CaseLabelsView({ data, setData, initialOrderId = null }) {
   const phone = useIsPhone();
   const orders = useMemo(() => (data.orders || []).filter(o => o && !o.deleted).sort((a, b) => (a.stage === "Shipped") - (b.stage === "Shipped") || String(b.id).localeCompare(String(a.id))), [data.orders]);
@@ -5275,11 +5280,11 @@ function CaseLabelsView({ data, setData, initialOrderId = null }) {
   const [msg, setMsg] = useState(null);
   useEffect(() => { setF(fromCust()); setMsg(null); setReprint(false); setPick(null);
     const ny = caseNums.filter(n => !printed.has(n)), ask = askedRange.current; askedRange.current = null;
-    if (ask) { setFrom(ask.from); setTo(ask.to); setReprint(true); }   /* a pallet's labels: those cases, printed again if they were before */
+    if (ask) { setFrom(ask.from); setTo(ask.to); if (ask.list) setPick(ask.list); setReprint(true); }   /* a pallet's labels: those cases, printed again if they were before */
     else if (printed.size && ny.length) { setFrom(ny[0]); setTo(ny[ny.length - 1]); } else { setFrom(1); setTo(Math.max(1, nCases)); } }, [orderId]);
   /* THE PALLET ON THE LABEL (21 Oct 2026): the pallet the case is on, else the one the pallet plan puts it on. No "of 6" — as the
      case number has no "of 23", so cases added later don't mean relabelling. */
-  const palletPlanHere = useMemo(() => order && !order.noPallets ? palletPlan(data.cases, order.id) : null, [data.cases, order]);
+  const palletPlanHere = useMemo(() => order && !order.noPallets ? orderPalletPlan(data.cases, order) : null, [data.cases, order]);
   const palletFor = (n) => { if (!order || !palletPlanHere || palletPlanHere.pallets.length < 2 && !casePalletOf(data.cases, order, n)) return null; return casePalletShown(data.cases, order, n, palletPlanHere).pallet; };
   const nums = pick && pick.length ? pick : caseLabelRange(from, to);
   /* NO "of 23" (Chris, 8 Oct 2026: "we tend to add boxes to orders half way through meaning we would have to relabel everything
@@ -5365,13 +5370,14 @@ function CaseLabelsView({ data, setData, initialOrderId = null }) {
         <div style={box}><div style={lab}>Which cases</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
             {nCases > 0 && <button data-cl-all onClick={() => { setPick(null); setFrom(1); setTo(nCases); }} style={chip(same(1, nCases))}>All {nCases} cases</button>}
-            {order && fullInfo.full.length > 0 && <button data-cl-full onClick={pickFull} style={chip(!!pick)}>Full cases only{fullInfo.part.length ? ` (${fullInfo.full.length})` : ` — all ${fullInfo.full.length} are full`}</button>}
+            {order && fullInfo.full.length > 0 && <button data-cl-full onClick={pickFull} style={chip(!!pick && pick === fullInfo.full)}>Full cases only{fullInfo.part.length ? ` (${fullInfo.full.length})` : ` — all ${fullInfo.full.length} are full`}</button>}
             {printed.size > 0 && notYet.length > 0 && <button data-cl-notyet onClick={() => { setPick(null); setFrom(notYet[0]); setTo(notYet[notYet.length - 1]); }} style={chip(same(notYet[0], notYet[notYet.length - 1]))}>Not printed yet: {notYet.length === 1 ? `case ${notYet[0]}` : `${notYet[0]} to ${notYet[notYet.length - 1]}`}</button>}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", fontSize: 16 }}>
             <span>From case</span><input data-cl-from inputMode="numeric" {...numBoxProps("from", from, (v) => { const a = numIn(v); const k = pick ? Math.max(1, to - from + 1) : (count || 1); setPick(null); setFrom(a); setTo(a + k - 1); })} style={numBox} />
             <span>to</span><input data-cl-to inputMode="numeric" {...numBoxProps("to", to, (v) => { setPick(null); setTo(numIn(v)); })} style={numBox} /></div>
-          {pick && <div data-cl-full-note style={{ fontSize: 13.5, color: NL.SUB, marginTop: 10 }}>Full cases only: <b style={{ color: NL.INK }}>{describe(pick)}</b>.{fullInfo.part.length ? <> Leaves out {fullInfo.part.map(x => `case ${x.n} (${x.qty} of ${x.capacity})`).join(", ")} — not full yet.</> : null}</div>}
+          {pick && (pick === fullInfo.full ? <div data-cl-full-note style={{ fontSize: 13.5, color: NL.SUB, marginTop: 10 }}>Full cases only: <b style={{ color: NL.INK }}>{describe(pick)}</b>.{fullInfo.part.length ? <> Leaves out {fullInfo.part.map(x => `case ${x.n} (${x.qty} of ${x.capacity})`).join(", ")} — not full yet.</> : null}</div>
+            : <div data-cl-list-note style={{ fontSize: 13.5, color: NL.SUB, marginTop: 10 }}>These cases: <b style={{ color: NL.INK }}>{describe(pick)}</b>.</div>)}
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", fontSize: 16, marginTop: 10 }}>
             <span>How many labels</span><input data-cl-count inputMode="numeric" {...numBoxProps("count", count, (v) => setCount(v))} style={numBox} /></div>
           {nCases > 0 && nums.length > 0 && nums[nums.length - 1] > nCases && <div data-cl-beyond style={{ fontSize: 13.5, color: "#8A5300", marginTop: 10 }}>The order has {nCases} case{nCases === 1 ? "" : "s"} on the system — {nums[nums.length - 1] === nCases + 1 ? `case ${nCases + 1} isn't` : `cases ${Math.max(nums[0], nCases + 1)} to ${nums[nums.length - 1]} aren't`} on it yet. They'll still print.</div>}
@@ -19940,7 +19946,7 @@ function WeighCheckCard({ n, ck, hasWeight, onRetake, photoOnly = false }) {
     {retakeRow}</>);
 }
 
-function WeighSheet({ cases, startAt, walk, caseWeights, setCaseWeights, palletAssignments, setPalletAssignments,
+function WeighSheet({ palletStored = null, cases, startAt, walk, caseWeights, setCaseWeights, palletAssignments, setPalletAssignments,
                       weightQueryFor, acceptCaseWeight, onClose, onMore, orderId = null,
                       check = false, data = null, order = null, onCheckDone = null, onReads = null, bigNumber = false, noPallets = false }) {
   const ordered = [...cases].sort((a, b) => a.caseNum - b.caseNum);
@@ -20076,7 +20082,7 @@ function WeighSheet({ cases, startAt, walk, caseWeights, setCaseWeights, palletA
   const pal = String(palletAssignments[n] ?? "").trim();
   const prevPal = prevC ? String(palletAssignments[prevC.caseNum] ?? "").trim() : "";
   /* the pallet plan (21 Oct 2026): the pallet this case should go on, offered in one tap when none is set */
-  const planPal = (() => { const p = palletPlan(ordered.map(x => ({ orderId: "_", caseNum: x.caseNum })), "_"); return p.pallets.length > 1 ? p.of.get(Number(n)) || null : null; })();
+  const planPal = (() => { const p = palletPlan(ordered.map(x => ({ orderId: "_", caseNum: x.caseNum })), "_", { stored: palletStored }); return p.pallets.length > 1 ? p.of.get(Number(n)) || null : null; })();
   const setPal = (v) => setPalletAssignments({ ...palletAssignments, [n]: v });
   const nextPlain = i >= 0 && i < ordered.length - 1 ? ordered[i + 1] : null;
   const nextWalk = ordered.find(x => x.caseNum !== n && needsWork(x) && x.caseNum > n) || ordered.find(x => x.caseNum !== n && needsWork(x));
@@ -20279,11 +20285,11 @@ function CaseNumBlock({ c, n, right = null, sub = null }) {
     </div></div>);
 }
 const CaseTilesCtx = typeof React.createContext === "function" ? React.createContext(null) : null;   // (the node logic tests load this file with a React stub)
-function CaseGrid({ cases, caseWeights, setCaseWeights, weightQueryFor = null, acceptCaseWeight = null, onPhotoFix = null, onCheckOrder = null, photoView = null, palletAssignments, setPalletAssignments, highlightBoxes = null, highlightKey = null, litCases = [], caseOverrides = {}, setCaseOverrides = null, onEditCase = null, editOrder = null, editData = null , onCaseAction = null , packRow = null}) {
+function CaseGrid({ palletStored = null, cases, caseWeights, setCaseWeights, weightQueryFor = null, acceptCaseWeight = null, onPhotoFix = null, onCheckOrder = null, photoView = null, palletAssignments, setPalletAssignments, highlightBoxes = null, highlightKey = null, litCases = [], caseOverrides = {}, setCaseOverrides = null, onEditCase = null, editOrder = null, editData = null , onCaseAction = null , packRow = null}) {
   /* Nothing is "on the way" to a case any more — promises were retired on 19 Sep 2026 (removed 24 Sep). */
   const [editingCase, setEditingCase] = useState(null);
   /* the pallet plan (21 Oct 2026): which pallet each case should go on — shown where no pallet is set yet */
-  const palPlan = useMemo(() => { const p = palletPlan((cases || []).map(x => ({ orderId: "_", caseNum: x.caseNum })), "_"); return p.pallets.length > 1 ? p : null; }, [cases]);
+  const palPlan = useMemo(() => { const p = palletPlan((cases || []).map(x => ({ orderId: "_", caseNum: x.caseNum })), "_", { stored: palletStored }); return p.pallets.length > 1 ? p : null; }, [cases, palletStored]);
   const planPalOf = (cn) => (palPlan && palPlan.of.get(Number(cn))) || null;
   const [caseAct, setCaseAct] = useState(null);   // "Swap" | "Move" — the open case action
   const [sel, setSel] = useState(cases.length ? cases[0].caseNum : null);
@@ -20440,7 +20446,7 @@ function CaseGrid({ cases, caseWeights, setCaseWeights, weightQueryFor = null, a
           screen is never mysteriously empty. */}
       <CaseFilterChips cases={cases} value={caseFilter} onChange={setCaseFilter} />
       {weigh && (
-        <WeighSheet key={`${weigh.check ? "k" : weigh.walk ? "w" : "c"}-${weigh.at}`} cases={cases} startAt={weigh.at} walk={weigh.walk} bigNumber={!!tilesOn} noPallets={!!(editOrder && editOrder.noPallets)}
+        <WeighSheet key={`${weigh.check ? "k" : weigh.walk ? "w" : "c"}-${weigh.at}`} palletStored={editOrder && !editOrder.noPallets ? editOrder.palletPlan || null : null} cases={cases} startAt={weigh.at} walk={weigh.walk} bigNumber={!!tilesOn} noPallets={!!(editOrder && editOrder.noPallets)}
           check={!!weigh.check} data={editData || null} order={editOrder || null}
           onReads={photoView && photoView.ph && photoView.ph.seed ? photoView.ph.seed : null}
           onCheckDone={(reads) => { setWeigh(null); if (onCheckOrder) onCheckOrder(reads, (n) => Number(caseWeights[n]) > 0 && !(weightQueryFor && weightQueryFor(n))); }}
@@ -21693,7 +21699,7 @@ function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = nu
           const behind = order.stage === "Shipped" ? !!shippedClear && !shippedPhotos : !!(ph.loaded && photoRep && photoRep.allClear);
           return behind ? null : <CasePhotos orderId={order.id} data={data} />; })()}
         {showGrid && (
-          <CaseGrid cases={allCases} caseWeights={caseWeights} setCaseWeights={setCaseWeights} weightQueryFor={weightQueryFor} acceptCaseWeight={acceptCaseWeight}
+          <CaseGrid palletStored={order && !order.noPallets ? order.palletPlan || null : null} cases={allCases} caseWeights={caseWeights} setCaseWeights={setCaseWeights} weightQueryFor={weightQueryFor} acceptCaseWeight={acceptCaseWeight}
             onPhotoFix={onPhotoFix} onCheckOrder={(reads) => { ph.seed(reads); setReportOpen({ focus: null }); }}
             photoView={!ph.loaded || (photoRep && (Object.keys(ph.photos).length > 0 || photoReaderHere())) ? { report: photoRep, ph, data, order, setData, onOpen: (n) => setReportOpen({ focus: n }) } : null}
             palletAssignments={palletAssignments} setPalletAssignments={setPalletAssignments}
@@ -44482,14 +44488,100 @@ const deskTile = (s) => { const t = String(s || ""); const m = t.match(/(\d+(?:\
   const variant = (t.match(/\b(O\/S|D\d|MINI|REEL)\b/i) || [""])[0];
   return `${/exceed/i.test(t) ? "Exceed " : ""}${n(m[1])}×${n(m[2])}${variant ? " " + variant : ""}`; };
 const deskShort = (s) => String(s || "").replace(/\s*\(\d+(\.\d+)?m\)$/, "").replace(/^(PX Plus|PX|Smart Formes|Speedy Crease|Ultra SR|Phoenix XL|Ken)\s+/, "").replace(/mm\b/, "").replace(/\s+2-3pt$/, "");
+/* PALLETS BY WEIGHT (Chris, 26 Oct 2026, JSC WO-0042: "make a plan based on case weight … spread case weight across the six pallets in
+   equal measure. Mock up the plan" → "make that happen and give that mock up a place in the order"). On the order's Cases tab, under
+   the pallet plan: what each case weighs (weighed, or its planned boxes at what the app has learned a box of each size weighs),
+   the pallets now against the pallets spread by weight, and each pallet's cases heaviest first (for the bottom layer).
+   "Spread by weight" stores the plan on the order (order.palletPlan) — the labels, the case panels and the weighing follow it;
+   "Back to 32 a pallet" takes it off. A case whose label is already printed and would change pallet is named first. */
+function PalletWeightPlan({ data, setData, order, plan }) {
+  const est = useMemo(() => caseWeightsEstimate(data.cases, order.id), [data.cases, order.id]);
+  const recs = useMemo(() => (data.cases || []).filter(c => c && !c.deleted && c.orderId === order.id && Number(c.caseNum) > 0), [data.cases, order.id]);
+  const nums = useMemo(() => recs.map(c => Number(c.caseNum)).sort((a, b) => a - b), [recs]);
+  const byWeight = plan.mode === "weight";
+  const numberPlan = useMemo(() => palletPlan(data.cases, order.id), [data.cases, order.id]);
+  const nPal = byWeight ? plan.pallets.length : numberPlan.pallets.length;
+  const proposal = useMemo(() => palletPlanByWeight(nums, est.kgOf, nPal), [nums, est, nPal]);
+  const [open, setOpen] = useState(() => { try { return localStorage.getItem("mxPalletWeightOpen") !== "0"; } catch (e) { return true; } });
+  const setOpenK = (v) => { setOpen(v); try { localStorage.setItem("mxPalletWeightOpen", v ? "1" : "0"); } catch (e) { /* private mode */ } };
+  const [msg, setMsg] = useState(null);
+  if (nPal < 2 || !nums.length) return null;
+  const kgOf = (c) => { const e = est.kgOf.get(c); return e && e.kg > 0 ? e.kg : 0; };
+  const sumKg = (cs) => cs.reduce((t, c) => t + kgOf(c), 0);
+  const total = sumKg(nums), known = nums.filter(c => kgOf(c) > 0), weighed = nums.filter(c => (est.kgOf.get(c) || {}).weighed).length;
+  const kmin = known.length ? Math.min(...known.map(kgOf)) : 0, kmax = known.length ? Math.max(...known.map(kgOf)) : 0;
+  /* the two plans side by side: the one in use, and the other */
+  const asPallets = (of, n) => Array.from({ length: n }, (_, i) => nums.filter(c => Number(of[c]) === i + 1));
+  const propPal = asPallets(proposal.of, proposal.n);
+  const usePal = plan.pallets.map(p => p.cases);
+  const numPal = numberPlan.pallets.map(p => p.cases);
+  const shownPal = byWeight ? usePal : propPal;
+  const rows = byWeight ? [["32 a pallet by case number", numPal, false], ["Spread by weight — in use", usePal, true]] : [["Now — 32 a pallet by case number", usePal, false], ["Spread by weight", propPal, true]];
+  const kgsOf = (pals) => pals.map(sumKg), maxKg = Math.max(...kgsOf(numPal), ...kgsOf(propPal), ...kgsOf(usePal), 1);
+  const spread = (pals) => { const k = kgsOf(pals).filter(v => v > 0); return k.length ? Math.round(Math.max(...k) - Math.min(...k)) : 0; };
+  const shade = (kg) => { const t = kmax > kmin ? (kg - kmin) / (kmax - kmin) : 0.5; return { bg: `hsl(222 45% ${Math.round(95 - t * 45)}%)`, ink: t > 0.55 ? "#fff" : "#1C2437" }; };
+  /* printed labels a spread would change */
+  const curOf = (c) => plan.of.get(c) || null;
+  const moved = byWeight ? [] : recs.filter(c => c.labelsPrintedAt && Number(proposal.of[Number(c.caseNum)]) !== Number(curOf(Number(c.caseNum)))).map(c => Number(c.caseNum));
+  const backMoved = byWeight ? recs.filter(c => c.labelsPrintedAt && Number(numberPlan.of.get(Number(c.caseNum))) !== Number(curOf(Number(c.caseNum)))).map(c => Number(c.caseNum)) : [];
+  const writePlan = (pp, words) => { const at = new Date().toISOString();
+    setData(prev => ({ ...prev, orders: (prev.orders || []).map(o => o && o.id === order.id ? { ...o, palletPlan: pp, updatedAt: at, updatedBy: currentActor() } : o),
+      ...appendLog(prev, { action: "update", entity: "order", entityId: order.id, summary: `${order.id}: ${words}`, before: { palletPlan: order.palletPlan || null }, after: { palletPlan: pp } }) })); };
+  const apply = () => { writePlan({ mode: "weight", n: proposal.n, of: proposal.of, kg: proposal.kg, at: new Date().toISOString(), by: currentActor() || null },
+      `pallets spread by weight — ${proposal.n} pallets of about ${Math.round(total / proposal.n)} kg (${proposal.kg.map(k => Math.round(k)).join(", ")} kg)${moved.length ? `; labels already printed for case ${caseRunsLabel(moved)} — they show the old pallet` : ""}`);
+    setMsg(`Spread by weight: ${proposal.n} pallets of about ${Math.round(total / proposal.n)} kg.${moved.length ? ` Reprint the labels for case ${caseRunsLabel(moved)} — they show the old pallet.` : " The labels print the new pallets."}`); };
+  const back = () => { writePlan(null, `pallets back to ${CASES_PER_PALLET} a pallet by case number`); setMsg(`Back to ${CASES_PER_PALLET} cases a pallet by case number.${backMoved.length ? ` Reprint the labels for case ${caseRunsLabel(backMoved)}.` : ""}`); };
+  const stale = byWeight && ((plan.unplaced && plan.unplaced.length) || spread(usePal) > Math.max(5, spread(propPal) + 5));
+  const card = { background: "#fff", border: "1px solid #E3E6EE", borderRadius: 12, padding: "12px 14px" };
+  const btn = (primary) => ({ height: 38, padding: "0 14px", borderRadius: 9, border: primary ? 0 : "1px solid #DDE0E8", background: primary ? "#1B2B6B" : "#fff", color: primary ? "#fff" : "#1B2B6B", fontWeight: 700, fontFamily: "inherit", fontSize: 14, cursor: "pointer" });
+  const tile = (big, small) => <div style={{ flex: "1 1 150px", background: "#F7F8FB", border: "1px solid #E3E6EE", borderRadius: 10, padding: "8px 12px" }}><div style={{ fontSize: 20, fontWeight: 700 }}>{big}</div><div style={{ fontSize: 12.5, color: "#5E6A82" }}>{small}</div></div>;
+  return (<div data-v5-pallet-weight={byWeight ? "weight" : "number"} style={{ ...card, display: "flex", flexDirection: "column", gap: 12 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+      <b style={{ fontSize: 16 }}>Pallets by weight</b>
+      <span style={{ fontSize: 13, color: "#5E6A82" }}>{byWeight ? `in use since ${plan.at ? new Date(plan.at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"}` : `spread by weight, the pallets would be within ${spread(propPal)} kg of each other — now ${spread(usePal)} kg apart`}</span>
+      <span style={{ flex: 1 }} />
+      {!byWeight && <button data-v5-pallet-spread onClick={apply} style={btn(true)}>Spread by weight</button>}
+      {byWeight && stale && <button data-v5-pallet-respread onClick={apply} style={btn(true)}>Spread again</button>}
+      {byWeight && <button data-v5-pallet-back onClick={back} style={btn(false)}>Back to {CASES_PER_PALLET} a pallet</button>}
+      <button data-v5-pallet-weight-open onClick={() => setOpenK(!open)} style={btn(false)}>{open ? "Hide" : "Show"}</button></div>
+    {msg && <div data-v5-pallet-weight-msg style={{ padding: "8px 12px", borderRadius: 10, background: "#E8F3EC", border: "1px solid #2F7D4F", fontSize: 14 }}>{msg}</div>}
+    {!byWeight && moved.length > 0 && <div data-v5-pallet-weight-printed style={{ padding: "8px 12px", borderRadius: 10, background: "#FFF4E0", border: "1px solid #E8C77A", fontSize: 13.5 }}>Labels are already printed for case {caseRunsLabel(moved)} — spread by weight, {moved.length === 1 ? "it would" : "they would"} go on another pallet, so {moved.length === 1 ? "its label needs" : "their labels need"} reprinting.</div>}
+    {open && <>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        {tile(`${Math.round(total).toLocaleString("en-GB")} kg`, `${nums.length} cases${weighed ? `, ${weighed} weighed` : ""}${weighed < nums.length ? `, ${nums.length - weighed} estimated` : ""}`)}
+        {tile(`${proposal.n} × ${Math.round(total / proposal.n)} kg`, `spread by weight · ${Math.round(nums.length / proposal.n)} cases each`)}
+        {tile(`${Math.round(Math.min(...kgsOf(numPal)))} – ${Math.round(Math.max(...kgsOf(numPal)))} kg`, `${CASES_PER_PALLET} a pallet by case number`)}
+        {known.length > 0 && tile(`${kmin.toFixed(1)} – ${kmax.toFixed(1)} kg`, "lightest and heaviest case")}</div>
+      <div data-v5-pallet-weight-bars>
+        <div style={{ fontSize: 12.5, color: "#5E6A82", marginBottom: 4 }}>{rows.map(([l, , on]) => <span key={l} style={{ marginRight: 14 }}><span style={{ display: "inline-block", width: 14, height: 10, borderRadius: 2, background: on ? "#1B2B6B" : "#C3CAD6", marginRight: 5, verticalAlign: "middle" }} />{l}</span>)}</div>
+        {Array.from({ length: Math.max(rows[0][1].length, rows[1][1].length) }, (_, i) => <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0", borderTop: "1px solid #EEF1F5" }}>
+          <b style={{ width: 70, fontSize: 14 }}>Pallet {i + 1}</b>
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 3 }}>{rows.map(([l, pals, on]) => { const cs = pals[i] || [], kg = sumKg(cs);
+            return <div key={l} style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ height: 12, width: `${(kg / maxKg * 70).toFixed(1)}%`, borderRadius: 3, background: on ? "#1B2B6B" : "#C3CAD6" }} />
+              <span style={{ fontSize: 12.5, color: on ? "#1C2437" : "#5E6A82", fontWeight: on ? 700 : 400, whiteSpace: "nowrap" }}>{Math.round(kg)} kg · {cs.length} cases</span></div>; })}</div></div>)}</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(330px, 1fr))", gap: 10 }}>
+        {shownPal.map((cs, i) => <section key={i} data-v5-pallet-weight-card={i + 1} style={{ border: "1px solid #E3E6EE", borderRadius: 10, padding: "10px 12px", background: "#FAFBFD" }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 6 }}><b style={{ fontSize: 16 }}>Pallet {i + 1}</b><b style={{ fontSize: 16, color: "#1B2B6B" }}>{Math.round(sumKg(cs))} kg</b>
+            <span style={{ fontSize: 12.5, color: "#5E6A82" }}>{cs.length} cases · {byWeight ? "in use" : "if spread"} · heaviest first, for the bottom</span></div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(10, minmax(0, 1fr))", gap: 3 }}>
+            {cs.slice().sort((a, b) => kgOf(b) - kgOf(a) || a - b).map(c => { const k = kgOf(c), sh = shade(k), e = est.kgOf.get(c) || {};
+              return <span key={c} data-v5-pallet-weight-case={c} title={`Case ${c}: ${k ? `${k.toFixed(1)} kg` : "no weight"}${e.weighed ? " (weighed)" : e.how ? ` (${e.how})` : ""}`} style={{ borderRadius: 5, textAlign: "center", fontWeight: 700, fontSize: 13, padding: "3px 0 2px", lineHeight: 1.05, background: sh.bg, color: sh.ink, outline: e.weighed ? "2px solid #2F7D4F" : "none", outlineOffset: -2 }}>{c}<span style={{ display: "block", fontWeight: 400, fontSize: 10 }}>{k ? k.toFixed(1) : "—"}</span></span>; })}</div></section>)}</div>
+      <div style={{ fontSize: 12.5, color: "#5E6A82", lineHeight: 1.45 }}>Darker = heavier; a green ring = weighed. A case not weighed yet is its planned boxes at what the app has learned a box of each size weighs (from {est.sizes} sizes weighed on their own), plus the empty case. As cases are weighed the figures get firmer — spread again before the labels go out if they move.
+        {est.guessed > 0 && <span data-v5-pallet-weight-guessed> {est.guessed === 1 ? "One case has" : `${est.guessed} cases have`} a size with nothing to go on yet — {est.avgBox ? `counted as this order's average box (${est.avgBox.toFixed(2)} kg)` : "left out of the weights"}.</span>}</div>
+    </>}
+  </div>);
+}
 function DeskCasesV5({ data, setData, order, go, selCase, setSelCase, ticked, setTicked, onFull }) {
   const [find, setFind] = useState(""); const [pal, setPal] = useState(""); const [msg, setMsg] = useState(null);
   const facts = useMemo(() => deskCaseFacts(data, order), [data, order]);
   /* THE PALLET PLAN (Chris, 21 Oct 2026, "32 cases to a pallet … which pallet each case should be on based on its packing plan"):
      By pallet shows the order's cases in their pallets — each pallet's cases, sizes and how many are full — with its labels and
      its weighing a tap away. Remembered on this PC; an order with no pallets (or one pallet's worth) shows the cases as before. */
-  const plan = useMemo(() => palletPlan(data.cases, order.id), [data.cases, order.id]);
+  const plan = useMemo(() => orderPalletPlan(data.cases, order), [data.cases, order]);
   const palletsOn = !order.noPallets && plan.pallets.length > 1;
+  const byWeight = plan.mode === "weight", estKg = useMemo(() => byWeight ? caseWeightsEstimate(data.cases, order.id).kgOf : null, [byWeight, data.cases, order.id]);
+  /* a pallet's weight as it stands now (cases weighed since the spread count at their real weight), whole kilos */
+  const palKg = (p) => estKg ? Math.round(p.cases.reduce((t, c) => t + ((estKg.get(c) || {}).kg || 0), 0)) || null : p.kg ? Math.round(p.kg) : null;
   const [byPallet, setByPallet0] = useState(() => { try { return localStorage.getItem("mxCasesView") !== "list"; } catch (e) { return true; } });
   const setByPallet = (v) => { setByPallet0(v); try { localStorage.setItem("mxCasesView", v ? "pallet" : "list"); } catch (e) { /* private mode */ } };
   const showPallets = palletsOn && byPallet;
@@ -44556,24 +44648,25 @@ function DeskCasesV5({ data, setData, order, go, selCase, setSelCase, ticked, se
       return <>
         <div data-v5-pallet-plan style={{ background: "#fff", border: "1px solid #E3E6EE", borderRadius: 12, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
           <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
-            <b style={{ fontSize: 16 }}>The pallet plan — {P.length} pallets</b>
-            <span style={{ fontSize: 13, color: "#5E6A82" }}>{plan.perPallet} cases to a pallet, in packing-plan order — case {P[0].from} is the first case on pallet 1</span></div>
+            <b style={{ fontSize: 16 }}>The pallet plan — {P.length} pallets{byWeight ? ", spread by weight" : ""}</b>
+            <span style={{ fontSize: 13, color: "#5E6A82" }}>{byWeight ? `about ${Math.round(P.reduce((t, p) => t + (palKg(p) || 0), 0) / P.length)} kg a pallet — each case goes on the pallet its label says${plan.unplaced && plan.unplaced.length ? ` · case ${caseRunsLabel(plan.unplaced)} came after the spread: on pallet ${P[P.length - 1].n} until it's spread again` : ""}` : `${plan.perPallet} cases to a pallet, in packing-plan order — case ${P[0].from} is the first case on pallet 1`}</span></div>
           <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(P.length, 6)}, minmax(0, 1fr))`, gap: 10 }}>
             {P.map(p => <div key={p.n} data-v5-pallet-card={p.n} style={{ border: "1px solid #E3E6EE", borderRadius: 10, padding: "10px 12px", background: "#FAFBFD", display: "flex", flexDirection: "column", gap: 4 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}><b style={{ fontSize: 16, color: "#161A2B" }}>Pallet {p.n}</b><span style={{ fontSize: 12.5, color: "#5E6A82" }}>{p.cases.length} cases</span></div>
-              <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13.5, fontWeight: 700, color: "#1B2B6B" }}>Cases {p.from}–{p.to}</div>
+              <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13.5, fontWeight: 700, color: "#1B2B6B" }}>{byWeight ? `${palKg(p) || "—"} kg` : `Cases ${p.from}–${p.to}`}</div>
               <div style={{ fontSize: 12.5, color: "#4A5170", lineHeight: 1.35 }}>{p.words || "—"}</div>
               <div style={{ height: 6, borderRadius: 3, background: "#E3E8F1", overflow: "hidden" }}><div style={{ height: 6, width: `${Math.round(p.full / Math.max(1, p.cases.length) * 100)}%`, background: "#2F7D4F" }} /></div>
               <div style={{ fontSize: 12.5, fontWeight: 600, color: p.full ? "#2F7D4F" : "#5E6A82" }}>{p.full === p.cases.length ? "All full — ready to wrap" : p.full ? `${p.full} full · ${p.cases.length - p.full} to go` : "Nothing full yet"}</div></div>)}
           </div></div>
+        <PalletWeightPlan data={data} setData={setData} order={order} plan={plan} />
         {P.map(p => <section key={p.n} data-v5-pallet={p.n} aria-label={`Pallet ${p.n}`} style={{ border: "1px solid #E3E6EE", borderRadius: 12, padding: "10px 12px 12px", display: "flex", flexDirection: "column", gap: 8, background: "#fff" }}>
           <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px 12px" }}>
             <span style={{ minWidth: 40, height: 40, padding: "0 10px", borderRadius: 9, background: "#161A2B", color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 16 }}>P{p.n}</span>
-            <span style={{ display: "flex", flexDirection: "column" }}><b style={{ fontSize: 15.5 }}>Pallet {p.n} · cases {p.from}–{p.to}</b>
+            <span style={{ display: "flex", flexDirection: "column" }}><b style={{ fontSize: 15.5 }}>Pallet {p.n} · {byWeight ? `${palKg(p) || "—"} kg · cases ${caseRunsLabel(p.cases)}` : `cases ${p.from}–${p.to}`}</b>
               <span style={{ fontSize: 12.5, color: "#5E6A82" }}>{p.full} of {p.cases.length} full · {p.words}{p.off.length ? ` · put on another pallet by hand: case ${p.off.map(f => `${f.n} (pallet ${f.pallet})`).join(", ")}` : ""}</span></span>
             <span style={{ flex: 1 }} />
             <button type="button" data-v5-pallet-tick={p.n} onClick={() => { setTicked(new Set(p.cases)); setPal(String(p.n)); }} style={{ height: 36, padding: "0 12px", borderRadius: 9, border: "1px solid #DDE0E8", background: "#fff", color: "#1B2B6B", fontWeight: 600, fontFamily: "inherit", fontSize: 13.5, cursor: "pointer" }}>Tick its {p.cases.length} cases</button>
-            {go && screenAllowed("caselabels") && <button type="button" data-v5-pallet-labels={p.n} onClick={() => openCaseLabelsFor(go, order.id, { from: p.from, to: p.to })} style={{ height: 36, padding: "0 12px", borderRadius: 9, border: "1px solid #DDE0E8", background: "#fff", color: "#1B2B6B", fontWeight: 600, fontFamily: "inherit", fontSize: 13.5, cursor: "pointer" }}>Print pallet {p.n} labels</button>}
+            {go && screenAllowed("caselabels") && <button type="button" data-v5-pallet-labels={p.n} onClick={() => openCaseLabelsFor(go, order.id, byWeight ? { list: p.cases } : { from: p.from, to: p.to })} style={{ height: 36, padding: "0 12px", borderRadius: 9, border: "1px solid #DDE0E8", background: "#fff", color: "#1B2B6B", fontWeight: 600, fontFamily: "inherit", fontSize: 13.5, cursor: "pointer" }}>Print pallet {p.n} labels</button>}
             <button type="button" data-v5-pallet-weigh={p.n} onClick={onFull} style={{ height: 36, padding: "0 12px", borderRadius: 9, border: "1px solid #DDE0E8", background: "#fff", color: "#1B2B6B", fontWeight: 600, fontFamily: "inherit", fontSize: 13.5, cursor: "pointer" }}>Weigh pallet {p.n}</button></div>
           <div style={{ display: "grid", gridTemplateColumns: size === "big" ? "repeat(2, minmax(0, 1fr))" : size === "medium" ? "repeat(7, minmax(0, 1fr))" : "repeat(auto-fill, minmax(64px, 1fr))", gap: size === "small" ? 6 : 10 }}>{p.fs.map(tile)}</div>
         </section>)}
@@ -44583,7 +44676,7 @@ function DeskCasesV5({ data, setData, order, go, selCase, setSelCase, ticked, se
       <span style={{ fontSize: 15 }}><b>{tickedFacts.length} case{tickedFacts.length === 1 ? "" : "s"} ticked</b> · {tickedFacts.reduce((t, f) => t + f.held, 0)} boxes</span><span style={{ flex: 1 }} />
       <span style={{ fontSize: 14 }}>Pallet</span><input data-v5-case-pallet value={pal} onChange={e => setPal(e.target.value)} style={{ width: 54, height: 34, borderRadius: 8, border: 0, padding: "0 8px", font: "inherit" }} />
       <button data-v5-case-pallet-go disabled={!String(pal).trim()} onClick={putOnPallet} style={{ height: 36, padding: "0 12px", borderRadius: 9, border: 0, background: "#fff", color: "#1B2B6B", fontWeight: 700, fontFamily: "inherit", cursor: "pointer" }}>Put on pallet {pal || "…"}</button>
-      {go && screenAllowed("caselabels") && <button onClick={() => openCaseLabelsFor(go, order.id, (() => { const ns = tickedFacts.map(f => f.n).sort((a, b) => a - b); return ns.length ? { from: ns[0], to: ns[ns.length - 1] } : null; })())} style={{ height: 36, padding: "0 12px", borderRadius: 9, border: 0, background: "rgba(255,255,255,0.14)", color: "#fff", fontWeight: 600, fontFamily: "inherit", cursor: "pointer" }}>Print their labels</button>}
+      {go && screenAllowed("caselabels") && <button onClick={() => openCaseLabelsFor(go, order.id, (() => { const ns = tickedFacts.map(f => f.n).sort((a, b) => a - b); return ns.length ? (ns[ns.length - 1] - ns[0] + 1 === ns.length ? { from: ns[0], to: ns[ns.length - 1] } : { list: ns }) : null; })())} style={{ height: 36, padding: "0 12px", borderRadius: 9, border: 0, background: "rgba(255,255,255,0.14)", color: "#fff", fontWeight: 600, fontFamily: "inherit", cursor: "pointer" }}>Print their labels</button>}
       <button onClick={onFull} style={{ height: 36, padding: "0 12px", borderRadius: 9, border: 0, background: "rgba(255,255,255,0.14)", color: "#fff", fontWeight: 600, fontFamily: "inherit", cursor: "pointer" }}>Weigh them in turn</button>
       <button onClick={() => setTicked(new Set())} aria-label="Untick all" style={{ border: 0, background: "none", color: "#C9D0EC", fontSize: 18, cursor: "pointer" }}>×</button></div>}
   </div>);
@@ -44628,7 +44721,7 @@ function DeskCasePanel({ data, setData, order, caseNum, onClose, onApply, applyE
     {!editing && !order.noPallets && (() => {
       /* WHICH PALLET (21 Oct 2026, the pallet plan): the pallet it's on, or the one the plan puts it on, big — and the pallet's other
          cases, full ones green, so whoever packs it can see where it stands */
-      const plan = palletPlan(data.cases, order.id); if (plan.pallets.length < 2 && !f.pallet) return null;
+      const plan = orderPalletPlan(data.cases, order); if (plan.pallets.length < 2 && !f.pallet) return null;
       const sh = casePalletShown(data.cases, order, f.n, plan), pp = plan.pallets.find(x => x.n === sh.planned) || null;
       const fullSet = new Set(deskCaseFacts(data, order).filter(x => x.state === "full").map(x => x.n));
       return <div data-v5-case-pallet-plan={sh.pallet || ""} style={{ background: "#161A2B", color: "#fff", borderRadius: 12, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
@@ -44637,7 +44730,7 @@ function DeskCasePanel({ data, setData, order, caseNum, onClose, onApply, applyE
             <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1 }}>PALLET</span><span style={{ fontSize: 34, fontWeight: 800, lineHeight: 1 }}>{sh.pallet || "—"}</span></span>
           <span style={{ display: "flex", flexDirection: "column", gap: 3 }}>
             <b style={{ fontSize: 16 }}>{sh.set ? `On pallet ${sh.set}` : `Put this case on pallet ${sh.pallet}`}</b>
-            {pp && <span style={{ fontSize: 13.5, color: "#C9D0EC" }}>{sh.differs ? `The plan had it on pallet ${pp.n} (cases ${pp.from}–${pp.to})` : `With cases ${pp.from}–${pp.to} · of ${plan.pallets.length} pallets`}</span>}
+            {pp && <span style={{ fontSize: 13.5, color: "#C9D0EC" }}>{plan.mode === "weight" ? (sh.differs ? `The plan by weight had it on pallet ${pp.n}` : `Spread by weight · ${pp.cases.length} cases on it · of ${plan.pallets.length} pallets`) : sh.differs ? `The plan had it on pallet ${pp.n} (cases ${pp.from}–${pp.to})` : `With cases ${pp.from}–${pp.to} · of ${plan.pallets.length} pallets`}</span>}
             {pp && <span style={{ fontSize: 13.5, color: "#C9D0EC" }}>{pp.cases.filter(c => fullSet.has(c)).length} of {pp.cases.length} full on it so far</span>}</span></div>
         {pp && <div style={{ display: "grid", gridTemplateColumns: "repeat(8, minmax(0, 1fr))", gap: 3 }}>{pp.cases.map(c => <span key={c} style={{ height: 22, borderRadius: 4, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10.5, fontWeight: 700,
           background: c === f.n ? "#FFF7E0" : fullSet.has(c) ? "#2F7D4F" : "rgba(255,255,255,0.12)", color: c === f.n ? "#161A2B" : "#fff", outline: c === f.n ? "2px solid #E09A4E" : "none" }}>{c}</span>)}</div>}
