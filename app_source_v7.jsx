@@ -38,7 +38,7 @@ import { deriveData, TRUTH_SCHEMA, TRUTH_INPUT_KEYS } from "./mx_truth.js";
 import { setCloudTruth, cloudTruthDecision, TRUTH_STORE } from "./mx_truthstore.js";
 import { TRUTH_CODE_SHA } from "./mx_truthcode.js";
 import { gsSwitchOn, gsSwitchSet } from "./mx_gapsimple.js";
-import { readBandNew, focusGate, lightGate, gapScaleNow, expoFlickerSafe, gapScaleDoubt, gapProofVerdict, gapProofDue, gapProofStreak, GAP_PROOF_PASS, GAP_PROOF_EARN, gapHouseState, gapHouseAgrees, glueGatherWatch, GAP_HOUSE_EARN, GAP_HOUSE_EARN_SIZES, GAP_HOUSE_ONE, GAP_HOUSE_ONE_SIZES } from "./mx_gapread.js";
+import { readBandNew, focusGate, lightGate, gapScaleNow, expoFlickerSafe, gapScaleDoubt, gapProofVerdict, gapProofDue, gapProofStreak, GAP_PROOF_PASS, GAP_PROOF_EARN, gapHouseState, gapHouseAgrees, glueGatherWatch, GAP_HOUSE_PASS, GAP_HOUSE_EARN, GAP_HOUSE_EARN_SIZES, GAP_HOUSE_ONE, GAP_HOUSE_ONE_SIZES } from "./mx_gapread.js";
 
 const { useState, useEffect, useMemo, useRef, useCallback } = React;
 
@@ -582,7 +582,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-10-26.6";
+const APP_VERSION = "2026-10-26.7";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -9822,7 +9822,7 @@ function GlueLinePortalView({ data, setData }) {
             {live && live.ok && !setupDone && wv.ok && <div data-pt-setup-steady style={{ fontSize: 13.5, color: live.steady && live.steady.ok ? "#166534" : "#B45309" }}>{live.steady && live.steady.ok ? `Camera settled · steady reading ${live.steady.value.toFixed(3)}${scaleWay ? (live.uncal ? " (not calibrated yet)" : "") : " before correction"}` : live.refused && !(live.steady && live.steady.n >= GAP_STEADY_MIN_N) ? gtNoReadingWhy(live, live.steady) : "Camera settling — wait for it before entering a figure"}</div>}
             {/* THE CAMERA'S OWN CORRECTION — what it is and how far it has proved itself (26 Oct 2026) */}
             {!scaleWay && house && house.learning && (() => { const hc = house.learning, pr = house.proof, sz = hc.sizes, onSys = !!house.corr;
-              const next = setupNeed === 0 ? `Calliper checks have retired — ${pr.n} in a row matched within ${GAP_PROOF_PASS.toFixed(2)} mm, over ${pr.sizes} sizes. A check is still welcome now and then; a miss brings them back.`
+              const next = setupNeed === 0 ? `Calliper checks have retired — ${pr.n} in a row matched within ${GAP_HOUSE_PASS.toFixed(2)} mm, over ${pr.sizes} sizes. A check is still welcome now and then; a miss brings them back.`
                 : setupNeed === 1 ? `${pr.n} in a row have matched over ${pr.sizes} sizes, so one check is enough when it agrees. At ${GAP_HOUSE_EARN} in a row over ${GAP_HOUSE_EARN_SIZES} sizes the checks retire.`
                 : onSys ? `${pr.n} in a row have matched${pr.n ? ` over ${pr.sizes} size${pr.sizes === 1 ? "" : "s"}` : ""}. At ${GAP_HOUSE_ONE} in a row over ${GAP_HOUSE_ONE_SIZES} sizes a set-up needs one check; at ${GAP_HOUSE_EARN} over ${GAP_HOUSE_EARN_SIZES} sizes, none.`
                 : `It's learning: it needs checks on two sizes before it stands. Every set-up's checks teach it.`;
