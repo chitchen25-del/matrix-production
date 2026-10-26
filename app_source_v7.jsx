@@ -582,7 +582,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-10-26.4";
+const APP_VERSION = "2026-10-26.5";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -3828,6 +3828,8 @@ function PhotoReportSheet({ order, data, setData, ph, report, onClose, focus = n
   if (!report) return null;
   const kept = order.photoReport && order.photoReport.allClear ? order.photoReport : null;
   const issues = photoIssuesForShow(report);
+  const toFix = issues.filter(i => i.kind !== "weight"), toWeigh = issues.filter(i => i.kind === "weight");   // weights are their own job, never "to fix"
+  const photoRight = report.photoRight != null ? report.photoRight : report.right;
   const when = (t) => { try { return new Date(t).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); } catch (e) { return ""; } };
   const times = report.cases.filter(c => c.photo && c.photo.takenAt).map(c => Date.parse(c.photo.takenAt)).filter(Boolean).sort((a, b) => a - b);
   const span = times.length ? (times.length > 1 ? `${when(times[0])} – ${new Date(times[times.length - 1]).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}` : when(times[0])) : "";
@@ -3857,10 +3859,10 @@ function PhotoReportSheet({ order, data, setData, ph, report, onClose, focus = n
           </div>
         ) : (
           <div style={{ display: "flex", alignItems: "center", gap: 16, padding: 16, borderRadius: 20, background: NL.PANEL }}>
-            <NLRing pct={report.pct} size={92} stroke={9} color={issues.length ? NL.NAVY : NL.OK} track={NLT.TINT.navy} label={`${report.pct}%`} lsize={20} />
+            <NLRing pct={report.counted ? Math.floor(100 * photoRight / report.counted) : 0} size={92} stroke={9} color={toFix.length ? NL.NAVY : NL.OK} track={NLT.TINT.navy} label={`${report.counted ? Math.floor(100 * photoRight / report.counted) : 0}%`} lsize={20} />
             <span style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
-              <span data-pr-summary style={{ fontSize: 19, fontWeight: 650, letterSpacing: -0.2 }}>{report.right} of {report.counted} cases right</span>
-              <span style={{ fontSize: 14, color: "#3B4559", lineHeight: 1.4 }}>{report.reading ? `Reading ${report.reading} photo${report.reading === 1 ? "" : "s"}… ` : ""}{issues.length ? `${issues.length} thing${issues.length === 1 ? "" : "s"} need${issues.length === 1 ? "s" : ""} you — nothing changes until you tap a fix.` : report.reading ? "" : "Every case is right — the order isn't complete yet."}</span>
+              <span data-pr-summary style={{ fontSize: 19, fontWeight: 650, letterSpacing: -0.2 }}>{photoRight} of {report.counted} photos right</span>
+              <span style={{ fontSize: 14, color: "#3B4559", lineHeight: 1.4 }}>{report.reading ? `Reading ${report.reading} photo${report.reading === 1 ? "" : "s"}… ` : ""}{toFix.length ? `${toFix.length} thing${toFix.length === 1 ? "" : "s"} need${toFix.length === 1 ? "s" : ""} you — nothing changes until you tap a fix.` : report.reading ? "" : photoRight === report.counted && toWeigh.length ? "The photos match the system." : "Every case is right — the order isn't complete yet."}{toWeigh.length ? ` ${toWeigh.length} case${toWeigh.length === 1 ? "" : "s"} still to weigh.` : ""}</span>
             </span>
           </div>
         )}
@@ -3868,19 +3870,19 @@ function PhotoReportSheet({ order, data, setData, ph, report, onClose, focus = n
         {!report.allClear && <div style={{ display: "flex", gap: 8 }}>
           {tile(`${report.photographed}/${report.counted}`, "photographed", report.photographed < report.counted)}
           {tile(`${report.weighed}/${report.counted}`, "weighed", report.weighed < report.counted)}
-          {tile(issues.length, issues.length === 1 ? "to fix" : "to fix", issues.length > 0)}
+          {tile(toFix.length, "to fix", toFix.length > 0)}
         </div>}
 
         {msg && <div data-pr-msg role="status" style={{ padding: "10px 14px", borderRadius: 12, background: msg.bad ? "#FDECEC" : NL.OKBG, color: msg.bad ? NL.RED : NL.OK, fontSize: 14.5, fontWeight: 600, lineHeight: 1.35 }}>{msg.bad ? "" : "✓ "}{msg.t}</div>}
 
         {issues.length > 0 && <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <span style={{ fontSize: 12.5, fontWeight: 700, letterSpacing: 1.1, color: NL.SUB }}>NEEDS YOU</span>
+          <span style={{ fontSize: 12.5, fontWeight: 700, letterSpacing: 1.1, color: NL.SUB }}>{toFix.length ? "NEEDS YOU" : "TO WEIGH"}</span>
           {issues.map((it, i) => <PhotoIssueCard key={it.kind + it.cases.join("-") + i} it={it} data={data} order={order} setData={setData} onTake={take} onMsg={setMsg} />)}
         </div>}
 
         {report.allClear ? (
           <div style={{ border: `1px solid ${NL.LINE}`, borderRadius: 16, overflow: "hidden" }}>
-            {[["Every case photographed", `${report.photographed} / ${report.counted}`], ["Labels match the system", `${report.right} / ${report.counted}`], ["Every case weighed, weights look right", `${report.weighed} / ${report.counted}`], ["Every line of the order in full", `${lines.complete} / ${lines.total}`], ["Nothing the order doesn't want", ""]].map(([k, v], i) =>
+            {[["Every case photographed", `${report.photographed} / ${report.counted}`], ["Labels match the system", `${photoRight} / ${report.counted}`], ["Every case weighed, weights look right", `${report.weighed} / ${report.counted}`], ["Every line of the order in full", `${lines.complete} / ${lines.total}`], ["Nothing the order doesn't want", ""]].map(([k, v], i) =>
               <div key={k} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "13px 14px", borderTop: i ? `1px solid ${NL.LINE}` : "none", fontSize: 15 }}><span>{k}</span><span style={{ fontWeight: 700, color: NL.OK, whiteSpace: "nowrap" }}>{v ? `${v} ✓` : "✓"}</span></div>)}
           </div>
         ) : linesWaiting.length > 0 && lines.total > 0 ? (
@@ -4007,12 +4009,12 @@ function PhotoReportLine({ order, report, onOpen, onPhotos = null, photosShown =
       <span style={{ fontSize: 13, color: NL.SUB }}>{keptClear.cases.length} of {keptClear.cases.length} cases · kept as {keptClear.ref} for the manifest</span></span>
     {onOpen && <NLIcon name="chev" size={18} color={NL.SUB} />}</button>);
   if (!report || !report.counted) return null;
-  const n = photoIssuesForShow(report).length;
+  const n = photoIssuesForShow(report).filter(i => i.kind !== "weight").length, nw = report.counted - report.weighed;
   return (<button type="button" data-pr-line={report.allClear ? "clear" : "open"} onClick={onOpen} style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 16, background: report.allClear ? "#E9F5ED" : "#fff", border: `1px solid ${report.allClear ? "#A8D5B6" : n ? "#EBC28E" : NL.LINE}`, fontFamily: NLT.FONT, textAlign: "left", cursor: "pointer" }}>
     <PhotoMark tone={report.allClear ? "ok" : n ? "fix" : "none"} size={34} />
     <span style={{ flex: 1, display: "flex", flexDirection: "column", gap: 2 }}>
       <span style={{ fontSize: 15.5, fontWeight: 700, color: report.allClear ? NL.OK : NL.INK }}>{report.allClear ? "Photo checked 100%" : "Photo report"}</span>
-      <span style={{ fontSize: 13, color: NL.SUB }}>{report.allClear ? `${report.counted} of ${report.counted} cases right · kept for the manifest` : `${report.right} of ${report.counted} cases right${n ? ` · ${n} to fix` : ""}${report.reading ? ` · reading ${report.reading}` : ""}`}</span></span>
+      <span style={{ fontSize: 13, color: NL.SUB }}>{report.allClear ? `${report.counted} of ${report.counted} cases right · kept for the manifest` : `${report.photoRight != null ? report.photoRight : report.right} of ${report.counted} photos right${n ? ` · ${n} to fix` : ""}${nw > 0 ? ` · ${nw} to weigh` : ""}${report.reading ? ` · reading ${report.reading}` : ""}`}</span></span>
     <NLIcon name="chev" size={18} color={NL.SUB} /></button>);
 }
 
@@ -20402,7 +20404,7 @@ function CaseGrid({ palletStored = null, cases, caseWeights, setCaseWeights, wei
         const toPhoto = photosIn ? withBoxes.filter(c => !(photoMarks[c.caseNum])) : [];
         const photoN = photosIn ? withBoxes.length - toPhoto.length : 0;
         const rep = photoView && photoView.report;
-        const fixN = rep ? photoIssuesForShow(rep).length : 0;
+        const fixN = rep ? photoIssuesForShow(rep).filter(i => i.kind !== "weight").length : 0;   // a weight still to type is "to go", not "to fix" 
         const kept = editOrder && editOrder.photoReport && editOrder.photoReport.allClear;
         const big = (on, icon, label, done, of, attr, onClick) => (
           <button type="button" {...attr} onClick={onClick} style={{ flex: 1, minWidth: 0, borderRadius: 14, padding: "10px 12px 9px", cursor: "pointer", textAlign: "left", display: "flex", flexDirection: "column", gap: 6,
@@ -20415,7 +20417,7 @@ function CaseGrid({ palletStored = null, cases, caseWeights, setCaseWeights, wei
           </button>);
         const left = [toPhoto.length && checkHere ? `${toPhoto.length} photo${toPhoto.length === 1 ? "" : "s"}` : null, stillToWeigh.length ? `${stillToWeigh.length} weight${stillToWeigh.length === 1 ? "" : "s"}` : null].filter(Boolean);
         const status = kept || (rep && rep.allClear) ? { t: "Photo checked 100% ✓", ok: true }
-          : rep && rep.counted && photoN ? { t: `${rep.right} of ${rep.counted} right${fixN ? ` · ${fixN} to fix` : ""}${left.length ? ` · ${left.join(" · ")} to go` : ""}`, warn: fixN > 0 }
+          : rep && rep.counted && photoN ? { t: `${rep.photoRight != null ? rep.photoRight : rep.right} of ${rep.counted} photos right${fixN ? ` · ${fixN} to fix` : ""}${left.length ? ` · ${left.join(" · ")} to go` : ""}`, warn: fixN > 0 }
           : !photosIn ? { t: `Loading the photos…${stillToWeigh.length ? ` · ${stillToWeigh.length} weight${stillToWeigh.length === 1 ? "" : "s"} to go` : ""}` }
           : { t: left.length ? `${left.join(" · ")} to go` : "Ready to check" };
         return (
