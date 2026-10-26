@@ -38,7 +38,7 @@ import { deriveData, TRUTH_SCHEMA, TRUTH_INPUT_KEYS } from "./mx_truth.js";
 import { setCloudTruth, cloudTruthDecision, TRUTH_STORE } from "./mx_truthstore.js";
 import { TRUTH_CODE_SHA } from "./mx_truthcode.js";
 import { gsSwitchOn, gsSwitchSet } from "./mx_gapsimple.js";
-import { readBandNew, focusGate, lightGate, gapScaleNow, expoFlickerSafe, gapScaleDoubt, gapProofVerdict, gapProofDue, gapProofStreak, GAP_PROOF_PASS, GAP_PROOF_EARN } from "./mx_gapread.js";
+import { readBandNew, focusGate, lightGate, gapScaleNow, expoFlickerSafe, gapScaleDoubt, gapProofVerdict, gapProofDue, gapProofStreak, GAP_PROOF_PASS, GAP_PROOF_EARN, gapHouseState, gapHouseAgrees, glueGatherWatch, GAP_HOUSE_EARN, GAP_HOUSE_EARN_SIZES, GAP_HOUSE_ONE, GAP_HOUSE_ONE_SIZES } from "./mx_gapread.js";
 
 const { useState, useEffect, useMemo, useRef, useCallback } = React;
 
@@ -582,7 +582,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-10-26.5";
+const APP_VERSION = "2026-10-26.6";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -7112,16 +7112,50 @@ function gtCalAll() {
   if (GT_REC.calMemo && GT_REC.calMemo.tr === tr && GT_REC.calMemo.ch === ch && GT_REC.calMemo.sp === sp) return GT_REC.calMemo.all;
   const all = gapCalChecks(tr, ch, sp); GT_REC.calMemo = { tr, ch, sp, all }; return all;
 }
+/* THE CAMERA'S OWN CORRECTION (Chris, 26 Oct 2026: do away with the calliper checks). One figure in pixels for every size, learned
+   from every PC's checks with the new reader in this light, on this camera, at this picture scale (gapHouseState), and how far it
+   has proved itself — which decides how many checks a set-up asks for (3, 1 that agrees, or none). Not with the camera's-scale
+   way (mxGapScale), which has no corrections. */
+function gtHouse() {
+  if (gapScaleHere()) return null;
+  const all = gtCalAll(), light = gtLightNow(), cam = GT_REC.camLabel || null, mm = Number(GT_REC.last && GT_REC.last.mmPerPx) || null, mk = `${light}|${cam}|${mm ? Math.round(mm * 1e5) : "-"}`;
+  if (GT_REC.houseMemo && GT_REC.houseMemo.all === all && GT_REC.houseMemo.mk === mk) return GT_REC.houseMemo.h;
+  let h = null; try { h = gapHouseState(all, { light, cam, mmPerPx: mm }); } catch (e) { h = null; }
+  GT_REC.houseMemo = { all, mk, h }; return h;
+}
 function gtCorr() {
   if (gapScaleHere()) { GT_REC.corr = null; GT_REC.corrFrom = null; GT_REC.corrChecks = []; GT_REC.corrRaw = null; GT_REC.corrFor = null; return null; }
   const { raw, sets } = gtCorrSetsRead(), key = gtCorrKeyNow();
   if (GT_REC.corrRaw !== raw || GT_REC.corrFor !== key) {
     /* the size's own correction, else the nearest size's until this one is checked (15 Oct 2026 — gapCorrFor) */
     const got = gapCorrFor(sets, GT_REC.cfg.spec || "", gtLightNow());
-    GT_REC.corrRaw = raw; GT_REC.corrFor = key; GT_REC.corrSets = sets; GT_REC.corrFrom = got.from;
-    GT_REC.corrChecks = got.set ? got.set.checks : []; GT_REC.corr = got.set ? gapCorrection(got.set.checks) : null;
+    GT_REC.corrRaw = raw; GT_REC.corrFor = key; GT_REC.corrSets = sets; GT_REC.corrFromOwn = got.from;
+    GT_REC.corrChecksOwn = got.set ? got.set.checks : []; GT_REC.corrOwn = got.set ? gapCorrection(got.set.checks) : null;
   }
-  return GT_REC.corr;
+  /* the size's own checks today stand; otherwise the camera's own correction, once it stands on two sizes — never another
+     size's from an earlier day (those were the old reader's, up to 27 px apart) */
+  const own = GT_REC.corrOwn, ownToday = !!(own && !GT_REC.corrFromOwn && own.at && new Date(own.at).toDateString() === new Date().toDateString());
+  const h = ownToday ? null : gtHouse();
+  if (h && h.corr) { const L = GT_REC.last || {};
+    GT_REC.corr = { px: h.corr.px, n: h.corr.n, spread: h.corr.spread, totPx: Number(L.totPx) || null, at: h.corr.lastAt, level: null, key, house: true, sizes: h.corr.sizes,
+      mm: Number(L.mmPerPx) > 0 ? Math.round(h.corr.px * Number(L.mmPerPx) * 1000) / 1000 : null };
+    GT_REC.corrFrom = null; GT_REC.corrChecks = []; return GT_REC.corr; }
+  GT_REC.corr = own; GT_REC.corrFrom = GT_REC.corrFromOwn; GT_REC.corrChecks = GT_REC.corrChecksOwn || []; return own;
+}
+/* GLUE GATHERING IN THE CHANNEL (26 Oct 2026): the watch runs from the last calliper check, the start of this recording, or the
+   last "watch again from here", every 5 s; the first time it sees the slide it says so in the log and marks the trace. */
+function gtGlueGatherWatch(lt) {
+  const now = Date.now(); if (GT_REC.gw && now - GT_REC.gw.at < 5000) return GT_REC.gw.res;
+  if (!GT_REC.recording || GT_REC.trial || GT_REC.settingUp) { GT_REC.gw = { at: now, res: null }; GT_REC.gwOn = false; return null; }
+  const S = GT_REC.samples || [], M = (lt && lt.M) || [], cm = GT_REC.carry ? Number(GT_REC.carry.metres) || 0 : 0;
+  const lastCheck = Math.max(0, ...(GT_REC.checks || []).map(c => Number(c && c.at) || 0));
+  let fromM = cm;
+  if (lastCheck && S.length) { const i = S.findIndex(x => x.t >= lastCheck); fromM = Math.max(fromM, cm + (i >= 0 ? (M[i] || 0) : (M[M.length - 1] || 0))); }
+  if (GT_REC.gwResetM != null) fromM = Math.max(fromM, GT_REC.gwResetM);
+  let res = null; try { res = glueGatherWatch((lt && lt.points) || [], { fromM }); } catch (e) { res = null; }
+  if (res && res.on && !GT_REC.gwOn) { gtLog(`The gap has slid ${res.drop.toFixed(3)} mm over ${res.overM} m, both strips keeping their width — check for glue gathering in the channel`, "#F59E0B");
+    GT_REC.marks.push({ t: now, note: `Gap sliding down ${res.drop.toFixed(3)} mm over ${res.overM} m — glue gathering in the channel?` }); }
+  GT_REC.gwOn = !!(res && res.on); GT_REC.gw = { at: now, res }; return res;
 }
 /* HOW MANY NEW PICTURES THE CAMERA SENDS (Chris at the line, 19 Oct 2026, 13:37: "Why does it keep stuttering"). The clip at
    13:30 had 187 of its 344 readings on a picture it had already read — the camera stood still for up to 2 s at a time — where
@@ -8840,7 +8874,12 @@ function GlueLinePortalView({ data, setData }) {
   const setupChecks = setupOk ? setupS.checks : [];
   const setupPending = setupChecks.find(c => c.odd && !c.kept) || null, setupGood = setupChecks.filter(c => !c.odd || c.kept);
   const setupDoubt = !!(setupOk && setupS.doubt && !setupS.doubtOk);   /* the safety net held the three back (gapScaleDoubt) */
-  const setupDone = setupGood.length >= GAP_SETUP_CHECKS && !setupPending && !setupDoubt;
+  /* HOW MANY CHECKS THE SET-UP ASKS FOR (26 Oct 2026): 3 until the camera's own correction has proved itself — then 1 that agrees
+     with it, then none (gapHouseState). A first check that disagrees asks for the usual 3, and the size gets its own correction. */
+  const house = gtHouse();
+  const setupNeed = scaleWay || !house ? GAP_SETUP_CHECKS : (setupOk && setupS.needAll ? GAP_SETUP_CHECKS : house.need);
+  const setupOneOk = setupGood.some(c => c.house && c.house.pass) && !(setupOk && setupS.needAll);
+  const setupDone = setupNeed === 0 ? true : setupNeed === 1 && setupOneOk && !setupPending ? true : setupGood.length >= GAP_SETUP_CHECKS && !setupPending && !setupDoubt;
   /* three stand: their average becomes this range-and-light's correction, and they go on the reel with the trace */
   const finishSetup = (list, opt = {}) => {
     const good = list.filter(c => !c.odd || c.kept); if (good.length < GAP_SETUP_CHECKS) return;
@@ -8880,6 +8919,15 @@ function GlueLinePortalView({ data, setData }) {
     gtLog(`Set-up checks: average ${ah.toFixed(3)} by hand, camera ${ar.toFixed(3)} — correction ${k && k.mm != null ? `${k.mm >= 0 ? "+" : ""}${k.mm.toFixed(3)} mm` : "—"} for ${words}`, "#60A5FA");
     setData(prev => ({ ...prev, ...appendLog(prev, { action: "update", entity: "gapTrace", entityId: "setupchecks", summary: `Gap set-up on ${spec || "—"}: width ${widthRec ? Number(widthRec.mm).toFixed(2) : "—"} mm; the gap by hand ${good.map(c => c.hand.toFixed(3)).join(", ")} (average ${ah.toFixed(3)}), the camera steady ${good.map(c => c.read.toFixed(3)).join(", ")} (average ${ar.toFixed(3)}) — correction ${k ? `${k.px >= 0 ? "+" : ""}${k.px.toFixed(1)} px` : "—"}${k && k.mm != null ? ` (${k.mm >= 0 ? "+" : ""}${k.mm.toFixed(3)} mm)` : ""} for ${words}${currentDevice() ? ` on ${currentDevice()}` : ""}` }) }));
   };
+  /* ONE CHECK THAT AGREES WITH THE CAMERA'S OWN CORRECTION (26 Oct 2026): it goes on the reel with the trace and counts towards the
+     proof; the size keeps using the camera's own correction (its own is made only from three) */
+  const finishSetupOne = (c) => {
+    GT_REC.checks = [...(GT_REC.checks || []), { hand: c.hand, read: c.read, diff: Math.round((c.read - c.hand) * 1000) / 1000, at: c.at, by: c.by, setup: true, kind: "setup", spec: c.spec || spec || null, raw: c.read, mmPerPx: c.mmPerPx || null, level: c.level || null, light: c.light || null, house: c.house || null,
+      ...(c.gapPx > 0 ? { gapPx: c.gapPx, totPx: c.totPx, cam: c.cam || null } : {}) }].slice(-20);
+    GT_REC.houseMemo = null; gtCorr();
+    gtLog(`Set-up: one check, ${c.hand.toFixed(3)} by hand — the camera's own correction shows ${c.house.shown.toFixed(3)} (${c.house.diff >= 0 ? "+" : ""}${c.house.diff.toFixed(3)}): it stands, no more checks needed`, "#34D399");
+    setData(prev => ({ ...prev, ...appendLog(prev, { action: "update", entity: "gapTrace", entityId: "setupchecks", summary: `Gap set-up on ${spec || "—"}: width ${widthRec ? Number(widthRec.mm).toFixed(2) : "—"} mm; one check by hand ${c.hand.toFixed(3)}, the camera's own correction showed ${c.house.shown.toFixed(3)} (${c.house.diff >= 0 ? "+" : ""}${c.house.diff.toFixed(3)}) — it stands for ${gapSizePart(spec) || spec || "this size"}${currentDevice() ? ` on ${currentDevice()}` : ""}` }) }));
+  };
   const doSetupCheck = () => {
     if (!wv.ok) { setSetupMsg({ bad: true, t: "Save the overall width first — the camera's reading depends on it." }); return; }
     const L = GT_REC.last || {}, st = L.steady;
@@ -8889,24 +8937,39 @@ function GlueLinePortalView({ data, setData }) {
     const res = gapCorrCheck(setupIn, st.value, L.mmPerPx, L.totPx, scaleWay && L.mmPerPx > 0 ? 0.5 / L.mmPerPx : undefined);
     if (!res.ok) { setSetupMsg({ bad: true, t: res.why }); return; }
     const odd = gapCheckOdd(setupGood.map(c => c.hand), res.hand), light = gtLightNow();
+    const houseSays = !scaleWay && house && house.corr ? gapHouseAgrees(house.corr, res.hand, st.value, L.mmPerPx) : null;
     const c = { ...res, read: st.value, drift: st.drift, n: st.n, level: GT_REC.levelNow || null, light, key: gapCorrKey(spec, light), spec, at: Date.now(), by: currentActor() || null, odd: odd || null, kept: false,
+      ...(houseSays ? { house: houseSays } : {}),
       ...(L.mmPerPx > 0 && L.totPx > 0 ? { gapPx: Math.round(st.value / L.mmPerPx * 10) / 10, totPx: Math.round(L.totPx * 10) / 10, cam: GT_REC.camLabel || null } : {}) };
+    /* the one-check set-up: agrees → done; doesn't → the usual three, and the size gets its own correction */
+    if (setupNeed === 1 && !setupGood.length && houseSays) {
+      const nextOne = [c];
+      if (houseSays.pass) { setSetupS({ spec, day: new Date().toDateString(), widthAt: widthRec.at, checks: nextOne }); setSetupIn(""); setSetupMsg(null); finishSetupOne(c); return; }
+      setSetupS({ spec, day: new Date().toDateString(), widthAt: widthRec.at, checks: nextOne, needAll: true }); setSetupIn("");
+      gtLog(`Set-up: ${c.hand.toFixed(3)} by hand, the camera's own correction shows ${houseSays.shown.toFixed(3)} — ${Math.abs(houseSays.diff).toFixed(3)} apart, so ${GAP_SETUP_CHECKS} checks this time`, "#F59E0B");
+      setSetupMsg({ bad: true, t: `That's ${Math.abs(houseSays.diff).toFixed(3)} from what the camera's own correction shows (${houseSays.shown.toFixed(3)}). Measure ${GAP_SETUP_CHECKS - 1} more — this size gets its own correction from the ${GAP_SETUP_CHECKS}.` });
+      return;
+    }
     /* Backlight help (5): the set-up's three are taken in one light — earlier ones from before the exposure was changed, or in a
        light more than GAP_LIGHT_SHIFT away from this one's, are put aside and the count starts again from this check */
     const exAt = gtBackHelp() && GT_REC.backExpo ? GT_REC.backExpo.at : 0;
     const before = gtBackHelp() ? setupChecks.filter(x => (exAt && Number(x.at) < exAt) || (Number(x.level) > 0 && Number(c.level) > 0 && Math.abs(Number(x.level) - Number(c.level)) / Number(c.level) > GAP_LIGHT_SHIFT)) : [];
     const next = [...setupChecks.filter(x => !before.includes(x)), c];
     if (before.length) gtLog(`Set-up: ${before.length} earlier check${before.length === 1 ? "" : "s"} put aside — taken in another light (the exposure or the light changed since). ${Math.min(next.filter(x => !x.odd || x.kept).length, GAP_SETUP_CHECKS)} of ${GAP_SETUP_CHECKS} now.`, "#F59E0B");
-    setSetupS({ spec, day: new Date().toDateString(), widthAt: widthRec.at, checks: next }); setSetupIn("");
-    gtLog(`Gap by hand ${c.hand.toFixed(3)} · camera steady ${c.read.toFixed(3)}${odd ? ` — ${odd.toFixed(3)} from the others` : ""}`, odd ? "#F59E0B" : "#60A5FA");
+    setSetupS({ spec, day: new Date().toDateString(), widthAt: widthRec.at, checks: next, ...(setupOk && setupS.needAll ? { needAll: true } : {}) }); setSetupIn("");
+    gtLog(`Gap by hand ${c.hand.toFixed(3)} · camera steady ${c.read.toFixed(3)}${odd ? ` — ${odd.toFixed(3)} from the others` : ""}${houseSays ? ` · the camera's own correction would show ${houseSays.shown.toFixed(3)}` : ""}`, odd ? "#F59E0B" : "#60A5FA");
     setSetupMsg(odd ? { bad: true, odd: true, t: `This one is ${odd.toFixed(3)} away from the ${setupGood.length === 1 ? "other one" : "others"}. It's left out — measure once more (or keep it if you're sure).` } : null);
     if (!odd) finishSetup(next);
   };
-  const setupAgain = () => { const next = setupChecks.filter(c => !(c.odd && !c.kept)); setSetupS({ ...setupS, checks: next }); setSetupMsg(null); };
+  const setupAgain = () => { const next = setupChecks.filter(c => !(c.odd && !c.kept)); setSetupS({ ...setupS, checks: next }); setSetupMsg(null); };   /* needAll stays with setupS */
   const setupKeep = () => { const next = setupChecks.map(c => c.odd && !c.kept ? { ...c, kept: true } : c); setSetupS({ ...setupS, checks: next }); setSetupMsg(null); finishSetup(next); };
   const setupDoubtKeep = () => { const next = setupChecks; setSetupS({ ...setupS, doubtOk: true }); setSetupMsg(null); gtLog("Set-up kept as measured, though it didn't match the camera's usual", "#94A3B8"); finishSetup(next, { doubtOk: true }); };
   const setupRestart = () => { setSetupS({ spec, day: new Date().toDateString(), widthAt: widthRec ? widthRec.at : null, checks: [] }); setSetupMsg(null); };
-  const start = () => { if (!wv.ok) { setPpanel("calib"); return; } if (!setupDone) { setSetupMsg({ bad: true, t: `Measure the gap by hand ${GAP_SETUP_CHECKS} times first.` }); return; } GT_REC.samples = []; GT_REC.marks = []; GT_REC.liveId = null; GT_REC.carry = null; GT_REC.settingUp = false; GT_REC.segStart = Date.now(); GT_REC.segRun0 = GT_REC.runM; GT_REC.paused = false; GT_REC.recording = true; GT_REC.trial = !!trialOn; GT_REC.flash = null; GT_REC.traceNo = trialOn ? null : gapNextTraceNo(data.gapTraces || []);
+  const start = () => { if (!wv.ok) { setPpanel("calib"); return; } if (!setupDone) { setSetupMsg({ bad: true, t: setupNeed === 1 ? "Measure the gap by hand once first." : `Measure the gap by hand ${GAP_SETUP_CHECKS} times first.` }); return; }
+    if (setupNeed === 0 && house && house.corr && !setupGood.length) { gtLog(`Set-up: no calliper checks — the camera's own correction (${house.corr.px >= 0 ? "+" : ""}${house.corr.px.toFixed(1)} px) has matched the callipers ${house.proof.n} times in a row over ${house.proof.sizes} sizes`, "#34D399");
+      setData(prev => ({ ...prev, ...appendLog(prev, { action: "update", entity: "gapTrace", entityId: "setupchecks", summary: `Gap set-up on ${spec || "—"}: no calliper checks — the camera's own correction ${house.corr.px >= 0 ? "+" : ""}${house.corr.px.toFixed(1)} px (proved ${house.proof.n} in a row over ${house.proof.sizes} sizes)${currentDevice() ? ` on ${currentDevice()}` : ""}` }) })); }
+    GT_REC.gwResetM = null; GT_REC.gw = null; GT_REC.gwOn = false;
+    GT_REC.samples = []; GT_REC.marks = []; GT_REC.liveId = null; GT_REC.carry = null; GT_REC.settingUp = false; GT_REC.segStart = Date.now(); GT_REC.segRun0 = GT_REC.runM; GT_REC.paused = false; GT_REC.recording = true; GT_REC.trial = !!trialOn; GT_REC.flash = null; GT_REC.traceNo = trialOn ? null : gapNextTraceNo(data.gapTraces || []);
     /* CARRY ON THE SAME REEL (15 Oct 2026): the trace left open by the restart is carried in front, under its own number and row */
     if (!trialOn && resumeOn && resumable) { GT_REC.carry = gapCarryOf(resumable, { segStart: GT_REC.segStart, speed }); GT_REC.liveId = resumable.id; GT_REC.traceNo = (resumable.stats && resumable.stats.traceNo) || GT_REC.traceNo;
       /* THE CHECKS COME BACK WITH THE REEL (19 Oct 2026, 14:50): a restart lost the set-up's three checks — this PC held them in
@@ -9152,7 +9215,8 @@ function GlueLinePortalView({ data, setData }) {
     GT_REC.samples = []; GT_REC.marks = []; GT_REC.segStart = now; GT_REC.segRun0 = GT_REC.runM; GT_REC.settingUp = false; GT_REC.liveId = null; GT_REC.carry = null; GT_REC.flash = null;
     GT_REC.checks = (GT_REC.checks || []).filter(c => c && c.at >= ns.at);   /* the three checks go on the new size's first reel */
     if (!GT_REC.traceNo) GT_REC.traceNo = gapNextTraceNo(data.gapTraces || []);
-    gtLog(`New size ${ns.to} — set up in ${fmtClock(now - ns.at)}, three checks done`, "#60A5FA");
+    GT_REC.gwResetM = null; GT_REC.gw = null; GT_REC.gwOn = false;
+    gtLog(`New size ${ns.to} — set up in ${fmtClock(now - ns.at)}, ${setupNeed === 0 ? "no checks needed" : setupNeed === 1 && setupOneOk ? "one check agreed" : "three checks done"}`, "#60A5FA");
     setData(prev => ({ ...prev, ...appendLog(prev, { action: "update", entity: "gapTrace", entityId: "newsize", summary: `Gap trace: new size ${ns.from || "—"} → ${ns.to} with the line running (set up in ${fmtClock(now - ns.at)})${currentDevice() ? ` on ${currentDevice()}` : ""}` }) }));
     setNs(null); setTick(t => t + 1);
   };
@@ -9625,6 +9689,7 @@ function GlueLinePortalView({ data, setData }) {
         sub: "Until then the gap shows grey and nothing is called in or out of range.", btn: "Check by hand" } : null)
       : recording && lim && live && live.ok ? (corrSt.light ? { k: "light", t: "The light has changed since the gap was checked.", sub: `${corrSt.why ? corrSt.why.replace(/^The light has changed since the gap was checked — /, "").replace(/^./, c => c.toUpperCase()) : ""}`, btn: "Check by hand" }
       : corrSt.size ? { k: "size", t: "The picture has changed size since the gap was checked.", sub: "The zoom or the camera moved — the correction isn't being used.", btn: "Check by hand" }
+      : GT_REC.corr && GT_REC.corr.house ? null
       : GT_REC.corr && GT_REC.corrFrom ? { k: "borrowed", t: `Using ${String(GT_REC.corrFrom).split("|")[0]}'s correction until ${gapSizePart(spec) || "this size"} is checked by hand.`, sub: "Each size keeps its own — on 12–14 Oct they were 0.04 to 0.13 mm apart.", btn: "Check by hand" }
       : !GT_REC.corr ? { k: "none", t: `No correction for ${gapRangeOf(spec)} under the ${(GAP_LIGHT_WORDS[lightNow] || lightNow).toLowerCase()}.`, sub: "The gap shown is the camera's own reading. Check the gap by hand to set one.", btn: "Measure now" } : null) : null;
     /* THE PROOF CHECK IS DUE (the new reader): half an hour after the set-up, once per run — asked here, on the running screen */
@@ -9637,6 +9702,11 @@ function GlueLinePortalView({ data, setData }) {
         {canJoin(lt) && <button data-pt-live-join={lt.id} onClick={() => joinLive(lt)} style={pbtn("navy", { minHeight: 42 })}>Join it — the same reel</button>}
         <button data-pt-live-keep={lt.id} onClick={() => keepLive(lt)} style={pbtn("plain", { minHeight: 42 })}>{canJoin(lt) ? "No — keep it for its own reel" : "Keep it — it waits for its reel"}</button>
         <button data-pt-live-bin={lt.id} onClick={() => binWaiting(lt)} style={pbtn("plain", { minHeight: 42, color: "#B91C1C" })}>Throw it away</button></div>)}
+      {(() => { const gw = gtGlueGatherWatch(liveTrace); if (!(gw && gw.on)) return null;
+        return <div data-pt-glue-gather role="alert" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px 14px", padding: "11px 22px", background: "#FDF6E3", borderBottom: "1px solid #F5D98B", color: "#92400E" }}>
+          <b style={{ fontSize: 16 }}>The gap has slid {gw.drop.toFixed(3)} mm over the last {gw.overM} m ({gw.from.toFixed(3)} → {gw.now.toFixed(3)}), both strips keeping their width.</b>
+          <span style={{ fontSize: 14 }}>Check for glue gathering at the edges of the channel — on 26 Oct turning the glue down brought it straight back.</span><span style={{ flex: "1 1 20px" }} />
+          <button data-pt-glue-gather-ok onClick={() => { GT_REC.gwResetM = liveTrace.head; GT_REC.gw = null; GT_REC.gwOn = false; gtLog("Glue checked — the gap watch starts again from here", "#94A3B8"); setTick(x => x + 1); }} style={pbtn("plain", { minHeight: 42 })}>Checked — watch again from here</button></div>; })()}
       {corrBanner && <div data-pt-corr-banner={corrBanner.k} role="alert" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px 14px", padding: "11px 22px", background: "#FDF0E7", borderBottom: "1px solid #F7D9C4", color: "#B45309" }}>
         <b style={{ fontSize: 16 }}>{corrBanner.t}</b><span style={{ fontSize: 14 }}>{corrBanner.sub}</span><span style={{ flex: "1 1 20px" }} />
         <button data-pt-corr-banner-go onClick={() => setPpanel("calib")} style={pbtn("plain", { minHeight: 42 })}>{corrBanner.btn}</button></div>}
@@ -9717,7 +9787,7 @@ function GlueLinePortalView({ data, setData }) {
               {isAdminLogin() ? <button data-pt-limits-open onClick={() => { setLimDraft(null); setLimErr(null); setPpanel("limits"); }} style={pbtn("plain", { minHeight: 44, alignSelf: "flex-start" })}>Change the limits</button> : null}</div>}
           </section>
           <section data-pt-measure style={{ ...card({ padding: "16px 22px" }), display: "flex", flexDirection: "column", gap: 10 }}>
-            {stepHead(3, "Measure by hand", wv.ok && setupDone, "Done", !wv.ok ? "Width needed" : `${Math.min(setupGood.length, GAP_SETUP_CHECKS)} of ${GAP_SETUP_CHECKS} gap checks`)}
+            {stepHead(3, "Measure by hand", wv.ok && setupDone, "Done", !wv.ok ? "Width needed" : setupNeed === 0 ? "No gap checks needed" : setupNeed === 1 ? `${setupOneOk ? 1 : 0} of 1 gap check` : `${Math.min(setupGood.length, GAP_SETUP_CHECKS)} of ${GAP_SETUP_CHECKS} gap checks`)}
             <div style={{ fontSize: 14, color: P.sub }}>Stop the line. Measure at the measuring line under the camera. Enter each figure as you take it — the camera notes its own steady reading at that moment.</div>
             <div style={{ fontSize: 16, fontWeight: 600 }}>Overall width, across both strips</div>
             <div data-pt-widthstrip style={{ fontSize: 14, color: P.sub }}>{wv.ok ? <>Saved <b style={{ color: P.ink }}>{Number(widthRec.mm).toFixed(2)} mm</b> across both strips · {hhmm(widthRec.at)}{widthRec.by ? ` ${String(widthRec.by).split("@")[0]}` : ""}</>
@@ -9727,7 +9797,7 @@ function GlueLinePortalView({ data, setData }) {
               <input id="pt-width" data-pt-width-in type="number" step="0.01" inputMode="decimal" aria-label="The overall width you measured, mm" placeholder="mm" value={widthShown} onChange={e => { setWidthIn(e.target.value); setWidthErr(null); }} style={{ flex: 1, minWidth: 0, background: "#fff", border: `2px solid ${wv.ok ? "#A7D3B5" : "#1B2B6B"}`, borderRadius: 12, color: P.ink, fontSize: 24, fontWeight: 600, padding: "0 14px", minHeight: 56, fontFamily: NLT.FONT, boxSizing: "border-box" }} />
               <button data-pt-width-set disabled={!widthMm} onClick={setWidth} style={pbtn("navy", { minHeight: 56, opacity: widthMm ? 1 : 0.5 })}>Save</button></div>
             {widthErr && <div data-pt-width-err style={{ color: "#B45309", fontWeight: 600, fontSize: 14 }}>{widthErr}</div>}
-            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, marginTop: 4 }}><span style={{ fontSize: 16, fontWeight: 600 }}>The gap, {GAP_SETUP_CHECKS} times</span>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, marginTop: 4 }}><span style={{ fontSize: 16, fontWeight: 600 }}>{setupNeed === 0 ? "The gap — no checks needed" : setupNeed === 1 ? "The gap, once" : `The gap, ${GAP_SETUP_CHECKS} times`}</span>
               {setupChecks.length > 0 && <button data-pt-setup-restart onClick={setupRestart} style={{ border: 0, background: "none", color: "#1B2B6B", fontWeight: 600, fontSize: 14, cursor: "pointer", fontFamily: NLT.FONT, padding: 0 }}>Start the checks again</button>}</div>
             <div data-pt-setup-checks style={{ display: "flex", flexDirection: "column" }}>
               {setupChecks.map((c, i) => <div key={c.at} data-pt-setup-check={i + 1} data-pt-setup-odd={c.odd && !c.kept ? "1" : "0"} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 0", borderTop: `1px solid ${P.line}` }}>
@@ -9747,8 +9817,18 @@ function GlueLinePortalView({ data, setData }) {
             {!setupPending && setupMsg && <div data-pt-setup-msg style={{ fontSize: 14, fontWeight: 600, color: setupMsg.bad ? "#B45309" : "#166534" }}>{setupMsg.t}</div>}
             {setupDoubt && <div data-pt-setup-doubt style={{ display: "flex", gap: 10, flexWrap: "wrap" }}><button data-pt-setup-doubt-again onClick={setupRestart} style={pbtn("navy", { minHeight: 46 })}>Measure the three again</button>
               <button data-pt-setup-doubt-keep onClick={setupDoubtKeep} style={pbtn("plain", { minHeight: 46 })}>They're right — keep them</button></div>}
+            {setupDone && setupGood.length < GAP_SETUP_CHECKS && GT_REC.corr && GT_REC.corr.house && <div data-pt-setup-house style={{ padding: "12px 14px", borderRadius: 12, background: "#E8F3EC", border: "1px solid #C8E6D2", fontSize: 15 }}>
+              {setupOneOk ? (() => { const c1 = setupGood.find(c => c.house && c.house.pass); return <>One check agreed with the camera's own correction — <b>{c1.hand.toFixed(3)}</b> by hand, the camera <b>{c1.house.shown.toFixed(3)}</b>. Ready to run.</>; })() : <>No checks needed — the camera's own correction (<b>{GT_REC.corr.px >= 0 ? "+" : ""}{GT_REC.corr.px.toFixed(1)} px</b>) is used. Ready to run.</>}</div>}
             {live && live.ok && !setupDone && wv.ok && <div data-pt-setup-steady style={{ fontSize: 13.5, color: live.steady && live.steady.ok ? "#166534" : "#B45309" }}>{live.steady && live.steady.ok ? `Camera settled · steady reading ${live.steady.value.toFixed(3)}${scaleWay ? (live.uncal ? " (not calibrated yet)" : "") : " before correction"}` : live.refused && !(live.steady && live.steady.n >= GAP_STEADY_MIN_N) ? gtNoReadingWhy(live, live.steady) : "Camera settling — wait for it before entering a figure"}</div>}
-            {setupDone && (() => { const avg = (a) => a.reduce((x, y) => x + y, 0) / a.length, ah = avg(setupGood.map(c => c.hand)), ar = avg(setupGood.map(c => c.read)), k = GT_REC.corr, key = setupGood[setupGood.length - 1].key, [rg, lt] = key.split("|");
+            {/* THE CAMERA'S OWN CORRECTION — what it is and how far it has proved itself (26 Oct 2026) */}
+            {!scaleWay && house && house.learning && (() => { const hc = house.learning, pr = house.proof, sz = hc.sizes, onSys = !!house.corr;
+              const next = setupNeed === 0 ? `Calliper checks have retired — ${pr.n} in a row matched within ${GAP_PROOF_PASS.toFixed(2)} mm, over ${pr.sizes} sizes. A check is still welcome now and then; a miss brings them back.`
+                : setupNeed === 1 ? `${pr.n} in a row have matched over ${pr.sizes} sizes, so one check is enough when it agrees. At ${GAP_HOUSE_EARN} in a row over ${GAP_HOUSE_EARN_SIZES} sizes the checks retire.`
+                : onSys ? `${pr.n} in a row have matched${pr.n ? ` over ${pr.sizes} size${pr.sizes === 1 ? "" : "s"}` : ""}. At ${GAP_HOUSE_ONE} in a row over ${GAP_HOUSE_ONE_SIZES} sizes a set-up needs one check; at ${GAP_HOUSE_EARN} over ${GAP_HOUSE_EARN_SIZES} sizes, none.`
+                : `It's learning: it needs checks on two sizes before it stands. Every set-up's checks teach it.`;
+              return <div data-pt-house={setupNeed} style={{ padding: "10px 14px", borderRadius: 12, background: setupNeed === 0 ? "#E8F3EC" : "#F1F4FA", border: `1px solid ${setupNeed === 0 ? "#C8E6D2" : P.line}`, fontSize: 14, lineHeight: 1.45 }}>
+                <b>The camera's own correction: {hc.px >= 0 ? "+" : ""}{hc.px.toFixed(1)} px</b> <span style={{ color: P.sub }}>· from {sz} size{sz === 1 ? "" : "s"}, {hc.n} checks{hc.left ? ` (${hc.left} left out)` : ""}{pr.last ? ` · last ${pr.last.pass ? "matched" : "missed"} by ${Math.abs(pr.last.diff).toFixed(3)}` : ""}</span><br />{next}</div>; })()}
+            {setupDone && setupGood.length >= GAP_SETUP_CHECKS && (() => { const avg = (a) => a.reduce((x, y) => x + y, 0) / a.length, ah = avg(setupGood.map(c => c.hand)), ar = avg(setupGood.map(c => c.read)), k = GT_REC.corr, key = setupGood[setupGood.length - 1].key, [rg, lt] = key.split("|");
               return <div data-pt-setup-avg style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "6px 20px", padding: "12px 14px", borderRadius: 12, background: "#E8F3EC", border: "1px solid #C8E6D2" }}>
                 <span><span style={lab}>Average by hand</span><br /><b data-pt-setup-avg-hand style={{ fontSize: 28, fontVariantNumeric: "tabular-nums" }}>{ah.toFixed(3)}</b> <span style={{ color: P.sub }}>mm</span></span>
                 <span><span style={lab}>Camera, steady</span><br /><b style={{ fontSize: 20, fontVariantNumeric: "tabular-nums" }}>{ar.toFixed(3)}</b></span>
