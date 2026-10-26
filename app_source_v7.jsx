@@ -582,7 +582,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-10-26.3";
+const APP_VERSION = "2026-10-26.4";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -765,7 +765,16 @@ function useUpdateCheck() {
   const askedFor = (() => {
     try { return new URLSearchParams(location.search).get("v"); } catch { return null; }
   })();
-  const staleOnServer = !!askedFor && VERSION_PATTERN.test(askedFor) && askedFor !== APP_VERSION;
+  /* Only a build BEHIND the one asked for is the stuck update (26 Oct 2026: Chris's phone sat at ?v=2026-10-26.1 from an
+     earlier update, the service worker then brought 2026-10-26.3 in at that same address, and this said "index.html hasn't
+     been published" while running a newer build than it asked for — and held back every quiet update after it). Running the
+     build asked for or a newer one is fine: the old ?v= is tidied off the address. */
+  const staleOnServer = !!askedFor && VERSION_PATTERN.test(askedFor) && appVersionRank(askedFor) > appVersionRank(APP_VERSION);
+  useEffect(() => {
+    if (!askedFor || staleOnServer) return;
+    try { const q = new URLSearchParams(location.search); q.delete("v"); const rest = q.toString();
+      history.replaceState(history.state, "", location.pathname + (rest ? "?" + rest : "") + location.hash); } catch (e) { /* not allowed here */ }
+  }, [askedFor, staleOnServer]);
 
   return {
     latest: state.latest,
