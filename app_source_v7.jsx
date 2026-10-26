@@ -582,7 +582,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-10-26.2";
+const APP_VERSION = "2026-10-26.3";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -36345,6 +36345,15 @@ function BondingLineView({ data, setData, jumpToPacking }) {
       /* An entry the office opened from "left for the office" is settled by logging it. */
       if (heldId && (working.issues || []).some(x => x && x.id === heldId && !x.resolvedAt))
         working = resolveIssue(working, heldId, `Logged at bonding as ${newRun.boxNumber || newRun.id} from the entry left for the office`);
+      /* …and so is one typed in again by hand (Chris, 26 Oct 2026: JSC 0.30 x 1.00 — Dave logged box J62303SDB again an hour
+         after leaving it, and "Left for the office" stayed up on his PC for three days). The same box code on the same day is
+         the same box. */
+      const boxNo = String(newRun.boxNumber || "").trim().toUpperCase();
+      if (boxNo) for (const x of (working.issues || []).filter(i => i && !i.deleted && !i.resolvedAt && i.kind === "held_bonding" && i.id !== heldId)) {
+        const f = heldEntryOf(x) || {};
+        if (String(f.boxNumber || x.boxNumber || "").trim().toUpperCase() === boxNo && (!f.date || !newRun.date || String(f.date).slice(0, 10) === String(newRun.date).slice(0, 10)))
+          working = resolveIssue(working, x.id, `Logged at bonding as ${newRun.boxNumber} (typed in again)`);
+      }
       return working;
     });
     /* THE RUN CONTINUES. Chris, 7 Sep: five boxes off a reel on strong tape,
