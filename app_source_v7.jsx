@@ -12,7 +12,7 @@ import { BOX_LOCATIONS, MOVEMENT_KINDS, SIGNED_MOVEMENT_KINDS, boxLinesFor, boxW
 import { fullCaseNums, orderPalletPlan, caseWeightsEstimate, palletPlanByWeight, BOX_CASE_SIZES, CASES_PER_PALLET, palletPlan, casePalletShown, ONE_PALLET_MAX_BOXES, onePalletCheck, CASE_BAND_ORDER, CASE_MAX_SIZE_DEFAULT, EMPTY_ON_PURPOSE, MONTH_LETTERS, PLAN_BAND_ORDER, STANDARD_BOX_TYPES, allocateCaseDetails, allocationRefusal, amendmentsFor, applyAmendmentReduction, arrangeBoxesThenReels, arrangeCases, arrangedCasesForOrder, backfillPlannedCases, batchesAvailableRows, batchesAvailableRowsFresh, boxOutOfOrderCases, buildCombinedCases, buildPackingPlan, cartonFor, cartonMismatch, caseContentLines, caseFill, caseKindOf, casePalletOf, casePlanLines, casePlanned, caseRangeLabel, caseRecordFor, caseRowId, caseRunsLabel, caseSortKey, caseState, caseView, caseWeightOf, caseWeightQuery, oddCaseWeights, compareCaseSort, computeMakeLists, dateFromReelCode, dedupeCaseRows, dismissalMap, findDiscrepancies, findDiscrepanciesFresh, hasCasePlan, isCaseClosed, isReelCase, isReelFulfilled, isStrongTapeOrder, liveMapEntries, mergePlannedRows, openCasesForOrder, openIssues, openPickSheets, orderBoxTypes, orderCaseCount, orderHasStarted, orderShortfall, ordersMissingPlan, ordersNeedingSpec, packedOutsideSpecs, packingShort, parseCodeDate, patchMapsFromCaseRecords, planAmendment, planBandFor, planCutForLine, planForMove, planOrderMismatches, planOrderRefusal, planRowsForNewOrder, planSpacesFor, plannableLines, plannedCasesFor, proposeCut, readDiscrepancyDismissals, reelsPerCase, refillCases, renumberAfterRemoval, resolveCaseContents, sameContents, shortCaseSpec, sortLinesForCases, specInCarton, specOfBoxInCase, subtractConfirmed, subtractPlanned, tapeFits, tapeRefusal, twinCartonSpec, bondedTwinSpecs, upBox, planVsOrder, discrepancyTriage, discrepancyWords, reelPlanInputs, orderMakePlan, caseWorkState } from "./mx_packing.js";
 import { ackVatKey, EMPTY_CASE_KG, glueSheetDoc, manifestWeights, officeSummary, money, bondingListDoc, caseLabelDoc, caseLabelInner, caseLabelRange, caseLabelLayoutKey, CASE_LABEL_CSS, CASE_LABEL_LAYOUTS, ACK_VAT_TREATMENTS, LOGO_B64, MATRIX_EORI, MATRIX_VAT_NUMBER, PAPER_CSS, boxContentsLine, lastPriceFor, manifestReadiness, orderAckDoc, orderShipmentWeight, orderThreads, ordersLeftDoc, pEsc, pN2, packingListRows, paperFoot, paperHead, paperRunHead, pickSheetDoc, portalOrdersWaiting, productionSheetDoc, shippingManifestDoc, shippingManifestEmail, suggestedVatTreatment, unreadFromCustomers, customerGaps, VAT_RECORD_VALUE, VAT_WORDS, correctedManifest, manifestBoughtIn } from "./mx_papers.js";
 import { ALL_GLUE_DIES, dpCardsState, dpClearReelEstimate, DEFAULT_SCHEDULE_SETTINGS, GLUE_DIES_10MM, GLUE_DIES_12MM, GLUE_DIES_7MM, GLUE_DIES_7MM_OS, GLUE_DIE_12_DOUBLE, GLUE_DIE_GROUPS, SMALL_KEYWORDS, ULTRA_SR_COLOURS, WORK_HOURS, addWorkHours, addWorkingDays, batchMeterageUsed, glueReelHours, planDayAmount, workDayFraction, rackReels, reelIsCleared, reelState, reelUsedByCode, scrappedReelCodes, buildDailyPlan, classifySize, dueDateLabel, dueDateRows, formatOrderBreakdown, gapFromSpec, glueDiesForSpec, glueLineSequence, glueSizeOfProduct, glueReelPool, glueUsableFrom, scheduleTweaksOf, glueChangeBetween, scheduleRulesOf, glueChangeoverStats, learnFromTweaks, glueRangeOf, LEARN_AFTER, glueReelOffAt, SAME_PVC_CHANGE_MIN, hoursOn, isDelivery, isSmallItem, localDateKey, measuredRates, nextWorkMoment, nextWorkingMorning, orderDialSegments, orderFinishDates, planOrderCompare, glueListOrdersFor, packingReadyRows, packingReadyRowsStored, planDaysUntil, planDueReason, planScore, planSlips, planSnapshotRow, promiseOptions, readyToShip, schedulePrep, scheduleSettingsOf, sizeKeyOfProduct, top2PriorityOrders, top2SizeRows, unrankableOrders, workCalendar } from "./mx_planning.js";
-import { pvcCodeCheck, BONDING_BOXES_PER_DAY_MIN, DERIVED_RUN_GAP_HOURS, DERIVED_RUN_KEYS, EVA_YIELD_MIN_SAMPLE, GLUE_MEASURE_TOLERANCE_PCT, PVC_COLOUR_BY_HEIGHT, PVC_DEFAULT_COLOUR, REEL_METRES_TYPICAL, batchDeleteWarning, bondingOutputByDay, categoryLowest, categoryTotal, deriveRuntimeHours, derivedGlueRuns, evaDieForRow, evaRackRows, evaYieldByDie, extrudedReelCheck, extrudedReelsForSize, extrudedReelsForSpec, extrudedReelsMatching, extrusionScheduleRows, glueDieByLabel, glueDiesForWidthOf, glueLineScheduleRows, glueLineScheduleRowsFresh, glueRunReels, glueRunTarget, glueRunTotals, glueSizeKey, glueSpecMalformed, lastGlueBatchUsed, lastToolingUse, toolingUseHistory, learnedReelMetres, materialBatchCode, materialStockFrom, materialsGroupedByCategory, metersPerBoxWarning, minutesSinceLastReel, normalWeightFor, productPipeline, pvcCodeForSpec, pvcColourForSpec, recommendedBatch, recordMaterialMovement, reelCapacityWarning, reelDiscrepancy, reelIsIndirect, reelOverConsumption, runningReelDiscrepancy, samePin, toolingUnplaced, unknownReelWarning, withGlueRunSettings, withMaterialFigures, withPrefixFor, evaOutlook, evaDieForSpec, evaCodeFacts, EXTRUDED_REEL_SOFT_DAYS, extrudedOn } from "./mx_production.js";
+import { pvcCodeCheck, BONDING_BOXES_PER_DAY_MIN, DERIVED_RUN_GAP_HOURS, DERIVED_RUN_KEYS, EVA_YIELD_MIN_SAMPLE, GLUE_MEASURE_TOLERANCE_PCT, PVC_COLOUR_BY_HEIGHT, PVC_DEFAULT_COLOUR, REEL_METRES_TYPICAL, batchDeleteWarning, bondingOutputByDay, categoryLowest, categoryTotal, deriveRuntimeHours, derivedGlueRuns, evaDieForRow, evaRackRows, evaYieldByDie, extrudedReelCheck, extrudedReelsForSize, extrudedReelsForSpec, extrudedReelsMatching, extrusionScheduleRows, glueDieByLabel, glueDiesForWidthOf, glueLineScheduleRows, glueLineScheduleRowsFresh, glueRunReels, glueRunTarget, glueRunTotals, glueSizeKey, glueSpecMalformed, lastGlueBatchUsed, lastToolingUse, toolingUseHistory, glueDieUseHistory, glueDieSpells, learnedReelMetres, materialBatchCode, materialStockFrom, materialsGroupedByCategory, metersPerBoxWarning, minutesSinceLastReel, normalWeightFor, productPipeline, pvcCodeForSpec, pvcColourForSpec, recommendedBatch, recordMaterialMovement, reelCapacityWarning, reelDiscrepancy, reelIsIndirect, reelOverConsumption, runningReelDiscrepancy, samePin, toolingUnplaced, unknownReelWarning, withGlueRunSettings, withMaterialFigures, withPrefixFor, evaOutlook, evaDieForSpec, evaCodeFacts, EXTRUDED_REEL_SOFT_DAYS, extrudedOn } from "./mx_production.js";
 // (mx_promises.js — the retired promise readers — removed 24 Sep 2026)
 import { CARTON_MEMO, CORRECTED_OUT, CORRECTED_RUNS, DEFAULT_BOX_TYPE, GLUE_REEL_FROM_RUN_KEYS, GLUE_RUN_SETTING_KEYS, INDIRECT_HISTORY_SAMPLE, KEN_BOX_TYPE, MEMO_STATS, MEMO_STORE, METERS_PER_BOX_DEFAULT, NO_PROMISES, SPEC_REF_CACHE, batchesAvailableRowsStored, bondingOffer, boxTypeNameOf, kPinEquivalent, boxedStockAvailable, boxedStockAvailableFresh, boxedStockAvailableStored, cartonStockFor, cartonStockForFresh, doubleGapOf, evaDiesForGap, extractMeterageSuffix, formById, formIdFor, fullerSpec, glueLineScheduleRowsStored, glueRunOf, glueSettingsFor, groupAssignedRunsByLineItem, isExceed, isKenPin, isMini, isOffCentre, isReelSpec, ledgerCorrectedRuns, ledgerCorrectedRunsFresh, ledgerView, localISO, looseSpecMatch, memoCall, memoDeepFreeze, memoGlobals, memoSameArg, mergeSplitRuns, normalizeSpec, orderBoxTypeFor, orderLineItems, orderMadeQty, orderOutstanding, orderPctComplete, orderPctCompleteStored, orderProgress, orderStageNow, stageNow, dueStateOf, dueCounts, isLiveOrder, isLiveWork, isWebsiteRequest, lineNeeds, reelPoolsOf, reelYieldStats, reelBoxesHonest, orderPickable, orderPickablePercent, orderPickablePercentStored, orderTotalItems, orderTotalValue, otherStockBalance, otherStockUsed, pickableNow, pickableNowFresh, predictRunDestinations, productKey, productParts, productRowKey, sameProductParts, productionOutstandingRows, productionOutstandingRowsFresh, productionOutstandingRowsStored, ptOf, rangeBoxFor, refsEquivalent, resolveProduct, runCustomer, runMatchesLine, runsForOrder, runsIndirect, runsIndirectByRule, sameSizeSpec, shelfBoxFitsBoxType, specCandidateIndex, specDimensions, specIsReel, specMeterage, specRef, sizeSortPair, daysFromTodayISO, metresPerBoxFor, stockFormMatchesLine, todayISO, whatsLeftRows , glueLineNeedRowsAll, resolveOrderLine, planReels, uncheckedShelfStock, tapeLast } from "./mx_stock.js";
 import { autoReloadDue, quietUpdateDue, mergeParked, parkUnsentRows, restoreParked } from "./mx_sync.js";
@@ -582,7 +582,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-10-26.8";
+const APP_VERSION = "2026-10-27.1";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -24696,7 +24696,7 @@ const ToolingRowFields = ({ values, setValues, lastRunFor }) => (
 );
 
 const TOOL_DESK_COLS = "minmax(170px, 1.2fr) 70px 70px 80px 60px minmax(220px, 2fr) minmax(140px, 1.4fr) 40px";
-function ToolingCategorySection({ title, rows, setRows, lastRunFor, unplaced = [] }) {
+function ToolingCategorySection({ title, rows, setRows, lastRunFor, unplaced = [], glueDieFor = () => "" }) {
   const nlOnly = typeof document !== "undefined" && !!document.querySelector(".nl-on");
   /* (Chris's PC, 4 Oct 2026: "I like this version for tooling too") — the phone's cards on the desk skin, three across */
   const toolDesk = !nlOnly && deskSkinNow(); const nlPhone = nlOnly || toolDesk;
@@ -24713,6 +24713,7 @@ function ToolingCategorySection({ title, rows, setRows, lastRunFor, unplaced = [
         lastScrewSpeedUsed: run?.screwSpeed || "—",
         lastHaulOffUsed: run?.haulOff || "—",
         lastBaseHeight: run?.height || "—",
+        lastGlueDie: glueDieFor(r) || "—",   /* the glue die it was last glued on (Chris, 27 Oct 2026) */
         lastFrom: run ? [run.batch, run.source, run.at ? new Date(run.at).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : ""].filter(Boolean).join(" · ") : "",
       };
     }), "size", "asc"
@@ -24782,7 +24783,7 @@ function ToolingCategorySection({ title, rows, setRows, lastRunFor, unplaced = [
               <span style={{ fontSize: 15, fontVariantNumeric: "tabular-nums" }}>{r.screwSpeed || <span style={{ color: INK_MUTED }}>—</span>}</span>
               <span style={{ fontSize: 15, fontVariantNumeric: "tabular-nums" }}>{r.haulOff || <span style={{ color: INK_MUTED }}>—</span>}</span>
               <span style={{ fontSize: 15 }}>{r.guide || <span style={{ color: INK_MUTED }}>—</span>}</span>
-              <span style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center", minWidth: 0 }}>{lastPin !== "—" ? <>{tag(`pin ${lastPin}`, mismatch, !mismatch)}{r.lastScrewSpeedUsed !== "—" ? tag(`screw ${r.lastScrewSpeedUsed}`, screwMismatch, !screwMismatch) : null}{r.lastHaulOffUsed && r.lastHaulOffUsed !== "—" ? tag(`haul off ${r.lastHaulOffUsed}`, haulOffMismatch, !haulOffMismatch) : null}{r.lastFrom ? <span style={{ fontSize: 11.5, color: INK_MUTED }}>{r.lastFrom}</span> : null}</> : <span style={{ color: INK_MUTED, fontSize: 13 }}>not run yet</span>}</span>
+              <span style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center", minWidth: 0 }}>{lastPin !== "—" ? <>{tag(`pin ${lastPin}`, mismatch, !mismatch)}{r.lastScrewSpeedUsed !== "—" ? tag(`screw ${r.lastScrewSpeedUsed}`, screwMismatch, !screwMismatch) : null}{r.lastHaulOffUsed && r.lastHaulOffUsed !== "—" ? tag(`haul off ${r.lastHaulOffUsed}`, haulOffMismatch, !haulOffMismatch) : null}{r.lastGlueDie !== "—" ? <span data-tooling-die>{tag(`glue die ${r.lastGlueDie}`)}</span> : null}{r.lastFrom ? <span style={{ fontSize: 11.5, color: INK_MUTED }}>{r.lastFrom}</span> : null}</> : r.lastGlueDie !== "—" ? <span data-tooling-die>{tag(`glue die ${r.lastGlueDie}`)}</span> : <span style={{ color: INK_MUTED, fontSize: 13 }}>not run yet</span>}</span>
               <span style={{ fontSize: 13, color: INK_MUTED, minWidth: 0 }}>{r.comments || ""}</span>
               <button onClick={() => startEdit(r)} aria-label={`Edit ${r.size}`} style={{ width: 36, height: 36, borderRadius: 18, border: 0, background: "#F4F6FA", cursor: "pointer" }}>✎</button></div>);
             return (<div key={r.id} data-tooling-card={r.id} style={{ background: isEditing ? "#FFF6EC" : "#F4F6FA", borderRadius: toolDesk ? 0 : 18, padding: toolDesk ? "16px 18px" : "14px 16px", ...(toolDesk ? { borderTop: "1px solid #EEF1F6" } : {}) }}>
@@ -24798,9 +24799,9 @@ function ToolingCategorySection({ title, rows, setRows, lastRunFor, unplaced = [
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
                   {r.screwSpeed ? tag(`screw ${r.screwSpeed}`) : null}{r.haulOff ? tag(`haul off ${r.haulOff}`) : null}{r.widthCategory ? tag(r.widthCategory) : null}{r.guide ? tag(`guide ${r.guide}`) : null}
                 </div>
-                {lastPin !== "—" && (<div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #E2E6EE" }}>
+                {(lastPin !== "—" || r.lastGlueDie !== "—") && (<div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #E2E6EE" }}>
                   <div style={{ fontSize: 11.5, color: INK_MUTED, letterSpacing: 0.8, textTransform: "uppercase", marginBottom: 6 }}>Last run{r.lastFrom ? ` · ${r.lastFrom}` : ""}</div>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{tag(`pin ${lastPin}`, mismatch, !mismatch)}{r.lastScrewSpeedUsed !== "—" ? tag(`screw ${r.lastScrewSpeedUsed}`, screwMismatch, !screwMismatch) : null}{r.lastHaulOffUsed !== "—" ? tag(`haul off ${r.lastHaulOffUsed}`, haulOffMismatch, !haulOffMismatch) : null}{r.lastBaseHeight !== "—" ? tag(`base ${r.lastBaseHeight}`) : null}</div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{lastPin !== "—" ? tag(`pin ${lastPin}`, mismatch, !mismatch) : null}{r.lastGlueDie !== "—" ? <span data-tooling-die>{tag(`glue die ${r.lastGlueDie}`)}</span> : null}{r.lastScrewSpeedUsed !== "—" ? tag(`screw ${r.lastScrewSpeedUsed}`, screwMismatch, !screwMismatch) : null}{r.lastHaulOffUsed !== "—" ? tag(`haul off ${r.lastHaulOffUsed}`, haulOffMismatch, !haulOffMismatch) : null}{r.lastBaseHeight !== "—" ? tag(`base ${r.lastBaseHeight}`) : null}</div>
                 </div>)}
                 {r.comments ? <div style={{ marginTop: 10, fontSize: 13.5, color: INK_MUTED }}>{r.comments}</div> : null}
               </>)}
@@ -24820,6 +24821,7 @@ function ToolingCategorySection({ title, rows, setRows, lastRunFor, unplaced = [
             <SortTh col="lastScrewSpeedUsed" sortBy={toolSortBy} sortDir={toolSortDir} onSort={toolToggleSort} className="text-right px-3 py-2" style={{ width: 120 }}>Last screw speed</SortTh>
             <SortTh col="lastHaulOffUsed" sortBy={toolSortBy} sortDir={toolSortDir} onSort={toolToggleSort} className="text-right px-3 py-2" style={{ width: 110 }}>Last haul off</SortTh>
             <SortTh col="lastBaseHeight" sortBy={toolSortBy} sortDir={toolSortDir} onSort={toolToggleSort} className="text-right px-3 py-2" style={{ width: 100 }}>Base height</SortTh>
+            <SortTh col="lastGlueDie" sortBy={toolSortBy} sortDir={toolSortDir} onSort={toolToggleSort} className="text-left px-3 py-2" style={{ width: 110 }}>Last glue die</SortTh>
             <th style={{ width: 70 }}></th>
           </tr></thead>
           <tbody>
@@ -24832,7 +24834,7 @@ function ToolingCategorySection({ title, rows, setRows, lastRunFor, unplaced = [
               return (
                 <tr key={r.id} className={i % 2 ? "" : "bg-black/[0.015]"} style={{ borderTop: `1px solid ${BORDER}`, background: isEditing ? "#FFF8EF" : undefined }}>
                   {isEditing ? (
-                    <td className="px-3 py-2" colSpan={10}>
+                    <td className="px-3 py-2" colSpan={12}>
                       <div className="flex flex-wrap gap-2 items-end">
                         <ToolingRowFields values={editForm} setValues={setEditForm} lastRunFor={lastRunFor} />
                       </div>
@@ -24858,6 +24860,9 @@ function ToolingCategorySection({ title, rows, setRows, lastRunFor, unplaced = [
                       </td>
                       <td className="px-3 py-1.5 text-right">
                         <Mono className="text-xs" style={{ color: r.lastBaseHeight === "—" ? INK_MUTED : INK }}>{r.lastBaseHeight}</Mono>
+                      </td>
+                      <td className="px-3 py-1.5" data-tooling-die>
+                        <Mono className="text-xs" style={{ color: r.lastGlueDie === "—" ? INK_MUTED : INK }}>{r.lastGlueDie}</Mono>
                       </td>
                     </>
                   )}
@@ -33038,7 +33043,7 @@ function ToolPhotoThumb({ photo }) {
   useEffect(() => { let live = true; toolPhotoUrls([photo.thumb_path || photo.path]).then(m => { if (live) setU(m[photo.thumb_path || photo.path] || null); }); return () => { live = false; }; }, [photo.id]);
   return u ? <img src={u} alt="" style={{ display: "block", width: "100%", height: 48, objectFit: "cover" }} /> : <span style={{ display: "block", height: 48, background: NL.PANEL }} />;
 }
-function ToolingSimple({ tooling, subTabs, setCategory, lastRunFor, history = new Map(), testedChart = null, setTestedChart = null }) {
+function ToolingSimple({ tooling, subTabs, setCategory, lastRunFor, history = new Map(), glueHistory = new Map(), testedChart = null, setTestedChart = null }) {
   useDeskTick();
   const tp = useToolPhotos();
   const [photoOf, setPhotoOf] = useState(null);   // { fam, row } — its shadowgraph sheet
@@ -33071,6 +33076,9 @@ function ToolingSimple({ tooling, subTabs, setCategory, lastRunFor, history = ne
   const phoneT = isPhoneScreen(761);
   /* the pin in the list is the LATEST pin used (the last extrusion of the size), the sheet's when it has never run */
   const pinNow = (r) => { const h = history.get(r.id) || []; const last = h.length ? h[h.length - 1] : null; return (last && String(last.pin || "").trim()) || r.pin || ""; };
+  /* the glue die the size was last glued on (Chris, 27 Oct 2026) — from the glue line's reels, never typed here */
+  const dieNow = (r) => { const h = glueHistory.get(r.id) || []; return h.length ? h[h.length - 1].glueDie : ""; };
+  const TOOL_SIMPLE_COLS = "1.3fr .7fr .8fr .6fr .6fr .7fr 1.4fr 18px";
   return (<div data-tooling-simple style={{ fontFamily: NLT.FONT, color: NL.INK, maxWidth: 980 }}>
     <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}><b style={{ fontSize: isPhoneScreen(761) ? 0 : 22, flex: 1 }}>{isPhoneScreen(761) ? "" : screenName("tooling", "Tooling")}</b>
       <span style={{ fontSize: 12.5, color: NL.SUB }}>{total} settings</span>
@@ -33083,24 +33091,25 @@ function ToolingSimple({ tooling, subTabs, setCategory, lastRunFor, history = ne
     {photoOf && <ToolPhotoSheet fam={photoOf.fam} row={(tooling[photoOf.fam] || []).find(x => x.id === photoOf.row.id) || photoOf.row} label={famLabel(photoOf.fam)} tp={tp} onClose={() => setPhotoOf(null)} />}
     {!term.length && fam === "tested" ? <TestedToolingList rows={tooling.tested} setRows={r => setCategory("tested", r)} chart={testedChart || testedChartOf({})} setChart={setTestedChart} open={testedOpen} setOpen={setTestedOpen} tp={tp} onPhoto={(fm, rw) => setPhotoOf({ fam: fm, row: rw })} /> : <>
     <div style={{ background: "#fff", borderRadius: 16, overflow: "hidden", boxShadow: "0 1px 2px rgba(27,43,107,.08)" }}>
-      {!phoneT && <div style={{ display: "grid", gridTemplateColumns: "1.4fr .7fr .7fr .6fr .8fr 1.6fr 18px", gap: 8, padding: "8px 14px", fontSize: 11.5, fontWeight: 700, letterSpacing: 0.6, color: NL.SUB, background: "#F8F9FB" }}>
-        <span>SIZE</span><span>PIN</span><span>SCREW</span><span>GUIDE</span><span>HAUL-OFF</span><span>{term.length ? "LIST" : "NOTE"}</span><span /></div>}
+      {!phoneT && <div style={{ display: "grid", gridTemplateColumns: TOOL_SIMPLE_COLS, gap: 8, padding: "8px 14px", fontSize: 11.5, fontWeight: 700, letterSpacing: 0.6, color: NL.SUB, background: "#F8F9FB" }}>
+        <span>SIZE</span><span>PIN</span><span>GLUE DIE</span><span>SCREW</span><span>GUIDE</span><span>HAUL-OFF</span><span>{term.length ? "LIST" : "NOTE"}</span><span /></div>}
       {sorted.length === 0 && <div style={{ padding: 14, fontSize: 14, color: NL.SUB }}>{term.length ? `Nothing matches "${q.trim()}".` : "No sizes yet."}</div>}
       {sorted.map(({ fam: f, r }) => phoneT ? (<div key={f + r.id} role="button" tabIndex={0} data-tooling-item={r.id} onClick={() => openRow(f, r)} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openRow(f, r); } }}
         style={{ display: "flex", width: "100%", boxSizing: "border-box", alignItems: "center", gap: 10, padding: "10px 14px", border: 0, borderTop: `1px solid ${NL.LINE}`, background: "#fff", textAlign: "left", fontFamily: NLT.FONT, cursor: "pointer" }}>
-        <span style={{ flex: 1, minWidth: 0 }}><b style={{ fontSize: 15.5 }}>{r.size}</b><br /><span style={{ fontSize: 12.5, color: NL.SUB }}>{[r.screwSpeed && `screw ${r.screwSpeed}`, r.guide && `guide ${r.guide}`, r.haulOff && `haul-off ${r.haulOff}`, term.length ? famLabel(f) : r.comments].filter(Boolean).join(" · ")}</span></span>
+        <span style={{ flex: 1, minWidth: 0 }}><b style={{ fontSize: 15.5 }}>{r.size}</b><br /><span style={{ fontSize: 12.5, color: NL.SUB }}>{[dieNow(r) && `glue die ${dieNow(r)}`, r.screwSpeed && `screw ${r.screwSpeed}`, r.guide && `guide ${r.guide}`, r.haulOff && `haul-off ${r.haulOff}`, term.length ? famLabel(f) : r.comments].filter(Boolean).join(" · ")}</span></span>
         <ToolPhotoButton fam={f} row={r} tp={tp} onView={(fm, rw) => setPhotoOf({ fam: fm, row: rw })} size={34} />
         <span style={{ textAlign: "right" }}><b data-tooling-pin style={{ fontSize: 20, color: NL.NAVY }}>{pinNow(r) || "—"}</b>{pinNow(r) && r.pin && !samePin(pinNow(r), r.pin) ? <span style={{ display: "block", fontSize: 11.5, color: NL.SUB }}>sheet {r.pin}</span> : null}</span><span style={{ color: "#8B94A8" }}>›</span></div>) : (<div key={f + r.id} role="button" tabIndex={0} data-tooling-item={r.id} onClick={() => openRow(f, r)} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openRow(f, r); } }}
-        style={{ display: "grid", width: "100%", boxSizing: "border-box", gridTemplateColumns: "1.4fr .7fr .7fr .6fr .8fr 1.6fr 18px", gap: 8, alignItems: "center", padding: "10px 14px", border: 0, borderTop: `1px solid ${NL.LINE}`, background: "#fff", textAlign: "left", fontFamily: NLT.FONT, cursor: "pointer" }}>
+        style={{ display: "grid", width: "100%", boxSizing: "border-box", gridTemplateColumns: TOOL_SIMPLE_COLS, gap: 8, alignItems: "center", padding: "10px 14px", border: 0, borderTop: `1px solid ${NL.LINE}`, background: "#fff", textAlign: "left", fontFamily: NLT.FONT, cursor: "pointer" }}>
         <b style={{ ...cell, fontWeight: 700 }}>{r.size}</b><span style={{ display: "flex", alignItems: "center", gap: 8 }}><span data-tooling-pin style={{ ...cell, color: NL.NAVY, fontWeight: 700 }}>{pinNow(r) || "—"}{pinNow(r) && r.pin && !samePin(pinNow(r), r.pin) ? <span style={{ display: "block", fontSize: 11, color: NL.SUB, fontWeight: 500 }}>sheet {r.pin}</span> : null}</span>
-          <ToolPhotoButton fam={f} row={r} tp={tp} onView={(fm, rw) => setPhotoOf({ fam: fm, row: rw })} /></span><span style={cell}>{r.screwSpeed || "—"}</span><span style={cell}>{r.guide || "—"}</span><span style={cell}>{r.haulOff || "—"}</span>
+          <ToolPhotoButton fam={f} row={r} tp={tp} onView={(fm, rw) => setPhotoOf({ fam: fm, row: rw })} /></span><span data-tooling-die style={{ ...cell, fontWeight: 600 }}>{dieNow(r) || <span style={{ color: NL.SUB, fontWeight: 400 }}>—</span>}</span><span style={cell}>{r.screwSpeed || "—"}</span><span style={cell}>{r.guide || "—"}</span><span style={cell}>{r.haulOff || "—"}</span>
         <span style={{ fontSize: 12.5, color: NL.SUB, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{term.length ? famLabel(f) : (r.comments || "")}</span><span style={{ color: "#8B94A8" }}>›</span></div>))}
     </div>
     {!term.length && <button type="button" data-tooling-add onClick={() => { setMsg(null); setOpen({ fam, add: true }); setEdit({ size: "", pin: "", widthCategory: "", screwSpeed: "", comments: "", guide: "", haulOff: "" }); }} style={{ ...simpleBtn(false), marginTop: 10 }}>+ Add a size to {famLabel(fam)}</button>}
     </>}
     {open && edit && <SimpleSheet id="tooling" title={open.add ? `Add to ${famLabel(open.fam)}` : `${famLabel(open.fam)} ${row ? row.size : ""}`} onClose={close}>
       {!open.add && row && <div style={{ fontSize: 13, color: NL.SUB, margin: "0 0 10px", lineHeight: 1.5 }}>{row.updatedBy ? `changed ${row.updatedAt ? plainDate(new Date(row.updatedAt)) : ""} by ${String(row.updatedBy).split("@")[0]}` : ""}
-        {run ? <><br />last run: pin {run.pin || "—"} · screw {run.screwSpeed || "—"}{run.haulOff ? ` · haul-off ${run.haulOff}` : ""}{run.batch ? ` · ${run.batch}` : ""}{run.at ? ` (${plainDate(new Date(run.at))})` : ""}</> : null}</div>}
+        {run ? <><br />last run: pin {run.pin || "—"} · screw {run.screwSpeed || "—"}{run.haulOff ? ` · haul-off ${run.haulOff}` : ""}{run.batch ? ` · ${run.batch}` : ""}{run.at ? ` (${plainDate(new Date(run.at))})` : ""}</> : null}
+        {dieNow(row) ? <><br />last glued on glue die <b style={{ color: NL.INK }}>{dieNow(row)}</b></> : null}</div>}
       {!open.add && row && (() => { const ps = tp.byId.get(row.id) || [];
         return (<div data-tooling-sheet-photo style={{ display: "flex", alignItems: "center", gap: 10, background: NL.PANEL, borderRadius: 12, padding: "8px 12px", marginBottom: 12 }}>
           <ToolPhotoButton fam={open.fam} row={row} tp={tp} onView={(fm, rw) => setPhotoOf({ fam: fm, row: rw })} size={44} />
@@ -33120,6 +33129,20 @@ function ToolingSimple({ tooling, subTabs, setCategory, lastRunFor, history = ne
                 <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: NL.SUB }}>{[e.screwSpeed && `screw ${e.screwSpeed}`, e.haulOff && `haul-off ${e.haulOff}`, e.height && `height ${e.height}`].filter(Boolean).join(" · ")}<br />{[e.batch, e.source].filter(Boolean).join(" · ")}{changed ? <b style={{ color: NL.AMBERTXT }}> · pin changed from {prev}</b> : null}</span></div>); })}
           </div>
           <div style={{ fontSize: 11.5, color: NL.SUB, marginTop: 6 }}>From every extrusion of this size — Extruder 1, the orange extruder and Direct reels on the glue line. Below: the sheet's settings, to change.</div>
+        </div>); })()}
+      {!open.add && row && (() => { const sp = glueDieSpells(glueHistory.get(row.id) || []);
+        const day = (e) => e.at ? new Date(e.at).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : e.date ? new Date(e.date + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : "";
+        return (<div data-tooling-die-history style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: 0.7, color: NL.SUB, margin: "4px 0 6px" }}>GLUE DIE HISTORY</div>
+          <div style={{ background: NL.PANEL, borderRadius: 12, overflow: "hidden" }}>
+            {sp.length === 0 && <div style={{ padding: "9px 12px", fontSize: 13, color: NL.SUB }}>No glue-line reel of this size has its glue die written down yet.</div>}
+            {sp.map((x, i) => { const latest = i === sp.length - 1; const a = day(x.from), b = day(x.to);
+              return (<div key={i} data-tooling-die-spell={x.glueDie} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderTop: i ? `1px solid ${NL.LINE}` : 0, background: latest ? "#E7EBF5" : "transparent" }}>
+                <span style={{ width: 92, flex: "none", fontSize: 12.5, color: NL.SUB }}>{a === b ? a : `${a} – ${b}`}{latest ? <b style={{ display: "block", color: NL.NAVY, fontSize: 11 }}>LATEST</b> : null}</span>
+                <b style={{ fontSize: 16, color: i && !latest ? NL.INK : NL.NAVY, minWidth: 70 }}>{x.glueDie}</b>
+                <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: NL.SUB }}>{x.reels} reel{x.reels === 1 ? "" : "s"}{x.to.batch ? ` · last ${x.to.batch}` : ""}{i ? <b style={{ color: NL.AMBERTXT }}> · changed from {sp[i - 1].glueDie}</b> : null}</span></div>); })}
+          </div>
+          <div style={{ fontSize: 11.5, color: NL.SUB, marginTop: 6 }}>From every glue-line reel of this size that has its glue die written down — Direct or off an extruded reel.</div>
         </div>); })()}
       <div data-tooling-fields style={{ display: "flex", flexWrap: "wrap", gap: 8 }}><ToolingRowFields values={edit} setValues={setEdit} lastRunFor={lastRunFor} /></div>
       {msg && <div style={{ color: NL.RED, fontSize: 13.5, marginTop: 8 }}>{msg}</div>}
@@ -33226,6 +33249,10 @@ function BaselineToolingView({ data, setData }) {
     [data.extrusion1, data.extrusion2, data.glueLineBatches, data.glueRuns, data.products, data.productAliases, data.tooling]);
   const unplacedByList = useMemo(() => toolingUnplaced(data, tooling),
     [data.extrusion1, data.extrusion2, data.glueLineBatches, data.glueRuns, data.products, data.productAliases, data.tooling]);
+  /* the glue die each size was last glued on, and every die since (Chris, 27 Oct 2026) — glueDieUseHistory, mx_production.js */
+  const glueHistory = useMemo(() => glueDieUseHistory(data, tooling),
+    [data.glueLineBatches, data.glueRuns, data.products, data.productAliases, data.tooling]);
+  const glueDieFor = (row) => { const h = glueHistory.get(row.id) || []; return h.length ? h[h.length - 1].glueDie : ""; };
 
   const setCategory = (key, updater) => setData(prevData => ({
     ...prevData,
@@ -33250,7 +33277,7 @@ function BaselineToolingView({ data, setData }) {
   const [testedOpen, setTestedOpen] = useState(null);
 
   useDeskTick();
-  if (listsSimpleHere()) return <ToolingSimple tooling={tooling} subTabs={subTabs} setCategory={setCategory} lastRunFor={lastRunFor} history={toolHistory} testedChart={testedChart} setTestedChart={setChart} />;
+  if (listsSimpleHere()) return <ToolingSimple tooling={tooling} subTabs={subTabs} setCategory={setCategory} lastRunFor={lastRunFor} history={toolHistory} glueHistory={glueHistory} testedChart={testedChart} setTestedChart={setChart} />;
   return (
     <div>
       {DESK_ORDER_V5_LOGINS.includes(nlEmail()) && !listsSimpleHere() && <button type="button" data-lists-try onClick={() => setListsSimple("new")} style={{ marginBottom: 10, height: 40, borderRadius: 12, border: 0, background: NAVY, color: "#fff", fontWeight: 700, padding: "0 16px", cursor: "pointer" }}>Switch to the simple Tooling page ›</button>}
@@ -33270,13 +33297,13 @@ function BaselineToolingView({ data, setData }) {
         ))}
       </div>
 
-      {subTab === "standard" && <ToolingCategorySection title="Standard Centre" rows={tooling.standard} setRows={r => setCategory("standard", r)} lastRunFor={lastRunFor} unplaced={unplacedByList.standard || []} />}
-      {subTab === "mini" && <ToolingCategorySection title="Mini Matrix Centre" rows={tooling.mini} setRows={r => setCategory("mini", r)} lastRunFor={lastRunFor} unplaced={unplacedByList.mini || []} />}
-      {subTab === "offcentre" && <ToolingCategorySection title="Off Centre" rows={tooling.offcentre} setRows={r => setCategory("offcentre", r)} lastRunFor={lastRunFor} unplaced={unplacedByList.offcentre || []} />}
-      {subTab === "doubles" && <ToolingCategorySection title="Doubles" rows={tooling.doubles} setRows={r => setCategory("doubles", r)} lastRunFor={lastRunFor} unplaced={unplacedByList.doubles || []} />}
-      {subTab === "ken" && <ToolingCategorySection title="Ken (K pins)" rows={tooling.ken} setRows={r => setCategory("ken", r)} lastRunFor={lastRunFor} unplaced={unplacedByList.ken || []} />}
-      {subTab === "ultrasr" && <ToolingCategorySection title="Ultra SR" rows={tooling.ultrasr} setRows={r => setCategory("ultrasr", r)} lastRunFor={lastRunFor} unplaced={unplacedByList.ultrasr || []} />}
-      {subTab === "scmetal" && <ToolingCategorySection title="Speedy Crease Metal" rows={tooling.scmetal} setRows={r => setCategory("scmetal", r)} lastRunFor={lastRunFor} unplaced={unplacedByList.scmetal || []} />}
+      {subTab === "standard" && <ToolingCategorySection title="Standard Centre" rows={tooling.standard} setRows={r => setCategory("standard", r)} lastRunFor={lastRunFor} glueDieFor={glueDieFor} unplaced={unplacedByList.standard || []} />}
+      {subTab === "mini" && <ToolingCategorySection title="Mini Matrix Centre" rows={tooling.mini} setRows={r => setCategory("mini", r)} lastRunFor={lastRunFor} glueDieFor={glueDieFor} unplaced={unplacedByList.mini || []} />}
+      {subTab === "offcentre" && <ToolingCategorySection title="Off Centre" rows={tooling.offcentre} setRows={r => setCategory("offcentre", r)} lastRunFor={lastRunFor} glueDieFor={glueDieFor} unplaced={unplacedByList.offcentre || []} />}
+      {subTab === "doubles" && <ToolingCategorySection title="Doubles" rows={tooling.doubles} setRows={r => setCategory("doubles", r)} lastRunFor={lastRunFor} glueDieFor={glueDieFor} unplaced={unplacedByList.doubles || []} />}
+      {subTab === "ken" && <ToolingCategorySection title="Ken (K pins)" rows={tooling.ken} setRows={r => setCategory("ken", r)} lastRunFor={lastRunFor} glueDieFor={glueDieFor} unplaced={unplacedByList.ken || []} />}
+      {subTab === "ultrasr" && <ToolingCategorySection title="Ultra SR" rows={tooling.ultrasr} setRows={r => setCategory("ultrasr", r)} lastRunFor={lastRunFor} glueDieFor={glueDieFor} unplaced={unplacedByList.ultrasr || []} />}
+      {subTab === "scmetal" && <ToolingCategorySection title="Speedy Crease Metal" rows={tooling.scmetal} setRows={r => setCategory("scmetal", r)} lastRunFor={lastRunFor} glueDieFor={glueDieFor} unplaced={unplacedByList.scmetal || []} />}
       {subTab === "tested" && <TestedToolingList rows={tooling.tested} setRows={r => setCategory("tested", r)} chart={testedChart} setChart={setChart} open={testedOpen} setOpen={setTestedOpen} />}
     </div>
   );
