@@ -582,7 +582,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-10-27.1";
+const APP_VERSION = "2026-10-27.2";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -41788,6 +41788,7 @@ const NL_ICON = {
   extrusion: "M6.5 3h5l-1.5 3h-2zM3 6h12v5H3zM5 8.5l1-1 1 2 1-2 1 2 1-2 1 2 1-1M15 7h2.5v3H15M17.5 8.5H21M5.5 11v3M12.5 11v3M2.5 14h13",
   glueline: "M6 5a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM6 7.8a1.2 1.2 0 1 0 0 2.4 1.2 1.2 0 0 0 0-2.4zM6 13h15M14.5 3h4v2.5l-2 2-2-2zM16.5 9.2c.7.9 1 1.3 1 1.7a1 1 0 0 1-2 0c0-.4.3-.8 1-1.7zM3 16.5h18",
   plus: "M12 5v14M5 12h14",
+  priorities: "M10 6h10M10 12h10M10 18h10M4.5 4.5l1.5-1v5M4 11c.4-1 2.6-1 2.6.3 0 1-2.6 1.8-2.6 2.7h2.7M4 16.6h2.5l-1.3 1.5c1.4 0 1.6 2.4 0 2.4-.6 0-1-.3-1.2-.6",
   bonding: "M12 2.8a3.2 3.2 0 1 0 0 6.4 3.2 3.2 0 0 0 0-6.4zM3 12.5h5l1.2 2.5h5.6l1.2-2.5H21M3 17.5h18",
   packing: "M3.5 8h17v12h-17zM9 8V5.5h6V8M3.5 13h17M11 13v2h2v-2",
   pick: "M5 12.5l4 4L19 6.5M4 20.5h16",
@@ -42764,7 +42765,7 @@ function NLEverything({ data, go, onBackup = null, backupAge = null, onSearch = 
   const byKey = new Map(NAV.map(n => [n.key, n]));
   /* The Daily plan is folded into the Schedule on the phone (4 Oct 2026, "one plan") — its tile is gone; a link to it
      opens Schedule → The lines. */
-  const groups = [["The line", ["extrusion", "glueline", "bonding", "packing", "pick", "eva"]], ["Planning", ["finish", "production", "gluelineschedule", "batches", "materials"]],
+  const groups = [["The line", ["extrusion", "glueline", "bonding", "packing", "pick", "eva"]], ["Planning", ["priorities", "finish", "production", "gluelineschedule", "batches", "materials"]],
     ["Customers and quality", ["customers", "messages", "overview", "register", "ncr", "metrics"]], ["Set-up", ["products", "tooling", "labels", "caselabels", "admin"]]];
   const shown = new Set(groups.flatMap(g => g[1]));
   const rest = NAV.filter(n => !n.hidden && !n.deskOnly && !shown.has(n.key) && !["dashboard", "stock", "daily", "home"].includes(n.key)).map(n => n.key);
@@ -42918,6 +42919,33 @@ function NLOrders({ data, go, jumpToOrder, onRefresh = null, setData = null, onS
       <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg></button>
     <div style={{ height: 24 }} />
   </div></PullToRefresh>);
+}
+
+/* THE PRIORITIES, ON THE PHONE (Chris, 27 Oct 2026: "make a facility that shows me in my phone Steve's priority order for
+   the order" — Steve had just put a priority on every order from Dave's PC). Every live order in the order the plan and the
+   shelf work them — priority, then soonest due, then WO number (planOrderCompare, the one rule, so this list can't disagree
+   with the plan) — numbered, under its priority. Orders with no priority come last and say so. A card is the Orders
+   screen's own card: tap to open the order (its priority is changed there), swipe for Pick or Ship. */
+function NLPriorities({ data, jumpToOrder, pickOrder = null, shipOrder = null }) {
+  const plans = useMemo(() => { try { return orderMakePlan(data); } catch (e) { return new Map(); } }, [data]);
+  const live = (data.orders || []).filter(isLiveOrder).slice().sort(planOrderCompare);
+  const tierOf = (o) => Number(o && o.priority) || 0;
+  const tiers = [...new Set(live.map(tierOf))].sort((a, b) => (a || 99) - (b || 99));
+  let rank = 0;
+  return (<div data-nl-priorities style={{ display: "flex", flexDirection: "column", fontFamily: NLT.FONT, color: NL.INK }}>
+    <div style={{ fontSize: 13.5, color: NL.SUB, margin: "0 4px", lineHeight: 1.4 }}>In the order the plan works them: priority first, then the soonest due, then the order number. Tap an order to open it or change its priority.</div>
+    {live.length === 0 && <div style={{ fontSize: 14.5, color: NL.SUB, padding: "14px 4px" }}>No live orders.</div>}
+    {tiers.map((t, gi) => { const os = live.filter(o => tierOf(o) === t);
+      return (<NLIn key={t || "none"} i={gi}><div data-nl-priority-tier={t || "none"}>
+        <NLEyebrow right={<span style={{ letterSpacing: 0, textTransform: "none", fontWeight: 500 }}>{os.length} order{os.length === 1 ? "" : "s"}</span>}><span style={{ color: t === 1 ? NL.RED : t ? NL.NAVY : NL.AMBERTXT }}>{t ? `Priority ${t}` : "No priority yet"}</span></NLEyebrow>
+        {!t && <div style={{ fontSize: 13.5, color: NL.SUB, margin: "-2px 4px 10px" }}>Not given a priority — the plan does these last.</div>}
+        {os.map(o => { rank += 1; const r = rank;
+          return (<div key={o.id} data-nl-priority-order={o.id} data-nl-priority-rank={r} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+            <span aria-label={`Number ${r}`} style={{ width: 24, flex: "none", paddingTop: 22, textAlign: "right", fontSize: 17, fontWeight: 600, color: t === 1 ? NL.RED : NL.SUB, fontVariantNumeric: "tabular-nums" }}>{r}</span>
+            <div style={{ flex: 1, minWidth: 0 }}><NLOrderCard data={data} o={o} plan={plans.get(o.id)} onOpen={() => jumpToOrder(o.id, o.stage)} onPick={pickOrder} onShip={shipOrder} /></div></div>); })}
+      </div></NLIn>); })}
+    <div style={{ height: 24 }} />
+  </div>);
 }
 
 function NLOrderHero({ data, orderId, go, jumpToPacking, setData = null }) {
@@ -46231,7 +46259,9 @@ function nlBandFor(view, data) {
     register: ["Register", `${(data.issues || []).filter(i => i && !i.deleted && !i.resolvedAt).length} open`, null], ncr: ["NCR log", "Non-conformance reports", null],
     metrics: (() => { const mp = nlMetricsPageNow(); return mp && NLM.title[mp] ? [NLM.title[mp][0], NLM.title[mp][1], null] : ["Metrics", "How the lines are running", null]; })(),
     completed: ["Shipped orders", `${(data.orders || []).filter(o => o && !o.deleted && o.stage === "Shipped").length} shipped`, null], neworders: ["New orders", "From a photo, a paste or by hand", null],
-    learning: ["Machine learning", "What the app is learning from its own records", null] };
+    learning: ["Machine learning", "What the app is learning from its own records", null],
+    priorities: (() => { const n = (f) => live.filter(f).length; const none = n(o => !Number(o.priority));
+      return ["Priorities", `${live.length} live orders, in priority order`, [[n(o => Number(o.priority) === 1), "priority 1", "red"], [n(o => Number(o.priority) === 2), "priority 2", "amber"], [none, "no priority", "plain"]]]; })() };
   const row = t[view] || null;
   /* the band says the screen's one name (review D41) — except where the screen names its own page (Plan's and Metrics' pages) */
   return row && SCREEN_NAMES[view] && view !== "finish" && view !== "metrics" ? [SCREEN_NAMES[view], row[1], row[2]] : row;
@@ -46257,7 +46287,7 @@ const SCREEN_NAMES = { dashboard: "Orders", home: "Today", daily: "Daily plan", 
   bonding: "Bonding", packing: "Packing", pick: "Pick", stock: "Stock", stocktake: "Stock take", materials: "Materials", register: "Register",
   ncr: "NCR log", overview: "Matrix overview", metrics: "Metrics", products: "Products", tooling: "Tooling", labels: "Labels", caselabels: "Case Labels",
   planner: "Dave's Planner", portal: "Glue line portal", efficiency: "Line efficiency", admin: "Admin", neworders: "New orders",
-  customers: "Customers", messages: "Messages", completed: "Shipped orders", schedule: "Ordered by EVA size", everything: "More", learning: "Machine learning" };
+  customers: "Customers", messages: "Messages", completed: "Shipped orders", schedule: "Ordered by EVA size", everything: "More", learning: "Machine learning", priorities: "Priorities" };
 function screenName(key, fallback = "") { return SCREEN_NAMES[key] || fallback || key; }
 const NAV = [
   { key: "dashboard", label: "Orders", icon: IconOrders },
@@ -46297,6 +46327,7 @@ const NAV = [
   { key: "customers", label: "Customers", icon: IconOrders },
   { key: "messages", label: "Messages", icon: IconOrders, badge: (data) => unreadFromCustomers(data) },
   { key: "completed", label: "Shipped orders", icon: IconCheckBox, hidden: true },
+  { key: "priorities", label: "Priorities", icon: IconOrders, hidden: true },   // the orders in priority order, on the phone's More (27 Oct 2026)
   { key: "schedule", label: "Ordered by EVA size", icon: IconLink, hidden: true },
 ];
 for (const n of NAV) if (SCREEN_NAMES[n.key]) n.label = SCREEN_NAMES[n.key];   // the one name (review D41)
@@ -46386,7 +46417,7 @@ function opensOnMine() { try { const v = (JSON.parse(localStorage.getItem(OPENS_
 const OPENS_ON_HINT = { "dave@creasingmatrix.com": "bonding", "glue.line@creasingmatrix.com": "glueline", "clare@creasingmatrix.com": "home", "chris@creasingmatrix.com": "home" };
 /* Screens reached from inside another follow it: New / Completed / Client orders open from Orders, the EVA view from
    the Production list. */
-const SCREEN_FOLLOWS = { neworders: "dashboard", completed: "dashboard", clientorders: "dashboard", schedule: "production" };
+const SCREEN_FOLLOWS = { neworders: "dashboard", completed: "dashboard", clientorders: "dashboard", schedule: "production", priorities: "dashboard" };
 const SCREEN_ACCESS_GROUPS = [
   { label: "The line", keys: ["portal", "dashboard", "extrusion", "eva", "glueline", "efficiency", "bonding", "packing", "pick"] },   // portal first: a login whose list starts there opens on it
   { label: "Stock", keys: ["stock", "stocktake", "materials"] },
@@ -49345,6 +49376,7 @@ function dataContainsId(storedData, id) {
   const views = {
     stocktake: <StockTakeView data={data} setData={setData} />,
     learning: isAdminLogin() ? <NLLearning data={data} /> : null,
+    priorities: <NLPriorities data={data} jumpToOrder={jumpToOrder} pickOrder={(id) => openPickFor(id)} shipOrder={(id) => jumpToPacking(id)} />,
     home: isOfficeLogin() ? <OfficeDashboard data={data} go={navigateTo} jumpToOrder={jumpToOrder} flush={officeDesk} /> : <NLDeskWrap on={false} view="home" data={data}><NLHome desk={!newLayout && deskNewScreens(newLayout)} data={data} go={navigateTo} jumpToOrder={jumpToOrder} pickOrder={(id) => openPickFor(id)} recent={nlRecent} openBox={(code) => jumpToSearchResult({ type: "box", value: code })} setData={setData} onRefresh={refreshFromCloud} onSearch={() => setNlSearch(true)} syncAt={lastSyncedAt} syncStatus={testMode ? null : syncStatus} overnight={{ pending: isAdminLogin() ? nlOvernightPending : 0, alerts: (isAdminLogin() ? adminAlertItems(data) : []) }} /></NLDeskWrap>,
     everything: <NLEverything data={data} go={navigateTo} onBackup={handleBackup} backupAge={backupAge} onSearch={() => setNlSearch(true)} recent={nlRecent} alerts={(isAdminLogin() ? adminAlertItems(data) : [])}
       signIn={<SyncPanel onDismissLost={dismissLostWarnings} syncStatus={syncStatus} syncEmail={syncEmail} syncError={syncError} connectSync={connectSync} disconnectSync={disconnectSync} refreshFromCloud={refreshFromCloud} syncFailureDetail={syncFailureDetail} syncWarnings={syncWarnings} updateLatest={updateLatest} applyUpdate={applyUpdate} />} />,
