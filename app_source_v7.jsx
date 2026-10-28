@@ -10,7 +10,7 @@ import { classifyScan, decodeFrame, decodeRuns128, decodeRuns93 } from "./mx_sca
 import { readBoxCodes, readWords } from "./mx_ocr.js";
 import { BOX_LOCATIONS, MOVEMENT_KINDS, SIGNED_MOVEMENT_KINDS, boxLinesFor, boxWhereabouts, cartonForNewEntry, cartonLedger, cartonOfEntry, caseProducts, casesHoldingBox, casesWithLedgerContents, freeInCartonFor, identityGateRefusal, inLiveCases, ledgerCaseContents, moveAdjusted, moveAllocated, moveCounted, moveMade, movePlaced, moveSampled, moveScrapped, moveShipped, moveUnallocated, moveUnplaced, movementRefusal, orderBoxes, orderCaseProducts, orderHoldings, placeLabel, placeOf, placeRefusalFor, runWhereabouts, placedBoxForm, placedBoxesByCase, projectBox, reconcileLedgerToStored, repackFacts, sizeWhereabouts, syncCaseRowsToLedger, takeOffOrder, traceLot, withLedgerFigures } from "./mx_ledger.js";
 import { fullCaseNums, orderPalletPlan, caseWeightsEstimate, palletPlanByWeight, BOX_CASE_SIZES, CASES_PER_PALLET, palletPlan, casePalletShown, ONE_PALLET_MAX_BOXES, onePalletCheck, CASE_BAND_ORDER, CASE_MAX_SIZE_DEFAULT, EMPTY_ON_PURPOSE, MONTH_LETTERS, PLAN_BAND_ORDER, STANDARD_BOX_TYPES, allocateCaseDetails, allocationRefusal, amendmentsFor, applyAmendmentReduction, arrangeBoxesThenReels, arrangeCases, arrangedCasesForOrder, backfillPlannedCases, batchesAvailableRows, batchesAvailableRowsFresh, boxOutOfOrderCases, buildCombinedCases, buildPackingPlan, cartonFor, cartonMismatch, caseContentLines, caseFill, caseKindOf, casePalletOf, casePlanLines, casePlanned, caseRangeLabel, caseRecordFor, caseRowId, caseRunsLabel, caseSortKey, caseState, caseView, caseWeightOf, caseWeightQuery, oddCaseWeights, compareCaseSort, computeMakeLists, dateFromReelCode, dedupeCaseRows, dismissalMap, findDiscrepancies, findDiscrepanciesFresh, hasCasePlan, isCaseClosed, isReelCase, isReelFulfilled, isStrongTapeOrder, liveMapEntries, mergePlannedRows, openCasesForOrder, openIssues, openPickSheets, orderBoxTypes, orderCaseCount, orderHasStarted, orderShortfall, ordersMissingPlan, ordersNeedingSpec, packedOutsideSpecs, packingShort, parseCodeDate, patchMapsFromCaseRecords, planAmendment, planBandFor, planCutForLine, planForMove, planOrderMismatches, planOrderRefusal, planRowsForNewOrder, planSpacesFor, plannableLines, plannedCasesFor, proposeCut, readDiscrepancyDismissals, reelsPerCase, refillCases, renumberAfterRemoval, resolveCaseContents, sameContents, shortCaseSpec, sortLinesForCases, specInCarton, specOfBoxInCase, subtractConfirmed, subtractPlanned, tapeFits, tapeRefusal, twinCartonSpec, bondedTwinSpecs, upBox, planVsOrder, discrepancyTriage, discrepancyWords, reelPlanInputs, orderMakePlan, caseWorkState } from "./mx_packing.js";
-import { ackVatKey, EMPTY_CASE_KG, glueSheetDoc, manifestWeights, officeSummary, money, bondingListDoc, caseLabelDoc, caseLabelInner, caseLabelRange, caseLabelLayoutKey, CASE_LABEL_CSS, CASE_LABEL_LAYOUTS, ACK_VAT_TREATMENTS, LOGO_B64, MATRIX_EORI, MATRIX_VAT_NUMBER, PAPER_CSS, boxContentsLine, lastPriceFor, manifestReadiness, orderAckDoc, orderShipmentWeight, orderThreads, ordersLeftDoc, pEsc, pN2, packingListRows, paperFoot, paperHead, paperRunHead, pickSheetDoc, portalOrdersWaiting, productionSheetDoc, shippingManifestDoc, shippingManifestEmail, suggestedVatTreatment, unreadFromCustomers, customerGaps, VAT_RECORD_VALUE, VAT_WORDS, correctedManifest, manifestBoughtIn } from "./mx_papers.js";
+import { ackVatKey, orderAddressFor, tidyAddress, newerShipmentFor, shippedDayOf, EMPTY_CASE_KG, glueSheetDoc, manifestWeights, officeSummary, money, bondingListDoc, caseLabelDoc, caseLabelInner, caseLabelRange, caseLabelLayoutKey, CASE_LABEL_CSS, CASE_LABEL_LAYOUTS, ACK_VAT_TREATMENTS, LOGO_B64, MATRIX_EORI, MATRIX_VAT_NUMBER, PAPER_CSS, boxContentsLine, lastPriceFor, manifestReadiness, orderAckDoc, orderShipmentWeight, orderThreads, ordersLeftDoc, pEsc, pN2, packingListRows, paperFoot, paperHead, paperRunHead, pickSheetDoc, portalOrdersWaiting, productionSheetDoc, shippingManifestDoc, shippingManifestEmail, suggestedVatTreatment, unreadFromCustomers, customerGaps, VAT_RECORD_VALUE, VAT_WORDS, correctedManifest, manifestBoughtIn } from "./mx_papers.js";
 import { ALL_GLUE_DIES, dpCardsState, dpClearReelEstimate, DEFAULT_SCHEDULE_SETTINGS, GLUE_DIES_10MM, GLUE_DIES_12MM, GLUE_DIES_7MM, GLUE_DIES_7MM_OS, GLUE_DIE_12_DOUBLE, GLUE_DIE_GROUPS, SMALL_KEYWORDS, ULTRA_SR_COLOURS, WORK_HOURS, addWorkHours, addWorkingDays, batchMeterageUsed, glueReelHours, planDayAmount, workDayFraction, rackReels, reelIsCleared, reelState, reelUsedByCode, scrappedReelCodes, buildDailyPlan, classifySize, dueDateLabel, dueDateRows, formatOrderBreakdown, gapFromSpec, glueDiesForSpec, glueLineSequence, glueSizeOfProduct, glueReelPool, glueUsableFrom, scheduleTweaksOf, glueChangeBetween, scheduleRulesOf, glueChangeoverStats, learnFromTweaks, glueRangeOf, LEARN_AFTER, glueReelOffAt, SAME_PVC_CHANGE_MIN, hoursOn, isDelivery, isSmallItem, localDateKey, measuredRates, nextWorkMoment, nextWorkingMorning, orderDialSegments, orderFinishDates, planOrderCompare, glueListOrdersFor, packingReadyRows, packingReadyRowsStored, planDaysUntil, planDueReason, planScore, planSlips, planSnapshotRow, promiseOptions, readyToShip, schedulePrep, scheduleSettingsOf, sizeKeyOfProduct, top2PriorityOrders, top2SizeRows, unrankableOrders, workCalendar } from "./mx_planning.js";
 import { pvcCodeCheck, BONDING_BOXES_PER_DAY_MIN, DERIVED_RUN_GAP_HOURS, DERIVED_RUN_KEYS, EVA_YIELD_MIN_SAMPLE, GLUE_MEASURE_TOLERANCE_PCT, PVC_COLOUR_BY_HEIGHT, PVC_DEFAULT_COLOUR, REEL_METRES_TYPICAL, batchDeleteWarning, bondingOutputByDay, categoryLowest, categoryTotal, deriveRuntimeHours, derivedGlueRuns, evaDieForRow, evaRackRows, evaYieldByDie, extrudedReelCheck, extrudedReelsForSize, extrudedReelsForSpec, extrudedReelsMatching, extrusionScheduleRows, glueDieByLabel, glueDiesForWidthOf, glueLineScheduleRows, glueLineScheduleRowsFresh, glueRunReels, glueRunTarget, glueRunTotals, glueSizeKey, glueSpecMalformed, lastGlueBatchUsed, lastToolingUse, toolingUseHistory, glueDieUseHistory, glueDieSpells, learnedReelMetres, materialBatchCode, materialStockFrom, materialsGroupedByCategory, metersPerBoxWarning, minutesSinceLastReel, normalWeightFor, productPipeline, pvcCodeForSpec, pvcColourForSpec, recommendedBatch, recordMaterialMovement, reelCapacityWarning, reelDiscrepancy, reelIsIndirect, reelOverConsumption, runningReelDiscrepancy, samePin, toolingUnplaced, unknownReelWarning, withGlueRunSettings, withMaterialFigures, withPrefixFor, evaOutlook, evaDieForSpec, evaCodeFacts, EXTRUDED_REEL_SOFT_DAYS, extrudedOn } from "./mx_production.js";
 // (mx_promises.js — the retired promise readers — removed 24 Sep 2026)
@@ -582,7 +582,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-10-27.2";
+const APP_VERSION = "2026-10-28.1";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -2006,7 +2006,11 @@ function printInFrame(frameId, html, size = null) {
    It was built inside the print function, so the only way to see one was to
    send it to a printer. The customer profile shows it on screen beside the
    acknowledgement, which needs the html rather than the side effect. */
-function printShippingManifest(order, setData) {
+function printShippingManifest(order, setData, orders = null, { force = false } = {}) {
+  /* AN OLD MANIFEST WHEN THERE'S A NEWER ONE (27 Oct 2026, SIMB: WO-0027 printed four times for WO-0057). With the orders to
+     hand, a shipped order whose customer has shipped since asks which one is meant first (ManifestChooser). */
+  if (!force && orders) { const newer = newerShipmentFor(order, orders);
+    if (newer) { try { window.dispatchEvent(new CustomEvent("mx-manifest-choose", { detail: { order, newer, verb: "Print", run: (x) => printShippingManifest(x, setData, null, { force: true }) } })); return true; } catch (e) { /* print as asked */ } } }
   /* BUILD, THEN PRINT. The fix that took the print call out of the builder
      took it out of here too — one string, matched at the first of two places —
      so the button built the document and handed it back to nobody. The builder
@@ -2746,6 +2750,47 @@ function SectionHeader({ title, subtitle, right }) {
       {help && <NLHelpSheet title={typeof title === "string" ? clean(title) : title} onClose={() => setHelp(false)}>{parts ? parts.map((t, i) => <div key={i} style={{ marginBottom: 6 }}>{t}</div>) : subtitle}</NLHelpSheet>}
     </div>
   );
+}
+/* AN ADDRESS BOX THAT KEEPS ITS LINES (27 Oct 2026, Hel-Lab WO-0043): a one-line box drops the line breaks of a pasted
+   address, and the paperwork prints whatever the box holds. Four lines tall; Enter starts a new line. */
+function AddressInput(props) {
+  return <textarea rows={4} {...props} className={"w-full px-2.5 py-1.5 text-sm outline-none " + (props.className || "")}
+    style={{ border: `1px solid ${BORDER}`, borderRadius: 5, color: INK, background: "#fff", resize: "vertical", lineHeight: 1.4, fontFamily: "inherit", ...(props.style || {}) }} />;
+}
+/* THE ORDER'S ADDRESS, SAVED WHEN THE BOX IS LEFT (27 Oct 2026, from watching the office's typing): it saved on every
+   keystroke — five saves in twelve seconds as spaces went in one at a time, each one on a shipped order raising "shipped,
+   but a save changed it". Now it's typed freely and saved once, tidied (tidyAddress: lines trimmed, lost line breaks put
+   back, the customer's record used when it's the same address), and says so when the tidy changed it. */
+/* A LITTLE NOTE THAT THE APP LEARNED SOMETHING (Chris, 27 Oct 2026: "make little pop ups telling her that you're learning from
+   her behaviors and think this may help"). Shown once per tip per device, the first time the box is used, on any login but the
+   admin's; "Got it" puts it away for good. Never names anyone. */
+function useLearnTip(key) {
+  const k = "mxLearnTip_" + key;
+  const [show, setShow] = useState(false);
+  const seen = () => { try { return isAdminLogin() || localStorage.getItem(k) === "1"; } catch (e) { return true; } };
+  return { show, open: () => { if (!seen()) setShow(true); }, done: () => { setShow(false); try { localStorage.setItem(k, "1"); } catch (e) {} } };
+}
+function LearnTip({ tip, children }) {
+  if (!tip.show) return null;
+  return (<div data-learn-tip role="status" style={{ marginTop: 6, padding: "10px 12px", borderRadius: 10, background: "#EEF2FC", border: "1px solid #D5DDF3", color: "#1B2B6B", fontSize: 13, lineHeight: 1.45, display: "flex", gap: 10, alignItems: "flex-start" }}>
+    <span aria-hidden="true" style={{ fontSize: 16, lineHeight: 1.2 }}>💡</span>
+    <span style={{ flex: 1 }}>{children}</span>
+    <button type="button" data-learn-tip-ok onMouseDown={e => e.preventDefault()} onClick={tip.done} style={{ border: 0, background: "#1B2B6B", color: "#fff", borderRadius: 8, padding: "5px 10px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>Got it</button>
+  </div>);
+}
+const ADDRESS_TIP = <>The app has been learning from how addresses get typed in here. Paste one in and it keeps its lines now — and when you click away it tidies it for you (spaces, lost line breaks, and the customer's own address when it's the same one). Just check it reads right.</>;
+function AddressBox({ value, recordAddress = "", onSave, rows = 4, placeholder = "", ...rest }) {
+  const tip = useLearnTip("address");
+  const [draft, setDraft] = useState(value || ""); const [note, setNote] = useState(false); const typing = useRef(false);
+  useEffect(() => { if (!typing.current) setDraft(value || ""); }, [value]);
+  const finish = () => { typing.current = false; const t = tidyAddress(draft, recordAddress);
+    setNote(!!draft.trim() && t !== draft.replace(/\r/g, "").trim()); setDraft(t); if (t !== String(value || "")) onSave(t); };
+  return (<>
+    <AddressInput {...rest} rows={rows} value={draft} placeholder={placeholder} onFocus={() => { typing.current = true; setNote(false); tip.open(); }}
+      onChange={e => { typing.current = true; setDraft(e.target.value); }} onBlur={finish} />
+    <LearnTip tip={tip}>{ADDRESS_TIP}</LearnTip>
+    {note && <div data-address-tidied className="text-xs" style={{ color: INK_MUTED, marginTop: 3 }}>✨ Tidied into lines, the way the app has learned addresses go here — check it reads right.</div>}
+  </>);
 }
 function TextInput(props) {
   return <input {...props} className={"w-full px-2.5 text-sm outline-none " + (props.className || "")}
@@ -3538,6 +3583,29 @@ function TruthBadge() {
       </div>
     </div>, document.body)}
   </>);
+}
+/* WHICH SHIPMENT? (27 Oct 2026) — shown when an older manifest is printed while the same customer has a newer shipment.
+   The latest is the big button; the older one can still be printed, on purpose. */
+function ManifestChooser() {
+  const [ask, setAsk] = useState(null);
+  useEffect(() => { const f = (e) => setAsk(e.detail || null); window.addEventListener("mx-manifest-choose", f); return () => window.removeEventListener("mx-manifest-choose", f); }, []);
+  if (!ask) return null;
+  const { order, newer, run, verb = "Print" } = ask;
+  const day = (o) => { const d = shippedDayOf(o); return d ? new Date(d + "T12:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }) : ""; };
+  const sum = (o) => { const m = o.shippingManifest || {}; const n = (m.caseRows || []).length; const kg = Number(m.grossWeight || m.totalWeight || 0);
+    return [n ? `${n} case${n === 1 ? "" : "s"}` : "", kg ? `${kg.toFixed(2)} kg` : ""].filter(Boolean).join(", "); };
+  const go = (o) => { setAsk(null); run(o); };
+  const btn = { width: "100%", borderRadius: 12, padding: "12px 16px", fontSize: 15, fontWeight: 600, cursor: "pointer", textAlign: "left", fontFamily: "inherit" };
+  return ReactDOM.createPortal(<div data-manifest-chooser style={{ position: "fixed", inset: 0, zIndex: 1400, background: "rgba(20,33,82,0.4)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setAsk(null)}>
+    <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 18, padding: 22, maxWidth: 480, width: "100%", boxShadow: "0 20px 50px rgba(20,33,82,0.3)", color: INK }}>
+      <div style={{ fontSize: 19, fontWeight: 700, marginBottom: 8 }}>Which {order.customer} shipment?</div>
+      <div style={{ fontSize: 14.5, lineHeight: 1.5, color: INK_MUTED, marginBottom: 16 }}>
+        <b style={{ color: INK }}>{order.id}</b> is an older one — shipped {day(order)}{sum(order) ? ` (${sum(order)})` : ""}.<br />
+        Their latest is <b style={{ color: INK }}>{newer.id}</b>, shipped {day(newer)}{sum(newer) ? ` (${sum(newer)})` : ""}.</div>
+      <button data-manifest-latest onClick={() => go(newer)} style={{ ...btn, border: 0, background: NAVY, color: "#fff", marginBottom: 8 }}>{verb} the latest — {newer.id}, shipped {day(newer)}</button>
+      <button data-manifest-older onClick={() => go(order)} style={{ ...btn, border: `1px solid ${BORDER}`, background: "#fff", color: INK, marginBottom: 8 }}>{verb} {order.id} anyway — shipped {day(order)}</button>
+      <button onClick={() => setAsk(null)} style={{ ...btn, border: 0, background: "none", color: INK_MUTED, textAlign: "center", fontWeight: 500 }}>Cancel</button>
+    </div></div>, document.body);
 }
 function PhotoOutboxKeeper() {
   const [list, setList] = useState(() => photoOutboxList()); const [open, setOpen] = useState(false); const [busy, setBusy] = useState(false); const [sure, setSure] = useState(null);
@@ -5285,6 +5353,14 @@ function CaseLabelsView({ data, setData, initialOrderId = null }) {
      between full ones. Typing a range, or another button, goes back to the range. */
   const [pick, setPick] = useState(null);
   const fullInfo = useMemo(() => fullCaseNums(data.cases, orderId), [data.cases, orderId]);
+  /* PACKED FULL, TEN AT A TIME (Chris, 28 Oct 2026, making space: "label, photo, and weigh all the full Viking cases" — "a print
+     button on Clare's pc that allows me to print 10 of the above labels at a time"). "Full cases only" means full on the PLAN
+     (nearly all of JSC's 180); this is the cases physically packed full — boxes recorded in the case reaching what it's planned
+     to hold — whose label hasn't been printed. Next 10 picks the first ten; once printed they drop off and the next ten come. */
+  const packedFull = useMemo(() => { if (!orderId || String(orderId).startsWith("cust:") || orderId === "new") return [];
+    const rec = recordedByCase(data, orderId); const sum = (o) => Object.values(o || {}).reduce((t, v) => t + (Number(v) || 0), 0);
+    return (data.cases || []).filter(c => c && !c.deleted && c.orderId === orderId && Number(c.caseNum) > 0).filter(c => { const pl = sum(c.planned), got = sum(rec[Number(c.caseNum)]);
+      return got > 0 && got >= (pl > 0 ? pl : (Number(c.maxSize) || CASE_MAX_SIZE_DEFAULT)); }).map(c => Number(c.caseNum)).sort((a, b) => a - b); }, [data.cases, data.movements, orderId]);
   const askedRange = useRef(takeCaseLabelRange());
   /* the TEC's 8 x 4 in labels unless this device chose A4 (the earlier "sheet"/"single" choices fall back to the TEC) */
   const [layout, setLayout] = useState(() => { try { return caseLabelLayoutKey(localStorage.getItem(CASE_LABEL_LAYOUT_KEY)); } catch (e) { return "tec"; } });
@@ -5325,7 +5401,7 @@ function CaseLabelsView({ data, setData, initialOrderId = null }) {
     setData(prev => { const list = prev.customers || [];
       const had = order ? caseLabelCustomer(prev, order) : pickedCust ? list.find(c => c.id === pickedCust.id) : list.find(c => c && !c.deleted && custNorm(c.companyName) === custNorm(newName)) || null;
       const next = { ...(had || { id: "cust-" + custNorm(target || (order && order.id)), companyName: target, createdAt: now, deleted: false }),
-        contactName: String(f.attn || "").trim() || null, address: String(f.address || "").trim() || null, contactPhone: String(f.tel || "").trim() || null, contactEmail: String(f.email || "").trim() || null, updatedAt: now, updatedBy: currentActor() };
+        contactName: String(f.attn || "").trim() || null, address: tidyAddress(f.address) || null, contactPhone: String(f.tel || "").trim() || null, contactEmail: String(f.email || "").trim() || null, updatedAt: now, updatedBy: currentActor() };
       savedId = next.id;
       return { ...prev, customers: had ? list.map(c => c.id === had.id ? next : c) : [...list, next],
         ...appendLog(prev, { action: had ? "update" : "create", entity: "customer", entityId: next.id, summary: had ? `${next.companyName} — delivery details saved from Case Labels` : `${next.companyName} — new customer added from Case Labels`, before: had ? { contactName: had.contactName, address: had.address, contactPhone: had.contactPhone, contactEmail: had.contactEmail } : null, after: { contactName: next.contactName, address: next.address, contactPhone: next.contactPhone, contactEmail: next.contactEmail } }) }; });
@@ -5356,6 +5432,9 @@ function CaseLabelsView({ data, setData, initialOrderId = null }) {
   const numBox = { ...inp, width: 76, textAlign: "center", fontSize: 20, fontWeight: 700, padding: "6px 4px" };
   const chip = (on) => ({ border: 0, borderRadius: 999, padding: "8px 14px", fontSize: 14, fontWeight: 600, fontFamily: NLT.FONT, background: on ? NL.NAVY : "#E7EBF5", color: on ? "#fff" : NL.INK, cursor: "pointer" });
   const same = (a, b) => !pick && nums.length && nums[0] === a && nums[nums.length - 1] === b;
+  const packedToDo = packedFull.filter(n => !printed.has(n)), next10 = packedToDo.slice(0, 10);
+  const onNext10 = !!pick && pick.length === next10.length && pick.every((x, i) => x === next10[i]);
+  const pickNext10 = () => { if (!next10.length) return; setPick(next10); setFrom(next10[0]); setTo(next10[next10.length - 1]); setNumDraft({}); setReprint(false); };
   const pickFull = () => { if (!fullInfo.full.length) return; setPick(fullInfo.full); setFrom(fullInfo.full[0]); setTo(fullInfo.full[fullInfo.full.length - 1]); setNumDraft({}); };
   const field = (k, label, ph, multi = false) => <label style={{ display: "block", marginBottom: 10 }}><div style={lab}>{label}</div>
     {multi ? <textarea data-cl-field={k} value={f[k] || ""} onChange={e => setF({ ...f, [k]: e.target.value })} rows={5} placeholder={ph} style={{ ...inp, resize: "vertical", lineHeight: 1.35 }} />
@@ -5381,14 +5460,17 @@ function CaseLabelsView({ data, setData, initialOrderId = null }) {
         <div style={box}><div style={lab}>Which cases</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
             {nCases > 0 && <button data-cl-all onClick={() => { setPick(null); setFrom(1); setTo(nCases); }} style={chip(same(1, nCases))}>All {nCases} cases</button>}
-            {order && fullInfo.full.length > 0 && <button data-cl-full onClick={pickFull} style={chip(!!pick && pick === fullInfo.full)}>Full cases only{fullInfo.part.length ? ` (${fullInfo.full.length})` : ` — all ${fullInfo.full.length} are full`}</button>}
+            {order && packedFull.length > 0 && <button data-cl-packed onClick={() => { setPick(packedFull); setFrom(packedFull[0]); setTo(packedFull[packedFull.length - 1]); setNumDraft({}); }} style={chip(!!pick && pick === packedFull)}>Packed full ({packedFull.length})</button>}
+            {order && packedToDo.length > 0 && <button data-cl-next10 onClick={pickNext10} style={chip(onNext10)}>Next {Math.min(10, packedToDo.length)} packed full cases{packedToDo.length > 10 ? ` · ${packedToDo.length} to label` : ""}</button>}
+            {order && fullInfo.full.length > 0 && <button data-cl-full onClick={pickFull} style={chip(!!pick && pick === fullInfo.full)}>Planned full ({fullInfo.full.length})</button>}
             {printed.size > 0 && notYet.length > 0 && <button data-cl-notyet onClick={() => { setPick(null); setFrom(notYet[0]); setTo(notYet[notYet.length - 1]); }} style={chip(same(notYet[0], notYet[notYet.length - 1]))}>Not printed yet: {notYet.length === 1 ? `case ${notYet[0]}` : `${notYet[0]} to ${notYet[notYet.length - 1]}`}</button>}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", fontSize: 16 }}>
             <span>From case</span><input data-cl-from inputMode="numeric" {...numBoxProps("from", from, (v) => { const a = numIn(v); const k = pick ? Math.max(1, to - from + 1) : (count || 1); setPick(null); setFrom(a); setTo(a + k - 1); })} style={numBox} />
             <span>to</span><input data-cl-to inputMode="numeric" {...numBoxProps("to", to, (v) => { setPick(null); setTo(numIn(v)); })} style={numBox} /></div>
-          {pick && (pick === fullInfo.full ? <div data-cl-full-note style={{ fontSize: 13.5, color: NL.SUB, marginTop: 10 }}>Full cases only: <b style={{ color: NL.INK }}>{describe(pick)}</b>.{fullInfo.part.length ? <> Leaves out {fullInfo.part.map(x => `case ${x.n} (${x.qty} of ${x.capacity})`).join(", ")} — not full yet.</> : null}</div>
-            : <div data-cl-list-note style={{ fontSize: 13.5, color: NL.SUB, marginTop: 10 }}>These cases: <b style={{ color: NL.INK }}>{describe(pick)}</b>.</div>)}
+          {pick && (pick === fullInfo.full ? <div data-cl-full-note style={{ fontSize: 13.5, color: NL.SUB, marginTop: 10 }}>Planned full: <b style={{ color: NL.INK }}>{describe(pick)}</b> — each planned to hold a full case; not all may be packed yet.{fullInfo.part.length ? <> Leaves out {fullInfo.part.map(x => `case ${x.n} (${x.qty} of ${x.capacity})`).join(", ")} — planned part cases.</> : null}{packedFull.length < fullInfo.full.length ? <> Packed full so far: {packedFull.length}.</> : null}</div>
+            : <div data-cl-list-note style={{ fontSize: 13.5, color: NL.SUB, marginTop: 10 }}>These cases: <b style={{ color: NL.INK }}>{describe(pick)}</b>.{onNext10 ? ` Packed full and not labelled yet — ${packedToDo.length - next10.length ? `${packedToDo.length - next10.length} more after these; press Next again once they've printed.` : "the last of them."}` : ""}</div>)}
+          {order && packedFull.length > 0 && !packedToDo.length && <div data-cl-packed-done style={{ fontSize: 13.5, color: NL.OK, marginTop: 10 }}>All {packedFull.length} packed full cases have their labels.</div>}
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", fontSize: 16, marginTop: 10 }}>
             <span>How many labels</span><input data-cl-count inputMode="numeric" {...numBoxProps("count", count, (v) => setCount(v))} style={numBox} /></div>
           {nCases > 0 && nums.length > 0 && nums[nums.length - 1] > nCases && <div data-cl-beyond style={{ fontSize: 13.5, color: "#8A5300", marginTop: 10 }}>The order has {nCases} case{nCases === 1 ? "" : "s"} on the system — {nums[nums.length - 1] === nCases + 1 ? `case ${nCases + 1} isn't` : `cases ${Math.max(nums[0], nCases + 1)} to ${nums[nums.length - 1]} aren't`} on it yet. They'll still print.</div>}
@@ -12070,7 +12152,7 @@ function customerRecordFor(data, order) { return customerRecordOf(data && data.c
 function ackOptsFor(data, order) {
   const rec = customerRecordFor(data, order) || {};
   return { vat: ackVatKey(rec.vatTreatment) || undefined, accountNumber: rec.accountNumber || "", customerVat: rec.customerVat || "",
-    customerEori: rec.customerEori || "", address: (order && order.address) || rec.address || "", needDate: promiseHere() };
+    customerEori: rec.customerEori || "", address: orderAddressFor(order && order.address, rec.address), needDate: promiseHere() };
 }
 /* THE PROMISE DATE (G2, 18 Oct 2026 — mx_promise.js). Chris's login first (mxPromise new/old; the test page off). */
 const PROMISE_KEY = "mxPromise";
@@ -15127,7 +15209,7 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
     /* Straight to the iframe printer. No body class, no cleanup timer, and
        therefore nothing that can be stripped before the preview renders. */
     const t = setTimeout(() => {
-      printShippingManifest(shippedPrintJob.order, setData);
+      printShippingManifest(shippedPrintJob.order, setData, data.orders);
       setShippedPrintJob(null);
     }, 60);
     return () => clearTimeout(t);
@@ -15248,6 +15330,12 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
                         order already at stage Shipped, and gating the button
                         on the view meant the one person most likely to want a
                         reprint — whoever just shipped it — had no button. */}
+                    {(() => { const nw = o.stage === "Shipped" ? newerShipmentFor(o, allOrders) : null; if (!nw) return null;
+                      const d = (x) => { const v = shippedDayOf(x); return v ? new Date(v + "T12:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }) : ""; };
+                      /* an older shipment's page says so before its paperwork is used (27 Oct 2026, SIMB) */
+                      return (<div data-older-banner style={{ width: "100%", padding: "10px 12px", borderRadius: 10, background: "#FFF4E5", border: "1px solid #F3D19B", color: "#7A4A06", fontSize: 13.5, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                        <span style={{ flex: 1, minWidth: 200 }}><b>This is an older {o.customer} shipment</b> ({d(o)}). Their latest is {nw.id}, shipped {d(nw)}.</span>
+                        <Button variant="ghost" onClick={() => { setExpanded(nw.id); setLineEditMode(false); }}>Open {nw.id}</Button></div>); })()}
                     {(o.stage === "Shipped" || mode === "completed") && (
                       <Button variant="ghost" onClick={() => {
                         if (!o.shippingManifest) { setShipError({ ...shipError, [o.id]: "No shipped record for this order — it was likely marked Shipped before this feature existed." }); return; }
@@ -15260,7 +15348,9 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
                         addressed to accounts, with the manifest written in; the person
                         presses Send. shippingManifestEmail, mx_papers.js. */}
                     {(o.stage === "Shipped" || mode === "completed") && o.shippingManifest && (
-                      <Button variant="ghost" onClick={() => {
+                      <Button variant="ghost" data-email-accounts onClick={() => {
+                        /* the same question as printing when the customer has shipped since (27 Oct 2026, SIMB) */
+                        const send = (o) => {
                         /* THE PRINTED SHEET, IN THE EMAIL (Chris, 24 Sep 2026: "I just want what
                            prints out on the printer in email form" — not a text list, not a PDF).
                            A mail link carries plain text only, so the printed manifest itself is
@@ -15277,6 +15367,10 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
                             : "Couldn't copy the manifest on this device - use 🖨 Shipping manifest instead." });
                           try { window.location.href = url; } catch (e) {}
                         });
+                        };
+                        const nw = newerShipmentFor(o, allOrders);
+                        if (nw) window.dispatchEvent(new CustomEvent("mx-manifest-choose", { detail: { order: o, newer: nw, verb: "Email", run: send } }));
+                        else send(o);
                       }}>
                         ✉ Email accounts
                       </Button>
@@ -15303,8 +15397,14 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
                   </div>}
                   <div className="mb-3" style={{ maxWidth: 420 }}>
                     <label className="text-xs block mb-1" style={{ color: INK_MUTED }}>Address (shown on the printed packing list)</label>
-                    <TextInput value={o.address || ""} placeholder="Optional"
-                      onChange={e => updateOrder(o.id, { address: e.target.value })} />
+                    <AddressBox data-order-address value={o.address || ""} placeholder="Optional — one line per line of the address"
+                      recordAddress={(customerRecordFor(data, o) || {}).address || ""}
+                      onSave={(t) => { updateOrder(o.id, { address: t });
+                        /* the customer's record has no address yet → it gets this one too, so case labels and their next order have it */
+                        if (t.trim()) setData(prev => { const rec = customerRecordOf(prev.customers, o); if (!rec || rec.deleted || String(rec.address || "").trim()) return prev;
+                          const next = { ...rec, address: t, updatedAt: new Date().toISOString(), updatedBy: currentActor() };
+                          return { ...prev, customers: (prev.customers || []).map(c => c.id === rec.id ? next : c),
+                            ...appendLog(prev, { action: "update", entity: "customer", entityId: rec.id, summary: `${rec.companyName} — address filled in from ${o.id}` }) }; }); }} />
                   </div>
                   {/* TWO NOTES, TWO AUDIENCES (Chris, 22 Sep 2026). The floor note is what the
                       bonding line, packing page and pick sheet show. Office notes — how the invoice
@@ -15905,9 +16005,14 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
         );
   }
   function renderOrdersList() {
+    /* THE SHIPPED LIST, NEWEST FIRST, WITH THE DAY EACH ONE WENT (27 Oct 2026, SIMB: the old WO-0027 sat above last week's
+       WO-0057 with nothing to tell them apart). An order whose customer has shipped since says so. */
+    const listed = mode === "completed" ? orders.slice().sort((a, b) => shippedDayOf(b).localeCompare(shippedDayOf(a)) || String(b.id).localeCompare(String(a.id))) : orders;
+    const shipDay = (o) => { const d = shippedDayOf(o); return d ? new Date(d + "T12:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" }) : ""; };
     return (
         <div className="space-y-2">
-          {orders.map(o => {
+          {listed.map(o => {
+            const newer = mode === "completed" ? newerShipmentFor(o, allOrders) : null;
             const items = orderLineItems(lineItems, o.id);
             const totalItems = orderTotalItems(lineItems, o.id);
             const totalValue = orderTotalValue(lineItems, o.id);
@@ -15920,6 +16025,8 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
                   <Mono className="text-sm font-semibold">{o.id}</Mono>
                   <span className="text-sm">{o.customer}</span>
                   <StageRule stage={stageNow(data, o)} />
+                  {mode === "completed" && shippedDayOf(o) && <span data-shipped-day className="text-xs" style={{ color: INK, fontWeight: 600 }}>shipped {shipDay(o)}</span>}
+                  {newer && <span data-older-shipment className="text-xs" style={{ color: AMBER, fontWeight: 600 }}>older — their latest is {newer.id}</span>}
                   {o.priority != null && <Badge color={o.priority <= 2 ? RED : INK_MUTED} solid={o.priority <= 2}>P{o.priority}</Badge>}
                   {o.boxType && <BoxTypeMark type={o.boxType} />}
                   <AmendmentBanner order={o} lineItems={lineItems} cases={data.cases} compact />
@@ -16159,6 +16266,7 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
 function NewOrdersView({ data, setData, jumpToOrder }) {
   const allOrders = data.orders;
   const readerHere = !useNewLayout() && orderReaderHere();   /* the PC's order reader: admin and office logins (17 Oct 2026) */
+  const newAddrTip = useLearnTip("address");
   const NEW_ORDER_BLANK = { customer: "", address: "", reference: "", currency: "", orderDate: todayISO(), dueDate: "", priority: "", boxType: "" };
   const [newOrder, setNewOrder, newOrderRestored, discardNewOrder] = useDraftState("newOrder", NEW_ORDER_BLANK, NEW_ORDER_BLANK);
   const addOrder = async () => {
@@ -16204,8 +16312,10 @@ function NewOrdersView({ data, setData, jumpToOrder }) {
           </div>
           <div className="flex-1 min-w-[200px]">
             <label className="text-xs block mb-1" style={{ color: INK_MUTED }}>Address</label>
-            <TextInput value={newOrder.address} placeholder="Optional — shown on the printed packing list"
-              onChange={e => setNewOrder({ ...newOrder, address: e.target.value })} />
+            <AddressInput data-neworder-address rows={3} value={newOrder.address} placeholder="Optional — shown on the printed packing list"
+              onFocus={newAddrTip.open} onChange={e => setNewOrder({ ...newOrder, address: e.target.value })}
+              onBlur={() => setNewOrder(n => ({ ...n, address: tidyAddress(n.address, (customerRecordByName(data, n.customer) || {}).address || "") }))} />
+            <LearnTip tip={newAddrTip}>{ADDRESS_TIP}</LearnTip>
           </div>
           <div style={{ width: 130 }}>
             <label className="text-xs block mb-1" style={{ color: INK_MUTED }}>Reference</label>
@@ -16287,6 +16397,21 @@ function ProductPanel({ p }) {
   if (!p) return null;
   const td = { padding: "4px 6px", borderTop: `1px solid ${BORDER}`, fontSize: 12.5, verticalAlign: "top" };
   const th = { ...td, borderTop: 0, color: INK_MUTED, fontSize: 11.5, fontWeight: 600, textAlign: "left" };
+  /* WHICH CARTON EACH BOX IS IN (Chris, 27 Oct 2026, Unimark WO-0069 "short 105" over a shelf of 0.50 x 1.50: "why … when
+     they're in white cases"). A box only counts for an order in that order's carton (shelfBoxFitsBoxType), so the shelf
+     list says each box's carton, splits into what fits the orders listed and what's in other cartons, and a short order
+     says when nothing on the shelf is in its carton. */
+  const cartonOf = (b) => boxTypeNameOf(b.boxTypeId) || DEFAULT_BOX_TYPE;
+  const fitsOrder = (b, o) => shelfBoxFitsBoxType({ boxTypeId: b.boxTypeId }, o.boxType) && !!b.strong === !!o.strongTape;
+  const fitsAny = (b) => p.orders.some(o => fitsOrder(b, o));
+  const wanted = [...new Set(p.orders.map(o => o.boxType || DEFAULT_BOX_TYPE))];
+  const fit = p.boxes.filter(fitsAny), other = p.boxes.filter(b => !fitsAny(b));
+  const boxRows = (list, max) => (<>{list.slice(0, max).map(b => (
+    <tr key={b.code + (b.bay || "")} data-shelf-box={b.code}><td style={td} className="font-mono">{b.code} {!b.checked && pipeChip("check it", "#8A4B00", "#FFF1DC")}{b.checked && !b.bay && pipeChip("find it", RED, "#FBE9E6")}{b.strong && pipeChip("S", RED, "#FBE9E6")}</td>
+      <td style={{ ...td, textAlign: "right", fontWeight: 700 }} className="font-mono">{b.qty}</td><td style={td}>{b.bay || <span style={{ color: INK_MUTED }}>no bay</span>}</td>
+      <td style={td} data-box-carton>{cartonOf(b)}</td><td style={{ ...td, color: INK_MUTED }}>{b.date || "—"}</td></tr>))}
+    {list.length > max && <tr><td style={{ ...td, color: INK_MUTED }} colSpan={5}>… {list.length - max} more</td></tr>}</>);
+  const head = <tr><th style={th}>Box</th><th style={{ ...th, textAlign: "right" }}>Qty</th><th style={th}>Bay</th><th style={th}>Carton</th><th style={th}>Made</th></tr>;
   return (
     <div data-product-panel={p.spec} onClick={e => e.stopPropagation()} style={{ marginTop: 8, border: `1px solid ${BORDER}`, borderRadius: 8, padding: 10, background: "#FBFBFD", cursor: "default" }}>
       <div style={{ fontSize: 12, fontWeight: 700, color: NAVY, marginBottom: 4 }}>If nothing more is made — most urgent first</div>
@@ -16295,20 +16420,16 @@ function ProductPanel({ p }) {
         {p.orders.map(o => (
           <tr key={o.orderId} data-short-row={o.orderId}><td style={td}>{o.customer} <span style={{ color: INK_MUTED }}>{o.orderId}{o.dueDate ? ` · due ${fmtDay(o.dueDate)}` : ""}{o.strongTape ? " · strong tape" : ""}</span></td>
             <td style={{ ...td, textAlign: "right", fontWeight: 700 }} className="font-mono">{o.needs}</td>
-            <td style={td}>{o.short > 0 ? <>{pipeChip(`short ${o.short}`, RED, "#FBE9E6")}{o.covered > 0 && <span style={{ color: INK_MUTED }}>{o.covered} covered</span>}</> : pipeChip("covered", "#2E7D52", "#E6F4EC")}</td></tr>
+            <td style={td}>{o.short > 0 ? <>{pipeChip(`short ${o.short}`, RED, "#FBE9E6")}{o.covered > 0 && <span style={{ color: INK_MUTED }}>{o.covered} covered</span>}
+              {p.boxes.length > 0 && !p.boxes.some(b => fitsOrder(b, o)) && <span data-no-carton style={{ color: INK_MUTED }}>none on the shelf in {o.boxType || DEFAULT_BOX_TYPE} cartons{o.strongTape ? " with strong tape" : ""}</span>}</> : pipeChip("covered", "#2E7D52", "#E6F4EC")}</td></tr>
         ))}
       </tbody></table>
-      <div style={{ fontSize: 12, fontWeight: 700, color: NAVY, margin: "10px 0 4px" }}>On the shelf — oldest first</div>
-      {p.boxes.length ? (
-        <table style={{ width: "100%", borderCollapse: "collapse" }}><tbody>
-          <tr><th style={th}>Box</th><th style={{ ...th, textAlign: "right" }}>Qty</th><th style={th}>Bay</th><th style={th}>Made</th></tr>
-          {p.boxes.slice(0, 12).map(b => (
-            <tr key={b.code + (b.bay || "")}><td style={td} className="font-mono">{b.code} {!b.checked && pipeChip("check it", "#8A4B00", "#FFF1DC")}{b.checked && !b.bay && pipeChip("find it", RED, "#FBE9E6")}{b.strong && pipeChip("S", RED, "#FBE9E6")}</td>
-              <td style={{ ...td, textAlign: "right", fontWeight: 700 }} className="font-mono">{b.qty}</td><td style={td}>{b.bay || <span style={{ color: INK_MUTED }}>no bay</span>}</td><td style={{ ...td, color: INK_MUTED }}>{b.date || "—"}</td></tr>
-          ))}
-          {p.boxes.length > 12 && <tr><td style={{ ...td, color: INK_MUTED }} colSpan={4}>… {p.boxes.length - 12} more</td></tr>}
-        </tbody></table>
-      ) : <div style={{ fontSize: 12.5, color: INK_MUTED }}>None on the shelf.</div>}
+      <div data-shelf-fits style={{ fontSize: 12, fontWeight: 700, color: NAVY, margin: "10px 0 4px" }}>On the shelf{p.boxes.length && other.length ? ` in ${wanted.join(" or ")} cartons` : ""} — oldest first</div>
+      {fit.length ? (<table style={{ width: "100%", borderCollapse: "collapse" }}><tbody>{head}{boxRows(fit, 12)}</tbody></table>)
+        : <div style={{ fontSize: 12.5, color: INK_MUTED }}>{p.boxes.length ? `None on the shelf in ${wanted.join(" or ")} cartons.` : "None on the shelf."}</div>}
+      {other.length > 0 && <>
+        <div data-shelf-other style={{ fontSize: 12, fontWeight: 700, color: INK_MUTED, margin: "10px 0 4px" }}>In other cartons — not counted for {p.orders.length === 1 ? p.orders[0].customer : "these orders"}</div>
+        <table style={{ width: "100%", borderCollapse: "collapse", opacity: 0.75 }}><tbody>{head}{boxRows(other, 8)}</tbody></table></>}
       {p.reelMetres != null && <div style={{ fontSize: 12.5, color: INK_MUTED, marginTop: 8 }}>Reels on the reel rack: {p.reelCount || 0} · {Math.round(p.reelMetres)} m · still to glue {Math.round(p.toGlueMetres || 0)} m</div>}
     </div>
   );
@@ -17031,7 +17152,8 @@ function ProductionListView({ data, initialCategory, autoPrint, onConsumeJump, i
    come in as props rather than through a closure. */
 function CustomerField({ label, field, wide, placeholder, lines, rec, put }) {
   const saved = rec[field] || "";
-  const commit = e => { if (e.target.value !== saved) put(field, e.target.value); };
+  /* an address is tidied as it's saved (27 Oct 2026, tidyAddress) — the box shows what was kept */
+  const commit = e => { const v = field === "address" ? tidyAddress(e.target.value) : e.target.value; if (field === "address") e.target.value = v; if (v !== saved) put(field, v); };
   const shared = { defaultValue: saved, placeholder, onBlur: commit };
   return (
     <label className="text-xs" style={{ color: INK_MUTED, flex: wide ? "1 1 100%" : "1 1 180px" }}>
@@ -17162,7 +17284,7 @@ function CustomersView({ data, setData }) {
           subtitle={o ? `${o.customer} · ${o.stage}${o.reference ? ` · their ref ${o.reference}` : ""}` : "Order not found"} />
         <div className="flex gap-3 mb-3 flex-wrap">
           {ackHtml && <Button variant="ghost" onClick={() => printInFrame("ack-print-frame", ackHtml)}>Print the acknowledgement</Button>}
-          {manHtml && <Button variant="ghost" onClick={() => printShippingManifest(o, setData)}>Print the manifest</Button>}
+          {manHtml && <Button variant="ghost" onClick={() => printShippingManifest(o, setData, data.orders)}>Print the manifest</Button>}
         </div>
         <div style={{ display: "flex", gap: 12, alignItems: "stretch", flexDirection: phone ? "column" : "row" }}>
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -19859,7 +19981,7 @@ function OrderPaperwork({ order, data, setData, onOpenPacking }) {
       <div style={row} data-ack-row><span>Acknowledgement{lastAck ? <span style={{ color: INK_MUTED }}> — {lastAck.sentHow === "email" ? "sent by email" : lastAck.sentHow === "printed" ? "printed" : lastAck.sentHow === "shared" ? "sent from the phone" : "sent"} {when(lastAck.createdAt)}</span> : <span style={{ color: AMBER }}> — not sent yet</span>}</span>
         <span style={{ display: "flex", gap: 14 }}><button style={link} data-ack-emailed onClick={() => recordAckSent(data, setData, order, "email")}>Sent by email</button><button style={link} onClick={printAck}>Print</button></span></div>
       <div style={row}><span>Shipping manifest{order.shippingManifest ? (order.shippingManifest.corrections || []).length ? <span style={{ color: INK_MUTED }}> — corrected after shipping</span> : "" : <span style={{ color: INK_MUTED }}> — after it ships</span>}</span>
-        {order.shippingManifest ? <span style={{ display: "flex", gap: 14 }}>{order.stage === "Shipped" && <button style={link} data-correct-open="1" onClick={() => setCorrecting(v => !v)}>Correct it</button>}<button style={link} onClick={() => printShippingManifest(order, setData)}>Print</button></span> : <span />}</div>
+        {order.shippingManifest ? <span style={{ display: "flex", gap: 14 }}>{order.stage === "Shipped" && <button style={link} data-correct-open="1" onClick={() => setCorrecting(v => !v)}>Correct it</button>}<button style={link} onClick={() => printShippingManifest(order, setData, data.orders)}>Print</button></span> : <span />}</div>
       {correcting && order.shippingManifest && <CorrectPaperworkPanel order={order} setData={setData} onClose={() => setCorrecting(false)} />}
       <OrderOriginal order={order} setData={setData} />
     </div>
@@ -27746,7 +27868,7 @@ function QuotesView({ data, setData }) {
             <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, color: PQ.SUB }}>Currency<select data-quote-currency value={d.currency} onChange={e => setD({ currency: e.target.value })} style={{ height: 38, borderRadius: 8, border: `1px solid ${PQ.LINE}` }}>{PRICE_CURRENCIES.map(c => <option key={c}>{c}</option>)}</select></label>
             <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, color: PQ.SUB }}>Valid until<input data-quote-valid type="date" value={d.validUntil || ""} onChange={e => setD({ validUntil: e.target.value })} style={{ height: 38, borderRadius: 8, border: `1px solid ${PQ.LINE}`, padding: "0 8px" }} /></label>
             <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, color: PQ.SUB, gridColumn: "span 2" }}>Their enquiry number<input data-quote-ref value={d.reference || ""} onChange={e => setD({ reference: e.target.value })} style={{ height: 38, borderRadius: 8, border: `1px solid ${PQ.LINE}`, padding: "0 10px" }} /></label>
-            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, color: PQ.SUB, gridColumn: "span 2" }}>Address<input value={d.address || ""} onChange={e => setD({ address: e.target.value })} style={{ height: 38, borderRadius: 8, border: `1px solid ${PQ.LINE}`, padding: "0 10px" }} /></label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, color: PQ.SUB, gridColumn: "span 2" }}>Address<textarea rows={3} value={d.address || ""} onChange={e => setD({ address: e.target.value })} onBlur={() => setD({ address: tidyAddress(d.address, (customerRecordByName(data, d.customer) || {}).address || "") })} style={{ borderRadius: 8, border: `1px solid ${PQ.LINE}`, padding: "8px 10px", fontFamily: "inherit", fontSize: 15, resize: "vertical" }} /></label>
           </div>}
           <div style={{ ...pqEye, marginBottom: 6 }}>Sizes quoted</div>
           {(d.lines || []).length === 0 && <div style={{ fontSize: 14, color: PQ.SUB, padding: "6px 0" }}>No sizes yet.</div>}
@@ -49601,6 +49723,7 @@ function dataContainsId(storedData, id) {
       <PrintStation data={data} setData={setData} />
       <GapTraceKeeper data={data} setData={setData} />
       <PhotoOutboxKeeper />
+      <ManifestChooser />
       <TruthBadge />
       <div className="print-only" data-truth-print-stamp style={{ position: "fixed", bottom: 0, right: 0, fontSize: 9, color: "#888" }}>{truthStampText(false)}</div>
       {globalUndo && (
