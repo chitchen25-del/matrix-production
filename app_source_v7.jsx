@@ -1,4 +1,4 @@
-import { customerRecordOf, samePoOrder, sameOrderAgain, BASE_ORDER, BOX_SUFFIXES, PHOENIX_HEIGHT_COLOURS, PRODUCT_COLOUR_HEX, RETIRED_SUFFIX_INITIALS, ULTRA_SR_WIDTHS, analyzeCodeStructure, baseGroupOf, boxCodeNearMisses, boxTypeIdForName, canonicalBoxCode, catalogueBoxFacts, catalogueName, checkUnusualAmount, codeImpliedDateISO, custNorm, customerRows, fillProductReferences, findCustomer, formIdForLine, formIdForRun, isStrongTapeBoxCode, manufactureDateFromCode, manufactureDateLabel, missingFrom, movementFormId, nameForForm, nearCustomer, nextBatchCode, nextOrderId, nextPickSheetRef, nextSplitOrderId, normaliseBoxSuffix, normaliseUltraSpec, ordersWithCustomer, parseOrderSnippet, planFormId, productColourFor, productDescription, productFormsOf, productsMissingForm, runsNamedByReference, slugForProduct, splitCustomerRef, standardTapeBoxCode, strongTapeBoxCode, unmatchedWhy, unresolvedLines, orderLineName, boxMetresRule, rubberSizeFromText, rangesCustomerTakes, orderRulesMap, boxMetresSuggest, guessNewSize, addNewSizeData, newSizeName, newSizeBase, newSizeColour, NEW_SIZE_RANGES, NEW_SIZE_VARIANTS } from "./mx_catalogue.js";
+import { customerRecordOf, samePoOrder, sameOrderAgain, BASE_ORDER, BOX_SUFFIXES, PHOENIX_HEIGHT_COLOURS, PRODUCT_COLOUR_HEX, RETIRED_SUFFIX_INITIALS, ULTRA_SR_WIDTHS, analyzeCodeStructure, baseGroupOf, boxCodeNearMisses, boxTypeIdForName, canonicalBoxCode, catalogueBoxFacts, catalogueName, checkUnusualAmount, codeImpliedDateISO, custNorm, customerRows, fillProductReferences, findCustomer, formIdForLine, formIdForRun, isStrongTapeBoxCode, manufactureDateFromCode, manufactureDateLabel, missingFrom, movementFormId, nameForForm, nearCustomer, nextBatchCode, nextOrderId, nextPickSheetRef, nextSplitOrderId, normaliseBoxSuffix, normaliseUltraSpec, ordersWithCustomer, parseOrderSnippet, planFormId, productColourFor, productDescription, productFormsOf, productsMissingForm, runsNamedByReference, slugForProduct, splitCustomerRef, standardTapeBoxCode, strongTapeBoxCode, unmatchedWhy, unresolvedLines, orderLineName, boxMetresRule, rubberSizeFromText, rangesCustomerTakes, orderRulesMap, boxMetresSuggest, guessNewSize, addNewSizeData, newSizeName, newSizeBase, newSizeColour, NEW_SIZE_RANGES, NEW_SIZE_VARIANTS, ultraSrMakes } from "./mx_catalogue.js";
 import { CHANGE_FIELD_LABELS, EDIT_LOG_IGNORE, appendChangeNote, changeAgo, changeCodes, changeDayLabel, changeFieldLabel, changeFieldValue, diffRowFields, draftAt } from "./mx_changes.js";
 import { BOX_MATERIALS, CATALOGUE, setCustomers, setOvermakePct, setOnNotice, DEFAULT_MATERIALS, DISMISSALS, EVA_DIES, LEDGER_CASES, LEDGER_CASE_HOLDINGS, LEDGER_MOVEMENTS, LEDGER_ORDERS, caseHoldingsFrom, currentActor, currentDevice, setActorAndDevice, setBoxMaterials, setCatalogue, setDismissals, setLedgerCaseHoldings, setLedgerMovements, setLedgerNcrs, setOrderRules } from "./mx_context.js";
 import { fmtMoneyTotals, currencyCode, compareSizes, dayStartMs, daysAgoLocal, fmtDay, fmtLogValue, fmtMoney, fmtSize, formatAgo, formatRuntime, medianOf, nowHHMM, sizeSortKey, sortChars, timeToMinutes, timestampFromUid, uid } from "./mx_format.js";
@@ -582,7 +582,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-10-28.1";
+const APP_VERSION = "2026-10-29.1";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -5346,7 +5346,14 @@ function CaseLabelsView({ data, setData, initialOrderId = null }) {
   const printed = useMemo(() => order ? caseLabelsPrintedFor(data, order.id) : pickedCust ? caseLabelsPrintedFor(data, pickedCust.id) : new Set(), [data.changeLog, data.cases, orderId]);
   const [reprint, setReprint] = useState(false);
   const notYet = caseNums.filter(n => !printed.has(n));
-  const fromCust = () => isNew ? { attn: "", name: "", address: "", tel: "", email: "" } : ({ attn: (cust && cust.contactName) || "", name: (cust && cust.companyName) || (order && order.customer) || "", address: (cust && cust.address) || (order && order.address) || "", tel: (cust && cust.contactPhone) || "", email: (cust && cust.contactEmail) || "" });
+  /* WHERE THE CASES GO, APART FROM WHO PAYS (Chris, 28 Oct 2026, a photo of JSC's old BarTender case label: "make JSC orders label
+     this" — LLP Genius Loci, Almaty, Kazakhstan, with Dmitry's email — while JSC's record, and so its manifest and acknowledgement
+     Bill to, is LLC Polygrafspezsnab in Moscow). A customer can carry its own case label details (rules.caseLabel: name, attn,
+     address, tel, email); when it does, every case label for them uses those, and the paperwork keeps the billing address. */
+  const labelTo = (cust && cust.rules && cust.rules.caseLabel && typeof cust.rules.caseLabel === "object") ? cust.rules.caseLabel : null;
+  const fromCust = () => isNew ? { attn: "", name: "", address: "", tel: "", email: "" } : labelTo
+    ? { attn: labelTo.attn || "", name: labelTo.name || (cust && cust.companyName) || "", address: labelTo.address || "", tel: labelTo.tel || "", email: labelTo.email || "" }
+    : ({ attn: (cust && cust.contactName) || "", name: (cust && cust.companyName) || (order && order.customer) || "", address: (cust && cust.address) || (order && order.address) || "", tel: (cust && cust.contactPhone) || "", email: (cust && cust.contactEmail) || "" });
   const [f, setF] = useState(fromCust);
   const [from, setFrom] = useState(1), [to, setTo] = useState(1);
   /* FULL CASES ONLY (Chris, 26 Oct 2026): a list of case numbers picked by the button — not always in a run, as a part case can sit
@@ -5400,7 +5407,10 @@ function CaseLabelsView({ data, setData, initialOrderId = null }) {
   const saveToCustomer = () => { if (!order && !pickedCust && !newName) return; const now = new Date().toISOString(); let savedId = null;
     setData(prev => { const list = prev.customers || [];
       const had = order ? caseLabelCustomer(prev, order) : pickedCust ? list.find(c => c.id === pickedCust.id) : list.find(c => c && !c.deleted && custNorm(c.companyName) === custNorm(newName)) || null;
-      const next = { ...(had || { id: "cust-" + custNorm(target || (order && order.id)), companyName: target, createdAt: now, deleted: false }),
+      const ownLabel = had && had.rules && had.rules.caseLabel && typeof had.rules.caseLabel === "object";
+      const next = ownLabel   /* a customer with its own case label details: those are what's changed, not the billing contact */
+        ? { ...had, rules: { ...had.rules, caseLabel: { ...had.rules.caseLabel, attn: String(f.attn || "").trim(), name: String(f.name || "").trim() || had.rules.caseLabel.name || "", address: tidyAddress(f.address), tel: String(f.tel || "").trim(), email: String(f.email || "").trim() } }, updatedAt: now, updatedBy: currentActor() }
+        : { ...(had || { id: "cust-" + custNorm(target || (order && order.id)), companyName: target, createdAt: now, deleted: false }),
         contactName: String(f.attn || "").trim() || null, address: tidyAddress(f.address) || null, contactPhone: String(f.tel || "").trim() || null, contactEmail: String(f.email || "").trim() || null, updatedAt: now, updatedBy: currentActor() };
       savedId = next.id;
       return { ...prev, customers: had ? list.map(c => c.id === had.id ? next : c) : [...list, next],
@@ -5453,6 +5463,7 @@ function CaseLabelsView({ data, setData, initialOrderId = null }) {
             <optgroup label="Customers — no order">{custList.map(c => <option key={c.id} value={"cust:" + c.id}>{c.companyName}{String(c.address || "").trim() ? "" : " (no address yet)"}</option>)}</optgroup>
           </select>
           {isNew && <div data-cl-new-note style={{ fontSize: 13.5, color: NL.SUB, marginTop: 10 }}>Type who it's going to below. It prints as it is — <b style={{ color: NL.INK }}>Save as new customer</b> keeps the address for next time.</div>}
+          {labelTo && !isNew && <div data-cl-own-label style={{ fontSize: 13.5, color: NL.SUB, marginTop: 10 }}>{(cust && cust.companyName) || "This customer"}'s cases go to <b style={{ color: NL.INK }}>{labelTo.name || "their own delivery address"}</b> — set on their record. The shipping manifest shows it as Deliver to; Bill to stays their billing address.</div>}
           {pickedCust && <div data-cl-cust-note style={{ fontSize: 13.5, color: NL.SUB, marginTop: 10 }}>Labels for {pickedCust.companyName} without an order — say which case numbers below.</div>}
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, color: NL.SUB, marginTop: 8 }}><input type="checkbox" checked={showShipped} onChange={e => setShowShipped(e.target.checked)} /> Show shipped orders too</label>
           {order && <div data-cl-cases style={{ fontSize: 14, marginTop: 10 }}>{nCases ? <>This order has <b>{nCases} case{nCases === 1 ? "" : "s"}</b>{printed.size ? <> · labels printed before for {printed.size === nCases && !notYet.length ? "all of them" : `${[...printed].filter(n => n <= nCases).length} of them`}</> : " · no case labels printed yet"}.</> : "This order has no cases yet."}</div>}
@@ -33165,6 +33176,17 @@ function ToolPhotoThumb({ photo }) {
   useEffect(() => { let live = true; toolPhotoUrls([photo.thumb_path || photo.path]).then(m => { if (live) setU(m[photo.thumb_path || photo.path] || null); }); return () => { live = false; }; }, [photo.id]);
   return u ? <img src={u} alt="" style={{ display: "block", width: "100%", height: 48, objectFit: "cover" }} /> : <span style={{ display: "block", height: 48, background: NL.PANEL }} />;
 }
+/* WHAT EACH ULTRA SR PIN MAKES, BOLDLY (Chris, 29 Oct 2026). Read from the setting's note (ultraSrMakes, mx_catalogue.js):
+   one swatch and colour per thing it makes, with its Ultra SR width. Nothing named in the note says so, quietly. */
+function UltraMakes({ note, big = false }) {
+  const ms = ultraSrMakes(note);
+  if (!ms.length) return <span data-ultra-makes="" style={{ display: "block", fontSize: 12, color: NL.SUB, marginTop: 3 }}>makes — not written in the note</span>;
+  return (<span data-ultra-makes={ms.map(m => m.colour).join(",")} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 4 }}>
+    <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.8, color: NL.SUB }}>MAKES</span>
+    {ms.map(m => <span key={m.colour} data-ultra-make={m.colour} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#F4F6FA", borderRadius: 8, padding: big ? "4px 10px" : "3px 8px", fontSize: big ? 16 : 14.5, fontWeight: 800, color: NL.INK, whiteSpace: "nowrap" }}>
+      <span style={{ width: big ? 14 : 12, height: big ? 14 : 12, borderRadius: 4, background: m.hex, boxShadow: "inset 0 0 0 1px rgba(0,0,0,.25)", flex: "none" }} />
+      Ultra SR {m.colour}{m.width ? ` ${m.width}` : ""}</span>)}</span>);
+}
 function ToolingSimple({ tooling, subTabs, setCategory, lastRunFor, history = new Map(), glueHistory = new Map(), testedChart = null, setTestedChart = null }) {
   useDeskTick();
   const tp = useToolPhotos();
@@ -33200,7 +33222,7 @@ function ToolingSimple({ tooling, subTabs, setCategory, lastRunFor, history = ne
   const pinNow = (r) => { const h = history.get(r.id) || []; const last = h.length ? h[h.length - 1] : null; return (last && String(last.pin || "").trim()) || r.pin || ""; };
   /* the glue die the size was last glued on (Chris, 27 Oct 2026) — from the glue line's reels, never typed here */
   const dieNow = (r) => { const h = glueHistory.get(r.id) || []; return h.length ? h[h.length - 1].glueDie : ""; };
-  const TOOL_SIMPLE_COLS = "1.3fr .7fr .8fr .6fr .6fr .7fr 1.4fr 18px";
+  const TOOL_SIMPLE_COLS = (!term.length && fam === "ultrasr") ? "2.6fr .6fr .7fr .5fr .5fr .6fr 1fr 18px" : "1.3fr .7fr .8fr .6fr .6fr .7fr 1.4fr 18px";   /* room for what each Ultra SR pin makes */
   return (<div data-tooling-simple style={{ fontFamily: NLT.FONT, color: NL.INK, maxWidth: 980 }}>
     <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}><b style={{ fontSize: isPhoneScreen(761) ? 0 : 22, flex: 1 }}>{isPhoneScreen(761) ? "" : screenName("tooling", "Tooling")}</b>
       <span style={{ fontSize: 12.5, color: NL.SUB }}>{total} settings</span>
@@ -33218,17 +33240,18 @@ function ToolingSimple({ tooling, subTabs, setCategory, lastRunFor, history = ne
       {sorted.length === 0 && <div style={{ padding: 14, fontSize: 14, color: NL.SUB }}>{term.length ? `Nothing matches "${q.trim()}".` : "No sizes yet."}</div>}
       {sorted.map(({ fam: f, r }) => phoneT ? (<div key={f + r.id} role="button" tabIndex={0} data-tooling-item={r.id} onClick={() => openRow(f, r)} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openRow(f, r); } }}
         style={{ display: "flex", width: "100%", boxSizing: "border-box", alignItems: "center", gap: 10, padding: "10px 14px", border: 0, borderTop: `1px solid ${NL.LINE}`, background: "#fff", textAlign: "left", fontFamily: NLT.FONT, cursor: "pointer" }}>
-        <span style={{ flex: 1, minWidth: 0 }}><b style={{ fontSize: 15.5 }}>{r.size}</b><br /><span style={{ fontSize: 12.5, color: NL.SUB }}>{[dieNow(r) && `glue die ${dieNow(r)}`, r.screwSpeed && `screw ${r.screwSpeed}`, r.guide && `guide ${r.guide}`, r.haulOff && `haul-off ${r.haulOff}`, term.length ? famLabel(f) : r.comments].filter(Boolean).join(" · ")}</span></span>
+        <span style={{ flex: 1, minWidth: 0 }}><b style={{ fontSize: 15.5 }}>{r.size}</b>{f === "ultrasr" ? <UltraMakes note={r.comments} /> : null}<br /><span style={{ fontSize: 12.5, color: NL.SUB }}>{[dieNow(r) && `glue die ${dieNow(r)}`, r.screwSpeed && `screw ${r.screwSpeed}`, r.guide && `guide ${r.guide}`, r.haulOff && `haul-off ${r.haulOff}`, term.length ? famLabel(f) : r.comments].filter(Boolean).join(" · ")}</span></span>
         <ToolPhotoButton fam={f} row={r} tp={tp} onView={(fm, rw) => setPhotoOf({ fam: fm, row: rw })} size={34} />
         <span style={{ textAlign: "right" }}><b data-tooling-pin style={{ fontSize: 20, color: NL.NAVY }}>{pinNow(r) || "—"}</b>{pinNow(r) && r.pin && !samePin(pinNow(r), r.pin) ? <span style={{ display: "block", fontSize: 11.5, color: NL.SUB }}>sheet {r.pin}</span> : null}</span><span style={{ color: "#8B94A8" }}>›</span></div>) : (<div key={f + r.id} role="button" tabIndex={0} data-tooling-item={r.id} onClick={() => openRow(f, r)} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openRow(f, r); } }}
         style={{ display: "grid", width: "100%", boxSizing: "border-box", gridTemplateColumns: TOOL_SIMPLE_COLS, gap: 8, alignItems: "center", padding: "10px 14px", border: 0, borderTop: `1px solid ${NL.LINE}`, background: "#fff", textAlign: "left", fontFamily: NLT.FONT, cursor: "pointer" }}>
-        <b style={{ ...cell, fontWeight: 700 }}>{r.size}</b><span style={{ display: "flex", alignItems: "center", gap: 8 }}><span data-tooling-pin style={{ ...cell, color: NL.NAVY, fontWeight: 700 }}>{pinNow(r) || "—"}{pinNow(r) && r.pin && !samePin(pinNow(r), r.pin) ? <span style={{ display: "block", fontSize: 11, color: NL.SUB, fontWeight: 500 }}>sheet {r.pin}</span> : null}</span>
+        <span style={{ minWidth: 0 }}><b style={{ ...cell, fontWeight: 700 }}>{r.size}</b>{f === "ultrasr" ? <UltraMakes note={r.comments} /> : null}</span><span style={{ display: "flex", alignItems: "center", gap: 8 }}><span data-tooling-pin style={{ ...cell, color: NL.NAVY, fontWeight: 700 }}>{pinNow(r) || "—"}{pinNow(r) && r.pin && !samePin(pinNow(r), r.pin) ? <span style={{ display: "block", fontSize: 11, color: NL.SUB, fontWeight: 500 }}>sheet {r.pin}</span> : null}</span>
           <ToolPhotoButton fam={f} row={r} tp={tp} onView={(fm, rw) => setPhotoOf({ fam: fm, row: rw })} /></span><span data-tooling-die style={{ ...cell, fontWeight: 600 }}>{dieNow(r) || <span style={{ color: NL.SUB, fontWeight: 400 }}>—</span>}</span><span style={cell}>{r.screwSpeed || "—"}</span><span style={cell}>{r.guide || "—"}</span><span style={cell}>{r.haulOff || "—"}</span>
         <span style={{ fontSize: 12.5, color: NL.SUB, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{term.length ? famLabel(f) : (r.comments || "")}</span><span style={{ color: "#8B94A8" }}>›</span></div>))}
     </div>
     {!term.length && <button type="button" data-tooling-add onClick={() => { setMsg(null); setOpen({ fam, add: true }); setEdit({ size: "", pin: "", widthCategory: "", screwSpeed: "", comments: "", guide: "", haulOff: "" }); }} style={{ ...simpleBtn(false), marginTop: 10 }}>+ Add a size to {famLabel(fam)}</button>}
     </>}
     {open && edit && <SimpleSheet id="tooling" title={open.add ? `Add to ${famLabel(open.fam)}` : `${famLabel(open.fam)} ${row ? row.size : ""}`} onClose={close}>
+      {!open.add && row && open.fam === "ultrasr" && <div data-ultra-makes-sheet style={{ margin: "0 0 10px" }}><UltraMakes note={row.comments} big /></div>}
       {!open.add && row && <div style={{ fontSize: 13, color: NL.SUB, margin: "0 0 10px", lineHeight: 1.5 }}>{row.updatedBy ? `changed ${row.updatedAt ? plainDate(new Date(row.updatedAt)) : ""} by ${String(row.updatedBy).split("@")[0]}` : ""}
         {run ? <><br />last run: pin {run.pin || "—"} · screw {run.screwSpeed || "—"}{run.haulOff ? ` · haul-off ${run.haulOff}` : ""}{run.batch ? ` · ${run.batch}` : ""}{run.at ? ` (${plainDate(new Date(run.at))})` : ""}</> : null}
         {dieNow(row) ? <><br />last glued on glue die <b style={{ color: NL.INK }}>{dieNow(row)}</b></> : null}</div>}
@@ -41302,7 +41325,11 @@ function ExtrusionView({ data, setData }) {
   const pvcAutoRef = useRef("");
   React.useEffect(() => {
     const sp = buildSpec(form);
-    if (!String(form.size || "").trim() || specDimensions(sp).length < 2) return;
+    /* ULTRA SR HAS ONE NUMBER (Chris, 29 Oct 2026: "Yellow 1.60 just says takes yellow but doesn't autofill"). Its size is a
+       colour and a width ("Yellow 1.60mm"), picked whole from the list, so one number is the whole size; every other range
+       still waits for height and gap. */
+    const ultraWhole = /\bultra\s*sr\b/i.test(sp) && specDimensions(sp).length >= 1;
+    if (!String(form.size || "").trim() || (specDimensions(sp).length < 2 && !ultraWhole)) return;
     const suggested = pvcCodeForSpec(sp, data.materials);
     if (!suggested) return;
     setForm(f => { const cur = String(f.pvcCode || "").trim();
@@ -49915,6 +49942,13 @@ function dataContainsId(storedData, id) {
             <ToggleSwitch on={floorMode} onChange={toggleFloorMode} labelOn="On" labelOff="Off" />
             <span className="text-xs font-semibold" style={{ color: "#C7CCE8" }}>Floor Mode</span>
           </div>)}
+          {/* + NEW ORDER ON DAVE'S PC (Chris, 29 Oct 2026: "Put a new order plus button on the system for Dave to enter a new
+              order") — right under Dave's Planner, always there whatever screen he's on; opens the same new order screen. */}
+          {String(nlEmail() || "").toLowerCase() === "dave@creasingmatrix.com" && screenAllowed("neworders") && (
+            <button data-sidebar-neworder onClick={() => { navigateTo("neworders"); setMobileMenuOpen(false); }} className="w-full flex items-center gap-2 mb-4 px-3 cursor-pointer"
+              style={{ height: 44, borderRadius: 12, border: 0, background: view === "neworders" ? "#fff" : ORANGE, color: view === "neworders" ? NAVY : "#fff", fontWeight: 800, fontSize: 15, textAlign: "left" }}>
+              <span aria-hidden="true" style={{ fontSize: 18, lineHeight: 1 }}>＋</span> New order</button>
+          )}
           {floorMode ? (
             <nav className="space-y-1.5 mb-6">
               {["dashboard", "extrusion", "glueline", "bonding"].filter(k => screenAllowed(k)).map(k => {
