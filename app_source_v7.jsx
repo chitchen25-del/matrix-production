@@ -24,7 +24,7 @@ import { PRICE_CURRENCIES, QUOTE_LOST_REASONS, QUOTE_VALID_DAYS, customerRecordB
 import { orderWithPromise, promiseBehind, promiseDay, promiseOf, promiseStats, promiseWrite } from "./mx_promise.js";
 import { OFFICE_AMBER_DAYS, OFFICE_RED_DAYS, officeAged, officeAgeTone, officeAgeWords, officeEntryWords, officeGuess, officeHistory, officeItems, officeKindWords, officeScreenOf, officeTally } from "./mx_office.js";
 import { OVERNIGHT_MORNINGS, TRUTHS, TRUTH_SHORT, UNDO_CAUSES, WRONG_KINDS, activityDay, causesLines, changesetMatches, describeChangeset, foundWords, healthView, overnightPolicyWords, proposedRowWords, reelDoubleSaves } from "./mx_fix.js";
-import { edgesWander, motionVoted, isRepeatPicture } from "./mx_gaptrace.js";
+import { edgesWander, motionVoted, isRepeatPicture, stripWidthsMm, widthsSteady } from "./mx_gaptrace.js";
 import { GAP_LIGHT_SHIFT, gapCalChecks, gapScaleFor, gapCalVerdict, gapWidthSeen, gapTraceUncal, gapMarkUncal, gapReelGapFrom, glueGapProblem, gapPointUncal, GAP_CAL_AGREE, GAP_CAL_DRIFT_RUN } from "./mx_gaptrace.js";
 import { glueRuns, reelGlueFault, GLUE_MIN_MM, GLUE_OPEN_END_M, GLUE_LINE_M, GLUE_CAUSES } from "./mx_gaptrace.js";
 import { learnedLineSpeed, gapMayLink, glueReelTraceKeep, gapCarryOf, gapJoinTraces, gapNextPiece, misreadStep, centringHint, reelGapWarning, gapCorrFor, gapSizePart, GAP_CORR_DAY_MAX, GAP_CORR_SIZE_AGREE, READOUT_SPAN_MS, READOUT_BIN_MS, GT_WOBBLE_FLAG, readoutTrend, readoutFigures, HAUL_MIN_LEARN_M, GAP_STEADY_MIN_N, CAM_GOOD_MM, CAM_OK_MM, camMetrics, blockCalib, blockHeights, heightOfSpec, CAP_FACTOR_REELS, CPK_WORDS, GAP_BAND_ROWS, GAP_LIMITS_DEFAULT, GAP_VERDICT_WORDS, GAP_LIGHT_WORDS, GAP_SETUP_CHECKS, gapTraceWaiting, gapNextTraceNo, gapPickWaiting, glueTraceChoice, glueReelWants, gapLiveFresh, gapLinkTrace, gapUnlinkTrace, glueDayTimeline, gapMoveCut, gapOffsets, nomOf, gapLightOf, gapRangeOf, gapCorrKey, gapCorrSets, lightShift, steadyRaw, gapWander, gapCheckOdd, binTrace, capability, sizeCapability, colourNameOf, haulFactor, haulMatch, rowProfile, gapCheck, gapCorrCheck, gapCorrection, gapCorrStands, gapLimitsFor, gapRecordDoc, motionGate, patchDiff, gapTraceRow, gapVerdict, guessStripColour, gapSteady, metresAlong, readBand, reelLoggedSince, sizeCheck, sizesDiffer, suggestSizes, traceEvents, traceStats, widthFrom, widthMmFor, widthValid } from "./mx_gaptrace.js";
@@ -582,7 +582,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-10-29.1";
+const APP_VERSION = "2026-10-29.2";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -7343,7 +7343,7 @@ function gtReadOnce() {
   const scaleUse = cal && cal.ok ? (newOn ? gapScaleNow(cal, stTot) : cal.scale) : null;
   GT_REC.cal = cal; const uncal = !!(scaleWay && !(cal && cal.ok));
   /* a new scale (a check just taught it) — the last seconds' readings were on the old one, so the steady reading starts again */
-  const scaleKey = cal && cal.ok ? cal.scale : null; if (GT_REC.calScaleSeen !== scaleKey) { GT_REC.calScaleSeen = scaleKey; GT_REC.rawHist = []; }
+  const scaleKey = cal && cal.ok ? cal.scale : null; if (GT_REC.calScaleSeen !== scaleKey) { GT_REC.calScaleSeen = scaleKey; GT_REC.rawHist = []; GT_REC.widHist = []; }
   const cs = scaleWay ? { on: false, why: null } : gapCorrStands(corr, stTot, GT_REC.levelNow), corrPx = cs.on && corr ? corr.px : 0; GT_REC.corrState = cs;
   const sd = gapSteady(GT_REC.steady, r.ok && !gate ? r.edges : null, widthMm, `${widthMm}|${lineY}|${GT_REC.cfg.spec || ""}|${w}x${h}${cal && cal.ok ? `|${cal.scale}` : ""}`, Date.now(), { nominal: GT_REC.cfg.lim ? nomOf(GT_REC.cfg.lim) : null, offsetPx: corrPx, scale: scaleUse,
     /* never on the set-up page or while a new size is being set up (19 Oct 2026, 11:42 — "Won't allow me to enter caliper size
@@ -7402,7 +7402,12 @@ function gtReadOnce() {
   const rawOne = r.ok && r.gap > 0 && mmPerPx ? r.gap - corrPx * mmPerPx : null;
   GT_REC.rawHist = (GT_REC.rawHist || []).filter(x => now - x.t <= 8000); if (rawOne > 0) GT_REC.rawHist.push({ t: now, v: rawOne });
   const steady = steadyRaw(GT_REC.rawHist, now), wander = gapWander((GT_REC.steady && GT_REC.steady.g || []).map(x => ({ t: x.t, v: x.g })), now);
-  GT_REC.last = { ...r, g, y0, bh, colour, w, h, at: now, mmPerPx, corrPx, totPx, raw: g > 0 && mmPerPx ? g - corrPx * mmPerPx : null, steady, wander, level: GT_REC.levelNow,
+  /* THE WIDTHS (Chris, 29 Oct 2026): overall and each strip, from a picture that counted (glue against a strip left out, as the
+     gap does), the middle of the last 4 s like Gap now */
+  const wOne = r.ok && !gate && !sd.refused ? stripWidthsMm(sd.edges || r.edges, mmPerPx) : null;
+  GT_REC.widHist = (GT_REC.widHist || []).filter(x => now - x.t <= 8000); if (wOne) GT_REC.widHist.push({ t: now, ...wOne });
+  const widths = widthsSteady(GT_REC.widHist, now);
+  GT_REC.last = { ...r, g, y0, bh, colour, w, h, at: now, mmPerPx, corrPx, totPx, raw: g > 0 && mmPerPx ? g - corrPx * mmPerPx : null, steady, wander, level: GT_REC.levelNow, widths,
     cal, uncal, scaleWay, widthSeen: scaleWay ? gapWidthSeen(cal, totPx, GT_REC.cfg.widthRec) : null };
   /* while a clip records, every reading goes with it (edges in pixels, the gap, the shown gap, any refusal) so tonight the
      clip can be read again and compared reading for reading (12 Oct 2026) */
@@ -7550,6 +7555,17 @@ async function gtStartCamera(id) {
 }
 /* THE PICTURE WHILE SETTING THE CAMERA (Chris, 12 Oct 2026: "I can't see the camera when using the slider") — its own
    <video> on the same stream, inside the Calibrate panel, with the measuring line drawn across it. */
+/* THE WIDTHS ON THE GAP SCREENS (Chris, 29 Oct 2026: "show overall width and also individual width of the two sides") —
+   overall (outside to outside), then the left and the right strip, each the middle of the last 4 s (GT_REC.last.widths). */
+function GtWidths({ w, dark = false, big = false, align = "flex-start" }) {
+  const fg = dark ? "#fff" : "#1C2437", sub = dark ? "#FDE2E2" : "#5E6A82";
+  const fig = (k, label, v) => <span key={k} data-gt-width={k} style={{ display: "inline-flex", alignItems: "baseline", gap: 6, whiteSpace: "nowrap" }}>
+    <span style={{ fontSize: big ? 14 : 13, fontWeight: 700, letterSpacing: "0.05em", color: sub }}>{label}</span>
+    <span style={{ fontSize: big ? 26 : 20, fontWeight: 700, color: fg, fontFamily: GT_MONO, fontVariantNumeric: "tabular-nums" }}>{v > 0 ? v.toFixed(3) : "—"}</span></span>;
+  return (<div data-gt-widths={w ? "1" : "0"} style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", justifyContent: align, gap: big ? "6px 26px" : "4px 18px" }}>
+    {fig("tot", "OVERALL", w && w.tot)}{fig("a", "LEFT STRIP", w && w.a)}{fig("b", "RIGHT STRIP", w && w.b)}
+    <span style={{ fontSize: big ? 15 : 13, color: sub }}>mm</span></div>);
+}
 function GtLivePreview({ maxH = 300, lineY = 0.5 }) {
   const ref = useRef(null);
   useEffect(() => { const v = ref.current; if (v && GT_REC.stream && v.srcObject !== GT_REC.stream) { v.srcObject = GT_REC.stream; v.play().catch(() => {}); } });
@@ -9482,6 +9498,7 @@ function GlueLinePortalView({ data, setData }) {
             <div style={{ flex: "1 1 220px", display: "flex", flexDirection: "column", justifyContent: "center", gap: 6 }}>
               <span style={lab}>Gap now</span>
               <span data-pt-hold-gap style={{ fontSize: 48, fontWeight: 600, lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{g ? g.toFixed(3) : "—"}<span style={{ fontSize: 20, color: P.sub }}> mm</span></span>
+              <GtWidths w={live && live.widths} />
               <span style={{ fontSize: 13.5, color: P.sub }}>{live && live.ok ? "Both strips found" : "Looking for the strips"}</span>
               {GT_REC.fps != null && <span data-pt-fps={Math.round(GT_REC.fps)} style={{ fontSize: 13.5, fontWeight: GT_REC.fps < GT_FPS_LOW ? 600 : 400, color: GT_REC.fps < GT_FPS_LOW ? "#B45309" : P.sub }}>{GT_REC.fps < GT_FPS_LOW
                 ? `Only ${Math.round(GT_REC.fps)} new pictures a second — it will stutter. Slide Brightness left until this says 9 or 10.`
@@ -10303,6 +10320,7 @@ function GlueLinePortalView({ data, setData }) {
                 <div style={{ display: "flex", alignItems: "baseline", justifyContent: "center", gap: 14 }}>
                   <span data-pt-gap data-gap-out={outNow ? "1" : "0"} style={{ ...mono, fontSize: "min(138px, 16vh)", fontWeight: 600, lineHeight: 1.02, letterSpacing: "-0.02em", ...(outNow ? { animation: "none", color: "#fff" } : {}) }}>{g ? g.toFixed(3) : "—"}</span>
                   <span style={{ fontSize: 36, fontWeight: 600, color: outNow ? "#FDE2E2" : P.sub }}>mm</span></div>
+                <GtWidths w={live && live.widths} dark={outNow} big align="center" />
                 {outNow && figs && figs.outSince ? <div data-pt-outsince style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", marginTop: 6, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.35)" }}>
                     <div style={{ fontSize: 17, fontWeight: 600 }}>Out since {figs.outSince.from.toFixed(1)} m — {Math.max(1, Math.round(figs.outSince.m - figs.outSince.from))} m so far</div>
                     <div style={{ fontSize: 15, color: "#FDE2E2" }}>min {lim.min.toFixed(2)} · nom {nomOf(lim).toFixed(2)} · max {lim.max.toFixed(2)}</div>
@@ -10462,6 +10480,7 @@ function GlueLinePortalView({ data, setData }) {
                 <div style={{ display: "flex", alignItems: "baseline", justifyContent: "flex-end", gap: 10 }}>
                   <span data-pt-gap data-gap-out={verdict === "over" || verdict === "under" ? "1" : "0"} style={{ fontSize: "clamp(88px, 8vw, 132px)", fontWeight: 600, letterSpacing: "-0.03em", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{g ? g.toFixed(3) : "—"}</span>
                   <span style={{ fontSize: 32, color: P.sub }}>mm</span></div>
+                <div style={{ marginTop: 6 }}><GtWidths w={live && live.widths} align="flex-end" /></div>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 10, flexWrap: "wrap", marginTop: 6 }}>
                   <span data-pt-status style={{ fontSize: 19, fontWeight: 600, padding: "7px 16px", borderRadius: 999, background: t[0], color: t[2], border: `1px solid ${t[1]}` }}>{toneWord}{(verdict === "over" || verdict === "under") && g && lim ? ` · ${(verdict === "over" ? g - lim.max : lim.min - g).toFixed(3)} ${verdict === "over" ? "over" : "under"}` : ""}</span>
                   {g > 0 && live && live.wander && live.wander.pm != null && <span data-pt-steady={live.wander.steady ? "steady" : "settling"} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13.5, fontWeight: 600, padding: "4px 12px", borderRadius: 999, border: `1px solid ${live.wander.steady ? "#C8E6D2" : "#F5D98B"}`, background: live.wander.steady ? "#E8F3EC" : "#FDF6E3", color: live.wander.steady ? "#1E7F3C" : "#B45309" }}>{dot(live.wander.steady ? "#1E7F3C" : "#B45309")}{live.wander.steady ? "steady" : "settling"} · ±{live.wander.pm.toFixed(3)}</span>}
