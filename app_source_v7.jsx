@@ -582,7 +582,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-10-29.2";
+const APP_VERSION = "2026-10-29.3";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -8706,13 +8706,13 @@ function GapTracePanel({ data, reelCode, forBox = false, setData = null }) {
     {open && <GapReelSheet trace={t} data={data} setData={setData} onClose={() => setOpen(false)} />}
   </div>);
 }
-/* The newest trace's button for a reel row: "Gap 98.6%", orange when anything went out. For whoever may open the portal. */
+/* The newest trace's button for a reel row. NO PERCENTAGE (Chris, 29 Oct 2026: "Get rid of the gap percentage next to 'edit'
+   button") — it just says "Gap trace" and opens it; the figures are inside. For whoever may open the portal. */
 function GapReelButton({ trace: t, onOpen, compact = false }) {
   if (!t || !screenAllowed("portal")) return null;
-  const out = (t.events || []).length > 0 && !gapTraceUncal(t), pct = gapTraceUncal(t) ? "—" : t.stats && t.stats.inPct != null ? `${t.stats.inPct}%` : "";
-  return <button type="button" data-gt-reel={t.reelCode} onClick={() => onOpen(t)} title={`Gap trace for ${t.reelCode}${out ? ` — ${t.events.length} out of limits` : " — all in limits"}`}
+  return <button type="button" data-gt-reel={t.reelCode} onClick={() => onOpen(t)} title={`Gap trace for ${t.reelCode}`}
     style={{ font: "inherit", fontSize: compact ? 11.5 : 13, fontWeight: 600, minHeight: compact ? 26 : 40, padding: compact ? "0 8px" : "0 12px", borderRadius: 5, cursor: "pointer", whiteSpace: "nowrap",
-      border: `1px solid ${out ? GT_ORANGE : "#9DB3D9"}`, background: out ? "#FDF0E7" : "#F1F5FC", color: out ? GT_ORANGE : "#1E3A8A" }}>Gap {pct}</button>;
+      border: "1px solid #9DB3D9", background: "#F1F5FC", color: "#1E3A8A" }}>Gap trace</button>;
 }
 
 /* ACROSS THE ROOM (option C of the mock-ups): the reading big enough to see from the glue line — status, the gap, the
