@@ -582,7 +582,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-02.1";
+const APP_VERSION = "2026-11-02.3";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -26976,7 +26976,7 @@ function adminAlertObjects(data) {
   /* Glue reels nobody has touched for three weeks — made, drawn from or seen at a rack check (reelState, 11 Oct 2026). The
      plan still counts them; a rack check settles them either way. */
   try { const idle = rackReels({ ...data, ncrs: data.ncrs || [] }).mayBeGone;   // the rack's one answer (third review item 31)
-    if (idle.length) items.push({ text: `${idle.length} glue reel${idle.length === 1 ? "" : "s"} (${Math.round(idle.reduce((t, x) => t + x.st.left, 0)).toLocaleString("en-GB")} m) untouched for three weeks — still counted in the plan; a rack check settles ${idle.length === 1 ? "it" : "them"}`, go: { section: "fix" }, fix: "Reel rack check" }); } catch (e) { /* never stops the alerts */ }
+    if (idle.length) items.push({ text: `${idle.length} glue reel${idle.length === 1 ? "" : "s"} (${Math.round(idle.reduce((t, x) => t + x.st.left, 0)).toLocaleString("en-GB")} m) untouched for three weeks — not counted towards what to glue; a rack check settles ${idle.length === 1 ? "it" : "them"}`, go: { section: "fix" }, fix: "Reel rack check" }); } catch (e) { /* never stops the alerts */ }
   return items;
 }
 function adminAlertItems(data) { return adminAlertObjects(data).map(x => x.text); }
@@ -37726,7 +37726,7 @@ function PvcCodeWarning({ code, spec, materials, onUse }) {
     <span>⚠ {w.text}.</span>
     <button type="button" data-pvc-use={w.expect} onClick={() => onUse(w.expect)} style={{ border: "1px solid #E7B98B", background: "#FFF6EE", color: "#9A4A06", borderRadius: 8, padding: "3px 10px", fontWeight: 600, cursor: "pointer" }}>Use {w.expect}</button></div>);
 }
-function GlueEntrySteps({ data = {}, form, setForm, openRun, openReel = null, runError = "", allRows = [], nextRunCode = "", justConfirmed = null, onConfirmReel, existingBatchNumbers = [], orderOptions = [], materials = [], onStartRun, onStartReel, onFinishReel, onSaveRunSettings, onEndRun, onSubmit, error, runTotals, children, renderFullForm, beforeLog = null, logLabel = null, logBlocked = false }) {
+function GlueEntrySteps({ data = {}, setData = null, form, setForm, openRun, openReel = null, runError = "", allRows = [], nextRunCode = "", justConfirmed = null, onConfirmReel, existingBatchNumbers = [], orderOptions = [], materials = [], onStartRun, onStartReel, onFinishReel, onSaveRunSettings, onEndRun, onSubmit, error, runTotals, children, renderFullForm, beforeLog = null, logLabel = null, logBlocked = false }) {
   const [everyField, setEveryField] = useState(false);
   /* HAVE I GLUED ENOUGH? (Chris, 24 Sep 2026 — "tell me when I'm gluing product when
      I've made enough of what's needed", with the 10% allowance.) While a run is open:
@@ -37945,6 +37945,7 @@ function GlueEntrySteps({ data = {}, form, setForm, openRun, openReel = null, ru
                 <div style={{ fontSize: 17, fontWeight: 700 }}>Enough glued for every order — you can finish the run.</div>
                 <div style={{ fontSize: 13, marginTop: 4 }}>{t.onRack} m on the reel rack covers {t.boxes} box{t.boxes === 1 ? "" : "es"} + {t.overmakePct}% set-up ({t.target} m){t.spare > 0 ? ` · ${t.spare} m spare` : ""}.</div>
                 <div style={{ fontSize: 12.5, marginTop: 3, opacity: .85 }}>{who}</div>
+                <IdleReelsNote reels={t.idleReels} setData={setData} compact />
               </div>);
             return (
               <div data-glue-target="short" style={{ borderRadius: 4, padding: "12px 13px", marginBottom: 14, background: "#FFF4E0", color: INK, lineHeight: 1.45, border: `1px solid ${AMBER}` }}>
@@ -37952,6 +37953,7 @@ function GlueEntrySteps({ data = {}, form, setForm, openRun, openReel = null, ru
                 <div style={{ fontSize: 26, fontWeight: 700 }}>{t.still} m</div>
                 <div style={{ fontSize: 13, marginTop: 2 }}>Needs {t.target} m: {t.boxes} box{t.boxes === 1 ? "" : "es"} ({t.needMetres} m) + {t.overmakePct}% set-up. On the reel rack {t.onRack} m, this run's reels included.</div>
                 <div style={{ fontSize: 12.5, marginTop: 3, color: INK_MUTED }}>{who}</div>
+                <IdleReelsNote reels={t.idleReels} setData={setData} compact />
               </div>);
           })()}
           <div style={{ fontSize: 12.5, color: INK_MUTED }}>Reel {(runTotals ? runTotals.reels : 0) + 1} of this run</div>
@@ -39804,7 +39806,30 @@ function GlueNextUp({ data }) {
    amounts"; the red line only, no extra question — agreed.) The figure is glueRunTarget's — the same one the
    run screen's "have I glued enough?" reads: every live order's still-to-make of the size, PX Plus and Smart
    Formes as one strip, plus the Schedule's overmake, less what is already on the reel rack. */
-function GlueNeedBanner({ data, spec, metres }) {
+/* REELS NOT COUNTED (Chris, 2 Nov 2026 — 0.80 x 2.70: three August reels nobody had touched, 920 m, made "Enough glued" true and
+   bonding ran short). A reel of this size nobody has touched for three weeks isn't counted towards what to glue; the glue line
+   names it and asks for a look at the reel rack: there → a rack check puts it back in the count; not there → cleared. */
+function IdleReelsNote({ reels, setData = null, compact = false }) {
+  const [done, setDone] = useState({});
+  const list = (reels || []).filter(r => !done[r.id]);
+  if (!list.length) return null;
+  const mark = (r, seen) => { if (!setData) return;
+    setData(prev => applyRackCheck(prev, seen ? { seenIds: [r.id] } : { goneIds: [r.id], note: `not on the reel rack (${currentActor() || "glue line"}, asked on the glue line)` }).data);
+    setDone(d => ({ ...d, [r.id]: seen ? "seen" : "gone" })); };
+  const day = (iso) => iso ? new Date(String(iso).slice(0, 10) + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : "";
+  return (<div data-idle-reels={list.map(r => r.code).join(",")} style={{ marginTop: 10, border: `1px solid ${AMBER}`, background: "#FFF8EC", borderRadius: 6, padding: compact ? "8px 10px" : "10px 12px", color: INK }}>
+    <div style={{ fontSize: 14, fontWeight: 700 }}>Not counted: {list.length === 1 ? "a reel" : `${list.length} reels`} nobody has touched for three weeks ({list.reduce((t, r) => t + r.left, 0).toLocaleString("en-GB")} m)</div>
+    <div style={{ fontSize: 13, color: INK_MUTED, marginTop: 2 }}>Are {list.length === 1 ? "it" : "they"} on the reel rack? If so, say so and {list.length === 1 ? "it counts" : "they count"} again.</div>
+    {list.map(r => (<div key={r.id || r.code} data-idle-reel={r.code} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+      <span className="font-mono" style={{ fontWeight: 700, fontSize: 15 }}>{r.code}</span>
+      <span style={{ fontSize: 13, color: INK_MUTED }}>{r.left} m{r.date ? ` · glued ${day(r.date)}` : ""}</span>
+      <span style={{ flex: 1 }} />
+      {setData && <><button type="button" data-idle-seen={r.code} onClick={() => mark(r, true)} style={{ font: "inherit", fontSize: 13.5, fontWeight: 600, minHeight: 40, padding: "0 12px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", cursor: "pointer" }}>It's on the rack</button>
+      <button type="button" data-idle-gone={r.code} onClick={() => mark(r, false)} style={{ font: "inherit", fontSize: 13.5, fontWeight: 600, minHeight: 40, padding: "0 12px", borderRadius: 6, border: 0, background: NAVY, color: "#fff", cursor: "pointer" }}>Not there — clear it</button></>}
+    </div>))}
+  </div>);
+}
+function GlueNeedBanner({ data, spec, metres, setData = null }) {
   const name = String(spec || "").trim();
   if (!name || /^\S+$/.test(name)) return null;
   let t = null;
@@ -39822,6 +39847,7 @@ function GlueNeedBanner({ data, spec, metres }) {
         <div style={{ fontSize: 44, fontWeight: 700, lineHeight: 1, color: INK_MUTED }}>0 m <span style={{ fontSize: 22, fontWeight: 600 }}>— for stock</span></div>
         <div data-glue-need-why style={{ fontSize: 14, color: INK_MUTED, marginTop: 4 }}>{t.nothingNeeded ? "No live order needs this size made — what's ordered is packed or comes off the shelf"
           : `The reel rack already holds enough: ${reelWords || `${t.onRack} m`} against ${t.target} m${orders ? ` for ${orders}` : ""}`}</div>
+        <IdleReelsNote reels={t.idleReels} setData={setData} compact />
       </div>);
   }
   const short = reel > 0 ? t.still - reel : null;
@@ -39836,6 +39862,7 @@ function GlueNeedBanner({ data, spec, metres }) {
             This reel ({reel} m) is {short} m short — run another {short} m</div>
         : <div data-glue-need-ok style={{ marginTop: 10, background: "#EAF7EE", border: `1px solid ${GREEN}`, borderRadius: 6, padding: "8px 10px", fontSize: 15, fontWeight: 700, color: GREEN }}>
             ✓ This reel ({reel} m) covers it{-short > 0 ? ` — ${-short} m over` : ""}</div>)}
+      <IdleReelsNote reels={t.idleReels} setData={setData} compact />
     </div>);
 }
 
@@ -40776,7 +40803,7 @@ function GlueLineView({ data, setData, phone = false }) {
             style={{ height: 54, borderRadius: 14, border: 0, background: !g5Spec || !(Number(form.meterage) > 0) || traceAsk ? "#C9CED9" : "#D9472B", color: "#fff", fontFamily: NLT.FONT, fontSize: 17, fontWeight: 800 }}>
             Log {String(form.batchNumber || "").trim() || g5Code}{Number(form.meterage) > 0 ? ` · ${form.meterage} m` : ""}{traceLabel ? ` · ${traceLabel}` : ""}</button>
         </div>
-        <GlueNeedBanner data={data} spec={g5Spec} metres={form.meterage} />
+        <GlueNeedBanner data={data} setData={setData} spec={g5Spec} metres={form.meterage} />
         {glueShareNote && <div data-glue-shared style={{ fontSize: 13, color: NL.SUB }}>↻ {glueShareNote}</div>}
         {g5Unchecked.length > 0 && <button type="button" data-g5-check-walk onClick={() => { nlHaptic(); setG5Sheet({ kind: "check", ids: g5Unchecked.map(r => r.id), at: 0 }); }} style={{ ...g5Btn(true), height: 50 }}>✓ Check the reels · {g5Unchecked.length} to check</button>}
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
@@ -40791,7 +40818,7 @@ function GlueLineView({ data, setData, phone = false }) {
         <button type="button" onClick={undoJustAdded} style={{ height: 40, padding: "0 14px", borderRadius: 10, border: 0, background: "rgba(255,255,255,.16)", color: "#fff", fontWeight: 700, fontFamily: NLT.FONT }}>Undo</button></div>, document.body)}
       {g5Sheet && g5Sheet.kind === "settings" && <NLSheet id="g5-settings" title="Size and settings" onClose={() => setG5Sheet(null)}>
         <div style={{ fontSize: 13.5, color: NL.SUB, margin: "0 0 10px", lineHeight: 1.45 }}>The full glue line form, as before. Whatever you set here stays on the line, reel to reel, until you change it.</div>
-        <GlueEntrySteps data={data} form={form} setForm={setForm} openRun={openRun} runTotals={openRunTotals}
+        <GlueEntrySteps data={data} setData={setData} form={form} setForm={setForm} openRun={openRun} runTotals={openRunTotals}
           onStartRun={null} onConfirmReel={confirmReel} runError={runError} allRows={rows}
           nextRunCode={nextRunCode} justConfirmed={justConfirmed}
           existingBatchNumbers={rows.map(r => r.batchNumber).filter(Boolean)} orderOptions={orderOptions}
@@ -40921,9 +40948,9 @@ function GlueLineView({ data, setData, phone = false }) {
         {(() => { const spec = openRun ? openRun.productSize : (String(form.size || "").trim() ? buildSpec(form) : ""); const k = spec ? glueListOrdersFor(data, glueSizeKey(data, spec), form.date || todayISO()) : null;
           return k && !form.assignedOrderId ? <div data-glue-forlist style={{ fontSize: 13.5, fontWeight: 600, color: "#1B2B6B", background: "#EEF2FA", borderRadius: 6, padding: "8px 10px", marginBottom: 6 }}>On today's glue list — this reel is kept for {k.map(id => { const o = (data.orders || []).find(x => x.id === id); return `${id}${o ? ` ${o.customer}` : ""}`; }).join(", ")}</div> : null; })()}
         {glueShareNote && <div data-glue-shared style={{ fontSize: 13, color: INK_MUTED, marginBottom: 6 }}>↻ {glueShareNote}</div>}
-        <GlueNeedBanner data={data} spec={openRun ? openRun.productSize : (String(form.size || "").trim() ? buildSpec(form) : "")} metres={form.meterage} />
+        <GlueNeedBanner data={data} setData={setData} spec={openRun ? openRun.productSize : (String(form.size || "").trim() ? buildSpec(form) : "")} metres={form.meterage} />
         <div>
-          <GlueEntrySteps data={data} form={form} setForm={setForm} openRun={openRun} runTotals={openRunTotals}
+          <GlueEntrySteps data={data} setData={setData} form={form} setForm={setForm} openRun={openRun} runTotals={openRunTotals}
             onStartRun={null} onConfirmReel={confirmReel} runError={runError} allRows={rows}
             nextRunCode={nextRunCode} justConfirmed={justConfirmed}
             existingBatchNumbers={rows.map(r => r.batchNumber).filter(Boolean)} orderOptions={orderOptions}
