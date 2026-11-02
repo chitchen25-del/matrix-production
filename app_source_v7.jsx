@@ -582,7 +582,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-10-30.1";
+const APP_VERSION = "2026-11-02.1";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -16435,7 +16435,7 @@ function ProductPanel({ p }) {
   const fitsOrder = (b, o) => shelfBoxFitsBoxType({ boxTypeId: b.boxTypeId }, o.boxType) && !!b.strong === !!o.strongTape;
   const fitsAny = (b) => p.orders.some(o => fitsOrder(b, o));
   const wanted = [...new Set(p.orders.map(o => o.boxType || DEFAULT_BOX_TYPE))];
-  const fit = p.boxes.filter(fitsAny), other = p.boxes.filter(b => !fitsAny(b));
+  const fit = p.boxes.filter(fitsAny);
   const boxRows = (list, max) => (<>{list.slice(0, max).map(b => (
     <tr key={b.code + (b.bay || "")} data-shelf-box={b.code}><td style={td} className="font-mono">{b.code} {!b.checked && pipeChip("check it", "#8A4B00", "#FFF1DC")}{b.checked && !b.bay && pipeChip("find it", RED, "#FBE9E6")}{b.strong && pipeChip("S", RED, "#FBE9E6")}</td>
       <td style={{ ...td, textAlign: "right", fontWeight: 700 }} className="font-mono">{b.qty}</td><td style={td}>{b.bay || <span style={{ color: INK_MUTED }}>no bay</span>}</td>
@@ -16451,15 +16451,13 @@ function ProductPanel({ p }) {
           <tr key={o.orderId} data-short-row={o.orderId}><td style={td}>{o.customer} <span style={{ color: INK_MUTED }}>{o.orderId}{o.dueDate ? ` · due ${fmtDay(o.dueDate)}` : ""}{o.strongTape ? " · strong tape" : ""}</span></td>
             <td style={{ ...td, textAlign: "right", fontWeight: 700 }} className="font-mono">{o.needs}</td>
             <td style={td}>{o.short > 0 ? <>{pipeChip(`short ${o.short}`, RED, "#FBE9E6")}{o.covered > 0 && <span style={{ color: INK_MUTED }}>{o.covered} covered</span>}
-              {p.boxes.length > 0 && !p.boxes.some(b => fitsOrder(b, o)) && <span data-no-carton style={{ color: INK_MUTED }}>none on the shelf in {o.boxType || DEFAULT_BOX_TYPE} cartons{o.strongTape ? " with strong tape" : ""}</span>}</> : pipeChip("covered", "#2E7D52", "#E6F4EC")}</td></tr>
+              {!p.boxes.some(b => fitsOrder(b, o)) && <span data-no-carton style={{ color: INK_MUTED }}>none on the shelf in {o.boxType || DEFAULT_BOX_TYPE} cartons{o.strongTape ? " with strong tape" : ""}</span>}</> : pipeChip("covered", "#2E7D52", "#E6F4EC")}</td></tr>
         ))}
       </tbody></table>
-      <div data-shelf-fits style={{ fontSize: 12, fontWeight: 700, color: NAVY, margin: "10px 0 4px" }}>On the shelf{p.boxes.length && other.length ? ` in ${wanted.join(" or ")} cartons` : ""} — oldest first</div>
+      {/* only the cartons the orders take (Chris, 2 Nov 2026: stock in other cartons "is confusing" — no longer listed) */}
+      <div data-shelf-fits style={{ fontSize: 12, fontWeight: 700, color: NAVY, margin: "10px 0 4px" }}>On the shelf in {wanted.join(" or ")} cartons — oldest first</div>
       {fit.length ? (<table style={{ width: "100%", borderCollapse: "collapse" }}><tbody>{head}{boxRows(fit, 12)}</tbody></table>)
-        : <div style={{ fontSize: 12.5, color: INK_MUTED }}>{p.boxes.length ? `None on the shelf in ${wanted.join(" or ")} cartons.` : "None on the shelf."}</div>}
-      {other.length > 0 && <>
-        <div data-shelf-other style={{ fontSize: 12, fontWeight: 700, color: INK_MUTED, margin: "10px 0 4px" }}>In other cartons — not counted for {p.orders.length === 1 ? p.orders[0].customer : "these orders"}</div>
-        <table style={{ width: "100%", borderCollapse: "collapse", opacity: 0.75 }}><tbody>{head}{boxRows(other, 8)}</tbody></table></>}
+        : <div style={{ fontSize: 12.5, color: INK_MUTED }}>None on the shelf in {wanted.join(" or ")} cartons.</div>}
       {p.reelMetres != null && <div style={{ fontSize: 12.5, color: INK_MUTED, marginTop: 8 }}>Reels on the reel rack: {p.reelCount || 0} · {Math.round(p.reelMetres)} m · still to glue {Math.round(p.toGlueMetres || 0)} m</div>}
     </div>
   );
