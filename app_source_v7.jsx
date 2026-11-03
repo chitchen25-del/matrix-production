@@ -582,7 +582,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-02.3";
+const APP_VERSION = "2026-11-03.1";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -9189,7 +9189,11 @@ function GlueLinePortalView({ data, setData }) {
     gtLog(`Camera corrected to the callipers: ${c.hand.toFixed(3)} — ${k.px >= 0 ? "+" : ""}${k.px.toFixed(1)} px (${mmNow >= 0 ? "+" : ""}${mmNow.toFixed(3)} mm) from ${k.n} check${k.n === 1 ? "" : "s"}`, "#60A5FA");
     setData(prev => ({ ...prev, ...appendLog(prev, { action: "update", entity: "gapTrace", entityId: "correction", summary: `Gap camera corrected to the callipers on ${spec || "—"}: measured ${c.hand.toFixed(3)} mm, the camera read ${c.read.toFixed(3)} — correction ${k.px >= 0 ? "+" : ""}${k.px.toFixed(1)} px from ${k.n} check${k.n === 1 ? "" : "s"}${currentDevice() ? ` on ${currentDevice()}` : ""}` }) }));
     setCheckIn("");
-    setCheckMsg({ bad: k.n > 1 && k.spread > 2, t: `Corrected: the camera now reads about ${now2.toFixed(3)} (it read ${c.read.toFixed(3)}).${k.n > 1 ? ` From ${k.n} checks${k.spread > 2 ? ` — they disagree by ${k.spread.toFixed(1)} px, measure again` : ", which agree"}.` : " Check two or three more places to firm it up."}` });
+    /* the camera had moved: today's earlier checks put aside (3 Nov 2026 — gapCorrection's restart) */
+    const fresh = k && k.moved && k.moved.at === c.at;
+    if (fresh) gtLog(`The camera had moved ${Math.abs(k.moved.mm).toFixed(3)} mm from today's ${k.moved.left} other check${k.moved.left === 1 ? "" : "s"} on this size — they are put aside; the correction starts again from this one`, "#F59E0B");
+    setCheckMsg({ bad: !fresh && k.n > 1 && k.spread > 2, t: fresh ? `Corrected: the camera now reads about ${now2.toFixed(3)} (it read ${c.read.toFixed(3)}). It had moved ${Math.abs(k.moved.mm).toFixed(3)} mm from today's other checks, so those are put aside and it starts again from this one. Check one or two more places to firm it up.`
+      : `Corrected: the camera now reads about ${now2.toFixed(3)} (it read ${c.read.toFixed(3)}).${k.n > 1 ? ` From ${k.n} checks${k.spread > 2 ? ` — they disagree by ${k.spread.toFixed(1)} px, measure again` : ", which agree"}.` : " Check two or three more places to firm it up."}` });
     setTick(t => t + 1);
   };
   /* REMOVE ONE CORRECTION (a range under a light), or the one in use now */
