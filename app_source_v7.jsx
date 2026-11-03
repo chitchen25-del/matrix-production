@@ -582,7 +582,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-03.1";
+const APP_VERSION = "2026-11-03.2";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -8179,7 +8179,7 @@ function GlueTraceCard({ choice, put, sel, setSel, twiceAns, setTwiceAns, metres
       {(() => { const gf = reelGlueFault(put); if (!gf) return null;
         return <div data-glue-gluefault style={{ background: "#FEF2F2", border: "1px solid #FCA5A5", borderRadius: 8, padding: "10px 14px", color: "#991B1B" }}>
           <div style={{ fontSize: 15.5, fontWeight: 700 }}>Glue in the gap — {gf.totalM} m</div>
-          <div style={{ fontSize: 14.5 }}>{gf.words}. Bonding will be asked whether each was cut out or used.</div></div>; })()}
+          <div style={{ fontSize: 14.5 }}>{gf.words}. The admin is asked at bonding whether each was cut out or used.</div></div>; })()}
       {links}{picker}</div>;
   }
   /* a trace there is, of another size */
@@ -34234,7 +34234,10 @@ function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRun
               <Spec s={reel.productSize} size={13} /><span className="font-mono" style={{ fontWeight: 600 }}>{reel.batchNumber}</span></span>
               <button type="button" onClick={() => setForm(f => ({ ...f, baselineBatchCode: "" }))} style={{ font: "inherit", background: "none", border: 0, color: NAVY, cursor: "pointer", fontSize: 14 }}>change</button></BondField>
           ) : null}
-          {reel ? <><GlueReelFault data={data} setData={setData} code={reel.batchNumber} /><GapReelWarn data={data} code={reel.batchNumber} /></> : (
+          {/* THE REEL'S GAP TRACE FAULTS — THE ADMIN ONLY FOR NOW (Chris, 3 Nov 2026: "stop putting trace issues in the bonding line
+             screen, for now keep that to just my side of things … they're getting annoyed it keeps saying cut x amount out and it's
+             a massive list") */}
+          {reel ? (isAdminLogin() ? <><GlueReelFault data={data} setData={setData} code={reel.batchNumber} /><GapReelWarn data={data} code={reel.batchNumber} /></> : null) : (
             <>
               <input value={reelQuery} onChange={e => setReelQuery(e.target.value.toUpperCase())} placeholder="Batch code, e.g. PBLI60402"
                 autoCorrect="off" autoCapitalize="off" spellCheck="false" className="font-mono"
