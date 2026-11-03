@@ -582,7 +582,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-03.2";
+const APP_VERSION = "2026-11-03.3";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -5179,7 +5179,8 @@ function LabelPreview({ tpl, fields, over }) {
 // What the catalogue says about a product, for its label: its metres a box.
 function boxMetresFor(data, productName) {
   const p = (data.products || []).find(x => x && !x.deleted && x.displayName === productName);
-  const f = p && (data.productForms || []).find(x => x && !x.deleted && x.productId === p.id && x.form === "Box");
+  const f = p && ((data.productForms || []).find(x => x && !x.deleted && x.productId === p.id && x.form === "Box")
+    || (data.productForms || []).find(x => x && !x.deleted && x.productId === p.id && x.form === "Reel"));   /* a size sold only as a reel prints its reel's metres (3 Nov 2026) */
   return f ? f.metres : null;
 }
 function cartonNameOf(data, boxTypeId) {
