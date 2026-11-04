@@ -25,6 +25,7 @@ import { orderWithPromise, promiseBehind, promiseDay, promiseOf, promiseStats, p
 import { OFFICE_AMBER_DAYS, OFFICE_RED_DAYS, officeAged, officeAgeTone, officeAgeWords, officeEntryWords, officeGuess, officeHistory, officeItems, officeKindWords, officeScreenOf, officeTally } from "./mx_office.js";
 import { OVERNIGHT_MORNINGS, TRUTHS, TRUTH_SHORT, UNDO_CAUSES, WRONG_KINDS, activityDay, causesLines, changesetMatches, describeChangeset, foundWords, healthView, overnightPolicyWords, proposedRowWords, reelDoubleSaves } from "./mx_fix.js";
 import { edgesWander, motionVoted, isRepeatPicture, stripWidthsMm, widthsSteady, beadForget, GAP_BEAD_RELEARN_STOP_MS } from "./mx_gaptrace.js";
+import { gaugeOne, gaugePush, gaugeMedian, gaugeKey, gaugeZeroValid, gaugeRead, gaugePicture, gaugeRezero, GAUGE_ZERO_MAX_MS } from "./mx_gapgauge.js";
 import { GAP_LIGHT_SHIFT, gapCalChecks, gapScaleFor, gapCalVerdict, gapWidthSeen, gapTraceUncal, gapMarkUncal, gapReelGapFrom, glueGapProblem, gapPointUncal, GAP_CAL_AGREE, GAP_CAL_DRIFT_RUN } from "./mx_gaptrace.js";
 import { glueRuns, reelGlueFault, GLUE_MIN_MM, GLUE_OPEN_END_M, GLUE_LINE_M, GLUE_CAUSES } from "./mx_gaptrace.js";
 import { learnedLineSpeed, gapMayLink, glueReelTraceKeep, gapCarryOf, gapJoinTraces, gapNextPiece, misreadStep, centringHint, reelGapWarning, gapCorrFor, gapSizePart, GAP_CORR_DAY_MAX, GAP_CORR_SIZE_AGREE, READOUT_SPAN_MS, READOUT_BIN_MS, GT_WOBBLE_FLAG, readoutTrend, readoutFigures, HAUL_MIN_LEARN_M, GAP_STEADY_MIN_N, CAM_GOOD_MM, CAM_OK_MM, camMetrics, blockCalib, blockHeights, heightOfSpec, CAP_FACTOR_REELS, CPK_WORDS, GAP_BAND_ROWS, GAP_LIMITS_DEFAULT, GAP_VERDICT_WORDS, GAP_LIGHT_WORDS, GAP_SETUP_CHECKS, gapTraceWaiting, gapNextTraceNo, gapPickWaiting, glueTraceChoice, glueReelWants, gapLiveFresh, gapLinkTrace, gapUnlinkTrace, glueDayTimeline, gapMoveCut, gapOffsets, nomOf, gapLightOf, gapRangeOf, gapCorrKey, gapCorrSets, lightShift, steadyRaw, gapWander, gapCheckOdd, binTrace, capability, sizeCapability, colourNameOf, haulFactor, haulMatch, rowProfile, gapCheck, gapCorrCheck, gapCorrection, gapCorrStands, gapLimitsFor, gapRecordDoc, motionGate, patchDiff, gapTraceRow, gapVerdict, guessStripColour, gapSteady, metresAlong, readBand, reelLoggedSince, sizeCheck, sizesDiffer, suggestSizes, traceEvents, traceStats, widthFrom, widthMmFor, widthValid } from "./mx_gaptrace.js";
@@ -582,7 +583,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-04.5";
+const APP_VERSION = "2026-11-04.6";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -7113,6 +7114,31 @@ function gtAutoStartOn() { try { const v = localStorage.getItem("mxGapAutoStart"
    unless a suite asks for it. */
 function gtReaderNew() { try { const v = localStorage.getItem("mxGapReader"); if (v === "old") return false; if (v === "new") return true;
   if (window.__MX_TEST_MIRROR__ && localStorage.getItem("__mxRealDefaults") !== "1") return false; } catch (e) { /* private mode */ } return true; }
+/* THE DIAL GAUGE (4 Nov 2026, 17:05 — "Now change the gap trace to the plan … let's try something different"; mx_gapgauge.js).
+   On for every PC; "off" in mxGapGauge puts the old corrections back on one PC. The test copy keeps the old way unless a suite
+   asks for it. The zero for each size and light is kept on this PC (mxGapZero) and carries across Reel off, a refresh and a
+   restart, for 12 hours; every zero also goes on the trace. */
+function gtGaugeOn() { try { const v = localStorage.getItem("mxGapGauge"); if (v === "off") return false; if (v === "on") return true;
+  if (window.__MX_TEST_MIRROR__ && localStorage.getItem("__mxRealDefaults") !== "1") return false; } catch (e) { /* private mode */ } return true; }
+function gtZeroKey() { return gaugeKey(GT_REC.cfg && GT_REC.cfg.spec, gtLightNow()); }
+function gtZeroAll() { try { return JSON.parse(localStorage.getItem("mxGapZero") || "{}") || {}; } catch (e) { return {}; } }
+function gtZeroNow() { const k = gtZeroKey(), z = gtZeroAll()[k]; return gaugeZeroValid(z, k) ? z : null; }
+function gtZeroSave(z) { if (!z || !z.key) return; try { const all = gtZeroAll(), now = Date.now(); const keep = {}; for (const [k, v] of Object.entries(all)) if (v && now - Number(v.at || 0) <= GAUGE_ZERO_MAX_MS) keep[k] = v;
+  keep[z.key] = z; localStorage.setItem("mxGapZero", JSON.stringify(keep)); } catch (e) { /* private mode */ } GT_REC.zeros = [...(GT_REC.zeros || []), { ...z }].slice(-40); }
+/* zero the camera to a calliper figure, now: the steady picture of the last 4 s (gaugeRezero — a check within 0.02 is averaged) */
+function gtGaugeZero(handIn) {
+  const hand = Number(String(handIn == null ? "" : handIn).replace(",", "."));
+  if (!(hand > 0 && hand < 20)) return { ok: false, why: "Type the gap you measured with the callipers, in mm." };
+  const m = gaugeMedian(GT_REC.gaugeHist || [], Date.now()); if (!m) return { ok: false, why: "The camera has to see both strips steadily while you measure." };
+  const key = gtZeroKey(), prev = gtZeroAll()[key], res = gaugeRezero(prev, m, hand, Number(GT_REC.cfg && GT_REC.cfg.widthMm) || gtWidthMmNow(), { key, by: currentActor() || null });
+  if (!res.zero) return { ok: false, why: res.why };
+  gtZeroSave(res.zero);
+  const words = res.averaged ? `Callipers ${hand.toFixed(3)}, camera ${res.was.toFixed(3)} — they agree, so the figure is ${res.zero.hand.toFixed(3)}` : res.was != null ? `Zeroed to the callipers: ${hand.toFixed(3)} (the camera showed ${res.was.toFixed(3)})` : `Zeroed to the callipers: ${hand.toFixed(3)}`;
+  gtLog(words, "#60A5FA"); if (GT_REC.recording) GT_REC.marks.push({ t: Date.now(), note: words });
+  GT_REC.checks = [...(GT_REC.checks || []), { hand, read: res.was != null ? res.was : null, diff: res.was != null ? Math.round((res.was - hand) * 1000) / 1000 : null, at: res.zero.at, by: res.zero.by, kind: "zero", raw: res.was, gapPx: res.zero.ge, totPx: res.zero.tot, mmPerPx: res.zero.mmPerPx, light: gtLightNow(), level: GT_REC.levelNow || null, spec: (GT_REC.cfg && GT_REC.cfg.spec) || null, cam: GT_REC.camLabel || null, averaged: !!res.averaged }].slice(-20);
+  return { ok: true, words, ...res };
+}
+function gtWidthMmNow() { try { const w = JSON.parse(localStorage.getItem("mxGapWidthRec") || "null"); return Number(w && w.mm) > 0 ? Number(w.mm) : 10; } catch (e) { return 10; } }
 function gtLightNow() { return gapLightOf(GT_REC.sigKeep || (GT_REC.last && GT_REC.last.signal) || "brightness"); }
 /* BACKLIGHT HELP (Chris, 20 Oct 2026, fitting a backlight to the microscope: "Build 1-3 but make it so I can choose between what is
    currently there and that"). One switch on this PC — More… and the set-up page. On: (1) when the camera sees the backlight, Hold
@@ -7199,7 +7225,7 @@ function gtCorrSetsWrite(sets) { try { localStorage.setItem("mxGapCorr2", JSON.s
 /* THE CAMERA'S SCALE (18 Oct 2026 — the gap trace audit, Chris: "Build it all"). The camera's own mm per pixel, learned from
    every calliper check kept on the traces (gapScaleFor), is the ruler; the typed width and the per-size corrections are not
    used. mxGapScale "old" on a PC puts the typed width back as the ruler (Admin's way back, kept for a while). */
-function gapScaleHere() { try { const v = localStorage.getItem("mxGapScale"); if (v === "new") return true; if (v === "old") return false;
+function gapScaleHere() { if (gtGaugeOn()) return false; try { const v = localStorage.getItem("mxGapScale"); if (v === "new") return true; if (v === "old") return false;
   if (window.__MX_TEST_MIRROR__ && localStorage.getItem("__mxRealDefaults") !== "1") return false; } catch (e) { /* private mode */ } return true; }
 function gtCalAll() {
   const tr = GT_REC.calTraces || [], ch = GT_REC.checks || [], sp = (GT_REC.cfg && GT_REC.cfg.spec) || null;
@@ -7218,7 +7244,7 @@ function gtHouse() {
   GT_REC.houseMemo = { all, mk, h }; return h;
 }
 function gtCorr() {
-  if (gapScaleHere()) { GT_REC.corr = null; GT_REC.corrFrom = null; GT_REC.corrChecks = []; GT_REC.corrRaw = null; GT_REC.corrFor = null; return null; }
+  if (gapScaleHere() || gtGaugeOn()) { GT_REC.corr = null; GT_REC.corrFrom = null; GT_REC.corrChecks = []; GT_REC.corrRaw = null; GT_REC.corrFor = null; return null; }
   const { raw, sets } = gtCorrSetsRead(), key = gtCorrKeyNow();
   if (GT_REC.corrRaw !== raw || GT_REC.corrFor !== key) {
     /* the size's own correction, else the nearest size's until this one is checked (15 Oct 2026 — gapCorrFor) */
@@ -7312,7 +7338,7 @@ function gtReadOnce() {
        light → a shorter exposure; gone dim → longer (expoServo). Only while the exposure is held (not left to the camera, not Hold by hand). */
     /* (4 Nov 2026, 12:25 — "the exposure is still badly affecting the trace": the glue line laptop has Backlight help off and Hold on,
        so 11-04.1's servo never ran) — it runs under the backlight whatever those are set to, and moves Hold's exposure with it */
-    if (r.ok && r.signal === "darkness" && !GT_REC.trial && !GT_REC.expoBusy && r.levels && r.levels.gap != null) gtExpoServo(255 - Number(r.levels.gap), !!r.clipped, nowR);
+    if (!gtGaugeOn() && r.ok && r.signal === "darkness" && !GT_REC.trial && !GT_REC.expoBusy && r.levels && r.levels.gap != null) gtExpoServo(255 - Number(r.levels.gap), !!r.clipped, nowR);
     /* the strips seen steadily for 2.5 s → the light held (gtSteadyLock); a held light that has since changed so much the strips
        can't be seen for 5 s → let go and held again once the camera has settled */
     if (r.ok) { GT_REC.readFailSince = null; if (!GT_REC.readOkSince) GT_REC.readOkSince = nowR; } else { GT_REC.readOkSince = null; if (!GT_REC.readFailSince) GT_REC.readFailSince = nowR; }
@@ -7344,10 +7370,16 @@ function gtReadOnce() {
   if (r.ok && r.level > 0) { GT_REC.lvlHist = (GT_REC.lvlHist || []).filter(x => nowL - x.t <= 3000); GT_REC.lvlHist.push({ t: nowL, v: r.level }); }
   GT_REC.levelNow = GT_REC.lvlHist && GT_REC.lvlHist.length >= 5 ? medianOf(GT_REC.lvlHist.map(x => x.v)) : null;
   /* the camera's scale for this picture (18 Oct 2026); none → the reading is "not calibrated", shown grey and judged by nobody */
+  /* THE DIAL GAUGE: every good picture's raw edges (no correction, no glue give-back), the steady middle of the last 4 s, and the
+     figure on this size's zero (gaugeRead) — no zero → the plain uncorrected reading, grey ("not calibrated") */
+  const gaugeOn = gtGaugeOn(), nowG = Date.now();
+  if (gaugeOn) GT_REC.gaugeHist = gaugePush(GT_REC.gaugeHist || [], r.ok && !gate ? r.edges : null, nowG);
+  const gzero = gaugeOn ? gtZeroNow() : null, gmed = gaugeOn ? gaugeMedian(GT_REC.gaugeHist || [], nowG) : null, gread = gaugeOn ? gaugeRead(gzero, gmed) : null;
+  GT_REC.gauge = gaugeOn ? { zero: gzero, med: gmed, read: gread, at: nowG } : null;
   const scaleWay = gapScaleHere();
   const cal = scaleWay ? gapScaleFor(gtCalAll(), { totNow: stTot, light: gtLightNow(), cam: GT_REC.camLabel || null, spec: GT_REC.cfg.spec || null, ...gtScaleOpts(gtLightNow()), latest: newOn }) : null;
   const scaleUse = cal && cal.ok ? (newOn ? gapScaleNow(cal, stTot) : cal.scale) : null;
-  GT_REC.cal = cal; const uncal = !!(scaleWay && !(cal && cal.ok));
+  GT_REC.cal = cal; const uncal = !!(scaleWay && !(cal && cal.ok)) || !!(gaugeOn && !gzero);
   /* a new scale (a check just taught it) — the last seconds' readings were on the old one, so the steady reading starts again */
   const scaleKey = cal && cal.ok ? cal.scale : null; if (GT_REC.calScaleSeen !== scaleKey) { GT_REC.calScaleSeen = scaleKey; GT_REC.rawHist = []; GT_REC.widHist = []; }
   const cs = scaleWay ? { on: false, why: null } : gapCorrStands(corr, stTot, GT_REC.levelNow), corrPx = cs.on && corr ? corr.px : 0; GT_REC.corrState = cs;
@@ -7358,15 +7390,23 @@ function gtReadOnce() {
     uncal: uncal || !GT_REC.recording || !!GT_REC.settingUp });
   GT_REC.steady = sd.st;
   if (r.ok && sd.gap > 0) r.gap = sd.gap;
+  /* the gauge's figure for this picture: on the zero; no zero → the plain reading (grey); the picture a different size from the
+     zero's (the camera moved) → no figure at all */
+  if (gaugeOn && r.ok) { const one = gaugeOne(r.edges);
+    if (gzero && gread && !gread.ok && gread.why === "moved") { r.gap = null; r.refused = "the picture has changed size since the camera was zeroed — the camera moved? Zero it again"; }
+    else if (gzero) r.gap = gaugePicture(gzero, r.edges);
+    else r.gap = one && sd.mmPerPx > 0 ? Math.round(one.ge * sd.mmPerPx * 10000) / 10000 : null; }
   /* a picture the focus or light watch held back: the strips are still drawn, nothing is counted from it */
   if (r.ok && gate) { r.gap = null; r.gate = gate; r.refused = gate === "focusing" ? "the camera is focusing" : "the light just changed"; }
   /* THE GLUE BEAD (15 Oct 2026): a strip read wider than it ever is has a bead against it — its extra is given back to the
      gap (gapSteady) and the edge is drawn at the strip. Said on the screen while it lasts, and on the log when it starts. */
-  if (r.ok && sd.bead && sd.edges) r.edges = sd.edges;
-  if (sd.beadRebased) gtLog(`The ${sd.beadRebased === "a" ? "left" : "right"} strip has read wider for 10 minutes — taken as its width now`, "#94A3B8");
+  if (r.ok && sd.bead && sd.edges && !gaugeOn) r.edges = sd.edges;
+  if (gaugeOn) { /* the gauge gives nothing back and refuses only for its own reasons (above) */ }
+  else if (sd.beadRebased) gtLog(`The ${sd.beadRebased === "a" ? "left" : "right"} strip has read wider for 10 minutes — taken as its width now`, "#94A3B8");
   /* a picture whose edges can't be right is no reading at all — nothing goes on the trace from it (12 Oct 2026) */
   else if (r.ok && sd.refused && !gate) { r.gap = null; r.refused = sd.refused; }   // the strips are still in view; this picture just isn't counted
-  const g = sd.shown;
+  /* (no steady picture yet — a slow camera — the figure is this picture's own; nothing is ever left with no figure to zero on) */
+  const g = !gaugeOn ? sd.shown : gzero ? (gread && gread.ok ? gread.mm : gread && gread.why === "moved" ? null : (r.gap > 0 ? r.gap : null)) : (gmed && gmed.tot > 0 && widthMm > 0 ? Math.round(gmed.ge * widthMm / gmed.tot * 1000) / 1000 : r.gap > 0 ? Math.round(r.gap * 1000) / 1000 : null);
   /* is the line moving? the middle of each strip, a tenth of a second apart, against the still background beside them */
   const M = GT_REC.mot, e = r.ok && r.edges;
   /* the strips out of sight for a minute or more (the reel being changed) → their widths learned again when they're back */
@@ -7402,8 +7442,8 @@ function gtReadOnce() {
   const mmPerPx = sd.mmPerPx || (r.ok && r.edges && widthMm ? widthMm / Math.max(1, r.edges.b1 - r.edges.a0) : null);
   /* GLUE AGAINST A STRIP, this picture (15 Oct 2026): seen as its own step in the rows (readBand), or as a strip reading
      wider than it is (gapSteady) — either way left out of the gap; how wide, which strip */
-  const glA = Math.max(r.ok && r.bead && r.bead.a > 0 && mmPerPx ? r.bead.a * mmPerPx : 0, sd.bead ? sd.bead.a : 0);
-  const glB = Math.max(r.ok && r.bead && r.bead.b > 0 && mmPerPx ? r.bead.b * mmPerPx : 0, sd.bead ? sd.bead.b : 0);
+  const glA = Math.max(r.ok && r.bead && r.bead.a > 0 && mmPerPx ? r.bead.a * mmPerPx : 0, sd.bead && !gaugeOn ? sd.bead.a : 0);
+  const glB = Math.max(r.ok && r.bead && r.bead.b > 0 && mmPerPx ? r.bead.b * mmPerPx : 0, sd.bead && !gaugeOn ? sd.bead.b : 0);
   const glNow = !gtGlueOff() && r.ok && (glA >= GLUE_MIN_MM || glB >= GLUE_MIN_MM) ? { s: `${glA >= GLUE_MIN_MM ? "a" : ""}${glB >= GLUE_MIN_MM ? "b" : ""}`, mm: Math.round(Math.max(glA, glB) * 1000) / 1000 } : null;
   if (glNow) GT_REC.bead = { at: now, side: glNow.s === "ab" ? "both" : glNow.s === "a" ? "left" : "right", mm: glNow.mm };
   else if (GT_REC.bead && now - GT_REC.bead.at > 3000) GT_REC.bead = null;
@@ -7439,7 +7479,8 @@ function gtReadOnce() {
     const mr = r.ok && r.gap > 0 ? misreadStep(GT_REC.mr, r.gap, now) : { ok: true, state: GT_REC.mr };
     GT_REC.mr = mr.state; const gKeep = r.ok && r.gap > 0 && mr.ok ? r.gap : null;
     /* the pixels go with each reading, and a reading before the camera was calibrated says so (18 Oct 2026) */
-    const pxNow = gKeep && sd.gapPx > 0 && sd.totPx > 0 ? { gp: Math.round(sd.gapPx * 10) / 10, tp: Math.round(sd.totPx * 10) / 10 } : {};
+    const g1 = gaugeOn && r.ok ? gaugeOne(r.edges) : null;
+    const pxNow = gaugeOn ? (gKeep && g1 ? { gp: Math.round(g1.ge * 10) / 10, tp: Math.round(g1.tot * 10) / 10 } : {}) : gKeep && sd.gapPx > 0 && sd.totPx > 0 ? { gp: Math.round(sd.gapPx * 10) / 10, tp: Math.round(sd.totPx * 10) / 10 } : {};
     if (!GT_REC.settingUp && !GT_REC.blockOn) GT_REC.samples.push({ t: now, g: r.ok ? gKeep : null, run: !!(r.ok && !GT_REC.paused), stopped: moving === false, ...(mr.ok ? {} : { mis: true }), ...(glNow ? { gl: glNow } : {}), ...pxNow, ...(uncal ? { u: 1 } : {}), ...(gate ? { q: gate === "focusing" ? "f" : "l" } : {}) });
     gtGlueWatch(now);
     /* THE READOUT'S LAST TEN MINUTES (14 Oct 2026, the Sikora-style readout): every picture's gap by the clock, across Reel
@@ -7902,7 +7943,9 @@ function gtOwnStats() {
   let expo = null; try { const tr = GT_REC.stream && GT_REC.stream.getVideoTracks()[0]; const st = tr && tr.getSettings ? tr.getSettings() : null; expo = st && st.exposureTime != null ? st.exposureTime : null; } catch (e) { /* older browser */ }
   /* how many readings were the same picture again (22 Oct 2026) — a slow camera shows here, not as false stops */
   const repeatPct = GT_REC.readN > 50 ? Math.round(100 * (GT_REC.repeatN || 0) / GT_REC.readN) : null;
-  return { owner: deviceKey(), device: currentDevice() || null, setup: { hold, backHelp: gtBackHelp(), exposure: expo, build: APP_VERSION, ...(repeatPct != null ? { repeatPct } : {}) } };
+  /* the dial gauge (4 Nov 2026): which way it read, and every zero made — with its picture, so any reel can be worked again */
+  const gauge = gtGaugeOn() ? { way: "gauge", zero: gtZeroNow(), zeros: (GT_REC.zeros || []).slice(-20) } : null;
+  return { owner: deviceKey(), device: currentDevice() || null, setup: { hold, backHelp: gtBackHelp(), exposure: expo, build: APP_VERSION, way: gauge ? "gauge" : gapScaleHere() ? "scale" : "corrections", ...(repeatPct != null ? { repeatPct } : {}) }, ...(gauge ? { gauge } : {}) };
 }
 function gtLiveLeft(t, { liveId = null, device = null, now = Date.now() } = {}) {
   if (!t || t.deleted || !t.stats || t.stats.live !== true || t.reelCode || t.id === liveId) return false;
@@ -9080,8 +9123,9 @@ function GlueLinePortalView({ data, setData }) {
     if (!camOn || !L.ok) { setSetupMsg({ bad: true, t: "The camera has to see both strips while you measure." }); return; }
     if (!st || !st.ok) { setSetupMsg({ bad: true, t: (st && st.n >= GAP_STEADY_MIN_N) ? st.why : gtNoReadingWhy(L, st) }); return; }
     /* the camera's scale (18 Oct 2026): before the first check a new picture may read 5 % out, so the guard is 0.5 mm, not 30 px */
-    const res = gapCorrCheck(setupIn, st.value, L.mmPerPx, L.totPx, scaleWay && L.mmPerPx > 0 ? 0.5 / L.mmPerPx : undefined);
+    const res = gapCorrCheck(setupIn, st.value, L.mmPerPx, L.totPx, (scaleWay || gtGaugeOn()) && L.mmPerPx > 0 ? 0.5 / L.mmPerPx : undefined);
     if (!res.ok) { setSetupMsg({ bad: true, t: res.why }); return; }
+    if (gtGaugeOn()) { const zr = gtGaugeZero(res.hand); if (!zr.ok) { setSetupMsg({ bad: true, t: zr.why }); return; } }
     const odd = gapCheckOdd(setupGood.map(c => c.hand), res.hand), light = gtLightNow();
     const houseSays = !scaleWay && house && house.corr ? gapHouseAgrees(house.corr, res.hand, st.value, L.mmPerPx) : null;
     const c = { ...res, read: st.value, drift: st.drift, n: st.n, level: GT_REC.levelNow || null, light, key: gapCorrKey(spec, light), spec, at: Date.now(), by: currentActor() || null, odd: odd || null, kept: false,
@@ -9180,6 +9224,7 @@ function GlueLinePortalView({ data, setData }) {
     setTick(x => x + 1);
   };
   const doCheck = () => {
+    if (gtGaugeOn()) { doZero(); return; }
     if (scaleWay && gtReaderNew()) { doProof(); return; }
     /* against the camera's STEADY reading, corrected as it is shown (12 Oct 2026 evening) — never one picture */
     const L = GT_REC.last || {}, st = L.steady;
@@ -9208,7 +9253,12 @@ function GlueLinePortalView({ data, setData }) {
   };
   /* CORRECT THE CAMERA TO THE CALLIPERS (12 Oct 2026): the gap measured by hand against what the camera reads before any
      correction, turned into pixels at each edge and kept on this PC; the middle of the last 5 is used. */
+  /* THE DIAL GAUGE'S CHECK: the callipers zero it (gtGaugeZero) — a figure within 0.02 of the camera's is averaged with it */
+  const doZero = () => { const res = gtGaugeZero(checkIn); if (!res.ok) { setCheckMsg({ bad: true, t: res.why }); return; }
+    setData(prev => ({ ...prev, ...appendLog(prev, { action: "update", entity: "gapTrace", entityId: "zero", summary: `Gap camera zeroed to the callipers on ${spec || "—"}: ${res.words}${currentDevice() ? ` on ${currentDevice()}` : ""}` }) }));
+    setCheckIn(""); setCheckMsg({ bad: false, t: `${res.words}.` }); setTick(t => t + 1); };
   const doCorrect = () => {
+    if (gtGaugeOn()) { doZero(); return; }
     if (scaleWay) { if (gtReaderNew()) { doTeach(checkIn); return; } doCheck(); return; }   /* no corrections with the camera's scale — a check teaches it (18 Oct 2026); with the new reader, Correct sets it (25 Oct 2026) */
     const L = GT_REC.last || {}, st = L.steady;
     if (L.ok && st && !st.ok) { setCheckMsg({ bad: true, t: st.why }); return; }
@@ -9578,8 +9628,12 @@ function GlueLinePortalView({ data, setData }) {
             <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <span style={{ fontSize: 14, color: P.sub2 }}>The camera reads <b style={{ ...mono, color: P.ink }}>{g > 0 ? g.toFixed(3) : "—"}</b></span>
               <input data-pt-check-in type="number" step="0.001" inputMode="decimal" aria-label="The gap you measured, mm" placeholder="you measured, mm" value={checkIn} onChange={e => { setCheckIn(e.target.value); setCheckMsg(null); }} style={{ flex: "1 1 140px", minWidth: 0, background: "#FFFFFF", border: "1px solid #CBD2DC", borderRadius: 8, color: P.ink, ...mono, fontSize: 20, fontWeight: 600, padding: "6px 12px", minHeight: 46, boxSizing: "border-box" }} />
-              <button data-pt-check-set disabled={!(g > 0) || String(checkIn).trim() === ""} onClick={doCheck} style={pbtn("plain", { minHeight: 46, opacity: !(g > 0) || String(checkIn).trim() === "" ? 0.5 : 1 })}>Check</button>
-              {(!scaleWay || gtReaderNew()) && <button data-pt-correct disabled={!(g > 0) || String(checkIn).trim() === ""} onClick={doCorrect} style={pbtn("go", { minHeight: 46, opacity: !(g > 0) || String(checkIn).trim() === "" ? 0.5 : 1 })}>Correct the camera</button>}</div>
+              {!gtGaugeOn() && <button data-pt-check-set disabled={!(g > 0) || String(checkIn).trim() === ""} onClick={doCheck} style={pbtn("plain", { minHeight: 46, opacity: !(g > 0) || String(checkIn).trim() === "" ? 0.5 : 1 })}>Check</button>}
+              {(gtGaugeOn() || !scaleWay || gtReaderNew()) && <button data-pt-correct disabled={!(g > 0) || String(checkIn).trim() === ""} onClick={doCorrect} style={pbtn("go", { minHeight: 46, opacity: !(g > 0) || String(checkIn).trim() === "" ? 0.5 : 1 })}>{gtGaugeOn() ? "Zero to the callipers" : "Correct the camera"}</button>}</div>
+            {gtGaugeOn() && (() => { const gz = GT_REC.gauge || {}, z = gz.zero, rd = gz.read;
+              return <div data-pt-gauge={z ? "zeroed" : "none"} style={{ fontSize: 14, fontWeight: 600, color: !z || (rd && !rd.ok) ? "#B45309" : "#166534" }}>
+                {!z ? `Not zeroed for ${gapSizePart(spec) || "this size"} yet — measure the gap with the callipers and press Zero. Until then the figure is the camera's plain reading, in grey.`
+                  : `Zeroed to ${Number(z.hand).toFixed(3)} at ${hhmm(z.at)}${z.n > 1 ? ` (${z.n} checks agreeing)` : ""}${rd && rd.ok ? ` — the gap has moved ${rd.moved >= 0 ? "+" : ""}${rd.moved.toFixed(3)} since` : rd && rd.why === "moved" ? " — the picture has changed size since: zero it again" : ""}.`}</div>; })()}
             {(() => { const k = GT_REC.corr, cs = GT_REC.corrState || {}, mpp = GT_REC.last && GT_REC.last.mmPerPx; if (!k) return null;
               return <div data-pt-corr style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", fontSize: 14, color: cs.on === false ? "#B45309" : "#166534", fontWeight: 600 }}>
                 <span style={{ flex: 1, minWidth: 200 }}>{cs.on === false ? cs.why : `Corrected to the callipers: ${k.px >= 0 ? "+" : ""}${k.px.toFixed(1)} px${mpp ? ` (${k.px * mpp >= 0 ? "+" : ""}${(k.px * mpp).toFixed(3)} mm)` : ""} from ${k.n} check${k.n === 1 ? "" : "s"}${k.n > 1 ? `, ${k.spread > 2 ? `disagreeing by ${k.spread.toFixed(1)} px — measure again` : "agreeing"}` : ""}.`}</span>
@@ -9836,7 +9890,11 @@ function GlueLinePortalView({ data, setData }) {
       <div style={{ fontSize: 22, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{hh}</div>
       <button data-pt-exit onClick={() => go(isAdminLogin() || !screenAllowed("glueline") ? "dashboard" : "glueline")} aria-label="Leave the portal" style={pbtn("plain", { minHeight: 44, padding: "0 16px" })}>Leave</button>
     </header>;
-    const corrBanner = scaleWay ? (recording && lim && live && live.ok && live.uncal ? { k: "uncal", t: calNow && calNow.why === "moved" ? "The camera has moved, or the picture has changed size — check one gap by hand." : "The camera isn't calibrated for this picture yet — check one gap by hand.",
+    const gz = GT_REC.gauge, gzw = gz && gz.read;
+    const corrBanner = gtGaugeOn() ? (recording && lim && live && live.ok && gz ? (!gz.zero ? { k: "zero", t: `The camera isn't zeroed for ${gapSizePart(spec) || "this size"} yet — measure the gap with the callipers and zero it.`, sub: "Until then the gap shows grey and nothing is called in or out of range.", btn: "Zero it" }
+        : gzw && !gzw.ok && gzw.why === "moved" ? { k: "moved", t: "The picture has changed size since the camera was zeroed.", sub: "The camera or its zoom moved — measure the gap with the callipers and zero it again.", btn: "Zero it" }
+        : gzw && gzw.ok && gzw.light ? { k: "light", t: `The light has changed since the camera was zeroed — the strips read ${Math.abs(gzw.light.pct).toFixed(0)} % ${gzw.light.thinner ? "thinner" : "thicker"}.`, sub: "The figure isn't adjusted for it. If it looks wrong, measure with the callipers and zero it again.", btn: "Zero it" } : null) : null)
+      : scaleWay ? (recording && lim && live && live.ok && live.uncal ? { k: "uncal", t: calNow && calNow.why === "moved" ? "The camera has moved, or the picture has changed size — check one gap by hand." : "The camera isn't calibrated for this picture yet — check one gap by hand.",
         sub: "Until then the gap shows grey and nothing is called in or out of range.", btn: "Check by hand" } : null)
       : recording && lim && live && live.ok ? (corrSt.light ? { k: "light", t: "The light has changed since the gap was checked.", sub: `${corrSt.why ? corrSt.why.replace(/^The light has changed since the gap was checked — /, "").replace(/^./, c => c.toUpperCase()) : ""}`, btn: "Check by hand" }
       : corrSt.size ? { k: "size", t: "The picture has changed size since the gap was checked.", sub: "The zoom or the camera moved — the correction isn't being used.", btn: "Check by hand" }
