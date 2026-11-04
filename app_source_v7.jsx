@@ -582,7 +582,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-04.1";
+const APP_VERSION = "2026-11-04.2";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -7310,7 +7310,9 @@ function gtReadOnce() {
     if (!fg.focusing && GT_REC.focusSaidAt && nowR - GT_REC.focusSaidAt > 3000) GT_REC.focusSaidAt = null;
     /* THE LIGHT KEPT STEADY UNDER THE BACKLIGHT (Chris, 4 Nov 2026: "It's an exposure, light issue") — the gap whited out by the day's
        light → a shorter exposure; gone dim → longer (expoServo). Only while the exposure is held (not left to the camera, not Hold by hand). */
-    if (r.ok && r.signal === "darkness" && gtBackHelp() && !GT_REC.trial && !GT_REC.expoBusy && !gtHoldOnHere() && r.levels && r.levels.gap != null) gtExpoServo(255 - Number(r.levels.gap), !!r.clipped, nowR);
+    /* (4 Nov 2026, 12:25 — "the exposure is still badly affecting the trace": the glue line laptop has Backlight help off and Hold on,
+       so 11-04.1's servo never ran) — it runs under the backlight whatever those are set to, and moves Hold's exposure with it */
+    if (r.ok && r.signal === "darkness" && !GT_REC.trial && !GT_REC.expoBusy && r.levels && r.levels.gap != null) gtExpoServo(255 - Number(r.levels.gap), !!r.clipped, nowR);
     /* the strips seen steadily for 2.5 s → the light held (gtSteadyLock); a held light that has since changed so much the strips
        can't be seen for 5 s → let go and held again once the camera has settled */
     if (r.ok) { GT_REC.readFailSince = null; if (!GT_REC.readOkSince) GT_REC.readOkSince = nowR; } else { GT_REC.readOkSince = null; if (!GT_REC.readFailSince) GT_REC.readFailSince = nowR; }
