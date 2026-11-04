@@ -38,7 +38,7 @@ import { deriveData, TRUTH_SCHEMA, TRUTH_INPUT_KEYS } from "./mx_truth.js";
 import { setCloudTruth, cloudTruthDecision, TRUTH_STORE } from "./mx_truthstore.js";
 import { TRUTH_CODE_SHA } from "./mx_truthcode.js";
 import { gsSwitchOn, gsSwitchSet } from "./mx_gapsimple.js";
-import { readBandNew, focusGate, lightGate, gapScaleNow, expoFlickerSafe, gapScaleDoubt, gapProofVerdict, gapProofDue, gapProofStreak, GAP_PROOF_PASS, GAP_PROOF_EARN, gapHouseState, gapHouseAgrees, glueGatherWatch, GAP_HOUSE_PASS, GAP_HOUSE_EARN, GAP_HOUSE_EARN_SIZES, GAP_HOUSE_ONE, GAP_HOUSE_ONE_SIZES } from "./mx_gapread.js";
+import { readBandNew, focusGate, lightGate, gapScaleNow, expoFlickerSafe, expoServo, gapScaleDoubt, gapProofVerdict, gapProofDue, gapProofStreak, GAP_PROOF_PASS, GAP_PROOF_EARN, gapHouseState, gapHouseAgrees, glueGatherWatch, GAP_HOUSE_PASS, GAP_HOUSE_EARN, GAP_HOUSE_EARN_SIZES, GAP_HOUSE_ONE, GAP_HOUSE_ONE_SIZES } from "./mx_gapread.js";
 
 const { useState, useEffect, useMemo, useRef, useCallback } = React;
 
@@ -582,7 +582,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-03.3";
+const APP_VERSION = "2026-11-04.1";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -7308,6 +7308,9 @@ function gtReadOnce() {
     GT_REC.quality = { at: nowR, gate, focusing: fg.focusing, lightHold: lgt.hold, sharp: r.ok ? r.sharp || null : null, usual: fg.usual, contrast: r.ok ? r.contrast || null : null, clipped: !!(r.ok && r.clipped) };
     if (gate === "focusing" && !GT_REC.focusSaidAt) { GT_REC.focusSaidAt = nowR; gtLog("The camera is focusing — its pictures are soft, so they're not being used until it settles", "#F59E0B"); }
     if (!fg.focusing && GT_REC.focusSaidAt && nowR - GT_REC.focusSaidAt > 3000) GT_REC.focusSaidAt = null;
+    /* THE LIGHT KEPT STEADY UNDER THE BACKLIGHT (Chris, 4 Nov 2026: "It's an exposure, light issue") — the gap whited out by the day's
+       light → a shorter exposure; gone dim → longer (expoServo). Only while the exposure is held (not left to the camera, not Hold by hand). */
+    if (r.ok && r.signal === "darkness" && gtBackHelp() && !GT_REC.trial && !GT_REC.expoBusy && !gtHoldOnHere() && r.levels && r.levels.gap != null) gtExpoServo(255 - Number(r.levels.gap), !!r.clipped, nowR);
     /* the strips seen steadily for 2.5 s → the light held (gtSteadyLock); a held light that has since changed so much the strips
        can't be seen for 5 s → let go and held again once the camera has settled */
     if (r.ok) { GT_REC.readFailSince = null; if (!GT_REC.readOkSince) GT_REC.readOkSince = nowR; } else { GT_REC.readOkSince = null; if (!GT_REC.readFailSince) GT_REC.readFailSince = nowR; }
@@ -7443,6 +7446,24 @@ function gtReadOnce() {
    and colour stop adjusting themselves: the exposure at what the camera had chosen, put on a whole number of hundredths of a
    second so the lights' mains flicker evens out (expoFlickerSafe) — or exactly where it is if this size has been checked today,
    so the light the checks saw doesn't move. Not with Hold on (that holds them already), and not after "Let it adjust itself". */
+function gtExpoServo(gapBright, clipped, nowR) {
+  const tr = GT_REC.stream && GT_REC.stream.getVideoTracks()[0]; if (!tr) return;
+  if (!(GT_REC.expoCur > 0) || nowR - (GT_REC.expoCurAt || 0) > 10000) { let st = {}; try { st = tr.getSettings() || {}; } catch (e) {}
+    GT_REC.expoCur = st.exposureMode === "manual" && Number(st.exposureTime) > 0 ? Number(st.exposureTime) : null; GT_REC.expoCurAt = nowR; }
+  const cur = GT_REC.expoCur; if (!(cur > 0)) return;
+  let caps = {}; try { caps = (tr.getCapabilities && tr.getCapabilities().exposureTime) || {}; } catch (e) {}
+  const sv = expoServo(GT_REC.expoSt, { gap: gapBright, clipped }, nowR, { cur, min: caps.min, max: Math.min(GT_BACK_EXPO_MAX, Number(caps.max) > 0 ? Number(caps.max) : Infinity) });
+  GT_REC.expoSt = sv.st; if (!sv.want) return;
+  const want = gtExpoFit(tr, sv.want); if (!(want > 0) || Math.abs(want - cur) < 0.5) return;
+  GT_REC.expoBusy = true;
+  tr.applyConstraints({ advanced: [{ exposureMode: "manual", exposureTime: want }] }).then(() => {
+    GT_REC.expoCur = want; GT_REC.expoCurAt = Date.now();
+    if (GT_REC.backLocked) GT_REC.backLocked = { ...GT_REC.backLocked, to: want }; if (GT_REC.steadyLock && GT_REC.steadyLock.to) GT_REC.steadyLock = { ...GT_REC.steadyLock, to: want };
+    try { const h = JSON.parse(localStorage.getItem("mxGapCamHold") || "null") || { on: false, values: {} }; h.slid = { ...(h.slid || {}), exposureTime: want }; h.slidBack = true; localStorage.setItem("mxGapCamHold", JSON.stringify(h)); } catch (e) { /* private mode */ }
+    const words = `Light kept steady: ${sv.why} — exposure 1/${Math.round(10000 / cur)} s → 1/${Math.round(10000 / want)} s`;
+    gtLog(words, "#60A5FA"); if (GT_REC.recording) GT_REC.marks.push({ t: Date.now(), note: words });
+  }).catch(() => { GT_REC.expoCur = null; }).finally(() => { GT_REC.expoBusy = false; });
+}
 function gtHoldOnHere() { try { const h = JSON.parse(localStorage.getItem("mxGapCamHold") || "null"); return !!(h && h.on); } catch (e) { return false; } }
 function gtBandMean(px) { let sum = 0, cnt = 0; for (let i = 0; i < px.length; i += 4 * 37) { sum += (px[i] + px[i + 1] + px[i + 2]) / 3; cnt++; } return cnt ? sum / cnt : 0; }
 async function gtSteadyLock(px) {
