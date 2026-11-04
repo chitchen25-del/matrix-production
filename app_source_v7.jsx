@@ -24,7 +24,7 @@ import { PRICE_CURRENCIES, QUOTE_LOST_REASONS, QUOTE_VALID_DAYS, customerRecordB
 import { orderWithPromise, promiseBehind, promiseDay, promiseOf, promiseStats, promiseWrite } from "./mx_promise.js";
 import { OFFICE_AMBER_DAYS, OFFICE_RED_DAYS, officeAged, officeAgeTone, officeAgeWords, officeEntryWords, officeGuess, officeHistory, officeItems, officeKindWords, officeScreenOf, officeTally } from "./mx_office.js";
 import { OVERNIGHT_MORNINGS, TRUTHS, TRUTH_SHORT, UNDO_CAUSES, WRONG_KINDS, activityDay, causesLines, changesetMatches, describeChangeset, foundWords, healthView, overnightPolicyWords, proposedRowWords, reelDoubleSaves } from "./mx_fix.js";
-import { edgesWander, motionVoted, isRepeatPicture, stripWidthsMm, widthsSteady } from "./mx_gaptrace.js";
+import { edgesWander, motionVoted, isRepeatPicture, stripWidthsMm, widthsSteady, beadForget, GAP_BEAD_RELEARN_STOP_MS } from "./mx_gaptrace.js";
 import { GAP_LIGHT_SHIFT, gapCalChecks, gapScaleFor, gapCalVerdict, gapWidthSeen, gapTraceUncal, gapMarkUncal, gapReelGapFrom, glueGapProblem, gapPointUncal, GAP_CAL_AGREE, GAP_CAL_DRIFT_RUN } from "./mx_gaptrace.js";
 import { glueRuns, reelGlueFault, GLUE_MIN_MM, GLUE_OPEN_END_M, GLUE_LINE_M, GLUE_CAUSES } from "./mx_gaptrace.js";
 import { learnedLineSpeed, gapMayLink, glueReelTraceKeep, gapCarryOf, gapJoinTraces, gapNextPiece, misreadStep, centringHint, reelGapWarning, gapCorrFor, gapSizePart, GAP_CORR_DAY_MAX, GAP_CORR_SIZE_AGREE, READOUT_SPAN_MS, READOUT_BIN_MS, GT_WOBBLE_FLAG, readoutTrend, readoutFigures, HAUL_MIN_LEARN_M, GAP_STEADY_MIN_N, CAM_GOOD_MM, CAM_OK_MM, camMetrics, blockCalib, blockHeights, heightOfSpec, CAP_FACTOR_REELS, CPK_WORDS, GAP_BAND_ROWS, GAP_LIMITS_DEFAULT, GAP_VERDICT_WORDS, GAP_LIGHT_WORDS, GAP_SETUP_CHECKS, gapTraceWaiting, gapNextTraceNo, gapPickWaiting, glueTraceChoice, glueReelWants, gapLiveFresh, gapLinkTrace, gapUnlinkTrace, glueDayTimeline, gapMoveCut, gapOffsets, nomOf, gapLightOf, gapRangeOf, gapCorrKey, gapCorrSets, lightShift, steadyRaw, gapWander, gapCheckOdd, binTrace, capability, sizeCapability, colourNameOf, haulFactor, haulMatch, rowProfile, gapCheck, gapCorrCheck, gapCorrection, gapCorrStands, gapLimitsFor, gapRecordDoc, motionGate, patchDiff, gapTraceRow, gapVerdict, guessStripColour, gapSteady, metresAlong, readBand, reelLoggedSince, sizeCheck, sizesDiffer, suggestSizes, traceEvents, traceStats, widthFrom, widthMmFor, widthValid } from "./mx_gaptrace.js";
@@ -582,7 +582,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-04.3";
+const APP_VERSION = "2026-11-04.5";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -7369,6 +7369,8 @@ function gtReadOnce() {
   const g = sd.shown;
   /* is the line moving? the middle of each strip, a tenth of a second apart, against the still background beside them */
   const M = GT_REC.mot, e = r.ok && r.edges;
+  /* the strips out of sight for a minute or more (the reel being changed) → their widths learned again when they're back */
+  if (e) { const tS = Date.now(); if (GT_REC.edgesSeenAt && tS - GT_REC.edgesSeenAt >= GAP_BEAD_RELEARN_STOP_MS) gtStripsRelearn(`the strips were out of sight ${Math.round((tS - GT_REC.edgesSeenAt) / 1000)} s`); GT_REC.edgesSeenAt = tS; }
   if (e) {
     const ph = Math.max(24, Math.round(h * 0.16)), py = Math.max(0, Math.min(h - ph, Math.round(lineY * h - ph / 2)));
     const sa = e.a1 - e.a0, sb = e.b1 - e.b0, bw = Math.max(sa, sb) * 0.6;
@@ -7387,6 +7389,9 @@ function gtReadOnce() {
       GT_REC.motion = motionVoted(GT_REC.motionGate, GT_REC.edgeWander);
       /* the line stopping and starting goes on the portal's list of what happened */
       if (GT_REC.motion.trusted && was.trusted && was.moving !== GT_REC.motion.moving) gtLog(GT_REC.motion.moving ? "Line moving again" : "Line stopped — metres held", GT_REC.motion.moving ? "#60A5FA" : "#94A3B8");
+      /* a stop of a minute or more (a reel change) → the strips' widths learned again (beadForget, 4 Nov 2026) */
+      if (GT_REC.motion.trusted && GT_REC.motion.moving === false && !GT_REC.stillSince) GT_REC.stillSince = tE;
+      if (GT_REC.motion.trusted && GT_REC.motion.moving === true && GT_REC.stillSince) { const sMs = tE - GT_REC.stillSince; GT_REC.stillSince = null; if (sMs >= GAP_BEAD_RELEARN_STOP_MS) gtStripsRelearn(`the line was stopped ${Math.round(sMs / 1000)} s`); }
       if (GT_REC.motion.vetoed && !(was && was.vetoed)) gtLog("Strip texture looked still, but the edges are moving — not a stop", "#94A3B8");
     }
   } else { M.A = M.B = M.Bg = null; GT_REC.edgeHist = []; }
@@ -7448,6 +7453,14 @@ function gtReadOnce() {
    and colour stop adjusting themselves: the exposure at what the camera had chosen, put on a whole number of hundredths of a
    second so the lights' mains flicker evens out (expoFlickerSafe) — or exactly where it is if this size has been checked today,
    so the light the checks saw doesn't move. Not with Hold on (that holds them already), and not after "Let it adjust itself". */
+/* A STOP STARTS THE STRIPS AGAIN (4 Nov 2026, 15:41 — a new Mylar reel taken for glue, the reading 0.2 high then 0.12 low after a
+   correction): the strips' usual widths are forgotten, learned again from the next pictures (beadForget) */
+function gtStripsRelearn(why) {
+  if (!GT_REC.steady || !(GT_REC.steady.bw || GT_REC.steady.bg)) return;
+  GT_REC.steady = beadForget(GT_REC.steady);
+  const words = `Strips' widths learned again — ${why} (a new reel can look different; it isn't taken for glue)`;
+  gtLog(words, "#60A5FA"); if (GT_REC.recording) GT_REC.marks.push({ t: Date.now(), note: words });
+}
 function gtExpoServo(gapBright, clipped, nowR) {
   const tr = GT_REC.stream && GT_REC.stream.getVideoTracks()[0]; if (!tr) return;
   if (!(GT_REC.expoCur > 0) || nowR - (GT_REC.expoCurAt || 0) > 10000) { let st = {}; try { st = tr.getSettings() || {}; } catch (e) {}
@@ -41566,7 +41579,10 @@ function ExtrusionView({ data, setData }) {
   const exSimple = extrusionSimpleHere();
   const [exSheet, setExSheet] = useState(null);   // null | { kind: "settings" } | { kind: "size" } | { kind: "reel", id }
   const [exPendingLog, setExPendingLog] = useState(false);
-  const byNewest = (a, b) => String(b.updatedAt || b.date || "").localeCompare(String(a.updatedAt || a.date || "")) || String(b.batchNumber || "").localeCompare(String(a.batchNumber || ""));
+  /* newest MADE first — the day in the reel's code (EXK60451 = 4 Nov 2026), then the reel number; an edit to an old reel (updatedAt)
+     no longer brings it to the top (4 Nov 2026: August's PPLH60351 sat above today's EXK60451) */
+  const madeKey = (r) => `${extrudedOn(r) || ""}|${String(r.batchNumber || "").slice(-2)}`;
+  const byNewest = (a, b) => madeKey(b).localeCompare(madeKey(a)) || String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")) || String(b.batchNumber || "").localeCompare(String(a.batchNumber || ""));
   const exNewest = rows.filter(r => r && !r.deleted).slice().sort(byNewest);
   const exLast = exNewest[0] || null;
   const exLastOf = (spec) => exNewest.find(r => r.productSize === spec) || null;
@@ -41720,26 +41736,28 @@ function ExtrusionView({ data, setData }) {
 
       </Panel>
 
+      {/* RECENT BATCHES — NEWEST FIRST (Chris, 4 Nov 2026: "change it so it shows recently made with the ability to print a label"):
+          it followed the table's sort (by size, A–Z), so today's reel was nowhere near the top. */}
       {/* RECENT BATCHES, the way Bonding and Glue line list theirs. The full
           table stays below for the office; this is the one you read across the
           room. Same cues throughout: colour chip from the printed chart,
           profile glyph, the number biggest, hollow chip until checked. */}
-      {sortedExtrusionRows.length > 0 && (
+      {exNewest.length > 0 && (
         <Panel className="p-4 mb-5 no-print">
           <div className="flex items-baseline justify-between gap-4 mb-1" style={{ paddingBottom: 8, borderBottom: `2px solid ${NAVY_DEEP}` }}>
             <h2 style={{ margin: 0, fontSize: 19, fontWeight: 600, color: NAVY_DEEP }}>Recent batches</h2>
             <span style={{ fontSize: 14, color: INK_MUTED }}>
-              {sortedExtrusionRows.length} batch{sortedExtrusionRows.length === 1 ? "" : "es"},{" "}
-              {sortedExtrusionRows.reduce((t, r) => t + (Number(r.meterage) || 0), 0).toLocaleString("en-GB")} m
+              {exNewest.length} batch{exNewest.length === 1 ? "" : "es"},{" "}
+              {exNewest.reduce((t, r) => t + (Number(r.meterage) || 0), 0).toLocaleString("en-GB")} m
             </span>
           </div>
-          {sortedExtrusionRows.slice(0, exListShown).map((r, i) => {
+          {exNewest.slice(0, exListShown).map((r, i) => {
             const checked = String(r.checked) === "Yes";
             const col = productColourFor(r.productSize || `${r.range || ""} ${r.size || ""}`);
             const spec = r.productSize || `${r.range || ""} ${r.size || ""}`.trim();
             return (
               <div key={r.id} className="mx-glue-row" style={{ display: "grid", gap: "0 18px", padding: "13px 0",
-                        borderBottom: i < Math.min(exListShown, sortedExtrusionRows.length) - 1 ? `1px solid ${BORDER}` : "none" }}>
+                        borderBottom: i < Math.min(exListShown, exNewest.length) - 1 ? `1px solid ${BORDER}` : "none" }}>
                 <div className="font-mono" style={{ fontSize: 16, fontWeight: 600, display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
                   <span title={col ? col.name + (checked ? "" : " — not yet checked") : ""} style={{ width: 6, height: 14, borderRadius: 1.5, flexShrink: 0,
                     background: checked ? (col?.hex || "transparent") : "transparent",
@@ -41785,7 +41803,7 @@ function ExtrusionView({ data, setData }) {
                   <button data-ex-reprint={r.batchNumber} onClick={() => setExLabelJob(queuePrint(setData, { kind: "exReel", ref: r.batchNumber, doc: extrusionReelLabelDoc(r, code128Svg), label: `extruded reel ${r.batchNumber} (reprint)` }))}
                     className="no-print mt-2 ml-2 text-xs"
                     style={{ minHeight: 34, padding: "0 12px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", color: NAVY, fontWeight: 600, cursor: "pointer" }}>
-                    🖨 Label
+                    🖨 Print label
                   </button>
                 </div>
                 {editingId === r.id && (
@@ -41811,10 +41829,10 @@ function ExtrusionView({ data, setData }) {
               </div>
             );
           })}
-          {sortedExtrusionRows.length > exListShown && (
+          {exNewest.length > exListShown && (
             <button onClick={() => setExListShown(v => v + 20)}
               style={{ font: "inherit", display: "block", width: "100%", textAlign: "left", background: "none", border: 0, color: NAVY, cursor: "pointer", padding: "14px 0 0", fontSize: 14.5 }}>
-              Show {Math.min(20, sortedExtrusionRows.length - exListShown)} more of {sortedExtrusionRows.length}
+              Show {Math.min(20, exNewest.length - exListShown)} more of {exNewest.length}
             </button>
           )}
         </Panel>
