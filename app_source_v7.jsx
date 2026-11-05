@@ -583,7 +583,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-05.3";
+const APP_VERSION = "2026-11-05.4";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -21561,14 +21561,21 @@ function setOrderNoPallets(setData, orderId, on) {
    its size; the cases not on a pallet yet; the weights sheet. Loose: one card, the total, and a photo of the cases. */
 function PalletsPanel({ data, setData, order, groups, caseWeights, palletWeights, setPalletWeights, palletDims, setPalletDim, allCaseNums, onPrintWeights }) {
   const loose = !!order.noPallets; const ph = usePalletPhotos(order.id); const [big, setBig] = useState(null);
-  const named = (groups || []).filter(g => g.label !== "Unassigned"), un = (groups || []).find(g => g.label === "Unassigned");
+  /* A PALLET WEIGHED EMPTY, BEFORE ANYTHING'S STACKED ON IT (Chris, 5 Nov 2026, 11:06: "I want the ability to load in the pallet
+     weight before I stack onto it"). "+ Weigh an empty pallet" opens the next pallet's card with nothing on it; its weight is kept
+     (palletWeights) and the cases join it as they're weighed onto that pallet number. An empty pallet goes on no manifest. */
+  const [adding, setAdding] = useState(null);
+  const caseGroups = (groups || []).filter(g => g.label !== "Unassigned"), un = (groups || []).find(g => g.label === "Unassigned");
+  const emptyLabels = [...new Set([...Object.keys(palletWeights || {}).filter(l => Number(palletWeights[l]) > 0), ...(adding ? [adding] : [])])].filter(l => !caseGroups.some(g => g.label === l));
+  const named = [...caseGroups, ...emptyLabels.map(l => ({ label: l, cases: [], weight: 0, empty: true }))].sort((a, b) => String(a.label).localeCompare(String(b.label), undefined, { numeric: true }));
+  const nextPallet = String(Math.max(0, ...named.map(g => parseInt(g.label, 10)).filter(n => n > 0)) + 1);
   const kg = (v) => `${Math.round((Number(v) || 0) * 100) / 100} kg`;
   const unweighed = (allCaseNums || []).filter(n => !(Number(caseWeights[n]) > 0));
   const casesKg = (allCaseNums || []).reduce((t, n) => t + (Number(caseWeights[n]) || 0), 0);
   const photosOf = (l) => ph.rows.filter(r => String(r.pallet || "1") === String(l));
   const dimsOf = (l) => (palletDims || {})[l] || {};
-  const ready = (g) => Number(palletWeights[g.label]) > 0 && ["h", "w", "d"].every(k => Number(dimsOf(g.label)[k]) > 0) && photosOf(g.label).length > 0 && g.cases.every(n => Number(caseWeights[n]) > 0);
-  const readyN = named.filter(ready).length;
+  const ready = (g) => !g.empty && Number(palletWeights[g.label]) > 0 && ["h", "w", "d"].every(k => Number(dimsOf(g.label)[k]) > 0) && photosOf(g.label).length > 0 && g.cases.every(n => Number(caseWeights[n]) > 0);
+  const readyN = caseGroups.filter(ready).length;
   const card = { background: "#fff", borderRadius: 16, boxShadow: "0 1px 2px rgba(27,43,107,0.08)", padding: 12, display: "flex", flexDirection: "column", gap: 10 };
   const fieldSt = { height: 38, borderRadius: 10, border: 0, background: NL.PANEL, textAlign: "center", fontFamily: NLT.FONT, fontSize: 15, fontWeight: 600, color: NL.INK, padding: 0, minHeight: 0 };
   const photoBlock = (label, title) => { const mine = photosOf(label); const saving = ph.busy === label;
@@ -21584,7 +21591,7 @@ function PalletsPanel({ data, setData, order, groups, caseWeights, palletWeights
     style={{ flex: 1, height: 38, border: 0, borderRadius: 10, background: on ? "#fff" : "none", boxShadow: on ? "0 1px 2px rgba(0,0,0,0.08)" : "none", fontFamily: NLT.FONT, fontSize: 14, fontWeight: on ? 700 : 500, color: on ? NL.INK : NL.SUB, whiteSpace: "nowrap" }}>{t}</button>;
   return (<div data-nl5-pallets={loose ? "loose" : "pallets"} className="no-print" style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 18, fontFamily: NLT.FONT, color: NL.INK }}>
     <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}><span style={{ fontSize: 21, fontWeight: 700 }}>Pallets</span><span style={{ flex: 1 }} />
-      <span style={{ fontSize: 13, fontWeight: loose || !named.length ? 400 : 700, color: !loose && named.length && readyN === named.length ? NL.OK : NL.SUB }}>{loose ? "loose cases" : named.length ? `${readyN} of ${named.length} ready` : "weight · size · photo"}</span></div>
+      <span style={{ fontSize: 13, fontWeight: loose || !caseGroups.length ? 400 : 700, color: !loose && caseGroups.length && readyN === caseGroups.length ? NL.OK : NL.SUB }}>{loose ? "loose cases" : caseGroups.length ? `${readyN} of ${caseGroups.length} ready` : "weight · size · photo"}</span></div>
     <div style={{ display: "flex", background: "#E4E8F0", borderRadius: 12, padding: 3 }}>{sw(!loose, "pallets", "On pallets")}{sw(loose, "loose", "No pallet — loose cases")}</div>
     {loose ? (<div data-nl5-loose style={{ ...card, borderLeft: `4px solid ${NL.NAVY}` }}>
       <b style={{ fontSize: 17 }}>Going as {(allCaseNums || []).length} loose case{(allCaseNums || []).length === 1 ? "" : "s"}</b>
@@ -21593,6 +21600,13 @@ function PalletsPanel({ data, setData, order, groups, caseWeights, palletWeights
       <span style={{ fontSize: 12.5, color: NL.SUB }}>Back to <b>On pallets</b> any time — the cases keep the pallet numbers they had.</span>
     </div>) : (<>
       {named.map(g => { const d = dimsOf(g.label), ok = ready(g);
+        if (g.empty) return (<div key={g.label} data-nl5-pallet-empty={g.label} style={{ ...card, borderLeft: `4px solid ${NL.NAVY}` }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}><b style={{ fontSize: 18 }}>Pallet {g.label}</b><span style={{ fontSize: 13, color: NL.SUB }}>empty — nothing stacked yet</span><span style={{ flex: 1 }} />
+            <button type="button" data-nl5-pallet-empty-remove={g.label} onClick={() => { const w = { ...palletWeights }; delete w[g.label]; setPalletWeights(w); if (adding === g.label) setAdding(null); }} style={{ border: 0, background: "none", color: NL.SUB, fontFamily: NLT.FONT, fontSize: 13, fontWeight: 600, padding: 0 }}>Remove</button></div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, flexWrap: "wrap" }}><span style={{ color: NL.SUB }}>The pallet on its own</span>
+            <span data-nl5-pallet-tare={g.label} style={{ width: 92 }}><WeightInput value={palletWeights[g.label]} onCommit={v => { setPalletWeights({ ...palletWeights, [g.label]: v }); if (adding === g.label) setAdding(null); }} /></span></div>
+          <span style={{ fontSize: 12.5, color: NL.SUB }}>Stack the cases on it, and put each on <b>pallet {g.label}</b> as it's weighed — the pallet's weight is already here.</span>
+        </div>);
         return (<div key={g.label} data-nl5-pallet={g.label} style={{ ...card, borderLeft: `4px solid ${ok ? "#2F7D4F" : NL.NAVY}` }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}><b style={{ fontSize: 18 }}>Pallet {g.label}</b><span style={{ fontSize: 13, color: NL.SUB }}>{g.cases.length} case{g.cases.length === 1 ? "" : "s"}</span><span style={{ flex: 1 }} />
             <span style={{ fontSize: 12.5, fontWeight: 700, color: ok ? NL.OK : NL.AMBERTXT }}>{ok ? "✓ ready for the manifest" : [!photosOf(g.label).length && "photo", !(Number(palletWeights[g.label]) > 0) && "weight", !["h", "w", "d"].every(k => Number(d[k]) > 0) && "size"].filter(Boolean).join(", ") + (g.cases.every(n => Number(caseWeights[n]) > 0) ? " to do" : " to do · cases to weigh")}</span></div>
@@ -21607,6 +21621,8 @@ function PalletsPanel({ data, setData, order, groups, caseWeights, palletWeights
         </div>); })}
       {un && un.cases.length > 0 && <div data-nl5-pallet-none style={{ background: "#FFF8EF", border: "1px solid #F1D3A8", borderRadius: 12, padding: "9px 12px", fontSize: 13.5, color: "#8A4B00" }}>
         <b>{un.cases.length} case{un.cases.length === 1 ? "" : "s"} not on a pallet yet</b> ({caseRunsLabel(un.cases)}) — {named.length ? "each gets its pallet as it's weighed (Weigh cases)." : "choose each one's pallet as it's weighed (Weigh cases), or switch to No pallet."}</div>}
+      <button type="button" data-nl5-pallet-add={nextPallet} onClick={() => { nlHaptic(); setAdding(nextPallet); }} disabled={!!adding && !(Number(palletWeights[adding]) > 0)}
+        style={{ height: 46, borderRadius: 12, border: `1.5px dashed ${NL.NAVY}`, background: "#fff", color: NL.NAVY, fontFamily: NLT.FONT, fontSize: 15, fontWeight: 700, opacity: adding && !(Number(palletWeights[adding]) > 0) ? 0.5 : 1 }}>+ Weigh an empty pallet (pallet {nextPallet})</button>
     </>)}
     {ph.err && <div data-pallet-photo-err style={{ fontSize: 13.5, color: "#B3261E", fontWeight: 600 }}>{ph.err}</div>}
     <button type="button" data-nl5-weights-sheet onClick={onPrintWeights} style={{ height: 46, borderRadius: 12, border: "1.5px solid #DDE0E8", background: "#fff", color: NL.NAVY, fontFamily: NLT.FONT, fontSize: 15, fontWeight: 600 }}>🖨 Weights sheet</button>
