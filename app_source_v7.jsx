@@ -583,7 +583,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-05.7";
+const APP_VERSION = "2026-11-05.8";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -48276,7 +48276,11 @@ function App() {
   /* Only what a push reports as LANDED counts — not the local snapshot, which also advances when
      the device is offline or in test mode. So green can only ever mean the database said yes. */
   const cloudIdsRef = useRef(new Set());
+  const landedAtRef = useRef({});   // "table|id" → when a send of it landed (5 Nov 2026 — see mergeById's `settled`)
   const noteLanded = (landed) => {
+    const t = Date.now(), at = landedAtRef.current;
+    for (const l of (landed || [])) if (l && l.table && l.id) at[`${l.table}|${l.id}`] = t;
+    if (Object.keys(at).length > 5000) for (const k of Object.keys(at)) if (t - at[k] > 600000) delete at[k];
     for (const l of (landed || [])) if (l && l.table === "movements" && l.id) cloudIdsRef.current.add(l.id);
     try { window.dispatchEvent(new Event("mx-synced")); } catch (e) {}
   };
@@ -48908,8 +48912,14 @@ function dataContainsId(storedData, id) {
     const nowMs = Date.now();
     for (const [key, { table, cols }] of Object.entries(SYNC_TABLES)) {
       const owedHere = owedFields(table, cols);
+      /* Nothing of this device's own on the row: nothing owed, no unsent delete, not changed here since the cloud was asked,
+         no send of it landed since (the answer may have been read before it arrived). Then the cloud's copy stands, however
+         this device dated its own — see mergeById (5 Nov 2026, the weights Dave's PC never showed). */
+      const askedAt = (remote && remote.__fetchedAt && remote.__fetchedAt[table]) || nowMs;
+      const settled = (id, local) => !owedHere[id] && !(pending && pending.has(id))
+        && !(Date.parse((local && local.updatedAt) || "") > askedAt) && !((landedAtRef.current[`${table}|${id}`] || 0) > askedAt - 2000);
       merged[key] = mergeById(currentData[key], remote[key], pending, key === "orders" ? ORDER_MAP_MERGE_FIELDS : null, owedHere,
-        (id, fields) => clashes.push({ table, id, fields }));
+        (id, fields) => clashes.push({ table, id, fields }), settled);
       /* A column this device changed and still owes that the cloud still doesn't hold, well after the change —
          a send that never went (the safety net; see lostOwedColumns). Only this device's own owed columns. */
       for (const l of lostOwedColumns(currentData[key], remote[key], owedHere, (remote && remote.__fetchedAt && remote.__fetchedAt[table]) || nowMs)) {
