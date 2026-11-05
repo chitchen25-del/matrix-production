@@ -14,7 +14,7 @@ import { ackVatKey, orderAddressFor, tidyAddress, newerShipmentFor, shippedDayOf
 import { ALL_GLUE_DIES, dpCardsState, dpClearReelEstimate, DEFAULT_SCHEDULE_SETTINGS, GLUE_DIES_10MM, GLUE_DIES_12MM, GLUE_DIES_7MM, GLUE_DIES_7MM_OS, GLUE_DIE_12_DOUBLE, GLUE_DIE_GROUPS, SMALL_KEYWORDS, ULTRA_SR_COLOURS, WORK_HOURS, addWorkHours, addWorkingDays, batchMeterageUsed, glueReelHours, planDayAmount, workDayFraction, rackReels, reelIsCleared, reelState, reelUsedByCode, scrappedReelCodes, buildDailyPlan, classifySize, dueDateLabel, dueDateRows, formatOrderBreakdown, gapFromSpec, glueDiesForSpec, glueLineSequence, glueSizeOfProduct, glueReelPool, glueUsableFrom, scheduleTweaksOf, glueChangeBetween, scheduleRulesOf, glueChangeoverStats, learnFromTweaks, glueRangeOf, LEARN_AFTER, glueReelOffAt, SAME_PVC_CHANGE_MIN, hoursOn, isDelivery, isSmallItem, localDateKey, measuredRates, nextWorkMoment, nextWorkingMorning, orderDialSegments, orderFinishDates, planOrderCompare, glueListOrdersFor, packingReadyRows, packingReadyRowsStored, planDaysUntil, planDueReason, planScore, planSlips, planSnapshotRow, promiseOptions, readyToShip, schedulePrep, scheduleSettingsOf, sizeKeyOfProduct, top2PriorityOrders, top2SizeRows, unrankableOrders, workCalendar } from "./mx_planning.js";
 import { pvcCodeCheck, BONDING_BOXES_PER_DAY_MIN, DERIVED_RUN_GAP_HOURS, DERIVED_RUN_KEYS, EVA_YIELD_MIN_SAMPLE, GLUE_MEASURE_TOLERANCE_PCT, PVC_COLOUR_BY_HEIGHT, PVC_DEFAULT_COLOUR, REEL_METRES_TYPICAL, batchDeleteWarning, bondingOutputByDay, categoryLowest, categoryTotal, deriveRuntimeHours, derivedGlueRuns, evaDieForRow, evaRackRows, evaYieldByDie, extrudedReelCheck, extrudedReelsForSize, extrudedReelsForSpec, extrudedReelsMatching, extrusionScheduleRows, glueDieByLabel, glueDiesForWidthOf, glueLineScheduleRows, glueLineScheduleRowsFresh, glueRunReels, glueRunTarget, glueRunTotals, glueSizeKey, glueSpecMalformed, lastGlueBatchUsed, lastToolingUse, toolingUseHistory, glueDieUseHistory, glueDieSpells, learnedReelMetres, materialBatchCode, materialStockFrom, materialsGroupedByCategory, metersPerBoxWarning, minutesSinceLastReel, normalWeightFor, productPipeline, pvcCodeForSpec, pvcColourForSpec, recommendedBatch, recordMaterialMovement, reelCapacityWarning, reelDiscrepancy, reelIsIndirect, reelOverConsumption, runningReelDiscrepancy, samePin, toolingUnplaced, unknownReelWarning, withGlueRunSettings, withMaterialFigures, withPrefixFor, evaOutlook, evaDieForSpec, evaCodeFacts, EXTRUDED_REEL_SOFT_DAYS, extrudedOn } from "./mx_production.js";
 // (mx_promises.js — the retired promise readers — removed 24 Sep 2026)
-import { CARTON_MEMO, CORRECTED_OUT, CORRECTED_RUNS, DEFAULT_BOX_TYPE, GLUE_REEL_FROM_RUN_KEYS, GLUE_RUN_SETTING_KEYS, INDIRECT_HISTORY_SAMPLE, KEN_BOX_TYPE, MEMO_STATS, MEMO_STORE, METERS_PER_BOX_DEFAULT, NO_PROMISES, SPEC_REF_CACHE, batchesAvailableRowsStored, bondingOffer, boxTypeNameOf, kPinEquivalent, boxedStockAvailable, boxedStockAvailableFresh, boxedStockAvailableStored, cartonStockFor, cartonStockForFresh, doubleGapOf, evaDiesForGap, extractMeterageSuffix, formById, formIdFor, fullerSpec, glueLineScheduleRowsStored, glueRunOf, glueSettingsFor, groupAssignedRunsByLineItem, isExceed, isKenPin, isMini, isOffCentre, isReelSpec, ledgerCorrectedRuns, ledgerCorrectedRunsFresh, ledgerView, localISO, looseSpecMatch, memoCall, memoDeepFreeze, memoGlobals, memoSameArg, mergeSplitRuns, normalizeSpec, orderBoxTypeFor, orderLineItems, orderMadeQty, orderOutstanding, orderPctComplete, orderPctCompleteStored, orderProgress, orderStageNow, stageNow, dueStateOf, dueCounts, isLiveOrder, isLiveWork, isWebsiteRequest, lineNeeds, reelPoolsOf, reelYieldStats, reelBoxesHonest, orderPickable, orderPickablePercent, orderPickablePercentStored, orderTotalItems, orderTotalValue, otherStockBalance, otherStockUsed, pickableNow, pickableNowFresh, predictRunDestinations, productKey, productParts, productRowKey, sameProductParts, productionOutstandingRows, productionOutstandingRowsFresh, productionOutstandingRowsStored, ptOf, rangeBoxFor, refsEquivalent, resolveProduct, runCustomer, runMatchesLine, runsForOrder, runsIndirect, runsIndirectByRule, sameSizeSpec, shelfBoxFitsBoxType, specCandidateIndex, specDimensions, specIsReel, specMeterage, specRef, sizeSortPair, daysFromTodayISO, metresPerBoxFor, stockFormMatchesLine, todayISO, whatsLeftRows , glueLineNeedRowsAll, resolveOrderLine, planReels, uncheckedShelfStock, tapeLast } from "./mx_stock.js";
+import { bondedAsBoxes, reelAsBoxes, CARTON_MEMO, CORRECTED_OUT, CORRECTED_RUNS, DEFAULT_BOX_TYPE, GLUE_REEL_FROM_RUN_KEYS, GLUE_RUN_SETTING_KEYS, INDIRECT_HISTORY_SAMPLE, KEN_BOX_TYPE, MEMO_STATS, MEMO_STORE, METERS_PER_BOX_DEFAULT, NO_PROMISES, SPEC_REF_CACHE, batchesAvailableRowsStored, bondingOffer, boxTypeNameOf, kPinEquivalent, boxedStockAvailable, boxedStockAvailableFresh, boxedStockAvailableStored, cartonStockFor, cartonStockForFresh, doubleGapOf, evaDiesForGap, extractMeterageSuffix, formById, formIdFor, fullerSpec, glueLineScheduleRowsStored, glueRunOf, glueSettingsFor, groupAssignedRunsByLineItem, isExceed, isKenPin, isMini, isOffCentre, isReelSpec, ledgerCorrectedRuns, ledgerCorrectedRunsFresh, ledgerView, localISO, looseSpecMatch, memoCall, memoDeepFreeze, memoGlobals, memoSameArg, mergeSplitRuns, normalizeSpec, orderBoxTypeFor, orderLineItems, orderMadeQty, orderOutstanding, orderPctComplete, orderPctCompleteStored, orderProgress, orderStageNow, stageNow, dueStateOf, dueCounts, isLiveOrder, isLiveWork, isWebsiteRequest, lineNeeds, reelPoolsOf, reelYieldStats, reelBoxesHonest, orderPickable, orderPickablePercent, orderPickablePercentStored, orderTotalItems, orderTotalValue, otherStockBalance, otherStockUsed, pickableNow, pickableNowFresh, predictRunDestinations, productKey, productParts, productRowKey, sameProductParts, productionOutstandingRows, productionOutstandingRowsFresh, productionOutstandingRowsStored, ptOf, rangeBoxFor, refsEquivalent, resolveProduct, runCustomer, runMatchesLine, runsForOrder, runsIndirect, runsIndirectByRule, sameSizeSpec, shelfBoxFitsBoxType, specCandidateIndex, specDimensions, specIsReel, specMeterage, specRef, sizeSortPair, daysFromTodayISO, metresPerBoxFor, stockFormMatchesLine, todayISO, whatsLeftRows , glueLineNeedRowsAll, resolveOrderLine, planReels, uncheckedShelfStock, tapeLast } from "./mx_stock.js";
 import { autoReloadDue, quietUpdateDue, mergeParked, parkUnsentRows, restoreParked } from "./mx_sync.js";
 import { DEFAULT_DATA, DEFAULT_PRODUCTION_RATES, lineRate, DEFAULT_TOOLING, TOOLING_LISTS, DEFAULT_WORK_CENTRES, DERIVED_BONDING_FIELDS, FOSSIL_ORDER_FIELDS, FOSSIL_RUN_FIELDS, IDB_STORE, KEN_TOOLING, LOCAL_KEEP_DAYS, MISSING_COLUMN_RE, NOT_NULL_BOOLEAN_COLUMNS, SYNC_TABLES, TOMBSTONED_TABLES, advancePrevForTables, appVersionRank, clearPendingColumns, rebasePendingColumns, cloudFieldsDiffer, lostOwedColumns, revivedOverTombstones, computeDeletedIdsByTable, countPendingChanges, dataToTables, dedupeProductForms, idbGet, idbPut, isNetworkFailure, isUpdateRequiredFailure, isFloorRefusal, floorRefusalWords, localBlobSizeKB, localOnly, mergeById, normalizeTooling, notePendingColumns, owedBase, owedCols, parseStored, patchRowsHealing, retireFossils, rowPatch, sameRowContent, seedData, stampRowsChanged, stampUpdatedAt, storableData, syncCamelToSnake, syncExtrusionFromRows, syncExtrusionToRows, syncSnakeToCamel, syncToCamelRow, syncToSnakeRow, syncToolingFromRows, syncToolingToRows, tablesToData, upsertHealingMissingColumns } from "./mx_sync.js";
 import { asAt, boxCodeFootprint, correctBoxCode, truthChecks } from "./mx_admin.js";
@@ -583,7 +583,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-05.9";
+const APP_VERSION = "2026-11-05.10";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -5568,12 +5568,21 @@ function BoxLabelStudio({ data, setData }) {
   useEffect(() => { const h = (e) => { const d = e.detail || {}; if (d.handled || !sizeOpenRef.current) return; const t = String(d.text || "").trim().toUpperCase(); if (!t) return;
       d.handled = true; d.notice = null; setCode(t); setSource("Scanned"); setMsg(null); };
     window.addEventListener("mx-scan", h); return () => window.removeEventListener("mx-scan", h); }, []);
+  /* THE NEXT CODE WHEN A SIZE IS PICKED (admin, 5 Nov 2026: "I want the next batch code to be present on labels when
+     selecting"). It used to fill in the LAST run's code for the size. Now it is today's next code — after every code
+     already logged, reserved for a run, or printed on labels today — with the tape of the newest run (SDB / SD4 / SDBS).
+     The last run of the size is still said, and any code can be typed or scanned over it. */
+  const usedCodes = useMemo(() => [...runs.map(r => r.boxNumber), ...(data.runStarts || []).filter(x => x && !x.deleted).map(x => x.boxCode),
+    ...(data.changeLog || []).filter(e => e && !e.deleted && e.action === "box_labels_printed").map(e => e.entityId)].filter(Boolean), [runs, data.runStarts, data.changeLog]);
+  const tapeSfx = useMemo(() => { const latest = runs.slice().sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")) || String(b.boxNumber).localeCompare(String(a.boxNumber)))[0];
+    const m = latest && String(latest.boxNumber).toUpperCase().match(/(SDBS|SDB|SD4)$/); return m ? m[1] : "SDB"; }, [runs]);
+  const nextCode = nextBatchCode(todayISO(), usedCodes, { suffix: tapeSfx }) || "";
   const fill = (name, asReel) => { setForm(asReel ? "reel" : "box"); setReelM(null); setOtherOn(false); setOtherM(""); setMsg(null);
-    const r = asReel ? lastReelRun(name) : lastRun(name);
-    if (asReel) { if (r) { setCode(String(r.boxNumber).toUpperCase()); setCount(Math.max(1, Math.round(Number(r.amountMade) || 1))); setSource(`From the reel run logged ${r.date ? new Date(`${r.date}T12:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : ""} for this size (${Math.round(Number(r.amountMade) || 0)} reel${Math.round(Number(r.amountMade) || 0) === 1 ? "" : "s"}) — or type a different one`); }
-      else { setCode(""); setCount(1); setSource("No reel run for this size yet — type the reel code"); } return; }
-    if (r) { setCode(String(r.boxNumber).toUpperCase()); setCount(Math.max(1, Math.round(Number(r.amountMade) || 1))); setSource(`From the bonding run logged ${r.date ? new Date(`${r.date}T12:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : ""} for this size (${Math.round(Number(r.amountMade) || 0)} boxes) — or type a different one`); }
-    else { setCode(""); setCount(1); setSource("No bonding run for this size yet — type the box code"); } };
+    const r = asReel ? lastReelRun(name) : lastRun(name), what = asReel ? "reel" : "box";
+    const when = r && r.date ? new Date(`${r.date}T12:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : "";
+    setCode(nextCode); setCount(r ? Math.max(1, Math.round(Number(r.amountMade) || 1)) : 1);
+    setSource(nextCode ? `Next code for today${r ? ` — the last ${what} run of this size was ${String(r.boxNumber).toUpperCase()}${when ? ` (${when})` : ""}` : ""} — or type a different one`
+      : `Type the ${what} code`); };
   /* opens as a reel when you came looking for reels, or when the last thing made of this size was reels (Aumann's
      J60511SDB, 5 Oct) — otherwise as a box, the way it always has */
   const open = (name) => { setSize(name); const rr = reelForms.has(name) ? lastReelRun(name) : null, br = lastRun(name);
@@ -28213,7 +28222,7 @@ function AdminShell({ data, setData, section, setSection }) {
   const changesToday = (data.changeLog || []).filter(e => String(e.at || "").slice(0, 10) === today).length;
   const gluedToday = (data.glueLineBatches || []).filter(b => b && !b.deleted && String(b.date || "") === today).reduce((t, b) => t + (Number(b.meterage) || 0), 0);
   const isReelRunA = (r) => String(r.packageType || "") === "Reel" || /\bREEL\b/i.test(String(r.productSize || ""));
-  const bondedToday = (data.bondingRuns || []).filter(r => r && !r.deleted && String(r.date || "") === today && !isReelRunA(r)).reduce((t, r) => t + (Number(r.amountMade) || 0), 0);
+  const bondedToday = Math.round((data.bondingRuns || []).filter(r => r && !r.deleted && String(r.date || "") === today).reduce((t, r) => t + bondedAsBoxes(r), 0));   // reels as boxes (5 Nov 2026)
   const bondedReelsToday = (data.bondingRuns || []).filter(r => r && !r.deleted && String(r.date || "") === today && isReelRunA(r)).reduce((t, r) => t + (Number(r.amountMade) || 0), 0);
   const waitingLabels = (data.printJobs || []).filter(j => j && !j.deleted && j.status === "waiting" && Date.now() - Date.parse(j.requestedAt || 0) > 10 * 60000);
   const refused = Object.entries((typeof window !== "undefined" && window.__mxRefusedReasons) || {});
@@ -28303,7 +28312,7 @@ function AdminShell({ data, setData, section, setSection }) {
       {!(deskAdmin && !section) && head}
       {!section ? (<>
         <div style={{ display: "grid", gridTemplateColumns: deskAdmin ? "repeat(4, minmax(0, 1fr))" : "repeat(auto-fit, minmax(120px, 1fr))", gap: deskAdmin ? 14 : 8 }}>
-          {[[changesToday, "changes today"], [`${gluedToday.toLocaleString("en-GB")} m`, "glued today"], [bondedToday, "boxes bonded today"], ...(bondedReelsToday ? [[bondedReelsToday, "reels bonded today"]] : []), [needYou, "need you"]].map(([v, l]) =>
+          {[[changesToday, "changes today"], [`${gluedToday.toLocaleString("en-GB")} m`, "glued today"], [bondedToday, "boxes bonded today"], ...(bondedReelsToday ? [[bondedReelsToday, "reels, counted in the boxes"]] : []), [needYou, "need you"]].map(([v, l]) =>
             <div key={l} data-admin-figure style={deskAdmin ? { ...card, padding: "16px 18px", borderRadius: 18 } : card}><div style={{ fontSize: deskAdmin ? 30 : 22, fontWeight: deskAdmin ? 700 : 600, color: l === "need you" && needYou ? P.warn : P.head }}>{v}</div><div style={{ fontSize: deskAdmin ? 13 : 11.5, color: P.dim }}>{l}</div></div>)}
         </div>
         <div style={{ display: "grid", gridTemplateColumns: deskAdmin ? "repeat(4, minmax(0, 1fr))" : "repeat(auto-fit, minmax(150px, 1fr))", gap: deskAdmin ? 14 : 8 }}>
@@ -42787,11 +42796,13 @@ function NLHome({ data, go, jumpToOrder, recent, openBox = null, setData = null,
   /* BOXES AND REELS APART (Chris, 6 Oct 2026: "need to separate boxes from reels when displaying what's been bonded" — the
      Bonded tile said 18 boxes when Aumann's 18 were reels). "bonded" is boxes; reels are counted on their own. */
   const reelRun = (r) => String(r.packageType || "") === "Reel" || /\bREEL\b/i.test(String(r.productSize || ""));
-  const glued = reels.reduce((t, g) => t + (Number(g.meterage) || 0), 0), bonded = runs.filter(r => !reelRun(r)).reduce((t, r) => t + (Number(r.amountMade) || 0), 0);
+  /* REELS AS BOXES IN THE SCORE (admin, 5 Nov 2026: "change the amount bonded to work out reels into boxes so we can keep
+     score more accurately"): a reel counts as its metres over a box of its size (bondedAsBoxes) — the reels are still said. */
+  const glued = reels.reduce((t, g) => t + (Number(g.meterage) || 0), 0), bonded = Math.round(runs.reduce((t, r) => t + bondedAsBoxes(r), 0));
   const bondedReels = runs.filter(reelRun).reduce((t, r) => t + (Number(r.amountMade) || 0), 0);
   const days = nlLastDays(5);
   const gluedBy = days.map(d => reelsAll.filter(g => g.date === d).reduce((t, g) => t + (Number(g.meterage) || 0), 0));
-  const bondedBy = days.map(d => runsAll.filter(r => r.date === d && !reelRun(r)).reduce((t, r) => t + (Number(r.amountMade) || 0), 0));
+  const bondedBy = days.map(d => Math.round(runsAll.filter(r => r.date === d).reduce((t, r) => t + bondedAsBoxes(r), 0)));
   const plans = useMemo(() => { try { return orderMakePlan(data); } catch (e) { return new Map(); } }, [data]);
   const byId = new Map((data.orders || []).map(o => [o.id, o]));
   const cust = (id) => { const o = byId.get(id); return o ? `${o.customer}` : id; };
@@ -42808,7 +42819,7 @@ function NLHome({ data, go, jumpToOrder, recent, openBox = null, setData = null,
   const glueNeed = sumPlan(dueWeek, "glueItems", "metersNeeded"), bondNeed = sumPlanIf(dueWeek, "bondingItems", "needed", r => !r) + sumPlanIf(dueWeek, "tomorrowItems", "needed", r => !r);
   const reelNeed = sumPlanIf(dueWeek, "bondingItems", "needed", r => r) + sumPlanIf(dueWeek, "tomorrowItems", "needed", r => r);
   const bondSub = bondNeed > 0 || reelNeed > 0 ? [bondNeed ? `${bondNeed.toLocaleString("en-GB")} box${bondNeed === 1 ? "" : "es"}` : "", reelNeed ? `${reelNeed.toLocaleString("en-GB")} reel${reelNeed === 1 ? "" : "s"}` : ""].filter(Boolean).join(" + ") + " still needed this week" : "nothing more needed this week";
-  const reelsChip = bondedReels > 0 ? <span data-nl-bonded-reels style={{ fontSize: 13.5, color: NL.SUB, whiteSpace: "nowrap" }}>+ <b style={{ color: NL.INK, fontWeight: 600 }}>{bondedReels.toLocaleString("en-GB")}</b> reel{bondedReels === 1 ? "" : "s"}</span> : null;
+  const reelsChip = bondedReels > 0 ? <span data-nl-bonded-reels style={{ fontSize: 13.5, color: NL.SUB, whiteSpace: "nowrap" }}>incl. <b style={{ color: NL.INK, fontWeight: 600 }}>{bondedReels.toLocaleString("en-GB")}</b> reel{bondedReels === 1 ? "" : "s"}</span> : null;
   /* TODAY'S TARGET (3 Oct 2026, from the Today render Chris liked): what the week still needs, spread over the working days
      left (Mon–Fri, today included); at a weekend, a weekday's share (÷5). The ring is today against that target. */
   /* THE PLAN'S DAY (third review item 39): today's target is what's logged today plus what the Plan still has on each line for
@@ -42823,7 +42834,7 @@ function NLHome({ data, go, jumpToOrder, recent, openBox = null, setData = null,
   const isReelLabel = (l) => /\bREEL\b/i.test(String(l || ""));
   const glueTarget = linePlan ? Math.round(glued + planDayAmount(linePlan.glueSteps || [], new Date(), s => s.metres))
     : Math.round((glued + glueNeed) / daysLeft);
-  const bondTarget = linePlan ? Math.round(bonded + planDayAmount((linePlan.bondJobs || []).filter(j => !isReelLabel(j.label)), new Date(), j => j.boxes))
+  const bondTarget = linePlan ? Math.round(bonded + planDayAmount(linePlan.bondJobs || [], new Date(), j => isReelLabel(j.label) ? reelAsBoxes(j.label, j.boxes) : j.boxes))
     : Math.round((bonded + bondNeed) / daysLeft);
   const gPct = glueTarget > 0 ? Math.min(100, Math.round(100 * glued / glueTarget)) : (glued > 0 ? 100 : 0);
   const bPct = bondTarget > 0 ? Math.min(100, Math.round(100 * bonded / bondTarget)) : (bonded > 0 ? 100 : 0);
@@ -43129,8 +43140,8 @@ function NLEverything({ data, go, onBackup = null, backupAge = null, onSearch = 
   const today = todayISO();
   const subFor = (k) => { if (k === "glueline") { const m = (data.glueLineBatches || []).filter(g => g && !g.deleted && g.date === today).reduce((t, g) => t + (Number(g.meterage) || 0), 0); return m ? `${m.toLocaleString("en-GB")} m today` : null; }
     if (k === "bonding") { const rs = (data.bondingRuns || []).filter(r => r && !r.deleted && r.date === today && !r.packingOnly); const isR = (r) => String(r.packageType || "") === "Reel" || /\bREEL\b/i.test(String(r.productSize || ""));
-      const b = rs.filter(r => !isR(r)).reduce((t, r) => t + (Number(r.amountMade) || 0), 0), rl = rs.filter(isR).reduce((t, r) => t + (Number(r.amountMade) || 0), 0);
-      return b || rl ? [b ? `${b} box${b === 1 ? "" : "es"}` : "", rl ? `${rl} reel${rl === 1 ? "" : "s"}` : ""].filter(Boolean).join(" + ") + " today" : null; } return null; };
+      const b = Math.round(rs.reduce((t, r) => t + bondedAsBoxes(r), 0)), rl = rs.filter(isR).reduce((t, r) => t + (Number(r.amountMade) || 0), 0);   // reels as boxes (5 Nov 2026)
+      return b || rl ? `${b} box${b === 1 ? "" : "es"}${rl ? ` (incl. ${rl} reel${rl === 1 ? "" : "s"})` : ""} today` : null; } return null; };
   const rec = (recent || []).filter(k => byKey.has(k) && k !== "daily").slice(0, 3);
   return (<div data-nl-everything style={{ display: "flex", flexDirection: "column", fontFamily: NLT.FONT, color: NL.INK }}>
     <NLHero title={screenName("everything", "More")} sub="Every screen, one tap away" onSearch={onSearch} alerts={alerts} onOpenAdmin={() => go("admin")}>
@@ -46592,7 +46603,7 @@ function NLNotifications() {
 function nlBandFor(view, data) {
   const today = todayISO();
   const reels = (data.glueLineBatches || []).filter(g => g && !g.deleted && g.date === today), m = reels.reduce((t, g) => t + (Number(g.meterage) || 0), 0);
-  const runs = (data.bondingRuns || []).filter(r => r && !r.deleted && r.date === today && !r.packingOnly && r.boxNumber), bx = runs.reduce((t, r) => t + (Number(r.amountMade) || 0), 0);
+  const runs = (data.bondingRuns || []).filter(r => r && !r.deleted && r.date === today && !r.packingOnly && r.boxNumber), bx = Math.round(runs.reduce((t, r) => t + bondedAsBoxes(r), 0));   // reels as boxes (5 Nov 2026)
   const live = (data.orders || []).filter(isLiveOrder);   // the one "is it live" (third review item 26)
   const shelfBoxes = (data.bondingRuns || []).filter(r => r && !r.deleted && !r.workNumber && r.boxNumber).length;
   const rack = rackReels(data).onRack.length;   // the rack's one answer (third review item 31): usable reels only
