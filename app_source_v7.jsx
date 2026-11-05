@@ -583,7 +583,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-05.4";
+const APP_VERSION = "2026-11-05.5";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -4423,7 +4423,7 @@ function OrderPhotoCheck({ order, data, setData, onClose, initialReads = null, w
   if (initialReads) { const rec = recordedByCase(data, order.id); for (const n of cases) if (!forVerdict[n] && !Object.keys(rec[n] || {}).length) forVerdict[n] = { labels: [], unreadable: 0 }; }
   /* a read with more labels than the case holds is a misread (photoCaseCheck overCap) — it goes to Retake, not to the verdict */
   for (const n of cases) { const k = checks[n]; if (k && k.overCap) forVerdict[n] = { error: k.error }; }
-  for (const n of cases) { const k = checks[n]; if (k && (k.state === "hidden" || k.rubber)) forVerdict[n] = { labels: Object.entries(k.recorded).flatMap(([code, q]) => Array.from({ length: q }, () => ({ code, sure: true }))), unreadable: 0 }; }
+  for (const n of cases) { const k = checks[n]; if (k && (k.state === "hidden" || k.rubber || k.reel)) forVerdict[n] = { labels: Object.entries(k.recorded).flatMap(([code, q]) => Array.from({ length: q }, () => ({ code, sure: true }))), unreadable: 0 }; }
   const v0 = stage === "result" ? photoOrderVerdict(data, order.id, forVerdict) : null;
   const orderIssues = cases.flatMap(n => { const k = checks[n]; return k && k.notOrder ? [...k.notOrder.map(x => ({ ...x, caseNum: n, kind: "notOrder" })), ...k.wrongTape.map(x => ({ ...x, caseNum: n, kind: "tape" }))] : []; });
   const hiddenCases = cases.filter(n => checks[n] && checks[n].state === "hidden");
@@ -20272,6 +20272,7 @@ function WeighCheckCard({ n, ck, hasWeight, onRetake, photoOnly = false }) {
   const box = (bg, border, kids) => <div data-weigh-check={ck.state} style={{ display: "flex", flexDirection: "column", gap: 6, padding: "10px 12px", borderRadius: 12, background: bg, border: `1px solid ${border}`, fontSize: 14.5, lineHeight: 1.35 }}>{kids}</div>;
   if (ck.state === "reading") return box(NL.PANEL, NL.LINE, <span style={{ color: NL.SUB, fontWeight: 600 }}>Reading the labels in case {n}…{photoOnly ? "" : " type the weight meanwhile"}</span>);
   if (ck.state === "error") return box("#FDECEC", "#F0B4B4", <><span style={{ color: RED, fontWeight: 600 }}>The labels couldn't be read: {ck.error}</span>{retakeRow}</>);
+  if (ck.state === "ok" && ck.reel) return box("#E8F3EC", "#9FCDAE", <span data-weigh-reel style={{ color: "#1E7F3C", fontWeight: 600 }}>✓ Reels — the top reel's label is one of this case's, {ck.held} reel{ck.held === 1 ? "" : "s"} on the system{hasWeight ? "" : " · the weight confirms the count"}</span>);
   if (ck.state === "ok" && ck.rubber) return box("#E8F3EC", "#9FCDAE", <span data-weigh-rubber style={{ color: "#1E7F3C", fontWeight: 600 }}>✓ Rubber in its cardboard boxes — {ck.held} pack{ck.held === 1 ? "" : "s"} on the system, no labels to read{hasWeight ? "" : " · the weight confirms the count"}</span>);
   /* a label read a character off and taken as the box in the case is said, never hidden (20 Oct 2026) */
   const snapped = (ck.mapped || []).length ? <span data-weigh-snapped={ck.mapped.length} style={{ fontSize: 13, color: NL.SUB }}>Read as {[...new Map(ck.mapped.map(m => [`${m.read}→${m.as}`, m])).values()].map(m => `${m.read} → ${m.as}`).join(", ")} (a label misread{ck.mapped.some(m => m.inCase) ? " — that box is in this case" : ""})</span> : null;
