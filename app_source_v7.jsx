@@ -25,7 +25,7 @@ import { orderWithPromise, promiseBehind, promiseDay, promiseOf, promiseStats, p
 import { OFFICE_AMBER_DAYS, OFFICE_RED_DAYS, officeAged, officeAgeTone, officeAgeWords, officeEntryWords, officeGuess, officeHistory, officeItems, officeKindWords, officeScreenOf, officeTally } from "./mx_office.js";
 import { OVERNIGHT_MORNINGS, TRUTHS, TRUTH_SHORT, UNDO_CAUSES, WRONG_KINDS, activityDay, causesLines, changesetMatches, describeChangeset, foundWords, healthView, overnightPolicyWords, proposedRowWords, reelDoubleSaves } from "./mx_fix.js";
 import { edgesWander, motionVoted, isRepeatPicture, stripWidthsMm, widthsSteady, beadForget, GAP_BEAD_RELEARN_STOP_MS } from "./mx_gaptrace.js";
-import { gaugeOne, gaugePush, gaugeMedian, gaugeKey, gaugeZeroValid, gaugeRead, gaugePicture, gaugeRezero, gaugeZeroFrom, GAUGE_ZERO_MAX_MS, GAUGE_AGREE_MM } from "./mx_gapgauge.js";
+import { gaugeOne, gaugePush, gaugeMedian, gaugeKey, gaugeZeroValid, gaugeRead, gaugePicture, gaugeRezero, gaugeZeroFrom, gaugeZeroFind, gaugeKeyNorm, GAUGE_ZERO_MAX_MS, GAUGE_AGREE_MM } from "./mx_gapgauge.js";
 import { GAP_LIGHT_SHIFT, gapCalChecks, gapScaleFor, gapCalVerdict, gapWidthSeen, gapTraceUncal, gapMarkUncal, gapReelGapFrom, glueGapProblem, gapPointUncal, GAP_CAL_AGREE, GAP_CAL_DRIFT_RUN } from "./mx_gaptrace.js";
 import { glueRuns, reelGlueFault, GLUE_MIN_MM, GLUE_OPEN_END_M, GLUE_LINE_M, GLUE_CAUSES } from "./mx_gaptrace.js";
 import { learnedLineSpeed, gapMayLink, glueReelTraceKeep, gapCarryOf, gapJoinTraces, gapNextPiece, misreadStep, centringHint, reelGapWarning, gapCorrFor, gapSizePart, GAP_CORR_DAY_MAX, GAP_CORR_SIZE_AGREE, READOUT_SPAN_MS, READOUT_BIN_MS, GT_WOBBLE_FLAG, readoutTrend, readoutFigures, HAUL_MIN_LEARN_M, GAP_STEADY_MIN_N, CAM_GOOD_MM, CAM_OK_MM, camMetrics, blockCalib, blockHeights, heightOfSpec, CAP_FACTOR_REELS, CPK_WORDS, GAP_BAND_ROWS, GAP_LIMITS_DEFAULT, GAP_VERDICT_WORDS, GAP_LIGHT_WORDS, GAP_SETUP_CHECKS, gapTraceWaiting, gapNextTraceNo, gapPickWaiting, glueTraceChoice, glueReelWants, gapLiveFresh, gapLinkTrace, gapUnlinkTrace, glueDayTimeline, gapMoveCut, gapOffsets, nomOf, gapLightOf, gapRangeOf, gapCorrKey, gapCorrSets, lightShift, steadyRaw, gapWander, gapCheckOdd, binTrace, capability, sizeCapability, colourNameOf, haulFactor, haulMatch, rowProfile, gapCheck, gapCorrCheck, gapCorrection, gapCorrStands, gapLimitsFor, gapRecordDoc, motionGate, patchDiff, gapTraceRow, gapVerdict, guessStripColour, gapSteady, metresAlong, readBand, reelLoggedSince, sizeCheck, sizesDiffer, suggestSizes, traceEvents, traceStats, widthFrom, widthMmFor, widthValid } from "./mx_gaptrace.js";
@@ -583,7 +583,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-05.6";
+const APP_VERSION = "2026-11-05.7";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -7122,15 +7122,16 @@ function gtGaugeOn() { try { const v = localStorage.getItem("mxGapGauge"); if (v
   if (window.__MX_TEST_MIRROR__ && localStorage.getItem("__mxRealDefaults") !== "1") return false; } catch (e) { /* private mode */ } return true; }
 function gtZeroKey() { return gaugeKey(GT_REC.cfg && GT_REC.cfg.spec, gtLightNow()); }
 function gtZeroAll() { try { return JSON.parse(localStorage.getItem("mxGapZero") || "{}") || {}; } catch (e) { return {}; } }
-function gtZeroNow() { const k = gtZeroKey(), z = gtZeroAll()[k]; return gaugeZeroValid(z, k) ? z : null; }
+function gtZeroNow() { return gaugeZeroFind(gtZeroAll(), gtZeroKey()); }
 function gtZeroSave(z) { if (!z || !z.key) return; try { const all = gtZeroAll(), now = Date.now(); const keep = {}; for (const [k, v] of Object.entries(all)) if (v && now - Number(v.at || 0) <= GAUGE_ZERO_MAX_MS) keep[k] = v;
+  for (const k of Object.keys(keep)) if (gaugeKeyNorm(keep[k] && keep[k].key) === gaugeKeyNorm(z.key)) delete keep[k];   /* one zero per size, by any of its names */
   keep[z.key] = z; localStorage.setItem("mxGapZero", JSON.stringify(keep)); } catch (e) { /* private mode */ } GT_REC.zeros = [...(GT_REC.zeros || []), { ...z }].slice(-40); }
 /* zero the camera to a calliper figure, now: the steady picture of the last 4 s (gaugeRezero — a check within 0.02 is averaged) */
 function gtGaugeZero(handIn) {
   const hand = Number(String(handIn == null ? "" : handIn).replace(",", "."));
   if (!(hand > 0 && hand < 20)) return { ok: false, why: "Type the gap you measured with the callipers, in mm." };
   const m = gaugeMedian(GT_REC.gaugeHist || [], Date.now()); if (!m) return { ok: false, why: "The camera has to see both strips steadily while you measure." };
-  const key = gtZeroKey(), prev = gtZeroAll()[key], res = gaugeRezero(prev, m, hand, Number(GT_REC.cfg && GT_REC.cfg.widthMm) || gtWidthMmNow(), { key, by: currentActor() || null });
+  const key = gtZeroKey(), prev = gtZeroNow(), res = gaugeRezero(prev, m, hand, Number(GT_REC.cfg && GT_REC.cfg.widthMm) || gtWidthMmNow(), { key, by: currentActor() || null });
   if (!res.zero) return { ok: false, why: res.why };
   gtZeroSave(res.zero);
   /* a calliper reading is the truth now — nothing from before it is asked about after a stop */
@@ -7145,7 +7146,7 @@ function gtGaugeAfterStop(before, why) { if (!gtGaugeOn() || !(Number(before) > 
 function gtGaugeKeep() {
   const a = GT_REC.gaugeAsk; if (!a) return null;
   const m = gaugeMedian(GT_REC.gaugeHist || [], Date.now()); if (!m) return null;
-  const key = gtZeroKey(), prev = gtZeroAll()[key];
+  const key = gtZeroKey(), prev = gtZeroNow();
   const z = gaugeZeroFrom(m, a.before, Number(GT_REC.cfg && GT_REC.cfg.widthMm) || gtWidthMmNow(), { key, by: currentActor() || null, n: (prev && prev.n) || 1 });
   if (!z) return null;
   gtZeroSave(z); GT_REC.gaugeAsk = null;
