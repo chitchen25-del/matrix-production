@@ -25,7 +25,7 @@ import { orderWithPromise, promiseBehind, promiseDay, promiseOf, promiseStats, p
 import { OFFICE_AMBER_DAYS, OFFICE_RED_DAYS, officeAged, officeAgeTone, officeAgeWords, officeEntryWords, officeGuess, officeHistory, officeItems, officeKindWords, officeScreenOf, officeTally } from "./mx_office.js";
 import { OVERNIGHT_MORNINGS, TRUTHS, TRUTH_SHORT, UNDO_CAUSES, WRONG_KINDS, activityDay, causesLines, changesetMatches, describeChangeset, foundWords, healthView, overnightPolicyWords, proposedRowWords, reelDoubleSaves } from "./mx_fix.js";
 import { edgesWander, motionVoted, isRepeatPicture, stripWidthsMm, widthsSteady, beadForget, GAP_BEAD_RELEARN_STOP_MS } from "./mx_gaptrace.js";
-import { gaugeOne, gaugePush, gaugeMedian, gaugeKey, gaugeZeroValid, gaugeRead, gaugePicture, gaugeRezero, GAUGE_ZERO_MAX_MS } from "./mx_gapgauge.js";
+import { gaugeOne, gaugePush, gaugeMedian, gaugeKey, gaugeZeroValid, gaugeRead, gaugePicture, gaugeRezero, gaugeZeroFrom, GAUGE_ZERO_MAX_MS, GAUGE_AGREE_MM } from "./mx_gapgauge.js";
 import { GAP_LIGHT_SHIFT, gapCalChecks, gapScaleFor, gapCalVerdict, gapWidthSeen, gapTraceUncal, gapMarkUncal, gapReelGapFrom, glueGapProblem, gapPointUncal, GAP_CAL_AGREE, GAP_CAL_DRIFT_RUN } from "./mx_gaptrace.js";
 import { glueRuns, reelGlueFault, GLUE_MIN_MM, GLUE_OPEN_END_M, GLUE_LINE_M, GLUE_CAUSES } from "./mx_gaptrace.js";
 import { learnedLineSpeed, gapMayLink, glueReelTraceKeep, gapCarryOf, gapJoinTraces, gapNextPiece, misreadStep, centringHint, reelGapWarning, gapCorrFor, gapSizePart, GAP_CORR_DAY_MAX, GAP_CORR_SIZE_AGREE, READOUT_SPAN_MS, READOUT_BIN_MS, GT_WOBBLE_FLAG, readoutTrend, readoutFigures, HAUL_MIN_LEARN_M, GAP_STEADY_MIN_N, CAM_GOOD_MM, CAM_OK_MM, camMetrics, blockCalib, blockHeights, heightOfSpec, CAP_FACTOR_REELS, CPK_WORDS, GAP_BAND_ROWS, GAP_LIMITS_DEFAULT, GAP_VERDICT_WORDS, GAP_LIGHT_WORDS, GAP_SETUP_CHECKS, gapTraceWaiting, gapNextTraceNo, gapPickWaiting, glueTraceChoice, glueReelWants, gapLiveFresh, gapLinkTrace, gapUnlinkTrace, glueDayTimeline, gapMoveCut, gapOffsets, nomOf, gapLightOf, gapRangeOf, gapCorrKey, gapCorrSets, lightShift, steadyRaw, gapWander, gapCheckOdd, binTrace, capability, sizeCapability, colourNameOf, haulFactor, haulMatch, rowProfile, gapCheck, gapCorrCheck, gapCorrection, gapCorrStands, gapLimitsFor, gapRecordDoc, motionGate, patchDiff, gapTraceRow, gapVerdict, guessStripColour, gapSteady, metresAlong, readBand, reelLoggedSince, sizeCheck, sizesDiffer, suggestSizes, traceEvents, traceStats, widthFrom, widthMmFor, widthValid } from "./mx_gaptrace.js";
@@ -583,7 +583,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-05.5";
+const APP_VERSION = "2026-11-05.6";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -7133,11 +7133,29 @@ function gtGaugeZero(handIn) {
   const key = gtZeroKey(), prev = gtZeroAll()[key], res = gaugeRezero(prev, m, hand, Number(GT_REC.cfg && GT_REC.cfg.widthMm) || gtWidthMmNow(), { key, by: currentActor() || null });
   if (!res.zero) return { ok: false, why: res.why };
   gtZeroSave(res.zero);
+  /* a calliper reading is the truth now — nothing from before it is asked about after a stop */
+  GT_REC.gaugeAtStop = null; GT_REC.gaugeLastGood = null; GT_REC.gaugeAfterStop = null; GT_REC.gaugeAsk = null;
   const words = res.averaged ? `Callipers ${hand.toFixed(3)}, camera ${res.was.toFixed(3)} — they agree, so the figure is ${res.zero.hand.toFixed(3)}` : res.was != null ? `Zeroed to the callipers: ${hand.toFixed(3)} (the camera showed ${res.was.toFixed(3)})` : `Zeroed to the callipers: ${hand.toFixed(3)}`;
   gtLog(words, "#60A5FA"); if (GT_REC.recording) GT_REC.marks.push({ t: Date.now(), note: words });
   GT_REC.checks = [...(GT_REC.checks || []), { hand, read: res.was != null ? res.was : null, diff: res.was != null ? Math.round((res.was - hand) * 1000) / 1000 : null, at: res.zero.at, by: res.zero.by, kind: "zero", raw: res.was, gapPx: res.zero.ge, totPx: res.zero.tot, mmPerPx: res.zero.mmPerPx, light: gtLightNow(), level: GT_REC.levelNow || null, spec: (GT_REC.cfg && GT_REC.cfg.spec) || null, cam: GT_REC.camLabel || null, averaged: !!res.averaged }].slice(-20);
   return { ok: true, words, ...res };
 }
+function gtGaugeAfterStop(before, why) { if (!gtGaugeOn() || !(Number(before) > 0)) return; GT_REC.gaugeAfterStop = { before: Number(before), t: Date.now(), why }; GT_REC.gaugeAsk = null; }
+/* "No — it didn't change": the figure from before the stop is kept — the zero carried across to the picture now */
+function gtGaugeKeep() {
+  const a = GT_REC.gaugeAsk; if (!a) return null;
+  const m = gaugeMedian(GT_REC.gaugeHist || [], Date.now()); if (!m) return null;
+  const key = gtZeroKey(), prev = gtZeroAll()[key];
+  const z = gaugeZeroFrom(m, a.before, Number(GT_REC.cfg && GT_REC.cfg.widthMm) || gtWidthMmNow(), { key, by: currentActor() || null, n: (prev && prev.n) || 1 });
+  if (!z) return null;
+  gtZeroSave(z); GT_REC.gaugeAsk = null;
+  const words = `The gap didn't change through the stop — kept at ${a.before.toFixed(3)} (the camera read ${a.now.toFixed(3)})`;
+  gtLog(words, "#60A5FA"); if (GT_REC.recording) GT_REC.marks.push({ t: Date.now(), note: words });
+  return words;
+}
+function gtGaugeChanged() { const a = GT_REC.gaugeAsk; if (!a) return null; GT_REC.gaugeAsk = null;
+  const words = `The gap changed through the stop: ${a.before.toFixed(3)} → ${a.now.toFixed(3)}`;
+  gtLog(words, "#60A5FA"); if (GT_REC.recording) GT_REC.marks.push({ t: Date.now(), note: words }); return words; }
 function gtWidthMmNow() { try { const w = JSON.parse(localStorage.getItem("mxGapWidthRec") || "null"); return Number(w && w.mm) > 0 ? Number(w.mm) : 10; } catch (e) { return 10; } }
 function gtLightNow() { return gapLightOf(GT_REC.sigKeep || (GT_REC.last && GT_REC.last.signal) || "brightness"); }
 /* BACKLIGHT HELP (Chris, 20 Oct 2026, fitting a backlight to the microscope: "Build 1-3 but make it so I can choose between what is
@@ -7378,6 +7396,17 @@ function gtReadOnce() {
   if (gaugeOn) GT_REC.gaugeHist = gaugePush(GT_REC.gaugeHist || [], r.ok && !gate ? r.edges : null, nowG);
   const gzero = gaugeOn ? gtZeroNow() : null, gmed = gaugeOn ? gaugeMedian(GT_REC.gaugeHist || [], nowG) : null, gread = gaugeOn ? gaugeRead(gzero, gmed) : null;
   GT_REC.gauge = gaugeOn ? { zero: gzero, med: gmed, read: gread, at: nowG } : null;
+  /* AFTER A STOP, ASK — DON'T GUESS (5 Nov 2026, 11:26 — T2's reel change at 381 m: the reading stepped +0.13, one strip's
+     edges both moving as a real gap change does, "The size hasn't budged on calipers"). The camera can't tell a knob turned
+     during a stop from the matrix sitting differently after a reel change; the person at the line can. So the last good
+     figure before a stop of a minute or more is kept, and 8 s after the line runs again a move of more than 0.02 is asked
+     about: "Did the gap change?" — No keeps the figure from before the stop (the zero carried across), Yes keeps the new one. */
+  if (gaugeOn && gread && gread.ok && !(GT_REC.motion && GT_REC.motion.moving === false)) GT_REC.gaugeLastGood = { mm: gread.mm, t: nowG };
+  if (gaugeOn && GT_REC.gaugeAfterStop && nowG - GT_REC.gaugeAfterStop.t >= 8000) {
+    const st = GT_REC.gaugeAfterStop;
+    if (gread && gread.ok) { const d = Math.round((gread.mm - st.before) * 1000) / 1000; if (Math.abs(d) > GAUGE_AGREE_MM) { GT_REC.gaugeAsk = { before: st.before, now: gread.mm, diff: d, why: st.why, at: nowG };
+        gtLog(`After ${st.why}: the gap reads ${gread.mm.toFixed(3)}, ${st.before.toFixed(3)} before — asked whether it changed`, "#F59E0B"); } GT_REC.gaugeAfterStop = null; }
+    else if (nowG - st.t > 60000) GT_REC.gaugeAfterStop = null; }
   const scaleWay = gapScaleHere();
   const cal = scaleWay ? gapScaleFor(gtCalAll(), { totNow: stTot, light: gtLightNow(), cam: GT_REC.camLabel || null, spec: GT_REC.cfg.spec || null, ...gtScaleOpts(gtLightNow()), latest: newOn }) : null;
   const scaleUse = cal && cal.ok ? (newOn ? gapScaleNow(cal, stTot) : cal.scale) : null;
@@ -7412,7 +7441,7 @@ function gtReadOnce() {
   /* is the line moving? the middle of each strip, a tenth of a second apart, against the still background beside them */
   const M = GT_REC.mot, e = r.ok && r.edges;
   /* the strips out of sight for a minute or more (the reel being changed) → their widths learned again when they're back */
-  if (e) { const tS = Date.now(); if (GT_REC.edgesSeenAt && tS - GT_REC.edgesSeenAt >= GAP_BEAD_RELEARN_STOP_MS) gtStripsRelearn(`the strips were out of sight ${Math.round((tS - GT_REC.edgesSeenAt) / 1000)} s`); GT_REC.edgesSeenAt = tS; }
+  if (e) { const tS = Date.now(); if (GT_REC.edgesSeenAt && tS - GT_REC.edgesSeenAt >= GAP_BEAD_RELEARN_STOP_MS) { gtStripsRelearn(`the strips were out of sight ${Math.round((tS - GT_REC.edgesSeenAt) / 1000)} s`); gtGaugeAfterStop(GT_REC.gaugeLastGood && GT_REC.gaugeLastGood.mm, "the strips were out of sight"); } GT_REC.edgesSeenAt = tS; }
   if (e) {
     const ph = Math.max(24, Math.round(h * 0.16)), py = Math.max(0, Math.min(h - ph, Math.round(lineY * h - ph / 2)));
     const sa = e.a1 - e.a0, sb = e.b1 - e.b0, bw = Math.max(sa, sb) * 0.6;
@@ -7432,8 +7461,8 @@ function gtReadOnce() {
       /* the line stopping and starting goes on the portal's list of what happened */
       if (GT_REC.motion.trusted && was.trusted && was.moving !== GT_REC.motion.moving) gtLog(GT_REC.motion.moving ? "Line moving again" : "Line stopped — metres held", GT_REC.motion.moving ? "#60A5FA" : "#94A3B8");
       /* a stop of a minute or more (a reel change) → the strips' widths learned again (beadForget, 4 Nov 2026) */
-      if (GT_REC.motion.trusted && GT_REC.motion.moving === false && !GT_REC.stillSince) GT_REC.stillSince = tE;
-      if (GT_REC.motion.trusted && GT_REC.motion.moving === true && GT_REC.stillSince) { const sMs = tE - GT_REC.stillSince; GT_REC.stillSince = null; if (sMs >= GAP_BEAD_RELEARN_STOP_MS) gtStripsRelearn(`the line was stopped ${Math.round(sMs / 1000)} s`); }
+      if (GT_REC.motion.trusted && GT_REC.motion.moving === false && !GT_REC.stillSince) { GT_REC.stillSince = tE; GT_REC.gaugeAtStop = GT_REC.gaugeLastGood ? GT_REC.gaugeLastGood.mm : null; }
+      if (GT_REC.motion.trusted && GT_REC.motion.moving === true && GT_REC.stillSince) { const sMs = tE - GT_REC.stillSince; GT_REC.stillSince = null; if (sMs >= GAP_BEAD_RELEARN_STOP_MS) { gtStripsRelearn(`the line was stopped ${Math.round(sMs / 1000)} s`); gtGaugeAfterStop(GT_REC.gaugeAtStop, `the line was stopped ${Math.round(sMs / 60000) || 1} min`); } }
       if (GT_REC.motion.vetoed && !(was && was.vetoed)) gtLog("Strip texture looked still, but the edges are moving — not a stop", "#94A3B8");
     }
   } else { M.A = M.B = M.Bg = null; GT_REC.edgeHist = []; }
@@ -9919,6 +9948,12 @@ function GlueLinePortalView({ data, setData }) {
           <b style={{ fontSize: 16 }}>The gap has slid {gw.drop.toFixed(3)} mm over the last {gw.overM} m ({gw.from.toFixed(3)} → {gw.now.toFixed(3)}), both strips keeping their width.</b>
           <span style={{ fontSize: 14 }}>Check for glue gathering at the edges of the channel — on 26 Oct turning the glue down brought it straight back.</span><span style={{ flex: "1 1 20px" }} />
           <button data-pt-glue-gather-ok onClick={() => { GT_REC.gwResetM = liveTrace.head; GT_REC.gw = null; GT_REC.gwOn = false; gtLog("Glue checked — the gap watch starts again from here", "#94A3B8"); setTick(x => x + 1); }} style={pbtn("plain", { minHeight: 42 })}>Checked — watch again from here</button></div>; })()}
+      {GT_REC.gaugeAsk && (() => { const a = GT_REC.gaugeAsk;
+        const said = (words) => { if (!words) return; setData(prev => ({ ...prev, ...appendLog(prev, { action: "update", entity: "gapTrace", entityId: "zero", summary: `${words} on ${spec || "—"}${currentDevice() ? ` on ${currentDevice()}` : ""}` }) })); setTick(t => t + 1); };
+        return <div data-pt-gauge-ask role="alert" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px 14px", padding: "11px 22px", background: "#FDF0E7", borderBottom: "1px solid #F7D9C4", color: "#B45309" }}>
+          <b style={{ fontSize: 16 }}>The gap reads {a.now.toFixed(3)} — it was {a.before.toFixed(3)} before the stop ({a.diff >= 0 ? "+" : ""}{a.diff.toFixed(3)}). Did the gap change?</b><span style={{ flex: "1 1 20px" }} />
+          <button data-pt-gauge-keep onClick={() => said(gtGaugeKeep())} style={pbtn("go", { minHeight: 42 })}>No — it's still {a.before.toFixed(3)}</button>
+          <button data-pt-gauge-changed onClick={() => said(gtGaugeChanged())} style={pbtn("plain", { minHeight: 42 })}>Yes, it changed</button></div>; })()}
       {corrBanner && <div data-pt-corr-banner={corrBanner.k} role="alert" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px 14px", padding: "11px 22px", background: "#FDF0E7", borderBottom: "1px solid #F7D9C4", color: "#B45309" }}>
         <b style={{ fontSize: 16 }}>{corrBanner.t}</b><span style={{ fontSize: 14 }}>{corrBanner.sub}</span><span style={{ flex: "1 1 20px" }} />
         <button data-pt-corr-banner-go onClick={() => setPpanel("calib")} style={pbtn("plain", { minHeight: 42 })}>{corrBanner.btn}</button></div>}
