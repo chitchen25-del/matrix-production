@@ -583,7 +583,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-05.1";
+const APP_VERSION = "2026-11-05.2";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -9068,9 +9068,10 @@ function GlueLinePortalView({ data, setData }) {
   /* HOW MANY CHECKS THE SET-UP ASKS FOR (26 Oct 2026): 3 until the camera's own correction has proved itself — then 1 that agrees
      with it, then none (gapHouseState). A first check that disagrees asks for the usual 3, and the size gets its own correction. */
   const house = gtHouse();
-  const setupNeed = scaleWay || !house ? GAP_SETUP_CHECKS : (setupOk && setupS.needAll ? GAP_SETUP_CHECKS : house.need);
+  /* (5 Nov 2026 — the dial gauge: ONE calliper reading at the start of a size zeroes it; the camera does the rest) */
+  const setupNeed = gtGaugeOn() ? 1 : scaleWay || !house ? GAP_SETUP_CHECKS : (setupOk && setupS.needAll ? GAP_SETUP_CHECKS : house.need);
   const setupOneOk = setupGood.some(c => c.house && c.house.pass) && !(setupOk && setupS.needAll);
-  const setupDone = setupNeed === 0 ? true : setupNeed === 1 && setupOneOk && !setupPending ? true : setupGood.length >= GAP_SETUP_CHECKS && !setupPending && !setupDoubt;
+  const setupDone = gtGaugeOn() ? setupGood.length >= 1 && !setupPending : setupNeed === 0 ? true : setupNeed === 1 && setupOneOk && !setupPending ? true : setupGood.length >= GAP_SETUP_CHECKS && !setupPending && !setupDoubt;
   /* three stand: their average becomes this range-and-light's correction, and they go on the reel with the trace */
   const finishSetup = (list, opt = {}) => {
     const good = list.filter(c => !c.odd || c.kept); if (good.length < GAP_SETUP_CHECKS) return;
@@ -9129,7 +9130,7 @@ function GlueLinePortalView({ data, setData }) {
     if (!res.ok) { setSetupMsg({ bad: true, t: res.why }); return; }
     if (gtGaugeOn()) { const zr = gtGaugeZero(res.hand); if (!zr.ok) { setSetupMsg({ bad: true, t: zr.why }); return; } }
     const odd = gapCheckOdd(setupGood.map(c => c.hand), res.hand), light = gtLightNow();
-    const houseSays = !scaleWay && house && house.corr ? gapHouseAgrees(house.corr, res.hand, st.value, L.mmPerPx) : null;
+    const houseSays = !scaleWay && !gtGaugeOn() && house && house.corr ? gapHouseAgrees(house.corr, res.hand, st.value, L.mmPerPx) : null;
     const c = { ...res, read: st.value, drift: st.drift, n: st.n, level: GT_REC.levelNow || null, light, key: gapCorrKey(spec, light), spec, at: Date.now(), by: currentActor() || null, odd: odd || null, kept: false,
       ...(houseSays ? { house: houseSays } : {}),
       ...(L.mmPerPx > 0 && L.totPx > 0 ? { gapPx: Math.round(st.value / L.mmPerPx * 10) / 10, totPx: Math.round(L.totPx * 10) / 10, cam: GT_REC.camLabel || null } : {}) };
