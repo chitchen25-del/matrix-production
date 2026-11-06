@@ -583,7 +583,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-06.1";
+const APP_VERSION = "2026-11-06.2";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -4169,6 +4169,8 @@ function CasePhotos({ orderId, data = null }) {
   </div>);
 }
 
+/* (6 Nov 2026 — admin had a pallet photo already on the phone and asked for it on BFS WO-0055: the button no longer forces the
+   camera, so the phone offers the photo library as well as taking one.) */
 /* ===================== PALLET PHOTOS (Chris, 6 Oct 2026: "the ability to take a couple of photos of pallets and have them
    stored with the completed orders next to the shipping manifest and acknowledgment paperwork"). On the order's
    Paperwork, under the shipping manifest: one row per pallet (the manifest's pallets, else the cases' pallet numbers,
@@ -4238,7 +4240,7 @@ function PalletPhotos({ data, order }) {   /* the one place pallet photos are ta
               <div style={{ fontSize: 13, color: NL.SUB }}>{busy === l ? "Saving…" : mine.length ? `${mine.length} photo${mine.length === 1 ? "" : "s"} · last ${when(mine[mine.length - 1].taken_at)}` : "No photos yet"}</div></div>
             <label data-pallet-photo-take={l} style={{ flex: "none", height: 40, padding: "0 14px", borderRadius: 20, background: NL.NAVY, color: "#fff", fontSize: 14.5, fontWeight: 600, fontFamily: NLT.FONT, display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer", opacity: busy ? 0.6 : 1 }}>
               <NLIcon name="photo" size={18} color="#fff" sw={1.8} />Take photo
-              <input data-pallet-photo-input={l} type="file" accept="image/*" capture="environment" multiple disabled={!!busy} onChange={e => { const fs = e.target.files; take(l, fs); e.target.value = ""; }} style={{ display: "none" }} /></label>
+              <input data-pallet-photo-input={l} type="file" accept="image/*" multiple disabled={!!busy} onChange={e => { const fs = e.target.files; take(l, fs); e.target.value = ""; }} style={{ display: "none" }} /></label>
           </div>
           {mine.length > 0 && <div style={{ display: "flex", gap: 8, overflowX: "auto", marginTop: 10, paddingBottom: 2 }}>
             {mine.map(r => { const u = urls[r.thumb_path] || urls[r.path];
