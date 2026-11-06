@@ -583,7 +583,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-05.10";
+const APP_VERSION = "2026-11-06.1";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -10659,7 +10659,7 @@ function GlueLinePortalView({ data, setData }) {
           </section>
           <section data-pt-profile style={{ ...card({ padding: "14px 20px" }), display: "flex", flexDirection: "column", gap: 8 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}><span style={{ fontSize: 18, fontWeight: 600 }}>Edge profile · across the line</span>
-              <span style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}><span style={{ fontSize: 13.5, color: P.sub }}>{live && live.signal === "darkness" ? "dark strips on a bright gap" : "light strips on a dark gap"}{ed ? ` · gap ${Math.round(ed.b0 - ed.a1)} px` : ""}</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}><span style={{ fontSize: 13.5, color: P.sub }}>{live && live.signal === "darkness" ? "dark strips on a bright gap" : live && live.signal === "colour" ? "coloured strips on the grey (read by colour)" : "light strips on a dark gap"}{ed ? ` · gap ${Math.round(ed.b0 - ed.a1)} px` : ""}</span>
               <span data-pt-motion={motion.trusted ? (motion.moving ? "moving" : "stopped") : "unknown"} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13.5, fontWeight: 500, color: motionWord[2] }}>{dot(motionWord[1])}{word(motionWord[0])}{motion.moving ? ` · ${Math.round(speed)} m/min` : ""}</span></span></div>
             {profileSvg(120)}
           </section>
