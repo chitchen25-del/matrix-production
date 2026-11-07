@@ -583,7 +583,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-06.2";
+const APP_VERSION = "2026-11-07.1";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -5582,8 +5582,14 @@ function BoxLabelStudio({ data, setData }) {
   const fill = (name, asReel) => { setForm(asReel ? "reel" : "box"); setReelM(null); setOtherOn(false); setOtherM(""); setMsg(null);
     const r = asReel ? lastReelRun(name) : lastRun(name), what = asReel ? "reel" : "box";
     const when = r && r.date ? new Date(`${r.date}T12:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : "";
-    setCode(nextCode); setCount(r ? Math.max(1, Math.round(Number(r.amountMade) || 1)) : 1);
-    setSource(nextCode ? `Next code for today${r ? ` — the last ${what} run of this size was ${String(r.boxNumber).toUpperCase()}${when ? ` (${when})` : ""}` : ""} — or type a different one`
+    /* BOXES LOGGED TODAY WITHOUT LABELS YET (7 Nov 2026 — K60701SDB: 10 boxes logged at 12:39, then the labels picked up
+       "the next code", K60702SDB, and the same boxes were nearly logged twice). When this size's last run was logged today
+       and no labels have been printed for it, its own code is offered, not the next one. */
+    const printed = new Set((data.changeLog || []).filter(e => e && !e.deleted && e.action === "box_labels_printed").map(e => String(e.entityId || "").toUpperCase()));
+    const own = r && String(r.date || "") === todayISO() && r.boxNumber && !printed.has(String(r.boxNumber).toUpperCase()) ? String(r.boxNumber).toUpperCase() : null;
+    setCode(own || nextCode); setCount(r ? Math.max(1, Math.round(Number(r.amountMade) || 1)) : 1);
+    setSource(own ? `The ${what} run logged today — ${own}, ${Math.round(Number(r.amountMade) || 0)} made, no labels printed yet — or type a different one`
+      : nextCode ? `Next code for today${r ? ` — the last ${what} run of this size was ${String(r.boxNumber).toUpperCase()}${when ? ` (${when})` : ""}` : ""} — or type a different one`
       : `Type the ${what} code`); };
   /* opens as a reel when you came looking for reels, or when the last thing made of this size was reels (Aumann's
      J60511SDB, 5 Oct) — otherwise as a box, the way it always has */
