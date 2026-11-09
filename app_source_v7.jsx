@@ -584,7 +584,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-09.1";
+const APP_VERSION = "2026-11-09.2";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -5706,9 +5706,12 @@ function BoxLabelStudio({ data, setData }) {
     for (const e of rws) { let x = e.after && e.after.code && e.after.size ? e.after : null;
       if (!x) { const m = String(e.summary || "").match(/^(?:Extra b|B)ox labels printed: (\d+) × (\S+) — (.+)$/); if (m) x = { count: Number(m[1]), code: m[2], size: m[3].trim(), items: null }; }
       if (!x) continue; const k = `${String(x.code).toUpperCase()}|${x.size}`; if (seen.has(k)) continue; seen.add(k);
-      out.push({ ...x, code: String(x.code).toUpperCase(), reel: !!x.reel, metres: x.metres || null, pt: x.pt || null, at: e.at, who: e.actor || "" }); if (out.length >= 5) break; }
+      out.push({ ...x, code: String(x.code).toUpperCase(), reel: !!x.reel, metres: x.metres || null, pt: x.pt || null, at: e.at, who: e.actor || "" }); if (out.length >= 40) break; }
     return out; }, [data.changeLog]);
-  const pick = (lastPick && recent.find(r => `${r.code}|${r.size}` === lastPick)) || recent[0] || null;
+  /* WITH A SIZE OPEN, ONLY THAT SIZE'S LABELS ARE OFFERED AGAIN (admin, 9 Nov 2026: PX picked, "Print 8 more" printed the last
+     label — PX Plus 0.80 x 5.00mm 6pt — 21 times). With no size open, the last five of any size, as before. */
+  const recentHere = (size ? recent.filter(r => r.size === size) : recent).slice(0, 5);
+  const pick = (lastPick && recentHere.find(r => `${r.code}|${r.size}` === lastPick)) || recentHere[0] || null;
   const printExtra = () => { if (!pick) return; nlHaptic && nlHaptic();
     if (pick.reel) { printLabelDoc(reelDoc(pick.size, pick.code, pick.metres, extra, pick.items || null, pick.pt));
       if (setData) setData(prev => ({ ...prev, ...appendLog(prev, { action: "box_labels_printed", entity: "bondingRun", entityId: pick.code, summary: `Extra reel labels printed: ${extra} × ${pick.code} — ${pick.size} (${pick.metres} m reels)`,
@@ -5806,12 +5809,12 @@ function BoxLabelStudio({ data, setData }) {
         {tidy.map(t => <div key={t.id} style={{ fontSize: 13, color: NL.SUB, marginTop: 2 }}>{t.name} — {t.why}</div>)}</div>
       <button data-ls-tidy onClick={doTidy} style={{ height: 44, padding: "0 18px", borderRadius: 10, border: 0, background: NL.NAVY, color: "#fff", fontWeight: 700, fontSize: 14.5, fontFamily: NLT.FONT }}>Tidy {tidy.length === 1 ? "it" : "them"}</button></div>}
     {pick && <div data-ls-again style={{ ...pane, marginBottom: 12, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 14, borderColor: "#C9D3EA", background: "#F6F8FD" }}>
-      <div style={{ flex: "1 1 260px", minWidth: 0 }}><div style={head}>PRINT MORE OF THE LAST LABEL</div>
+      <div style={{ flex: "1 1 260px", minWidth: 0 }}><div style={head}>{size ? `PRINT MORE OF THE LAST ${size.toUpperCase()} LABEL` : "PRINT MORE OF THE LAST LABEL"}</div>
         <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", margin: "0 4px" }}>
           <span data-ls-again-code style={{ fontFamily: "Menlo, monospace", fontSize: 22, fontWeight: 700 }}>{pick.code}</span>
           <span data-ls-again-size style={{ fontSize: 15, fontWeight: 600 }}>{pick.size}{pick.reel ? ` · ${pick.metres} m reel` : pick.metres ? ` · ${pick.metres} m` : ""}{pick.pt ? ` · ${ptShow(pick.pt)}` : ""}</span></div>
         <div style={{ fontSize: 12.5, color: NL.SUB, margin: "4px 4px 0" }}>{pick.count} printed {hhmm(pick.at)}{pick.who ? ` by ${pick.who}` : ""}{pick.items ? " · with that print's own changes" : ""}</div>
-        {recent.length > 1 && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "8px 4px 0" }}>{recent.map(r => { const k = `${r.code}|${r.size}`, on = r === pick;
+        {recentHere.length > 1 && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "8px 4px 0" }}>{recentHere.map(r => { const k = `${r.code}|${r.size}`, on = r === pick;
           return <button key={k} data-ls-again-pick={r.code} onClick={() => { setLastPick(k); setExtraMsg(null); }} style={{ ...lsTb, height: 30, background: on ? NL.NAVY : "#fff", color: on ? "#fff" : NL.INK, fontFamily: "Menlo, monospace", fontSize: 12.5 }}>{r.code}</button>; })}</div>}</div>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <button data-ls-again-minus onClick={() => setExtra(c => Math.max(1, c - 1))} style={{ width: 40, height: 40, borderRadius: 20, border: 0, background: "#E4E8F0", fontSize: 22 }}>−</button>
