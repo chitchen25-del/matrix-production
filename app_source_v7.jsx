@@ -1,4 +1,4 @@
-import { customerRecordOf, samePoOrder, sameOrderAgain, BASE_ORDER, BOX_SUFFIXES, PHOENIX_HEIGHT_COLOURS, PRODUCT_COLOUR_HEX, RETIRED_SUFFIX_INITIALS, ULTRA_SR_WIDTHS, analyzeCodeStructure, baseGroupOf, boxCodeNearMisses, boxTypeIdForName, canonicalBoxCode, catalogueBoxFacts, catalogueName, checkUnusualAmount, codeImpliedDateISO, custNorm, customerRows, fillProductReferences, findCustomer, formIdForLine, formIdForRun, isStrongTapeBoxCode, manufactureDateFromCode, manufactureDateLabel, missingFrom, movementFormId, nameForForm, nearCustomer, nextBatchCode, nextOrderId, nextPickSheetRef, nextSplitOrderId, normaliseBoxSuffix, normaliseUltraSpec, ordersWithCustomer, parseOrderSnippet, planFormId, productColourFor, productDescription, productFormsOf, productsMissingForm, runsNamedByReference, slugForProduct, splitCustomerRef, standardTapeBoxCode, strongTapeBoxCode, unmatchedWhy, unresolvedLines, orderLineName, boxMetresRule, rubberSizeFromText, rangesCustomerTakes, orderRulesMap, boxMetresSuggest, guessNewSize, addNewSizeData, newSizeName, newSizeBase, newSizeColour, NEW_SIZE_RANGES, NEW_SIZE_VARIANTS, ultraSrMakes } from "./mx_catalogue.js";
+import { customerRecordOf, samePoOrder, sameOrderAgain, BASE_ORDER, BOX_SUFFIXES, PHOENIX_HEIGHT_COLOURS, PRODUCT_COLOUR_HEX, RETIRED_SUFFIX_INITIALS, ULTRA_SR_WIDTHS, analyzeCodeStructure, baseGroupOf, boxCodeNearMisses, boxTypeIdForName, canonicalBoxCode, catalogueBoxFacts, catalogueName, checkUnusualAmount, codeImpliedDateISO, custNorm, customerRows, fillProductReferences, findCustomer, formIdForLine, formIdForRun, isStrongTapeBoxCode, manufactureDateFromCode, manufactureDateLabel, missingFrom, movementFormId, nameForForm, nearCustomer, nextBatchCode, nextOrderId, nextPickSheetRef, nextSplitOrderId, normaliseBoxSuffix, normaliseUltraSpec, ordersWithCustomer, parseOrderSnippet, planFormId, productColourFor, productDescription, productFormsOf, productsMissingForm, runsNamedByReference, slugForProduct, splitCustomerRef, standardTapeBoxCode, strongTapeBoxCode, unmatchedWhy, unresolvedLines, formGapLines, orderLineName, boxMetresRule, rubberSizeFromText, rangesCustomerTakes, orderRulesMap, boxMetresSuggest, guessNewSize, addNewSizeData, newSizeName, newSizeBase, newSizeColour, NEW_SIZE_RANGES, NEW_SIZE_VARIANTS, ultraSrMakes } from "./mx_catalogue.js";
 import { CHANGE_FIELD_LABELS, EDIT_LOG_IGNORE, appendChangeNote, changeAgo, changeCodes, changeDayLabel, changeFieldLabel, changeFieldValue, diffRowFields, draftAt } from "./mx_changes.js";
 import { BOX_MATERIALS, CATALOGUE, setCustomers, setOvermakePct, setOnNotice, DEFAULT_MATERIALS, DISMISSALS, EVA_DIES, LEDGER_CASES, LEDGER_CASE_HOLDINGS, LEDGER_MOVEMENTS, LEDGER_ORDERS, caseHoldingsFrom, currentActor, currentDevice, setActorAndDevice, setBoxMaterials, setCatalogue, setDismissals, setLedgerCaseHoldings, setLedgerMovements, setLedgerNcrs, setOrderRules } from "./mx_context.js";
 import { fmtMoneyTotals, currencyCode, compareSizes, dayStartMs, daysAgoLocal, fmtDay, fmtLogValue, fmtMoney, fmtSize, formatAgo, formatRuntime, medianOf, nowHHMM, sizeSortKey, sortChars, timeToMinutes, timestampFromUid, uid } from "./mx_format.js";
@@ -584,7 +584,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-09.3";
+const APP_VERSION = "2026-11-09.4";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -11461,6 +11461,10 @@ For each line item's "description", you MUST pick exactly ONE of the two options
   (b) If it does NOT clearly match a known product, keep the customer's original wording
       verbatim, on its own, and mention the uncertainty in "notes" instead.
 
+A line sold as a REEL (the order says reel / REEL) must end with the word REEL, and keep its metres in brackets
+whenever the order gives them — e.g. "Smart Formes 0.60 x 3.50mm 3-4pt (30m) REEL". Never move REEL or the metres into
+"notes" instead: the description is what gets made.
+
 Do not concatenate, combine, or list both the customer's original text and your matched
 version in the same description — one line item is one product, described once.
 WRONG:   "PX Plus 0.6 x 2.5, PX Plus 0.60 x 2.50mm 3-4pt (24m)"
@@ -11800,10 +11804,20 @@ function ProductGateLine({ data, value, onResolved, setData = null, rangeHint = 
   if (res.status === "exact") {
     const saved = orderLineName(data, value);   // what the line is saved as — a reel says so (28 Sep 2026)
     const differs = saved !== String(value).trim();
-    /* A reel the catalogue can't sell as a reel is said out loud, not planned as boxes (28 Sep 2026 audit). */
-    if (isReelSpec(value) && !formIdForLine(data, { description: value })) {
+    /* A reel — or a length — the catalogue can't sell is said out loud and stops the order, not planned as boxes (28 Sep
+       2026 audit; 9 Nov 2026 MITEX: "(30m) REEL" went in as the 20.25 m box). One tap adds that form when the length is known. */
+    const gap = formGapLines(data, [{ description: value }])[0];
+    if (gap) {
+      const addIt = setData && gap.metres > 0 ? () => setData(prev => {
+        const at = new Date().toISOString(), id = `${gap.product.id}-${gap.form.toLowerCase()}-${String(gap.metres).replace(".", "-")}`;
+        const had = (prev.productForms || []).find(f => f && f.id === id);
+        const row = { ...(had || {}), id, productId: gap.product.id, form: gap.form, metres: gap.metres, active: true, createdAt: (had && had.createdAt) || at, updatedAt: at, deleted: false };
+        const d = { ...prev, productForms: had ? prev.productForms.map(f => f.id === id ? row : f) : [...(prev.productForms || []), row] };
+        return { ...d, ...appendLog(d, { action: had ? "update" : "add", entity: "productForm", entityId: id, summary: `${gap.product.displayName} can now be ordered as a ${gap.metres} m ${gap.form.toLowerCase()} (from an order line)` }) }; }) : null;
       return (<div data-gate-noreel style={{ fontSize: 11.5, color: RED, marginTop: 2, fontWeight: 600 }}>
-        {res.product.displayName} isn't sold as a reel in the catalogue yet — add it in Admin → Fix tools → Sell a size another way, or these won't be counted.</div>);
+        {gap.why}. The order can't go in like this — it would be made as the normal box.
+        {addIt ? <button data-gate-addform onClick={addIt} style={{ marginLeft: 6, fontSize: 11, padding: "2px 8px", borderRadius: 4, border: `1px solid ${RED}`, background: "#fff", color: RED, fontWeight: 700, cursor: "pointer" }}>Add a {gap.want} of this size to the catalogue</button>
+          : <span> Add it in Admin → Fix tools → Sell a size another way.</span>}</div>);
     }
     return (
       <div style={{ fontSize: 11, color: differs ? NAVY : "#2E8B57", marginTop: 2 }}>
@@ -11996,6 +12010,7 @@ function PasteOrderPanel({ data, setData, initialRaw = null, onDone = null }) {
     /* No order is created carrying a product name the rest of the system
        cannot match. Every line resolves to a catalogue product first. */
     if (unresolvedLines(data, parsed.lineItems).length) return;
+    if (formGapLines(data, parsed.lineItems).length) return;   // a reel / length the catalogue doesn't sell (MITEX, 9 Nov)
     let custName = parsed.customer.trim();
     const near = nearCustomer(data, custName);
     if (near && window.confirm(`Is "${custName}" the same customer as "${near.companyName}", already on file?\n\nOK = yes, use ${near.companyName}\nCancel = no, add ${custName} as a new customer`)) custName = near.companyName;
@@ -12156,7 +12171,7 @@ function PasteOrderPanel({ data, setData, initialRaw = null, onDone = null }) {
               )}
               <Button variant="accent" onClick={handleConfirm}
                 disabled={!parsed.customer.trim() || parsed.lineItems.length === 0 || !boxType
-                          || unresolvedLines(data, parsed.lineItems).length > 0}>+ Add this order</Button>
+                          || unresolvedLines(data, parsed.lineItems).length > 0 || formGapLines(data, parsed.lineItems).length > 0}>+ Add this order</Button>
               {!boxType && parsed.customer.trim() && parsed.lineItems.length > 0 && (
                 <div className="text-xs mt-2" style={{ color: INK_MUTED }}>Choose a box type to add this order.</div>
               )}
@@ -12166,6 +12181,12 @@ function PasteOrderPanel({ data, setData, initialRaw = null, onDone = null }) {
                   {unresolvedLines(data, parsed.lineItems).length} line
                   {unresolvedLines(data, parsed.lineItems).length === 1 ? " does" : "s do"} not match a product in
                   the catalogue. Pick the right product on each highlighted line above, then add the order.
+                </div>
+              )}
+              {unresolvedLines(data, parsed.lineItems).length === 0 && formGapLines(data, parsed.lineItems).length > 0 && (
+                <div data-paste-formgap className="text-xs mt-2" style={{ color: RED, fontWeight: 600 }}>
+                  {formGapLines(data, parsed.lineItems).map(g => <div key={g.i}>{g.why}.</div>)}
+                  Add it to the catalogue on the line above (one tap), or change the line — then add the order. Otherwise it would be made as the normal box.
                 </div>
               )}
             </div>

@@ -156,14 +156,41 @@ function partsFor(stored: any) {
 }
 const partName = (p: { parts: string[]; slice?: number; of?: number }) => p.parts.join("+") + (p.of ? ` ${(p.slice || 0) + 1}/${p.of}` : "");
 // deno-lint-ignore no-explicit-any
-async function askPart(p: { parts: string[]; slice?: number; of?: number }, payload: Uint8Array, key: string, runId: string): Promise<any> {
+async function askPartOnce(p: { parts: string[]; slice?: number; of?: number }, payload: Uint8Array, key: string, runId: string): Promise<any> {
   const r = await fetch(`${URL_}/functions/v1/mx-truth`, { method: "POST", signal: AbortSignal.timeout(100_000),
     headers: { "x-mx-key": key, "x-mx-part": JSON.stringify(p), "x-mx-run": runId, "content-type": "application/gzip" }, body: payload });
   const text = await r.text();
-  if (!r.ok) throw new Error(`part ${partName(p)}: ${r.status} ${text.slice(0, 300)}`);
+  if (!r.ok) { const err = new Error(`part ${partName(p)}: ${r.status} ${text.slice(0, 300)}`); (err as Error & { status?: number }).status = r.status; throw err; }
   const j = JSON.parse(text);
   if (!j || !j.ok || !Array.isArray(j.rows)) throw new Error(`part ${partName(p)}: ${String(j && j.error || "no answer").slice(0, 300)}`);
   return j;
+}
+/* A PIECE THAT FALLS OVER IS ASKED AGAIN (9 Nov 2026). No good run from 03:00 to 14:40: every piece was asked at once, the
+   cloud put several on one worker, and when that worker ran out of room (546 WORKER_RESOURCE_LIMIT) every piece on it fell
+   over together — the run with them, often before it could even say so (runs left with no answer). Now the pieces go two
+   at a time, and one that falls over for want of room, or a timeout, is asked twice more after a pause. */
+const PIECES_AT_ONCE = 2, PIECE_TRIES = 3;
+// deno-lint-ignore no-explicit-any
+async function askPart(p: { parts: string[]; slice?: number; of?: number }, payload: Uint8Array, key: string, runId: string, tries: Record<string, number>): Promise<any> {
+  for (let i = 1; ; i++) {
+    try { return await askPartOnce(p, payload, key, runId); }
+    catch (e) {
+      const st = Number((e as Error & { status?: number }).status) || 0;
+      const again = st === 546 || st === 502 || st === 503 || st === 504 || /timed? ?out|aborted|connection/i.test(String((e as Error)?.message || ""));
+      if (!again || i >= PIECE_TRIES) throw e;
+      tries[partName(p)] = i;
+      await new Promise(r => setTimeout(r, 700 * i));
+    }
+  }
+}
+/* the pieces, a few at a time, in order */
+// deno-lint-ignore no-explicit-any
+async function askParts(PARTS: { parts: string[]; slice?: number; of?: number }[], payload: Uint8Array, key: string, runId: string, tries: Record<string, number>): Promise<any[]> {
+  // deno-lint-ignore no-explicit-any
+  const out: any[] = new Array(PARTS.length); let next = 0;
+  const worker = async () => { while (next < PARTS.length) { const i = next++; out[i] = await askPart(PARTS[i], payload, key, runId, tries); } };
+  await Promise.all(Array.from({ length: Math.min(PIECES_AT_ONCE, PARTS.length) }, worker));
+  return out;
 }
 /* one piece of the answer, asked by a run: the inputs it was sent, the clock it was given */
 async function part(p: { parts: string[]; slice?: number; of?: number }, bytes: Uint8Array) {
@@ -195,13 +222,17 @@ async function run(reason: string, key: string) {
     t = performance.now();
     const pulled = await pullInputs(inputTables(m)); ms.pull = Math.round(performance.now() - t);
     if (!key) throw new Error("no key to ask for the pieces with");
-    t = performance.now(); const stored = storedFrom(m, pulled.inputs); ms.shape = Math.round(performance.now() - t);
+    t = performance.now(); let stored = storedFrom(m, pulled.inputs); ms.shape = Math.round(performance.now() - t);
     t = performance.now();
     const payload = await gzip(JSON.stringify({ v: 2, stored, now: new Date().toISOString() })); ms.pack = Math.round(performance.now() - t);
     const PARTS = partsFor(stored); ms.pieces = PARTS.length;
+    // deno-lint-ignore no-explicit-any
+    stored = null as any;   // the pieces have their own copy; this one is only room taken up while they work
     t = performance.now();
-    const answers = await Promise.all(PARTS.map(p => askPart(p, payload, key, runId)));
+    const tries: Record<string, number> = {};
+    const answers = await askParts(PARTS, payload, key, runId, tries);
     ms.parts = Math.round(performance.now() - t);
+    ms.retried = Object.keys(tries).length;
     const out = { asOf: answers[0].asOf as string, rows: answers.flatMap(a => a.rows) as TRow[], problems: answers.flatMap(a => a.problems || []) as string[] };
     answers.forEach((a, i) => { for (const k of ["code", "read", "compute"]) if (a.ms && a.ms[k] != null) ms[`p${i + 1}_${k}`] = a.ms[k]; });
     /* the slowest piece, start to finish — the figure to watch against the 2 seconds */
