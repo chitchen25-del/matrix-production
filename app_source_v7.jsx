@@ -584,7 +584,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-09.2";
+const APP_VERSION = "2026-11-09.3";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -36056,6 +36056,10 @@ function BondingLineView({ data, setData, jumpToPacking }) {
     /* Whatever is set must be a real bay, even when nothing is going to the
        shelf. "Staging" is not a place and must not be carried forward. */
     const bay = bayFor(f);
+    /* EVERY BOX TO AN ORDER: whatever's typed in the bay box doesn't matter (9 Nov 2026 — Dave sent all 22 of K60903SDB to
+       Viking's WO-0042 and typed VIKING in the bay; it was refused six times and left for the office). The order rows go in
+       with no bay; only boxes going to stock need a real one. */
+    if (toShelf === 0 && toOrders > 0) return "";
     if (loc && !BOX_LOCATIONS.includes(loc)) {
       if (bay) offer({ label: `Bay ${bay}`, sub: "where this size usually goes", run: answer(`bay ${bay}`, x => ({ ...x, location: bay })) }); else offerBayPick();
       return "\u201c" + loc + "\u201d isn\u2019t a bay. A box is in an order\u2019s case or on a shelf \u2014 there is nowhere in between."
@@ -36421,7 +36425,7 @@ function BondingLineView({ data, setData, jumpToPacking }) {
       const carton = boxTypeNameOf(a.boxTypeId || f.boxTypeId || "");
       const asCarton = rangeInCarton(f.range, carton);
       return { ...f, ...asCarton, allocations: [], amountMade: Number(a.qty), onOrderQty: Number(a.qty), toStock: 0,
-        workNumber: a.orderId, customerName: order?.customer || "", location: f.location || "",
+        workNumber: a.orderId, customerName: order?.customer || "", location: BOX_LOCATIONS.includes(String(f.location || "").trim()) ? String(f.location).trim() : "",
         boxTypeId: a.boxTypeId || f.boxTypeId || "" };
     });
     if (remainder > 0) {
