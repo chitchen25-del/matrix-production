@@ -4,6 +4,7 @@ import { BOX_MATERIALS, CATALOGUE, setCustomers, setOvermakePct, setOnNotice, DE
 import { fmtMoneyTotals, currencyCode, compareSizes, dayStartMs, daysAgoLocal, fmtDay, fmtLogValue, fmtMoney, fmtSize, formatAgo, formatRuntime, medianOf, nowHHMM, sizeSortKey, sortChars, timeToMinutes, timestampFromUid, uid } from "./mx_format.js";
 import { spreadsheetText } from "./mx_sheet.js";
 import { LABEL_W_MM, LABEL_H_MM, labelDocWithOffset, LABEL_OFFSET_MAX_MM, defaultLabelItems, labelItemsFor, itemText, labelItemsDoc, labelLayoutProblems } from "./mx_labels.js";
+import { LABEL_MID_MM, LABEL_PARTS, LABEL_PART_COLOURS, LABEL_PART_CSS, labelSegments, textToWords, wordsToText, partsIn, pointsForms, withLabelChoices, labelPrefsFor, setBaseWordFor, rangeSamples, labelItemsDocMany, labelTidyList, tidiedItems, reelTemplate, baseWordFor, itemsWithoutPlus } from "./mx_labels.js";
 import { BOX_LABEL_CSS, glueReelLabelDoc, reelOver, reelLabelItems, SHRINK_TO_FIT_JS, LABEL_TEMPLATE_DEFAULTS, LABEL_TEMPLATE_ORDER, baseWordRules, boxLabelDoc, boxLabelInner, extrusionReelLabelDoc, fillLine, labelFields, labelTemplate, templateIdFor } from "./mx_labels.js";
 import { CODE128_WIDTHS, code128Svg, code128Widths } from "./mx_barcode.js";
 import { classifyScan, decodeFrame, decodeRuns128, decodeRuns93 } from "./mx_scan.js";
@@ -583,7 +584,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-07.1";
+const APP_VERSION = "2026-11-09.1";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -5195,7 +5196,9 @@ function PrintLabelsDialog({ data, code, productName, boxTypeId, printedSoFar = 
   const carton = cartonNameOf(data, boxTypeId);
   const tid = templateIdFor(productName, carton);
   const tpl = labelTemplate(data.labelTemplates, tid);
-  const fields = labelFields({ productName, code, metres: boxMetresFor(data, productName), rules: baseWordRules(data.labelTemplates) });
+  /* what's kept for this size on Print labels (its points, its box metres) prints here too (9 Nov 2026) */
+  const kept = labelPrefsFor(data.labelTemplates || [], productName);
+  const fields = withLabelChoices(labelFields({ productName, code, metres: (kept && !kept.reel && kept.metres) || boxMetresFor(data, productName), rules: baseWordRules(data.labelTemplates) }), { pt: kept && kept.pt });
   const [count, setCount] = useState(String(defaultCount || 1));
   const [editing, setEditing] = useState(false);
   const [over, setOver] = useState({});
@@ -5245,7 +5248,6 @@ function PrintLabelsDialog({ data, code, productName, boxTypeId, printedSoFar = 
   );
 }
 
-const PLACEHOLDERS = [["{size}", "Size"], ["{sizec}", "0.4x1.5"], ["{gap}", "Gap"], ["{variant}", "O/S · D"], ["{pt}", "2-3"], ["{points}", "2-3pt"], ["{pt/}", "2/3"], ["{COLOUR}", "COLOUR"], ["{metal}", "#No."], ["{metres}", "Metres"], ["{base}", "Base word"], ["{code}", "Box code"], ["{customer}", "Customer"]];
 
 /* ===================== BOX LABELS, THE WAY THE FLOOR KNOWS THEM (Chris, 4 Oct 2026: "they have every size for every
    profit range stored on the work pc. So when they need to print px plus 0.40 x 1.30mm 2-3pt they just open that up and
@@ -5259,36 +5261,35 @@ const LS_INK = { ultra: "#C8102E" };
 const LS_CODE_RX = /^[A-L]\d{5}[A-Z]{2}[A-Z0-9]{1,2}S?$/;
 const lsTb = { flex: "none", height: 32, padding: "0 10px", borderRadius: 8, border: "1px solid #DDE2EA", background: "#fff", fontSize: 13.5, fontFamily: "inherit", color: "#1C2437" };
 function lsShrink(root) { if (!root) return; for (const e of root.querySelectorAll(".fit")) { e.style.fontSize = ""; let fs = parseFloat(getComputedStyle(e).fontSize), n = 0; while (e.scrollWidth > e.clientWidth + 0.5 && fs > 6 && n < 80) { fs -= 0.25; e.style.fontSize = fs + "px"; n++; } } }
-/* THE LABEL YOU CAN TOUCH (piece 2) — items placed in mm, drawn at the preview's scale. Click to pick a word, drag to move
-   it, the corner handle to make it bigger or smaller, double-click to type over it. */
-function LabelCanvas({ items, f, scale, ink, editable, sel, setSel, editing, setEditing, change, begin }) {
+/* THE LABEL YOU CAN TOUCH (piece 2) — items placed in mm, drawn at the preview's scale. Tap to pick a word, drag to move it,
+   the corner handle to make it bigger or smaller, double-tap to change its words. `mark` colours the parts that fill in by
+   themselves (9 Nov 2026). */
+function LabelCanvas({ items, f, scale, ink, editable, sel, setSel, change, begin, mark = false, onWords = null }) {
   const pxmm = 3.7795 * scale;
-  const startDrag = (e, it, mode) => { if (!editable || editing === it.id) return; e.stopPropagation(); setSel(it.id);   // no preventDefault — it would swallow the double-click
+  const startDrag = (e, it, mode) => { if (!editable) return; e.stopPropagation(); setSel(it.id);   // no preventDefault — it would swallow the double-click
     const x0 = e.clientX, y0 = e.clientY, ox = it.x, oy = it.y, os = it.size, oh = it.h;
     let moved = false;
     const mv = (ev) => { const dx = (ev.clientX - x0) / pxmm, dy = (ev.clientY - y0) / pxmm; if (!moved) { if (Math.abs(dx) + Math.abs(dy) < 0.3) return; moved = true; begin(); }
-      if (mode === "move") change(it.id, { x: Math.round(Math.max(0, Math.min(LABEL_W_MM, ox + dx)) * 10) / 10, y: Math.round(Math.max(0, Math.min(LABEL_H_MM - 2, oy + dy)) * 10) / 10 });
+      if (mode === "move") { let nx = Math.max(0, Math.min(LABEL_W_MM, ox + dx)); if (Math.abs(nx - LABEL_MID_MM) < 0.8) nx = LABEL_MID_MM;   /* snaps to the middle */
+        change(it.id, { x: Math.round(nx * 10) / 10, y: Math.round(Math.max(0, Math.min(LABEL_H_MM - 2, oy + dy)) * 10) / 10 }); }
       else if (it.kind === "barcode") change(it.id, { h: Math.round(Math.max(3, Math.min(14, oh + dy)) * 10) / 10 });
       else change(it.id, { size: Math.round(Math.max(5, Math.min(30, os + dx * 0.9)) * 2) / 2 }); };
     const up = () => { window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); };
     window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up); };
   return (<div data-lc style={{ position: "relative", width: `${LABEL_W_MM}mm`, height: `${LABEL_H_MM}mm`, background: "#fff", color: ink, overflow: "hidden", transform: `scale(${scale})`, transformOrigin: "0 0" }}
     onPointerDown={() => editable && setSel(null)}>
-    <style>{"[data-lc] svg rect{fill:currentColor}"}</style>
+    <style>{"[data-lc] svg rect{fill:currentColor}" + (mark ? LABEL_PART_CSS : "")}</style>
+    {editable && <div style={{ position: "absolute", left: `${LABEL_MID_MM}mm`, top: 0, bottom: 0, borderLeft: "0.15mm dashed rgba(47,91,211,.45)", pointerEvents: "none" }} />}
     {items.map(it => { const on = editable && sel === it.id;
       const base = { position: "absolute", left: `${it.x}mm`, top: `${it.y}mm`, transform: "translateX(-50%)", userSelect: "none", outline: editable ? (on ? "0.3mm solid #2F5BD3" : "0.15mm dashed rgba(27,43,107,.35)") : "none", cursor: editable ? "move" : "default", touchAction: "none" };
       const handle = on ? <span data-lc-handle onPointerDown={e => startDrag(e, it, "size")} style={{ position: "absolute", right: "-1mm", bottom: "-1mm", width: "1.8mm", height: "1.8mm", background: "#2F5BD3", border: "0.3mm solid #fff", cursor: "nwse-resize" }} /> : null;
       if (it.kind === "barcode") return <div key={it.id} data-lc-item={it.id} onPointerDown={e => startDrag(e, it, "move")} style={{ ...base, lineHeight: 0 }}>
         <span dangerouslySetInnerHTML={{ __html: code128Svg(f.code || " ", { moduleMm: it.module || 0.375, heightMm: it.h || 6.5 }).replace(/fill="#000"|fill="black"/g, 'fill="currentColor"') }} />{handle}</div>;
       const fam = it.font === "sans" ? "Arial,Helvetica,sans-serif" : "'Times New Roman','Liberation Serif',Times,serif";
-      const txt = itemText(it, f);
-      return <div key={it.id} data-lc-item={it.id} onPointerDown={e => startDrag(e, it, "move")} onDoubleClick={() => editable && setEditing(it.id)}
-        style={{ ...base, whiteSpace: "nowrap", fontFamily: fam, fontWeight: it.bold ? 700 : 400, fontSize: `${it.size}pt`, lineHeight: 1.1, color: it.kind === "text" && it.font === "sans" && it.id === "under" ? "#111" : undefined }}>
-        {editing === it.id ? <input data-lc-input autoFocus defaultValue={txt} onPointerDown={e => e.stopPropagation()}
-          onBlur={e => { const v = e.target.value; setEditing(null); if (v !== txt) { begin(); change(it.id, { text: v, literal: true }); } }}
-          onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") { e.currentTarget.value = txt; e.currentTarget.blur(); } }}
-          style={{ font: "inherit", width: `${Math.max(4, txt.length + 2)}ch`, border: 0, outline: "none", padding: 0, background: "rgba(47,91,211,.08)", color: "inherit", textAlign: "center" }} /> : txt}
-        {handle}</div>; })}
+      const body = mark && !it.literal ? labelSegments(it.text, f).map((sg, i) => sg.part && LABEL_PARTS[sg.part] ? <span key={i} className={`lp-${LABEL_PARTS[sg.part][1]}`}>{sg.text}</span> : <React.Fragment key={i}>{sg.text}</React.Fragment>) : itemText(it, f);
+      return <div key={it.id} data-lc-item={it.id} onPointerDown={e => startDrag(e, it, "move")} onDoubleClick={() => editable && onWords && onWords(it.id)}
+        style={{ ...base, whiteSpace: "pre", wordSpacing: Number(it.gap) > 0 ? `${Number(it.gap)}mm` : undefined, fontFamily: fam, fontWeight: it.bold ? 700 : 400, fontSize: `${it.size}pt`, lineHeight: 1.1, color: it.kind === "text" && it.font === "sans" && it.id === "under" ? "#111" : undefined }}>
+        {body}{handle}</div>; })}
   </div>);
 }
 
@@ -5537,25 +5538,30 @@ function CaseLabelPreview({ f, n, of = null, layout, pallet = null }) {
 function labelsSimpleHere() { try { const v = localStorage.getItem("mxLabelsSimple"); if (v === "new") return true; if (v === "old") return false;
     if (window.__MX_TEST_MIRROR__ && localStorage.getItem("__mxRealDefaults") !== "1") return false; } catch (e) {}
   return DESK_ORDER_V5_LOGINS.includes(nlEmail()); }
+/* LABELS (9 Nov 2026): one screen. The old "Label layouts" screen of {codes} is gone — a label is changed on the label itself,
+   points / metres / reel are choices on the print screen, and the Centre word is picked on the size. */
 function LabelsHome({ data, setData }) {
-  const [tab, setTab] = useState("print");
-  return (<div data-labels-home>
-    <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>{[["print", "Print labels"], ["layouts", "Label layouts"]].map(([k, l]) => <button key={k} data-labels-tab={k} aria-selected={tab === k} onClick={() => setTab(k)}
-      style={{ height: 40, padding: "0 16px", borderRadius: 20, border: 0, background: tab === k ? NL.NAVY : "#E4E8F0", color: tab === k ? "#fff" : NL.INK, fontWeight: 600, fontSize: 14.5, fontFamily: NLT.FONT }}>{l}</button>)}</div>
-    {tab === "print" ? <BoxLabelStudio data={data} setData={setData} /> : <LabelsView data={data} setData={setData} />}</div>);
+  return (<div data-labels-home><BoxLabelStudio data={data} setData={setData} /></div>);
 }
 function BoxLabelStudio({ data, setData }) {
+  const rows = data.labelTemplates || [];
+  const admin = isAdminLogin();
   const products = useMemo(() => (data.products || []).filter(p => p && !p.deleted && p.active !== false && p.displayName).map(p => p.displayName), [data.products]);
   /* REELS (Chris, 5 Oct 2026, label B off the mock-up). A size sold as a reel has a Reel form in the catalogue, and its
-     length is that form's metres — the only place a reel's length lives. "Sold as reels" lists just those sizes; a size
-     that has one shows a Box | Reel switch; Reel takes the last reel run's code and count, and the length from the
-     catalogue (another length can be picked for one print, and says so). */
+     length is that form's metres. Since 9 Nov 2026 any size can print as a reel ("nowhere to include the word reel") — a
+     size with no reel in the catalogue just needs the length picking. */
   const reelForms = useMemo(() => { const byId = new Map((data.products || []).filter(p => p && !p.deleted && p.displayName).map(p => [p.id, p.displayName])); const m = new Map();
     for (const f of (data.productForms || [])) { if (!f || f.deleted || f.active === false || !/reel/i.test(String(f.form || ""))) continue; const n = byId.get(f.productId); if (!n) continue; if (!m.has(n)) m.set(n, []); m.get(n).push(f); }
     return m; }, [data.products, data.productForms]);
   const reelLengths = useMemo(() => [...new Set([...reelForms.values()].flat().map(f => Number(f.metres)).filter(x => x > 0))].sort((a, b) => a - b), [reelForms]);
-  const [onlyReels, setOnlyReels] = useState(false); const [form, setForm] = useState("box");
+  /* the lengths the catalogue uses most, offered as one-tap metres */
+  const commonMetres = useMemo(() => { const c = new Map(); for (const fm of (data.productForms || [])) { if (!fm || fm.deleted || fm.active === false) continue; const m = Number(fm.metres); if (m > 0) c.set(m, (c.get(m) || 0) + 1); }
+    return [...c.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(x => x[0]); }, [data.productForms]);
+  const [onlyReels, setOnlyReels] = useState(false); const [form, setForm] = useState("box"); const [normForm, setNormForm] = useState("box");
+  /* this print's choices: metres (box or reel), points */
   const [reelM, setReelM] = useState(null); const [otherOn, setOtherOn] = useState(false); const [otherM, setOtherM] = useState("");
+  const [qPt, setQPt] = useState(null); const [ptOtherOn, setPtOtherOn] = useState(false); const [ptOtherV, setPtOtherV] = useState("");
+  const resetChoices = () => { setReelM(null); setOtherOn(false); setOtherM(""); setQPt(null); setPtOtherOn(false); setPtOtherV(""); };
   const ranges = LS_RANGES.map(([name, rx]) => [name, products.filter(n => rx.test(n) && (!onlyReels || reelForms.has(n))).sort((a, b) => a.localeCompare(b, "en", { numeric: true }))]).filter(([, xs]) => xs.length);
   const [range, setRange] = useState(() => (ranges[0] || [""])[0]); const [q, setQ] = useState(""); const [size, setSize] = useState(null); const [findQ, setFindQ] = useState("");
   const sizes = ((ranges.find(r => r[0] === range) || [, []])[1]).filter(n => !q.trim() || n.toLowerCase().includes(q.trim().toLowerCase().replace(/\s+/g, " ")));
@@ -5571,9 +5577,9 @@ function BoxLabelStudio({ data, setData }) {
       d.handled = true; d.notice = null; setCode(t); setSource("Scanned"); setMsg(null); };
     window.addEventListener("mx-scan", h); return () => window.removeEventListener("mx-scan", h); }, []);
   /* THE NEXT CODE WHEN A SIZE IS PICKED (admin, 5 Nov 2026: "I want the next batch code to be present on labels when
-     selecting"). It used to fill in the LAST run's code for the size. Now it is today's next code — after every code
-     already logged, reserved for a run, or printed on labels today — with the tape of the newest run (SDB / SD4 / SDBS).
-     The last run of the size is still said, and any code can be typed or scanned over it. */
+     selecting"). Today's next code — after every code already logged, reserved for a run, or printed on labels today — with
+     the tape of the newest run (SDB / SD4 / SDBS). The last run of the size is still said, and any code can be typed or
+     scanned over it. */
   const usedCodes = useMemo(() => [...runs.map(r => r.boxNumber), ...(data.runStarts || []).filter(x => x && !x.deleted).map(x => x.boxCode),
     ...(data.changeLog || []).filter(e => e && !e.deleted && e.action === "box_labels_printed").map(e => e.entityId)].filter(Boolean), [runs, data.runStarts, data.changeLog]);
   const tapeSfx = useMemo(() => { const latest = runs.slice().sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")) || String(b.boxNumber).localeCompare(String(a.boxNumber)))[0];
@@ -5582,43 +5588,59 @@ function BoxLabelStudio({ data, setData }) {
   const fill = (name, asReel) => { setForm(asReel ? "reel" : "box"); setReelM(null); setOtherOn(false); setOtherM(""); setMsg(null);
     const r = asReel ? lastReelRun(name) : lastRun(name), what = asReel ? "reel" : "box";
     const when = r && r.date ? new Date(`${r.date}T12:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : "";
-    /* BOXES LOGGED TODAY WITHOUT LABELS YET (7 Nov 2026 — K60701SDB: 10 boxes logged at 12:39, then the labels picked up
-       "the next code", K60702SDB, and the same boxes were nearly logged twice). When this size's last run was logged today
-       and no labels have been printed for it, its own code is offered, not the next one. */
+    /* BOXES LOGGED TODAY WITHOUT LABELS YET (7 Nov 2026 — K60701SDB): when this size's last run was logged today and no
+       labels have been printed for it, its own code is offered, not the next one. */
     const printed = new Set((data.changeLog || []).filter(e => e && !e.deleted && e.action === "box_labels_printed").map(e => String(e.entityId || "").toUpperCase()));
     const own = r && String(r.date || "") === todayISO() && r.boxNumber && !printed.has(String(r.boxNumber).toUpperCase()) ? String(r.boxNumber).toUpperCase() : null;
     setCode(own || nextCode); setCount(r ? Math.max(1, Math.round(Number(r.amountMade) || 1)) : 1);
     setSource(own ? `The ${what} run logged today — ${own}, ${Math.round(Number(r.amountMade) || 0)} made, no labels printed yet — or type a different one`
       : nextCode ? `Next code for today${r ? ` — the last ${what} run of this size was ${String(r.boxNumber).toUpperCase()}${when ? ` (${when})` : ""}` : ""} — or type a different one`
       : `Type the ${what} code`); };
-  /* opens as a reel when you came looking for reels, or when the last thing made of this size was reels (Aumann's
-     J60511SDB, 5 Oct) — otherwise as a box, the way it always has */
-  const open = (name) => { setSize(name); const rr = reelForms.has(name) ? lastReelRun(name) : null, br = lastRun(name);
-    fill(name, reelForms.has(name) && (onlyReels || (!!rr && (!br || String(rr.date || "") >= String(br.date || ""))))); };
-  const hasReel = !!size && reelForms.has(size);
-  const isReel = hasReel && form === "reel";
-  const sizeReelM = hasReel ? (Number((reelForms.get(size) || [])[0].metres) || null) : null;
-  const reelMetres = isReel ? (otherOn ? (Number(String(otherM).replace(",", ".")) > 0 ? Math.round(Number(String(otherM).replace(",", ".")) * 100) / 100 : null) : (reelM != null ? reelM : sizeReelM)) : null;
-  const reelOdd = isReel && reelMetres != null && sizeReelM != null && reelMetres !== sizeReelM;
+  /* opens as a reel when it's kept as a reel for the size, when you came looking for reels, or when the last thing made of
+     this size was reels (Aumann's J60511SDB, 5 Oct) — otherwise as a box */
+  const autoReel = (name) => { const pr = labelPrefsFor(rows, name); if (pr) return pr.reel;
+    const rr = reelForms.has(name) ? lastReelRun(name) : null, br = lastRun(name);
+    return reelForms.has(name) && (onlyReels || (!!rr && (!br || String(rr.date || "") >= String(br.date || "")))); };
+  const open = (name) => { setSize(name); resetChoices(); const asReel = autoReel(name); setNormForm(asReel ? "reel" : "box"); fill(name, asReel); };
+  const isReel = !!size && form === "reel";
   const tplId = size ? templateIdFor(size, null) : "pxplus";
-  const tpl = labelTemplate(data.labelTemplates || [], tplId);
-  const f = size ? labelFields({ productName: size, code, metres: boxMetresFor(data, size), rules: baseWordRules(data.labelTemplates || []) }) : null;
+  const tpl = labelTemplate(rows, tplId);
+  const rules = baseWordRules(rows);
+  /* WHAT THIS PRINT SAYS — the catalogue's, else what's kept for the size, else what's picked for this print */
+  const prefs = size ? labelPrefsFor(rows, size) : null;
+  const catPt = size ? labelFields({ productName: size }).pt : "";
+  const normPt = (prefs && prefs.pt) || catPt;
+  const curPt = ptOtherOn ? (String(ptOtherV).trim() || normPt) : (qPt != null ? qPt : normPt);
+  const boxM = size ? (Number(boxMetresFor(data, size)) || null) : null;
+  const sizeReelM = size && reelForms.has(size) ? (Number((reelForms.get(size) || [])[0].metres) || null) : null;
+  const catM = isReel ? sizeReelM : boxM;
+  const normM = prefs && prefs.metres && !!prefs.reel === isReel ? prefs.metres : catM;
+  const otherNum = Number(String(otherM).replace(",", "."));
+  const curM = otherOn ? (otherNum > 0 ? Math.round(otherNum * 100) / 100 : null) : (reelM != null ? reelM : normM);
+  const reelMetres = isReel ? curM : null;
+  const ptShow = (p) => { const pf = pointsForms(p); return pf ? pf.points : ""; };
+  const changes = size ? [form !== normForm ? (isReel ? "Reel" : "Box") : null, curPt && curPt !== normPt ? ptShow(curPt) : null, curM && curM !== normM ? `${curM} m` : null].filter(Boolean) : [];
+  const keptHere = !!prefs && ((prefs.pt || catPt) === curPt) && (!!prefs.reel === isReel) && ((prefs.metres || catM) === curM);
+  const f = size ? withLabelChoices(labelFields({ productName: size, code, metres: curM, rules }), { pt: curPt }) : null;
   const clean = String(code || "").trim().toUpperCase();
-  /* a reel prints the box label with the reel's length in place of the box metres, and REEL at the bottom */
-  const fShow = f && isReel ? { ...f, metres: reelMetres > 0 ? `${reelMetres}m` : "" } : f;
-  const reelDoc = (name, c, m, n, its) => { const tid = templateIdFor(name, null), t = labelTemplate(data.labelTemplates || [], tid);
-    const ff = { ...labelFields({ productName: name, code: c, metres: m, rules: baseWordRules(data.labelTemplates || []) }), code: c };
-    const lay = its !== undefined ? its : labelItemsFor(data.labelTemplates || [], tid, name).items;
-    return lay ? labelItemsDoc(reelLabelItems(lay), ff, n) : boxLabelDoc(t, ff, n, reelOver(t, ff)); };
+  const reelDoc = (name, c, m, n, its, pt) => { const tid = templateIdFor(name, null), t = labelTemplate(rows, tid);
+    const ff = withLabelChoices({ ...labelFields({ productName: name, code: c, metres: m, rules }), code: c }, { pt });
+    const lay = its !== undefined && its !== null ? its : labelItemsFor(rows, tid, name).items;
+    return lay ? labelItemsDoc(reelLabelItems(lay), ff, n) : boxLabelDoc(reelTemplate(t), ff, n); };
   const other = clean ? runs.find(r => String(r.boxNumber).toUpperCase() === clean && lsBase(r.productSize) !== size) : null;
   const odd = clean && !LS_CODE_RX.test(clean);
-  /* piece 2 — the label as items: a draft while changing it; "just this print" kept until the next print */
-  const saved = size ? labelItemsFor(data.labelTemplates || [], tplId, size) : { items: null, from: null };
-  const [edit, setEdit] = useState(false); const [draft, setDraft] = useState(null); const [hist, setHist] = useState([]); const [sel, setSel] = useState(null); const [editing, setEditing] = useState(null);
-  const [once, setOnce] = useState(null); const [keepFor, setKeepFor] = useState("print");
-  useEffect(() => { setEdit(false); setDraft(null); setHist([]); setSel(null); setEditing(null); setOnce(null); }, [size]);
+  /* the label as items: a draft while changing it; "just this print" kept until the next print */
+  const saved = size ? labelItemsFor(rows, tplId, size) : { items: null, from: null };
+  const [edit, setEdit] = useState(false); const [draft, setDraft] = useState(null); const [hist, setHist] = useState([]); const [sel, setSel] = useState(null);
+  const [once, setOnce] = useState(null); const [keepFor, setKeepFor] = useState("size");
+  const [words, setWords] = useState(null); const [rangeCheck, setRangeCheck] = useState(false); const [histOpen, setHistOpen] = useState(null);
+  const closeEdit = () => { setEdit(false); setDraft(null); setSel(null); setWords(null); setRangeCheck(false); setHistOpen(null); };
+  useEffect(() => { closeEdit(); setHist([]); setOnce(null); }, [size]);
   const items = edit ? draft : (once || saved.items);
-  const startEdit = () => { setDraft(JSON.parse(JSON.stringify(once || saved.items || defaultLabelItems(tpl)))); setHist([]); setEdit(true); setKeepFor(tplId === "px" ? "print" : (saved.from || "print")); };
+  const layoutText = (items || defaultLabelItems(tpl)).filter(x => x && x.kind === "text").map(x => String(x.text || "")).join(" ");
+  const usesPt = /\{(pt|points|pt\/)\}/.test(layoutText);
+  const usesM = /\{metres\}/.test(layoutText) || isReel;
+  const startEdit = () => { setDraft(JSON.parse(JSON.stringify(once || saved.items || defaultLabelItems(tpl)))); setHist([]); setEdit(true); setKeepFor("size"); setSel(null); setWords(null); setRangeCheck(false); setMsg(null); };
   const begin = () => setHist(h => [...h.slice(-30), JSON.stringify(draft)]);
   const change = (id, patch) => setDraft(d => (d || []).map(x => x.id === id ? { ...x, ...patch } : x));
   const undoEdit = () => setHist(h => { if (!h.length) return h; setDraft(JSON.parse(h[h.length - 1])); return h.slice(0, -1); });
@@ -5626,73 +5648,168 @@ function BoxLabelStudio({ data, setData }) {
   const upsertTpl = (id, name, config, summary) => setData && setData(prev => { const now = new Date().toISOString(); const had = (prev.labelTemplates || []).find(r => r.id === id);
     const row = { ...(had || {}), id, name, config, deleted: false, updatedAt: now };
     const next = { ...prev, labelTemplates: had ? prev.labelTemplates.map(r => r.id === id ? row : r) : [...(prev.labelTemplates || []), row] };
-    return { ...next, ...appendLog(next, { action: "label_template", entity: "labelTemplate", entityId: id, summary, before: had ? had.config : null, after: config }) }; });
+    return { ...next, ...appendLog(next, { action: "label_template", entity: "labelTemplate", entityId: id, summary, before: had && !had.deleted ? had.config : null, after: config }) }; });
+  const dropTpl = (id, summary) => setData && setData(prev => { const had = (prev.labelTemplates || []).find(r => r.id === id && !r.deleted); if (!had) return prev;
+    const next = { ...prev, labelTemplates: prev.labelTemplates.map(r => r.id === id ? { ...r, deleted: true, updatedAt: new Date().toISOString() } : r) };
+    return { ...next, ...appendLog(next, { action: "label_template", entity: "labelTemplate", entityId: id, summary, before: had.config, after: null }) }; });
   const rangeName = (range || "").trim();
-  const saveEdit = () => { nlHaptic && nlHaptic(); const it = draft;
-    { const pr = labelLayoutProblems(it); if (pr.refuse) { setMsg(pr.refuse); return; } if (pr.warn && !window.confirm(`${pr.warn}\n\nKeep it as it is?`)) return; }
+  /* "Every … label": PX follows PX Plus, so it's changed from a PX Plus size; and it's the admin's */
+  const rangeWord = tplId === "pxplus" ? "PX Plus and PX" : (tpl.usedFor && tplId !== "px" ? String(tpl.usedFor).replace(/ products$/i, "") : rangeName);
+  const rangeBlocked = tplId === "px" ? "PX labels follow the PX Plus label — change it from a PX Plus size" : !admin ? "Admin only" : null;
+  const saveEdit = () => { nlHaptic && nlHaptic(); const it = draft; setWords(null);
+    { const pr = labelLayoutProblems(it); if (pr.refuse) { setMsg(pr.refuse.replace("Put {code} back on it", "Put the Box code back on it")); return; } if (pr.warn && !window.confirm(`${pr.warn.replace(/Use \{metres\}[^.]*\./, "Use the Metres part to print each box's own length.")}\n\nKeep it as it is?`)) return; }
+    if (keepFor === "range") { if (rangeBlocked) return; setRangeCheck(true); return; }
     if (keepFor === "print") { setOnce(it); setMsg("Changed for this print only — the next one prints as normal."); }
-    else if (keepFor === "size") { upsertTpl(`size:${size}`, size, { items: it }, `Label for ${size} changed (its own layout)`); setOnce(null); setMsg(`Saved — every ${size} label prints like this now.`); }
-    else { const cur = (data.labelTemplates || []).find(r => r.id === tplId && !r.deleted); upsertTpl(tplId, (cur && cur.name) || tpl.name, { ...((cur && cur.config) || {}), items: it }, `Label layout for ${tpl.name} changed`); setOnce(null); setMsg(`Saved — every ${tpl.usedFor || rangeName} label prints like this now.`); }
-    setEdit(false); setDraft(null); setSel(null); };
+    else { upsertTpl(`size:${size}`, size, { items: it, v: 2 }, `Label for ${size} changed (its own layout)`); setOnce(null); setMsg(`Saved — every ${size} label prints like this now.`); }
+    closeEdit(); };
+  const saveRange = () => { if (rangeBlocked) return; nlHaptic && nlHaptic(); const cur = rows.find(r => r.id === tplId && !r.deleted);
+    upsertTpl(tplId, (cur && cur.name) || tpl.name, { ...((cur && cur.config) || {}), items: draft }, `Label layout for ${tpl.name} changed (every ${rangeWord} label)`);
+    setOnce(null); setMsg(`Saved — every ${rangeWord} label prints like this now.`); closeEdit(); };
   const backToNormal = () => { if (!window.confirm("Put this label back to how it normally prints?")) return; nlHaptic && nlHaptic();
-    if (saved.from === "size") setData(prev => { const next = { ...prev, labelTemplates: (prev.labelTemplates || []).map(r => r.id === `size:${size}` ? { ...r, deleted: true, updatedAt: new Date().toISOString() } : r) };
-      return { ...next, ...appendLog(next, { action: "label_template", entity: "labelTemplate", entityId: `size:${size}`, summary: `Label for ${size} back to normal` }) }; });
-    else if (saved.from === "range") { const cur = (data.labelTemplates || []).find(r => r.id === tplId && !r.deleted); const { items: _drop, ...rest } = (cur && cur.config) || {}; upsertTpl(tplId, (cur && cur.name) || tpl.name, rest, `Label layout for ${tpl.name} back to normal`); }
-    setOnce(null); setEdit(false); setDraft(null); setSel(null); setMsg("Back to normal."); };
+    if (saved.from === "size") dropTpl(`size:${size}`, `Label for ${size} back to normal`);
+    else if (saved.from === "range" && admin && tplId !== "px") { const cur = rows.find(r => r.id === tplId && !r.deleted); const { items: _drop, ...rest } = (cur && cur.config) || {}; upsertTpl(tplId, (cur && cur.name) || tpl.name, rest, `Label layout for ${tpl.name} back to normal`); }
+    setOnce(null); closeEdit(); setMsg("Back to normal."); };
+  /* KEEP FOR THIS SIZE — points, metres and reel as this size's normal from now on (Dong Nam's 20 m boxes) */
+  const keepChoices = () => { if (!size || !setData) return; nlHaptic && nlHaptic();
+    if (keptHere) { dropTpl(`print:${size}`, `Label for ${size}: back to the catalogue's points and metres`); setNormForm(autoReelNoPrefs(size) ? "reel" : "box"); resetChoices(); setMsg("Back to the catalogue — this size prints as normal again."); return; }
+    const cfg = { pt: curPt && curPt !== catPt ? curPt : null, metres: curM && curM !== catM ? curM : null, reel: isReel };
+    const what = [isReel ? "reel" : null, cfg.pt ? ptShow(cfg.pt) : null, cfg.metres ? `${cfg.metres} m` : null].filter(Boolean).join(", ");
+    if (!cfg.pt && !cfg.metres && !cfg.reel) dropTpl(`print:${size}`, `Label for ${size}: back to the catalogue's points and metres`);
+    else upsertTpl(`print:${size}`, size, cfg, `Label for ${size}: ${what} kept for this size`);
+    setNormForm(isReel ? "reel" : "box"); resetChoices(); setMsg(`Kept — every ${size} label prints ${what || "as the catalogue says"} from now on.`); };
+  const autoReelNoPrefs = (name) => { const rr = reelForms.has(name) ? lastReelRun(name) : null, br = lastRun(name); return reelForms.has(name) && (!!rr && (!br || String(rr.date || "") >= String(br.date || ""))); };
   const ref = React.useRef(null); const boxRef = React.useRef(null); const [boxW, setBoxW] = useState(600);
   useEffect(() => { lsShrink(ref.current); });
   useEffect(() => { const el = boxRef.current; if (!el || typeof ResizeObserver === "undefined") return; const ro = new ResizeObserver(() => setBoxW(el.clientWidth)); ro.observe(el); setBoxW(el.clientWidth); return () => ro.disconnect(); }, []);
   const scale = Math.max(0.9, Math.min(2.4, (boxW - 40) / 290));
   const print = () => { if (!size || !clean) return;
     if (other && !window.confirm(`${clean} is already on ${other.productSize}. Print it on ${size} anyway?`)) return;
-    if (isReel) { if (!(reelMetres > 0)) return; nlHaptic && nlHaptic();
-      printLabelDoc(reelDoc(size, clean, reelMetres, count, saved.items || null));
-      if (setData) setData(prev => ({ ...prev, ...appendLog(prev, { action: "box_labels_printed", entity: "bondingRun", entityId: clean, summary: `Reel labels printed: ${count} × ${clean} — ${size} (${reelMetres} m reels)`,
-        after: { size, code: clean, count, reel: true, metres: reelMetres } }) }));
-      setLastPick(null); setExtra(1); setMsg(`Sent ${count} reel label${count === 1 ? "" : "s"} for ${clean} (${reelMetres} m) to the printer. Recorded.`); return; }
-    nlHaptic && nlHaptic(); const its = once || saved.items;
-    printLabelDoc(its ? labelItemsDoc(its, { ...f, code: clean }, count) : boxLabelDoc(tpl, { ...f, code: clean }, count)); if (once) setOnce(null);
-    if (setData) setData(prev => ({ ...prev, ...appendLog(prev, { action: "box_labels_printed", entity: "bondingRun", entityId: clean, summary: `Box labels printed: ${count} × ${clean} — ${size}`,
-      after: { size, code: clean, count, items: once || null } }) }));
-    setLastPick(null); setExtra(1);
-    setMsg(`Sent ${count} label${count === 1 ? "" : "s"} for ${clean} to the printer. Recorded.`); };
-  /* PRINT MORE OF THE LAST LABEL (Chris, 5 Oct 2026: "Dave's complaining that when he needs extra labels for something
-     he's just printed he has to go and retype things"). The labels printed lately — from the record every print already
-     makes, so it survives leaving the screen, a reload or another device — newest first, one per box code. Tap one,
-     say how many more, Print: same size, same code, same layout as it went out (a "just this print" change included). */
+    const ptLog = curPt && curPt !== catPt ? curPt : null, said = changes.length ? ` (${changes.join(", ")})` : "";
+    if (isReel) { if (!(curM > 0)) return; nlHaptic && nlHaptic();
+      printLabelDoc(reelDoc(size, clean, curM, count, once || saved.items || null, curPt));
+      if (setData) setData(prev => ({ ...prev, ...appendLog(prev, { action: "box_labels_printed", entity: "bondingRun", entityId: clean, summary: `Reel labels printed: ${count} × ${clean} — ${size} (${curM} m reels${ptLog ? `, ${ptShow(ptLog)}` : ""})`,
+        after: { size, code: clean, count, reel: true, metres: curM, pt: ptLog, items: once || null } }) }));
+    } else { nlHaptic && nlHaptic(); const its = once || saved.items;
+      printLabelDoc(its ? labelItemsDoc(its, { ...f, code: clean }, count) : boxLabelDoc(tpl, { ...f, code: clean }, count));
+      if (setData) setData(prev => ({ ...prev, ...appendLog(prev, { action: "box_labels_printed", entity: "bondingRun", entityId: clean, summary: `Box labels printed: ${count} × ${clean} — ${size}${said ? ` — this print${said}` : ""}`,
+        after: { size, code: clean, count, items: once || null, pt: ptLog, metres: curM !== boxM ? curM : null } }) })); }
+    const n = count, wasReel = isReel; if (once) setOnce(null); setLastPick(null); setExtra(1);
+    if (form !== normForm) fill(size, normForm === "reel"); resetChoices();
+    setMsg(`Sent ${n} ${wasReel ? "reel " : ""}label${n === 1 ? "" : "s"} for ${clean}${wasReel ? ` (${curM} m)` : ""} to the printer. Recorded.${changes.length ? " The next one prints as normal." : ""}`); };
+  /* PRINT ONE TO CHECK — the changed label, once, on the printer; nothing saved, nothing recorded against a box */
+  const printCheck = () => { if (!size || !draft) return; nlHaptic && nlHaptic(); printLabelDoc(labelItemsDoc(draft, { ...f, code: clean || "CHECK" }, 1)); setMsg("One label sent to check — nothing is saved yet."); };
+  /* PRINT MORE OF THE LAST LABEL (Chris, 5 Oct 2026). The labels printed lately — newest first, one per box code. Tap one, say
+     how many more, Print: same size, code, layout, points and metres as it went out. */
   const [lastPick, setLastPick] = useState(null); const [extra, setExtra] = useState(1); const [extraMsg, setExtraMsg] = useState(null);
   const recent = useMemo(() => { const out = [], seen = new Set();
-    const rows = (data.changeLog || []).filter(e => e && !e.deleted && e.action === "box_labels_printed").sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
-    for (const e of rows) { let x = e.after && e.after.code && e.after.size ? e.after : null;
+    const rws = (data.changeLog || []).filter(e => e && !e.deleted && e.action === "box_labels_printed").sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+    for (const e of rws) { let x = e.after && e.after.code && e.after.size ? e.after : null;
       if (!x) { const m = String(e.summary || "").match(/^(?:Extra b|B)ox labels printed: (\d+) × (\S+) — (.+)$/); if (m) x = { count: Number(m[1]), code: m[2], size: m[3].trim(), items: null }; }
       if (!x) continue; const k = `${String(x.code).toUpperCase()}|${x.size}`; if (seen.has(k)) continue; seen.add(k);
-      out.push({ ...x, code: String(x.code).toUpperCase(), reel: !!x.reel, metres: x.metres || null, at: e.at, who: e.actor || "" }); if (out.length >= 5) break; }
+      out.push({ ...x, code: String(x.code).toUpperCase(), reel: !!x.reel, metres: x.metres || null, pt: x.pt || null, at: e.at, who: e.actor || "" }); if (out.length >= 5) break; }
     return out; }, [data.changeLog]);
   const pick = (lastPick && recent.find(r => `${r.code}|${r.size}` === lastPick)) || recent[0] || null;
   const printExtra = () => { if (!pick) return; nlHaptic && nlHaptic();
-    if (pick.reel) { printLabelDoc(reelDoc(pick.size, pick.code, pick.metres, extra));
+    if (pick.reel) { printLabelDoc(reelDoc(pick.size, pick.code, pick.metres, extra, pick.items || null, pick.pt));
       if (setData) setData(prev => ({ ...prev, ...appendLog(prev, { action: "box_labels_printed", entity: "bondingRun", entityId: pick.code, summary: `Extra reel labels printed: ${extra} × ${pick.code} — ${pick.size} (${pick.metres} m reels)`,
-        after: { size: pick.size, code: pick.code, count: extra, reel: true, metres: pick.metres, extra: true } }) }));
+        after: { size: pick.size, code: pick.code, count: extra, reel: true, metres: pick.metres, pt: pick.pt, items: pick.items || null, extra: true } }) }));
       setLastPick(`${pick.code}|${pick.size}`); setExtraMsg(`Sent ${extra} more reel label${extra === 1 ? "" : "s"} for ${pick.code} to the printer. Recorded.`); setExtra(1); return; }
-    const tid = templateIdFor(pick.size, null), t2 = labelTemplate(data.labelTemplates || [], tid);
-    const f2 = labelFields({ productName: pick.size, code: pick.code, metres: boxMetresFor(data, pick.size), rules: baseWordRules(data.labelTemplates || []) });
-    const its = pick.items || labelItemsFor(data.labelTemplates || [], tid, pick.size).items;
+    const tid = templateIdFor(pick.size, null), t2 = labelTemplate(rows, tid);
+    const f2 = withLabelChoices(labelFields({ productName: pick.size, code: pick.code, metres: pick.metres || boxMetresFor(data, pick.size), rules }), { pt: pick.pt });
+    const its = pick.items || labelItemsFor(rows, tid, pick.size).items;
     printLabelDoc(its ? labelItemsDoc(its, { ...f2, code: pick.code }, extra) : boxLabelDoc(t2, { ...f2, code: pick.code }, extra));
     if (setData) setData(prev => ({ ...prev, ...appendLog(prev, { action: "box_labels_printed", entity: "bondingRun", entityId: pick.code, summary: `Extra box labels printed: ${extra} × ${pick.code} — ${pick.size}`,
-      after: { size: pick.size, code: pick.code, count: extra, items: pick.items || null, extra: true } }) }));
+      after: { size: pick.size, code: pick.code, count: extra, items: pick.items || null, pt: pick.pt, metres: pick.metres, extra: true } }) }));
     setLastPick(`${pick.code}|${pick.size}`);
     setExtraMsg(`Sent ${extra} more label${extra === 1 ? "" : "s"} for ${pick.code} to the printer. Recorded.`); setExtra(1); };
   const hhmm = (at) => { try { const d = new Date(at), today = new Date().toDateString() === d.toDateString();
     return (today ? "" : d.toLocaleDateString("en-GB", { day: "numeric", month: "short" }) + " ") + d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }); } catch (e) { return ""; } };
+  /* THE CENTRE WORD FOR THIS SIZE — chosen on the label, kept as the size's own (the old rules screen is gone) */
+  const baseNow = size ? baseWordFor(rules, size) : "";
+  const setBaseWord = (w) => { if (!size || w === baseNow) return; nlHaptic && nlHaptic(); upsertTpl("baseWords", "Base words", setBaseWordFor(rules, size, w), `${size} now says ${w}`); setMsg(`${size} says ${w} on its labels now.`); };
+  /* LAYOUTS THAT NEED TIDYING (admin) */
+  const tidy = admin ? labelTidyList(rows) : [];
+  const doTidy = () => { if (!tidy.length || !setData) return; nlHaptic && nlHaptic();
+    for (const t of tidy) { if (t.action === "remove") dropTpl(t.id, `${t.name}: an old layout that was never used, taken away`);
+      else { const r = rows.find(x => x.id === t.id); upsertTpl(t.id, t.name, { ...(r.config || {}), items: tidiedItems(r.config.items, labelTemplate(rows, templateIdFor(t.name, null))) }, `${t.name}: the size fills in by itself again`); } }
+    setMsg(`Tidied ${tidy.length} label layout${tidy.length === 1 ? "" : "s"}.`); };
+  /* CHANGES TO THIS LABEL — every change to this size's label, its range's, or what's kept for it, with before and after */
+  const histIds = size ? [`size:${size}`, tplId === "px" ? "pxplus" : tplId, `print:${size}`] : [];
+  const history = useMemo(() => size ? (data.changeLog || []).filter(e => e && !e.deleted && e.action === "label_template" && (histIds.includes(e.entityId) || (e.entityId === "baseWords" && String(e.summary || "").includes(size))))
+    .sort((a, b) => String(b.at || "").localeCompare(String(a.at || ""))).slice(0, 6) : [], [data.changeLog, size, tplId]);
+  const cfgLook = (id, cfg) => { if (!cfg) return null; if (Array.isArray(cfg.items) && cfg.items.length) return tplId === "px" && id === "pxplus" ? itemsWithoutPlus(cfg.items) : cfg.items;
+    if (LABEL_TEMPLATE_DEFAULTS[id]) { const t0 = { ...LABEL_TEMPLATE_DEFAULTS[id], ...cfg }; const its = defaultLabelItems(t0); return tplId === "px" && id === "pxplus" ? itemsWithoutPlus(its) : its; } return null; };
+  const prefsSay = (c) => !c ? "the catalogue's" : [c.reel ? "reel" : null, c.pt ? ptShow(c.pt) : null, Number(c.metres) > 0 ? `${c.metres} m` : null].filter(Boolean).join(", ") || "the catalogue's";
+  const canPutBack = (id) => admin || String(id).startsWith("size:") || String(id).startsWith("print:");
+  const putBack = (e) => { if (!canPutBack(e.entityId) || !window.confirm("Put this label back to how it was before this change?")) return; nlHaptic && nlHaptic();
+    const name = e.entityId.startsWith("size:") || e.entityId.startsWith("print:") ? size : ((rows.find(r => r.id === e.entityId) || {}).name || e.entityId);
+    if (e.before == null) dropTpl(e.entityId, `${name}: put back to how it was before ${hhmm(e.at)}`); else upsertTpl(e.entityId, name, e.before, `${name}: put back to how it was before ${hhmm(e.at)}`);
+    setHistOpen(null); setMsg("Put back."); };
   const wide = typeof window !== "undefined" && window.innerWidth >= 900;
   const pane = { background: "#fff", border: "1px solid #DDE2EA", borderRadius: 14, padding: 12 };
   const head = { fontSize: 12, fontWeight: 700, letterSpacing: 1, color: "#5E6A82", margin: "2px 4px 8px" };
+  const chipS = (on) => ({ height: 44, padding: "0 14px", borderRadius: 12, border: on ? `2px solid ${NL.NAVY}` : "1px solid #DDE2EA", background: on ? "#E7EBF5" : "#fff", color: NL.INK, fontSize: 16, fontWeight: 700, fontFamily: NLT.FONT, display: "inline-flex", alignItems: "center", gap: 6 });
+  const tool = { height: 46, minWidth: 46, padding: "0 12px", borderRadius: 10, border: "1px solid #DDE2EA", background: "#fff", fontSize: 15.5, fontWeight: 700, fontFamily: NLT.FONT, color: NL.INK };
+  const small = { fontSize: 12, fontWeight: 500, color: NL.SUB };
+  const ink = LS_INK[tplId] || "#1B2A8C";
+  /* the parts on this label, for the key under it */
+  const kindsHere = (() => { const ks = new Set(); for (const it of (items || defaultLabelItems(tpl))) if (it && it.kind === "text" && !it.literal) for (const k of partsIn(it.text)) ks.add(LABEL_PARTS[k][1]);
+    if (isReel) ks.add("reel"); return ["size", "pt", "code", "base", "m", "reel"].filter(k => ks.has(k)); })();
+  const kindName = { size: "Size", pt: "Points", code: isReel ? "Reel code" : "Box code", base: "Centre word", m: "Metres", reel: "Reel" };
+  const legend = <div data-ls-legend style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px", justifyContent: "center", fontSize: 12.5, color: NL.SUB, marginTop: 6 }}>
+    {kindsHere.map(k => <span key={k} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><i style={{ width: 13, height: 13, borderRadius: 4, background: LABEL_PART_COLOURS[k][0], border: `1px solid ${LABEL_PART_COLOURS[k][1]}`, display: "inline-block" }} />{kindName[k]}</span>)}
+    <span>— coloured parts fill in by themselves</span></div>;
+  /* the sizes a whole-range change is checked on */
+  const rangeNames = useMemo(() => products.filter(n => templateIdFor(n, null) === tplId).sort((a, b) => a.localeCompare(b, "en", { numeric: true })), [products, tplId]);
+  const ownLayouts = rangeNames.filter(n => n !== size && rows.some(r => r && !r.deleted && r.id === `size:${n}` && r.config && Array.isArray(r.config.items) && r.config.items.length));
+  const samples = rangeCheck ? rangeSamples(rangeNames.filter(n => !ownLayouts.includes(n)), size, 5) : [];
+  const sampleFields = (n) => labelFields({ productName: n, code: clean || nextCode || "K00000SDB", metres: boxMetresFor(data, n), rules });
+  const printSamples = () => { nlHaptic && nlHaptic(); printLabelDoc(labelItemsDocMany(samples.map(n => ({ items: draft, f: sampleFields(n) })))); setMsg(`${samples.length} labels sent to check — nothing is saved yet.`); };
+  const mini = (its, ff, k = 0.82) => <div style={{ width: 290 * k, height: 96 * k, position: "relative", flex: "none", boxShadow: "0 1px 6px rgba(0,0,0,.15)", background: "#fff" }}>
+    <LabelCanvas items={its} f={ff} scale={k} ink={ink} editable={false} sel={null} setSel={() => {}} change={() => {}} begin={() => {}} mark /></div>;
+  /* the words box: the line with its parts named in [brackets] */
+  const partButtons = ["size", "sizec", "pt", "points", "metres", "base", "code", "variant", ...(tplId === "ultra" || tplId === "kenMetal" ? ["COLOUR"] : []), "reel"];
+  const saveWords = () => { if (!selItem || words == null) return; const before = String(selItem.text || ""), next = wordsToText(words);
+    const lost = partsIn(before).filter(k => !partsIn(next).includes(k));
+    if (lost.length && !window.confirm(`${lost.map(k => LABEL_PARTS[k][0]).join(", ")} won't fill in by itself any more — what's typed in its place prints on every label this is saved for. Keep it?`)) return;
+    begin(); change(sel, { text: next, literal: false }); setWords(null); };
+  const choicesPane = size && !edit && <div data-ls-choices style={{ ...pane, padding: "12px 14px" }}><div style={head}>FOR THIS PRINT — NO NEED TO CHANGE THE LABEL</div>
+    <div style={{ display: "grid", gridTemplateColumns: wide ? "120px 1fr" : "1fr", gap: "10px 12px", alignItems: "center" }}>
+      <b style={{ fontSize: 15 }}>Box or reel</b>
+      <div data-ls-form-switch role="group" aria-label="Box or reel" style={{ display: "inline-flex", justifySelf: "start", background: "#E4E8F0", borderRadius: 12, padding: 3 }}>
+        {[["box", `Box${boxM ? ` · ${boxM} m` : ""}`], ["reel", `Reel${sizeReelM ? ` · ${sizeReelM} m` : ""}`]].map(([k, l]) => <button key={k} data-ls-form={k} aria-pressed={form === k} onClick={() => { if (form !== k) { setOnce(null); fill(size, k === "reel"); } }}
+          style={{ height: 40, padding: "0 18px", borderRadius: 10, border: 0, background: form === k ? "#fff" : "transparent", color: form === k ? NL.NAVY : NL.SUB, fontWeight: 600, fontSize: 15, fontFamily: NLT.FONT, boxShadow: form === k ? "0 1px 3px rgba(27,43,107,.18)" : "none" }}>{l}</button>)}</div>
+      {usesPt && <><b style={{ fontSize: 15 }}>Points</b>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+          {[...new Set(["2-3", "3-4", "6pt", catPt, normPt].filter(Boolean))].map(p => { const on = !ptOtherOn && curPt === p; return <button key={p} data-ls-pt={p} aria-pressed={on} onClick={() => { setPtOtherOn(false); setQPt(p); setMsg(null); }} style={chipS(on)}>
+            {ptShow(p)}{p === catPt ? <span style={small}>· this size</span> : p === normPt ? <span style={small}>· kept for this size</span> : null}</button>; })}
+          <button data-ls-pt-other aria-pressed={ptOtherOn} onClick={() => { setPtOtherOn(true); setMsg(null); }} style={chipS(ptOtherOn)}>Other…</button>
+          {ptOtherOn && <input data-ls-pt-input autoFocus value={ptOtherV} onChange={e => setPtOtherV(e.target.value.slice(0, 12))} placeholder="e.g. 4-5" style={{ width: 90, height: 44, boxSizing: "border-box", borderRadius: 10, border: `2px solid ${NL.NAVY}`, padding: "0 10px", fontSize: 17, fontWeight: 700, fontFamily: NLT.FONT, color: NL.INK }} />}
+        </div></>}
+      {usesM && <><b style={{ fontSize: 15 }}>{isReel ? "Metres on the reel" : "Metres"}</b>
+        <div data-ls-lengths style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+          {[...new Set([...commonMetres, ...(isReel ? reelLengths : []), catM, normM].filter(x => x > 0))].sort((a, b) => a - b).map(m => { const on = !otherOn && curM === m; return <button key={m} data-ls-metres={m} aria-pressed={on} onClick={() => { setOtherOn(false); setReelM(m); setMsg(null); }} style={chipS(on)}>
+            {m} m{m === catM ? <span style={small}>· this size{isReel ? "" : "'s box"}</span> : m === normM ? <span style={small}>· kept for this size</span> : null}</button>; })}
+          <button data-ls-metres-other aria-pressed={otherOn} onClick={() => { setOtherOn(true); setMsg(null); }} style={chipS(otherOn)}>Other…</button>
+          {otherOn && <input data-ls-metres-input autoFocus inputMode="decimal" value={otherM} onChange={e => { setOtherM(e.target.value.replace(/[^\d.,]/g, "")); setMsg(null); }} placeholder="metres" style={{ width: 90, height: 44, boxSizing: "border-box", borderRadius: 10, border: `2px solid ${NL.NAVY}`, padding: "0 10px", fontSize: 17, fontWeight: 700, fontFamily: NLT.FONT, color: NL.INK }} />}
+        </div></>}
+    </div>
+    {isReel && !(curM > 0) && <div data-ls-metres-need style={{ marginTop: 10, fontSize: 13.5, color: "#9A4A06", fontWeight: 600 }}>{otherOn ? "Type how many metres are on the reel." : `${size} has no reel length in the catalogue — pick the length on the reel.`}</div>}
+    {(changes.length > 0 || prefs) && <div data-ls-changed style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 10, justifyContent: "space-between", alignItems: "center", fontSize: 13.5, fontWeight: 600, borderRadius: 10, padding: "9px 12px",
+        color: changes.length ? "#9A4A06" : NL.SUB, background: changes.length ? "#FFF6EC" : NL.PANEL, border: `1px solid ${changes.length ? "#F3D3AE" : NL.LINE}` }}>
+      <span>{changes.length ? <>Changed for this print: {changes.join(" · ")}. The next one prints as normal.</> : <>This size is kept as {prefsSay(prefs)} — set here, not in the catalogue.</>}</span>
+      <label style={{ display: "inline-flex", alignItems: "center", gap: 8, color: NL.INK, cursor: "pointer" }}><input type="checkbox" data-ls-keep-size checked={keptHere} onChange={keepChoices} style={{ width: 20, height: 20 }} />Keep for this size</label></div>}
+  </div>;
   return (<div data-ls style={{ fontFamily: NLT.FONT, color: NL.INK }}>
+    {tidy.length > 0 && <div data-ls-tidy-pane style={{ ...pane, marginBottom: 12, borderColor: "#F3D3AE", background: "#FFF8EE", display: "flex", flexWrap: "wrap", gap: 12, justifyContent: "space-between", alignItems: "center" }}>
+      <div style={{ minWidth: 0 }}><b style={{ fontSize: 15.5 }}>{tidy.length} label layout{tidy.length === 1 ? " needs" : "s need"} tidying</b>
+        {tidy.map(t => <div key={t.id} style={{ fontSize: 13, color: NL.SUB, marginTop: 2 }}>{t.name} — {t.why}</div>)}</div>
+      <button data-ls-tidy onClick={doTidy} style={{ height: 44, padding: "0 18px", borderRadius: 10, border: 0, background: NL.NAVY, color: "#fff", fontWeight: 700, fontSize: 14.5, fontFamily: NLT.FONT }}>Tidy {tidy.length === 1 ? "it" : "them"}</button></div>}
     {pick && <div data-ls-again style={{ ...pane, marginBottom: 12, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 14, borderColor: "#C9D3EA", background: "#F6F8FD" }}>
       <div style={{ flex: "1 1 260px", minWidth: 0 }}><div style={head}>PRINT MORE OF THE LAST LABEL</div>
         <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", margin: "0 4px" }}>
           <span data-ls-again-code style={{ fontFamily: "Menlo, monospace", fontSize: 22, fontWeight: 700 }}>{pick.code}</span>
-          <span data-ls-again-size style={{ fontSize: 15, fontWeight: 600 }}>{pick.size}{pick.reel ? ` · ${pick.metres} m reel` : ""}</span></div>
+          <span data-ls-again-size style={{ fontSize: 15, fontWeight: 600 }}>{pick.size}{pick.reel ? ` · ${pick.metres} m reel` : pick.metres ? ` · ${pick.metres} m` : ""}{pick.pt ? ` · ${ptShow(pick.pt)}` : ""}</span></div>
         <div style={{ fontSize: 12.5, color: NL.SUB, margin: "4px 4px 0" }}>{pick.count} printed {hhmm(pick.at)}{pick.who ? ` by ${pick.who}` : ""}{pick.items ? " · with that print's own changes" : ""}</div>
         {recent.length > 1 && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "8px 4px 0" }}>{recent.map(r => { const k = `${r.code}|${r.size}`, on = r === pick;
           return <button key={k} data-ls-again-pick={r.code} onClick={() => { setLastPick(k); setExtraMsg(null); }} style={{ ...lsTb, height: 30, background: on ? NL.NAVY : "#fff", color: on ? "#fff" : NL.INK, fontFamily: "Menlo, monospace", fontSize: 12.5 }}>{r.code}</button>; })}</div>}</div>
@@ -5703,22 +5820,20 @@ function BoxLabelStudio({ data, setData }) {
       <button data-ls-again-print onClick={printExtra} style={{ height: 52, padding: "0 22px", borderRadius: 12, border: 0, background: "#C8102E", color: "#fff", fontSize: 17, fontWeight: 700, fontFamily: NLT.FONT }}>Print {extra} more</button>
       {extraMsg && <div data-ls-again-msg style={{ flexBasis: "100%", fontSize: 13.5, color: "#1F7A4D", fontWeight: 600, margin: "0 4px" }}>{extraMsg}</div>}
     </div>}
-    {/* LABELS OPEN ON SEARCH (audit item 8, 18 Oct 2026 — Chris's login first): one box finds a size in every range, and the
-        sizes made lately sit under it, newest first, so a label is a search or a tap, not a pick from about 250 buttons. The
-        ranges and their sizes stay below, as they were. Reprints come from the box's own sheet (Find anything → the box). */}
+    {/* LABELS OPEN ON SEARCH (audit item 8, 18 Oct 2026): one box finds a size in every range, and the sizes made lately sit under it */}
     {labelsSimpleHere() && (() => {
       const all = products.filter(n => !onlyReels || reelForms.has(n));
-      const words = String(findQ || "").toLowerCase().replace(/[×x]/g, " ").split(/\s+/).filter(Boolean);
-      const hits = words.length ? all.filter(n => { const h = n.toLowerCase(); return words.every(w => h.includes(w)); }).slice(0, 12) : [];
-      const recent = []; for (const r of [...runs].sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")) || String(b.createdAt || "").localeCompare(String(a.createdAt || "")))) {
-        const n = lsBase(r.productSize); if (all.includes(n) && !recent.includes(n)) recent.push(n); if (recent.length >= 10) break; }
+      const wds = String(findQ || "").toLowerCase().replace(/[×x]/g, " ").split(/\s+/).filter(Boolean);
+      const hits = wds.length ? all.filter(n => { const h = n.toLowerCase(); return wds.every(w => h.includes(w)); }).slice(0, 12) : [];
+      const made = []; for (const r of [...runs].sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")) || String(b.createdAt || "").localeCompare(String(a.createdAt || "")))) {
+        const n = lsBase(r.productSize); if (all.includes(n) && !made.includes(n)) made.push(n); if (made.length >= 10) break; }
       const chip = (n, attr) => <button key={n} {...{ [attr]: n }} onClick={() => { open(n); setFindQ(""); }} style={{ ...lsTb, height: 36, borderRadius: 18, padding: "0 14px", background: size === n ? NL.NAVY : "#fff", color: size === n ? "#fff" : NL.INK, fontSize: 14 }}>{n}</button>;
       return (<div data-ls-find-pane style={{ ...pane, marginBottom: 12 }}>
         <input data-ls-find value={findQ} onChange={e => setFindQ(e.target.value)} placeholder="Find a size in any range — e.g. 0.40 1.50 O/S" autoCorrect="off" autoCapitalize="off" spellCheck="false"
           style={{ width: "100%", boxSizing: "border-box", height: 46, borderRadius: 12, border: "1px solid #DDE2EA", padding: "0 14px", fontSize: 16, fontFamily: NLT.FONT }} />
-        {words.length > 0 && <div data-ls-find-hits style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>{hits.length ? hits.map(n => chip(n, "data-ls-find-hit")) : <span style={{ fontSize: 14, color: NL.SUB }}>No size matches "{findQ}".</span>}</div>}
-        {!words.length && recent.length > 0 && <><div style={{ ...head, marginTop: 12 }}>MADE LATELY</div>
-          <div data-ls-recent style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>{recent.map(n => chip(n, "data-ls-recent-size"))}</div></>}
+        {wds.length > 0 && <div data-ls-find-hits style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>{hits.length ? hits.map(n => chip(n, "data-ls-find-hit")) : <span style={{ fontSize: 14, color: NL.SUB }}>No size matches "{findQ}".</span>}</div>}
+        {!wds.length && made.length > 0 && <><div style={{ ...head, marginTop: 12 }}>MADE LATELY</div>
+          <div data-ls-recent style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>{made.map(n => chip(n, "data-ls-recent-size"))}</div></>}
       </div>);
     })()}
     <div style={{ display: "grid", gridTemplateColumns: wide ? "220px 260px minmax(0, 1fr)" : "1fr", gap: 12, alignItems: "start" }}>
@@ -5737,45 +5852,83 @@ function BoxLabelStudio({ data, setData }) {
           {rf && <span data-ls-reel-tag style={{ flex: "none", fontSize: 11.5, fontWeight: 600, color: NL.NAVY, background: "#E7EBF5", borderRadius: 999, padding: "2px 8px", whiteSpace: "nowrap" }}>Reel {rf.map(f => Number(f.metres)).filter(x => x > 0).join(" / ")} m</span>}</button>; })}
         {!sizes.length && <div style={{ fontSize: 13, color: NL.SUB, padding: 8 }}>No size matches.</div>}</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0 }}>
+      {choicesPane}
       <div ref={boxRef} style={{ ...pane, minHeight: 230, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "repeating-linear-gradient(0deg,#E7EAF0 0 1px,transparent 1px 24px),repeating-linear-gradient(90deg,#E7EAF0 0 1px,#F3F5F9 1px 24px)" }}>
         {size ? <>
-          <style>{BOX_LABEL_CSS + ".lsl .lab{color:inherit}.lsl .lab svg rect{fill:currentColor}"}</style>
-          {hasReel && !edit && <div data-ls-form-switch role="group" aria-label="Box or reel" style={{ display: "flex", background: "#E4E8F0", borderRadius: 12, padding: 3, marginTop: 2 }}>
-            {[["box", `Box · ${boxMetresFor(data, size) || "?"} m`], ["reel", `Reel · ${sizeReelM || "?"} m`]].map(([k, l]) => <button key={k} data-ls-form={k} aria-pressed={form === k} onClick={() => { if (form !== k) { setOnce(null); fill(size, k === "reel"); } }}
-              style={{ height: 36, padding: "0 16px", borderRadius: 10, border: 0, background: form === k ? "#fff" : "transparent", color: form === k ? NL.NAVY : NL.SUB, fontWeight: 600, fontSize: 14.5, fontFamily: NLT.FONT, boxShadow: form === k ? "0 1px 3px rgba(27,43,107,.18)" : "none" }}>{l}</button>)}</div>}
-          {edit && <div data-ls-toolbar style={{ display: "flex", flexWrap: "nowrap", overflowX: "auto", height: 40, gap: 6, alignItems: "center", alignSelf: "stretch", fontSize: 13.5, marginBottom: 6 }}>
-            <b style={{ marginRight: 4, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: "none" }}>{selItem ? (selItem.kind === "barcode" ? "Barcode" : `“${itemText(selItem, { ...f, code: clean })}”`) : "Pick a word"}</b>
-            {selItem && selItem.kind === "text" && <><button data-ls-smaller onClick={() => { begin(); change(sel, { size: Math.max(5, selItem.size - 0.5) }); }} style={lsTb}>A−</button><span>{selItem.size}pt</span>
-              <button data-ls-bigger onClick={() => { begin(); change(sel, { size: Math.min(30, selItem.size + 0.5) }); }} style={lsTb}>A+</button>
-              <button data-ls-bold onClick={() => { begin(); change(sel, { bold: !selItem.bold }); }} style={{ ...lsTb, fontWeight: 700, background: selItem.bold ? "#DCE5FA" : "#fff" }}>B</button>
-              <button onClick={() => { begin(); change(sel, { font: selItem.font === "sans" ? "serif" : "sans" }); }} style={lsTb}>{selItem.font === "sans" ? "Arial" : "Times"}</button>
-              {selItem.literal && <button data-ls-refill onClick={() => { begin(); const d0 = defaultLabelItems(tpl).find(x => x.id === sel); change(sel, { literal: false, text: d0 ? d0.text : selItem.text }); }} style={lsTb}>Fill in by itself again</button>}
-              <button data-ls-remove onClick={() => { begin(); setDraft(d => d.filter(x => x.id !== sel)); setSel(null); }} style={lsTb}>Remove</button></>}
-            <span style={{ marginLeft: "auto" }} /><button data-ls-addtext onClick={() => { begin(); const id = `t${Date.now()}`; setDraft(d => [...d, { id, kind: "text", text: "TEXT", literal: true, x: 38, y: 9, size: 11, bold: true, font: "serif" }]); setSel(id); }} style={lsTb}>+ Add text</button>
-            <button data-ls-undo disabled={!hist.length} onClick={undoEdit} style={lsTb}>Undo</button></div>}
-          <div style={{ width: 290 * scale, height: 96 * scale, position: "relative", margin: "14px 0" }}>
-          {isReel ? (items ? <div data-ls-label data-ls-reel-label style={{ position: "absolute", left: 0, top: 0, boxShadow: "0 2px 10px rgba(0,0,0,.15)", width: 290 * scale, height: 96 * scale }}>
-            <LabelCanvas items={reelLabelItems(items)} f={{ ...fShow, code: clean || " " }} scale={scale} ink={LS_INK[tplId] || "#1B2A8C"} editable={false} sel={null} setSel={() => {}} editing={null} setEditing={() => {}} change={() => {}} begin={() => {}} /></div>
-            : <div className="lsl" ref={ref} data-ls-label data-ls-reel-label style={{ position: "absolute", left: 0, top: 0, transform: `scale(${scale})`, transformOrigin: "0 0", color: LS_INK[tplId] || "#1B2A8C", background: "#fff", borderRadius: 6, boxShadow: "0 2px 10px rgba(0,0,0,.15)" }}
-              dangerouslySetInnerHTML={{ __html: `<div class="lab">${boxLabelInner(tpl, { ...fShow, code: clean || " " }, reelOver(tpl, fShow))}</div>` }} />)
-          : items ? <div data-ls-label style={{ position: "absolute", left: 0, top: 0, boxShadow: "0 2px 10px rgba(0,0,0,.15)", width: 290 * scale, height: 96 * scale }}>
-            <LabelCanvas items={items} f={{ ...f, code: clean || " " }} scale={scale} ink={LS_INK[tplId] || "#1B2A8C"} editable={edit} sel={sel} setSel={setSel} editing={editing} setEditing={setEditing} change={change} begin={begin} /></div>
-          : <div className="lsl" ref={ref} data-ls-label style={{ position: "absolute", left: 0, top: 0, transform: `scale(${scale})`, transformOrigin: "0 0", color: LS_INK[tplId] || "#1B2A8C", background: "#fff", borderRadius: 6, boxShadow: "0 2px 10px rgba(0,0,0,.15)" }}
-            dangerouslySetInnerHTML={{ __html: `<div class="lab">${boxLabelInner(tpl, { ...f, code: clean || " " })}</div>` }} />}</div>
-          <div style={{ fontSize: 13, color: NL.SUB, textAlign: "center", marginTop: 4 }}>{edit ? <>Double-click a word to type over it · drag to move · the blue corner makes it bigger or smaller · the barcode reads <b style={{ color: NL.INK }} data-ls-reads>{clean || "—"}</b></>
-            : isReel ? <>Exactly as it prints · the barcode reads <b style={{ color: NL.INK }} data-ls-reads>{clean || "—"}</b>{reelOdd ? " · length changed for this print" : ""}</>
-            : <>Exactly as it prints · the barcode reads <b style={{ color: NL.INK }} data-ls-reads>{clean || "—"}</b>{once ? " · changed for this print" : tplId === "px" ? " · the PX Plus label without PLUS" : saved.from === "size" ? " · this size's own layout" : saved.from === "range" ? " · the range's changed layout" : ""}</>}</div>
-          {isReel ? null : !edit ? <div style={{ display: "flex", gap: 8, marginTop: 10 }}><button data-ls-edit onClick={startEdit} style={{ ...lsTb, height: 40, padding: "0 16px", fontSize: 14.5 }}>Change the label</button>
-              {((saved.from && tplId !== "px") || once) && <button data-ls-normal onClick={backToNormal} style={{ ...lsTb, height: 40, padding: "0 16px", fontSize: 14.5 }}>Back to normal</button>}</div>
-            : <div data-ls-keep style={{ alignSelf: "stretch", marginTop: 10, display: "grid", gridTemplateColumns: wide ? "1fr 1fr 1fr auto auto" : "1fr", gap: 8, alignItems: "stretch" }}>
-              {/* PX follows the PX Plus label (8 Oct 2026) — a PX layout of its own would never be read, so only "this print" is offered */}
-              {(tplId === "px" ? [["print", "Just this print", "PX labels follow the PX Plus label — change that one to change every PX label"]] : [["print", "Just this print", "the next one prints as normal"], ["size", `Every ${size}`, "like saving the size's own file"], ["range", `Every ${tpl.usedFor || rangeName} label`, "the whole range's layout"]]).map(([k, t, sub]) =>
-                <button key={k} data-ls-keepfor={k} aria-pressed={keepFor === k} onClick={() => setKeepFor(k)} style={{ textAlign: "left", padding: "8px 10px", borderRadius: 10, border: keepFor === k ? `2px solid ${NL.NAVY}` : "1px solid #DDE2EA", background: "#fff", fontFamily: NLT.FONT }}><b style={{ fontSize: 13.5 }}>{t}</b><div style={{ fontSize: 12, color: NL.SUB }}>{sub}</div></button>)}
-              <button data-ls-cancel onClick={() => { setEdit(false); setDraft(null); setSel(null); }} style={{ ...lsTb, height: "auto", padding: "0 14px" }}>Cancel</button>
-              <button data-ls-save onClick={saveEdit} style={{ height: "auto", minHeight: 44, padding: "0 18px", borderRadius: 10, border: 0, background: NL.NAVY, color: "#fff", fontWeight: 700, fontFamily: NLT.FONT }}>Done</button></div>}</>
+          <style>{BOX_LABEL_CSS + LABEL_PART_CSS + ".lsl .lab{color:inherit}.lsl .lab svg rect{fill:currentColor}"}</style>
+          {edit && <div style={{ alignSelf: "stretch", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 14 }}>
+            <b>Changing the label — {size}</b><span style={{ color: NL.SUB, fontSize: 13 }}>Tap a word to change it · drag to move it</span></div>}
+          <div style={{ width: 290 * scale, height: 96 * scale, position: "relative", margin: "14px 0 6px" }}>
+          {items ? <div data-ls-label {...(isReel && !edit ? { "data-ls-reel-label": "" } : {})} style={{ position: "absolute", left: 0, top: 0, boxShadow: "0 2px 10px rgba(0,0,0,.15)", width: 290 * scale, height: 96 * scale }}>
+              <LabelCanvas items={isReel && !edit ? reelLabelItems(items) : items} f={{ ...f, code: clean || " " }} scale={scale} ink={ink} editable={edit} sel={sel} setSel={(id) => { setSel(id); setWords(null); }} change={change} begin={begin} mark
+                onWords={(id) => { const it = (draft || []).find(x => x.id === id); if (it && it.kind === "text") { setSel(id); setWords(textToWords(it.literal ? it.text : it.text)); } }} /></div>
+            : <div className="lsl" ref={ref} data-ls-label {...(isReel ? { "data-ls-reel-label": "" } : {})} style={{ position: "absolute", left: 0, top: 0, transform: `scale(${scale})`, transformOrigin: "0 0", color: ink, background: "#fff", borderRadius: 6, boxShadow: "0 2px 10px rgba(0,0,0,.15)" }}
+              dangerouslySetInnerHTML={{ __html: `<div class="lab">${boxLabelInner(isReel ? reelTemplate(tpl) : tpl, { ...f, code: clean || " " }, {}, { mark: true })}</div>` }} />}</div>
+          {legend}
+          <div style={{ fontSize: 13, color: NL.SUB, textAlign: "center", marginTop: 4 }}>{edit ? <>The barcode always reads the box code — <b style={{ color: NL.INK }} data-ls-reads>{clean || "—"}</b></>
+            : <>Exactly as it prints · the barcode reads <b style={{ color: NL.INK }} data-ls-reads>{clean || "—"}</b>{once ? " · changed for this print" : tplId === "px" && saved.from !== "size" ? " · the PX Plus label without PLUS" : saved.from === "size" ? " · this size's own layout" : saved.from === "range" ? " · the range's changed layout" : ""}</>}</div>
+          {!edit && <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap", justifyContent: "center" }}>
+            {!isReel && <button data-ls-edit onClick={startEdit} style={{ ...lsTb, height: 40, padding: "0 16px", fontSize: 14.5 }}>Change the layout…</button>}
+            {(((saved.from === "size") || (saved.from === "range" && admin && tplId !== "px")) || once) && <button data-ls-normal onClick={backToNormal} style={{ ...lsTb, height: 40, padding: "0 16px", fontSize: 14.5 }}>Back to normal</button>}
+            {isReel && <span style={{ fontSize: 12.5, color: NL.SUB, alignSelf: "center" }}>A reel prints the size's box label with the reel's length, and REEL at the bottom. Change the layout from Box.</span>}</div>}</>
           : <div style={{ fontSize: 15, color: NL.SUB, textAlign: "center", padding: 30 }}>Pick a range, then open a size.</div>}
       </div>
-      <div style={{ ...pane, display: "grid", gridTemplateColumns: wide ? "1.3fr 1fr 1fr" : "1fr", gap: 14, alignItems: "end" }} data-ls-side>
+      {edit && size && !rangeCheck && <div data-ls-toolbar style={{ ...pane, padding: 14 }}>
+        {!selItem ? <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 14.5, color: NL.SUB }}>Tap a word on the label to change it — or add some words.</span>
+            <span style={{ display: "flex", gap: 8 }}><button data-ls-addtext onClick={() => { begin(); const id = `t${Date.now()}`; setDraft(d => [...d, { id, kind: "text", text: "WORDS", x: 38, y: 9, size: 11, bold: true, font: "serif" }]); setSel(id); setWords("WORDS"); }} style={tool}>+ Add words</button>
+              <button data-ls-undo disabled={!hist.length} onClick={undoEdit} style={{ ...tool, opacity: hist.length ? 1 : 0.5 }}>Undo</button></span></div>
+          : <>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ minWidth: 0 }}><div style={head}>YOU'VE PICKED</div>
+              {selItem.kind === "barcode" ? <div style={{ fontSize: 15 }}><b>The barcode</b> <span style={{ color: NL.SUB }}>— always the box code</span></div>
+                : <div data-ls-picked style={{ fontSize: 17, fontWeight: 700, fontFamily: selItem.font === "sans" ? "Arial, sans-serif" : "'Times New Roman', serif", color: ink }}>
+                  {selItem.literal ? itemText(selItem, f) : labelSegments(selItem.text, { ...f, code: clean || " " }).map((sg, i) => sg.part && LABEL_PARTS[sg.part] ? <span key={i} title={LABEL_PARTS[sg.part][0]} style={{ background: LABEL_PART_COLOURS[LABEL_PARTS[sg.part][1]][0], borderRadius: 4, padding: "0 3px" }}>{sg.text}</span> : <span key={i}>{sg.text}</span>)}
+                  {!selItem.literal && partsIn(selItem.text).length > 0 && <div style={{ fontSize: 12.5, fontWeight: 500, color: NL.SUB, fontFamily: NLT.FONT }}>Fills in by itself: {[...new Set(partsIn(selItem.text).filter(k => String((f || {})[k] ?? "") !== "" || k === "code").map(k => LABEL_PARTS[k][0]))].join(", ")}</div>}
+                  {selItem.literal && <div style={{ fontSize: 12.5, fontWeight: 600, color: "#9A4A06", fontFamily: NLT.FONT }}>Typed in by hand — it won't follow the size.{defaultLabelItems(tpl).some(x => x.id === sel) && <button data-ls-refill onClick={() => { begin(); const d0 = defaultLabelItems(tpl).find(x => x.id === sel); change(sel, { literal: false, text: d0 ? d0.text : selItem.text }); }} style={{ ...lsTb, marginLeft: 8, height: 28 }}>Fill in by itself again</button>}</div>}</div>}</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+              {selItem.kind === "text" ? <><button data-ls-smaller onClick={() => { begin(); change(sel, { size: Math.max(5, selItem.size - 0.5) }); }} style={tool}>A−</button>
+                <button data-ls-bigger onClick={() => { begin(); change(sel, { size: Math.min(30, selItem.size + 0.5) }); }} style={tool}>A+</button>
+                <button data-ls-bold onClick={() => { begin(); change(sel, { bold: !selItem.bold }); }} style={{ ...tool, background: selItem.bold ? "#DCE5FA" : "#fff" }}>B</button>
+                <button data-ls-font onClick={() => { begin(); change(sel, { font: selItem.font === "sans" ? "serif" : "sans" }); }} style={{ ...tool, fontSize: 13.5 }}>{selItem.font === "sans" ? "Arial" : "Times"}</button></>
+                : <><button data-ls-shorter onClick={() => { begin(); change(sel, { h: Math.max(3, Math.round(((selItem.h || 6.5) - 0.5) * 10) / 10) }); }} style={{ ...tool, fontSize: 13.5 }}>Shorter</button>
+                <button data-ls-taller onClick={() => { begin(); change(sel, { h: Math.min(14, Math.round(((selItem.h || 6.5) + 0.5) * 10) / 10) }); }} style={{ ...tool, fontSize: 13.5 }}>Taller</button></>}
+              <span style={{ width: 6 }} />
+              {[["l", "←", { x: -0.5 }], ["u", "↑", { y: -0.5 }], ["d", "↓", { y: 0.5 }], ["r", "→", { x: 0.5 }]].map(([k, a, d]) => <button key={k} data-ls-nudge={k} onClick={() => { begin(); change(sel, { x: Math.round(Math.max(0, Math.min(LABEL_W_MM, selItem.x + (d.x || 0))) * 10) / 10, y: Math.round(Math.max(0, Math.min(LABEL_H_MM - 2, selItem.y + (d.y || 0))) * 10) / 10 }); }} style={tool}>{a}</button>)}
+              <button data-ls-centre onClick={() => { begin(); change(sel, { x: LABEL_MID_MM }); }} style={{ ...tool, fontSize: 13.5 }}>Centre it</button>
+              {selItem.kind === "text" && <button data-ls-remove onClick={() => { begin(); setDraft(d => d.filter(x => x.id !== sel)); setSel(null); setWords(null); }} style={{ ...tool, fontSize: 13.5, color: "#B3261E" }}>Remove</button>}
+            </div></div>
+          {selItem.kind === "text" && (words == null ? <div style={{ borderTop: "1px solid #E2E6EE", marginTop: 12, paddingTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 13.5, color: NL.SUB }}>Change what it says — the coloured parts keep filling in by themselves.</span>
+              <span style={{ display: "flex", gap: 8 }}><button data-ls-words onClick={() => setWords(textToWords(selItem.literal ? selItem.text : selItem.text))} style={tool}>Change the words</button>
+                <button data-ls-addtext onClick={() => { begin(); const id = `t${Date.now()}`; setDraft(d => [...d, { id, kind: "text", text: "WORDS", x: 38, y: 9, size: 11, bold: true, font: "serif" }]); setSel(id); setWords("WORDS"); }} style={tool}>+ Add words</button>
+                <button data-ls-undo disabled={!hist.length} onClick={undoEdit} style={{ ...tool, opacity: hist.length ? 1 : 0.5 }}>Undo</button></span></div>
+            : <div data-ls-words-pane style={{ borderTop: "1px solid #E2E6EE", marginTop: 12, paddingTop: 10 }}>
+              <div style={{ fontSize: 13, color: NL.SUB, marginBottom: 6 }}>Type the words. Parts in [square brackets] fill in by themselves — add one with the buttons.</div>
+              <input data-ls-words-input data-lc-input autoFocus value={words} onChange={e => setWords(e.target.value)} onKeyDown={e => { if (e.key === "Enter") saveWords(); if (e.key === "Escape") setWords(null); }}
+                style={{ width: "100%", boxSizing: "border-box", height: 46, borderRadius: 10, border: `2px solid ${NL.NAVY}`, padding: "0 12px", fontSize: 17, fontWeight: 700, fontFamily: NLT.FONT, color: NL.INK }} />
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>{partButtons.map(k => <button key={k} data-ls-part={k} onClick={() => setWords(w => `${String(w || "").replace(/\s+$/, "")}${String(w || "").trim() ? " " : ""}[${LABEL_PARTS[k][0]}]`)}
+                style={{ ...lsTb, height: 32, background: LABEL_PART_COLOURS[LABEL_PARTS[k][1]][0], border: `1px solid ${LABEL_PART_COLOURS[LABEL_PARTS[k][1]][1]}` }}>+ {LABEL_PARTS[k][0]}</button>)}</div>
+              <div style={{ display: "flex", gap: 8, marginTop: 10, justifyContent: "flex-end" }}><button data-ls-words-cancel onClick={() => setWords(null)} style={tool}>Cancel</button>
+                <button data-ls-words-save onClick={saveWords} style={{ ...tool, background: NL.NAVY, color: "#fff", border: 0 }}>Done</button></div></div>)}
+          {selItem.kind === "text" && /\{base\}/.test(String(selItem.text || "")) && !selItem.literal && <div data-ls-basewords style={{ borderTop: "1px solid #E2E6EE", marginTop: 12, paddingTop: 10, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+            <span style={{ fontSize: 13.5, color: NL.SUB, marginRight: 4 }}>The Centre word for {size}:</span>
+            {["Centre", "Off-centre", "Double", "MINI", "NARROW"].map(w => <button key={w} data-ls-baseword={w} aria-pressed={baseNow === w} onClick={() => setBaseWord(w)} style={{ ...chipS(baseNow === w), height: 38, fontSize: 14.5 }}>{w}</button>)}
+            <span style={{ fontSize: 12, color: NL.SUB }}>saved straight away, for this size</span></div>}
+          </>}
+      </div>}
+      {edit && size && rangeCheck && <div data-ls-range-check style={{ ...pane, padding: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}><div style={head}>CHECK THESE BEFORE SAVING — THIS IS EXACTLY HOW THEY'LL PRINT</div>
+          <span style={{ fontSize: 12.5, color: NL.SUB }}>Every {rangeWord} label changes</span></div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 14, padding: "10px 4px", justifyContent: "center", background: "#F3F5F9", borderRadius: 10 }}>
+          {samples.map(n => <div key={n} data-ls-sample={n} style={{ display: "grid", gap: 4, justifyItems: "center" }}>{mini(draft, sampleFields(n))}<div style={{ fontSize: 12, color: NL.SUB }}>{n}</div></div>)}</div>
+        {ownLayouts.length > 0 && <div style={{ fontSize: 13, color: NL.SUB, marginTop: 8 }}>{ownLayouts.length} size{ownLayouts.length === 1 ? " has its" : "s have their"} own layout and keep{ownLayouts.length === 1 ? "s" : ""} it: {ownLayouts.slice(0, 6).join(", ")}{ownLayouts.length > 6 ? "…" : ""}</div>}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
+          <button data-ls-range-cancel onClick={() => setRangeCheck(false)} style={tool}>Back</button>
+          <button data-ls-range-print onClick={printSamples} style={tool}>Print these {samples.length} to check</button>
+          <button data-ls-range-save onClick={saveRange} style={{ ...tool, background: NL.NAVY, color: "#fff", border: 0 }}>Save for every {rangeWord} label</button></div>
+      </div>}
+      {!edit && <div style={{ ...pane, display: "grid", gridTemplateColumns: wide ? "1.3fr 1fr 1fr" : "1fr", gap: 14, alignItems: "end" }} data-ls-side>
         <div><div style={head}>{isReel ? "REEL CODE" : "BOX CODE"}</div>
           <input data-ls-code data-code-field value={code} disabled={!size} onChange={e => { setCode(e.target.value.toUpperCase()); setSource("Typed in"); setMsg(null); }} placeholder="e.g. I62812SDB"
             style={{ width: "100%", boxSizing: "border-box", height: 48, borderRadius: 10, border: `2px solid ${other ? "#C8102E" : odd ? "#E58A12" : NL.NAVY}`, padding: "0 12px", fontFamily: "Menlo, monospace", fontSize: 21, fontWeight: 700, color: NL.INK, textTransform: "uppercase" }} />
@@ -5788,145 +5941,40 @@ function BoxLabelStudio({ data, setData }) {
             <input data-ls-count value={count} onChange={e => setCount(Math.max(1, Math.min(500, Math.round(Number(e.target.value.replace(/\D/g, "")) || 1))))} style={{ width: 70, height: 42, textAlign: "center", fontSize: 22, fontWeight: 700, border: "1px solid #DDE2EA", borderRadius: 10, fontFamily: NLT.FONT }} />
             <button data-ls-plus onClick={() => setCount(c => Math.min(500, c + 1))} style={{ width: 42, height: 42, borderRadius: 21, border: 0, background: "#E4E8F0", fontSize: 22 }}>+</button></div>
           <div style={{ fontSize: 12.5, color: NL.SUB, marginTop: 6 }}>{isReel ? "one per reel made" : "one per box made"}</div></div>
-        <button data-ls-print disabled={!size || !clean || (isReel && !(reelMetres > 0))} onClick={print} style={{ alignSelf: "end", height: 56, borderRadius: 12, border: 0, background: !size || !clean || (isReel && !(reelMetres > 0)) ? "#C5CBD6" : "#C8102E", color: "#fff", fontSize: 19, fontWeight: 700, fontFamily: NLT.FONT }}>Print {count} label{count === 1 ? "" : "s"}</button>
-        {isReel && <div data-ls-lengths style={{ gridColumn: "1 / -1", borderTop: "1px solid #E2E6EE", paddingTop: 12 }}>
-          <div style={head}>LENGTH ON THE REEL</div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-            {reelLengths.map(m => { const on = !otherOn && reelMetres === m; return <button key={m} data-ls-metres={m} aria-pressed={on} onClick={() => { setOtherOn(false); setReelM(m); setMsg(null); }}
-              style={{ height: 44, padding: "0 14px", borderRadius: 12, border: on ? `2px solid ${NL.NAVY}` : "1px solid #DDE2EA", background: on ? "#E7EBF5" : "#fff", color: NL.INK, fontSize: 16, fontWeight: 700, fontFamily: NLT.FONT }}>
-              {m} m{m === sizeReelM && <span style={{ fontSize: 12, fontWeight: 500, color: NL.SUB }}> · this size</span>}</button>; })}
-            <button data-ls-metres-other aria-pressed={otherOn} onClick={() => { setOtherOn(true); setMsg(null); }} style={{ height: 44, padding: "0 14px", borderRadius: 12, border: otherOn ? `2px solid ${NL.NAVY}` : "1px solid #DDE2EA", background: otherOn ? "#E7EBF5" : "#fff", color: NL.INK, fontSize: 16, fontWeight: 700, fontFamily: NLT.FONT }}>Other…</button>
-            {otherOn && <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, color: NL.SUB }}>metres
-              <input data-ls-metres-input autoFocus inputMode="decimal" value={otherM} onChange={e => { setOtherM(e.target.value.replace(/[^\d.,]/g, "")); setMsg(null); }} style={{ width: 80, height: 44, boxSizing: "border-box", borderRadius: 10, border: `2px solid ${NL.NAVY}`, padding: "0 10px", fontSize: 18, fontWeight: 700, fontFamily: NLT.FONT, color: NL.INK }} /></label>}
-          </div>
-          <div style={{ fontSize: 12.5, color: NL.SUB, marginTop: 8 }}>{sizeReelM ? `${size} reels are ${sizeReelM} m in the catalogue.` : `${size} has no reel length in the catalogue — pick one.`}</div>
-          {reelOdd && <div data-ls-metres-warn style={{ marginTop: 8, fontSize: 13.5, fontWeight: 600, color: "#9A4A06", background: "#FFF6EC", border: "1px solid #F3D3AE", borderRadius: 10, padding: "8px 10px" }}>{reelMetres} m isn't this size's length — it prints on these labels only. The catalogue keeps {sizeReelM} m.</div>}
-          {otherOn && !(reelMetres > 0) && <div style={{ marginTop: 8, fontSize: 13, color: "#9A4A06", fontWeight: 600 }}>Type how many metres are on the reel.</div>}
-        </div>}
+        <button data-ls-print disabled={!size || !clean || (isReel && !(curM > 0))} onClick={print} style={{ alignSelf: "end", height: 56, borderRadius: 12, border: 0, background: !size || !clean || (isReel && !(curM > 0)) ? "#C5CBD6" : "#C8102E", color: "#fff", fontSize: 19, fontWeight: 700, fontFamily: NLT.FONT }}>Print {count} label{count === 1 ? "" : "s"}</button>
         {msg && <div data-ls-msg style={{ fontSize: 13.5, color: "#1F7A4D", fontWeight: 600, gridColumn: "1 / -1" }}>{msg}</div>}
-        <div style={{ fontSize: 12.5, color: NL.SUB, gridColumn: "1 / -1" }}>Every label printed is recorded against its {isReel ? "reel" : "box"}.{isReel ? " A reel prints its size's box label with the reel's length and REEL at the bottom." : " The label's layout comes from Label layouts."}</div>
-      </div></div>
-    </div></div>);
-}
-
-/* The layouts (templates and base words) — the screen box labels were set up on; reached from "Label layouts". */
-function LabelsView({ data, setData }) {
-  const [sel, setSel] = useState("pxplus");
-  const rows = data.labelTemplates || [];
-  const products = (data.products || []).filter(p => p && !p.deleted && p.active !== false).map(p => p.displayName).sort();
-  const sampleFor = (id) => ({ ken: "Speedy Crease 0.50 x 1.30mm 2-3pt", kenMetal: products.find(n => /^Speedy Crease Metal/.test(n)) || "", smart: "Smart Formes 0.40 x 1.00mm O/S 2-3pt", ultra: "Ultra SR Blue 2.60mm 2-3pt", pxplus: "PX Plus 0.40 x 1.40mm 2-3pt", phoenix: products.find(n => /^Phoenix XL\b/i.test(n)) || "Phoenix XL Pink 0.30 x 0.50mm", px: products.find(n => /^PX\b(?!\s*Plus)/i.test(n)) || "PX Plus 0.40 x 1.30mm 2-3pt" }[id] || products[0] || "");
-  const [draft, setDraft] = useState(null);
-  const [sample, setSample] = useState(sampleFor("pxplus"));
-  const [rulesDraft, setRulesDraft] = useState(null);
-  const [focusKey, setFocusKey] = useState("line1");
-  const [msg, setMsg] = useState("");
-  const saved = labelTemplate(rows, sel);
-  const tpl = draft || saved;
-  const rules = rulesDraft || baseWordRules(rows);
-  const carton = sel === "px" ? "White" : sel === "smart" ? "Smart Formes" : sel === "ultra" ? "Ultra SR" : "PX Plus";
-  const fields = labelFields({ productName: sample, code: "I62314SDB", metres: boxMetresFor(data, sample), rules });
-  const pick = (id) => { setSel(id); setDraft(null); setRulesDraft(null); setSample(sampleFor(id)); setMsg(""); };
-  const upsert = (id, name, config, summary) => setData(prev => {
-    const now = new Date().toISOString();
-    const had = (prev.labelTemplates || []).find(r => r.id === id);
-    const row = { ...(had || {}), id, name, config, deleted: false, updatedAt: now };
-    const next = { ...prev, labelTemplates: had ? prev.labelTemplates.map(r => r.id === id ? row : r) : [...(prev.labelTemplates || []), row] };
-    return { ...next, ...appendLog(next, { action: "label_template", entity: "labelTemplate", entityId: id, summary, before: had ? had.config : null, after: config }) };
-  });
-  const saveTemplate = () => {
-    const { id, ...config } = tpl;
-    { const pr = labelLayoutProblems(config); if (pr.refuse) { setMsg(pr.refuse); return; } if (pr.warn && !window.confirm(`${pr.warn}\n\nKeep it as it is?`)) return; }
-    upsert(sel, tpl.name, config, `Label template ${tpl.name} changed`);
-    setDraft(null); setMsg("Saved — every label from this template prints like this from now on.");
-  };
-  const resetTemplate = () => { const { id, ...d } = LABEL_TEMPLATE_DEFAULTS[sel]; setDraft({ ...d, id: sel }); setMsg("Back to the original — Save to keep it."); };
-  const saveRules = () => { upsert("baseWords", "Base words", rules, "Label base words changed"); setRulesDraft(null); setMsg("Base words saved."); };
-  const setT = (k, v) => setDraft({ ...tpl, [k]: v });
-  const setRule = (i, patch) => setRulesDraft({ ...rules, rules: rules.rules.map((r, j) => j === i ? { ...r, ...patch } : r) });
-  const lineKeys = tpl.layout === "std"
-    ? [["line1", "Line 1", "size1"], ["left", "Line 2 first", "size2"], ["middle", "Line 2 then", null], ["right", "Line 2 last", null], ["under", "Under barcode", null]]
-    : [["line1", "Line 1", "size1"], ["line2", "Line 2", "size2"], ["under", "Under barcode", null]];
-  const inp = { border: `1px solid ${BORDER}`, borderRadius: 4, padding: "6px 8px", fontSize: 13, width: "100%", fontFamily: "Menlo, Consolas, monospace" };
-  return (
-    <div>
-      <SectionHeader title={screenName("labels", "Labels")} subtitle="Box labels printed by the app — the code comes from the box, never typed. Changes here apply to every label from now on, and are logged." />
-      {!boxLabelsOn() && <div style={{ fontSize: 13, color: "#7A4D00", marginBottom: 10 }}>Box labels are <b>off</b> on this device (Admin → Box labels from the app), so Bonding and History don't offer them yet. Templates can still be set up and test-printed here.</div>}
-      <div className="grid gap-4" style={{ gridTemplateColumns: "minmax(200px, 250px) 1fr" }}>
-        <Panel className="p-3">
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>Box label templates</div>
-          {LABEL_TEMPLATE_ORDER.map(id => { const t = labelTemplate(rows, id); return (
-            <button key={id} onClick={() => pick(id)} data-template={id}
-              style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 10px", borderRadius: 5, marginBottom: 4, cursor: "pointer",
-                background: sel === id ? "#E8EDF8" : "none", border: `1px solid ${sel === id ? NAVY : "transparent"}`, fontWeight: sel === id ? 700 : 400, fontSize: 13.5 }}>
-              {t.name}<span style={{ display: "block", color: INK_MUTED, fontSize: 11.5, fontWeight: 400 }}>{t.usedFor}</span>
-            </button>); })}
-        </Panel>
-        <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(330px, 1fr))", alignItems: "start" }}>
-          <Panel className="p-3">
-            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 8 }}>{tpl.name}</div>
-            {sel === "px" && <div data-px-follows style={{ fontSize: 13, color: INK, background: "#F4F6FA", borderRadius: 6, padding: "8px 10px", marginBottom: 10 }}>
-              PX labels are the <b>5 · PX Plus</b> label with the word PLUS taken out — change the PX Plus one and every PX label follows.
-              <div style={{ marginTop: 6 }}><Button onClick={() => pick("pxplus")}>Open 5 · PX Plus</Button></div></div>}
-            {lineKeys.map(([k, lab, sz]) => (
-              <div key={k} className="grid gap-2 items-center mb-2" style={{ gridTemplateColumns: "100px 1fr 64px", fontSize: 13 }}>
-                <b>{lab}</b>
-                <input value={tpl[k] || ""} readOnly={sel === "px"} onFocus={() => setFocusKey(k)} onChange={e => setT(k, e.target.value)} data-tpl-field={k} style={sel === "px" ? { ...inp, background: "#F4F6FA" } : inp} />
-                {sz ? <input type="number" value={tpl[sz]} readOnly={sel === "px"} onChange={e => setT(sz, Number(e.target.value) || tpl[sz])} title="text size, pt" style={{ ...inp, textAlign: "center", fontFamily: "inherit" }} /> : <span />}
-              </div>
-            ))}
-            <div style={{ fontSize: 12, color: INK_MUTED, margin: "4px 0 6px" }}>Add to <b>{lineKeys.find(x => x[0] === focusKey)?.[1] || "Line 1"}</b>:</div>
-            <div className="flex flex-wrap gap-1 mb-3" style={sel === "px" ? { display: "none" } : undefined}>
-              {PLACEHOLDERS.map(([ph, lab]) => (
-                <button key={ph} onClick={() => setT(focusKey, `${tpl[focusKey] || ""}${tpl[focusKey] ? " " : ""}${ph}`)}
-                  style={{ background: NAVY, color: "#fff", border: 0, borderRadius: 3, padding: "2px 7px", fontSize: 11.5, cursor: "pointer" }}>{lab}</button>
-              ))}
-            </div>
-            <div style={{ fontSize: 12, color: INK_MUTED, marginBottom: 10 }}>The barcode is always the box code. Lines too long for the label shrink to fit.</div>
-            <div className="flex gap-2 flex-wrap">
-              <Button variant="accent" onClick={saveTemplate} disabled={!draft || sel === "px"}>Save template</Button>
-              <Button onClick={() => printLabelDoc(boxLabelDoc(tpl, fields, 1))}>Print a test label</Button>
-              <Button onClick={() => { setDraft(null); setMsg(""); }} disabled={!draft}>Discard changes</Button>
-              {sel !== "px" && <Button onClick={resetTemplate}>Back to original</Button>}
-            </div>
-            {msg && <div style={{ fontSize: 12.5, color: GREEN, marginTop: 8 }} data-labels-msg>{msg}</div>}
-          </Panel>
-          <div>
-            <Panel className="p-3 mb-4">
-              <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>Preview — try any product</div>
-              <select value={sample} onChange={e => setSample(e.target.value)} data-label-sample style={{ ...inp, fontFamily: "inherit", marginBottom: 10 }}>
-                {products.map(n => <option key={n} value={n}>{n}</option>)}
-              </select>
-              <LabelPreview tpl={tpl} fields={fields} />
-              {templateIdFor(sample, carton) !== sel && <div style={{ fontSize: 12, color: AMBER, marginTop: 6 }}>This product normally prints on {labelTemplate(rows, templateIdFor(sample, carton)).name}.</div>}
-            </Panel>
-            <Panel className="p-3">
-              <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>Base words — first match wins</div>
-              <div style={{ fontSize: 12, color: INK_MUTED, marginBottom: 6 }}>A rule matches words in the product's name (comma between them), or products listed by name.</div>
-              {rules.rules.map((r, i) => (
-                <div key={i} className="grid gap-2 mb-2" style={{ gridTemplateColumns: "1fr 110px", fontSize: 12.5 }} data-base-rule={i}>
-                  <div>
-                    <input value={r.match || ""} onChange={e => setRule(i, { match: e.target.value })} placeholder="words in the name" style={inp} />
-                    <input value={(r.products || []).join("; ")} list="label-products" onChange={e => setRule(i, { products: e.target.value.split(";").map(s => s.trim()).filter(Boolean) })}
-                      placeholder="…or these products (separate with ;)" style={{ ...inp, marginTop: 3, fontFamily: "inherit", fontSize: 12 }} />
-                  </div>
-                  <input value={r.word || ""} onChange={e => setRule(i, { word: e.target.value })} style={{ ...inp, fontWeight: 700, fontFamily: "inherit" }} />
-                </div>
-              ))}
-              <div className="grid gap-2 mb-2" style={{ gridTemplateColumns: "1fr 110px", fontSize: 12.5, alignItems: "center" }}>
-                <span style={{ color: INK_MUTED }}>anything else</span>
-                <input value={rules.otherwise || ""} onChange={e => setRulesDraft({ ...rules, otherwise: e.target.value })} style={{ ...inp, fontWeight: 700, fontFamily: "inherit" }} />
-              </div>
-              <datalist id="label-products">{products.map(n => <option key={n} value={n} />)}</datalist>
-              <div className="flex gap-2 flex-wrap">
-                <Button onClick={() => setRulesDraft({ ...rules, rules: [...rules.rules, { match: "", word: "", products: [] }] })}>+ Add a rule</Button>
-                <Button variant="accent" onClick={saveRules} disabled={!rulesDraft}>Save base words</Button>
-              </div>
-            </Panel>
-          </div>
+        <div style={{ fontSize: 12.5, color: NL.SUB, gridColumn: "1 / -1" }}>Every label printed is recorded against its {isReel ? "reel" : "box"}.</div>
+      </div>}
+      {edit && size && <div data-ls-keep-pane style={{ ...pane, padding: 14 }}>
+        <div style={head}>SAVE THIS CHANGE FOR</div>
+        <div data-ls-keep style={{ display: "grid", gridTemplateColumns: wide ? "1fr 1fr 1fr" : "1fr", gap: 8 }}>
+          {[["size", "This size only", `${size} — every label of it from now on`, null], ["print", "Just this print", "the next one prints as normal", null], ["range", `Every ${rangeWord} label`, rangeBlocked || "shows you other sizes with the change on before it saves", rangeBlocked]].map(([k, t, sub, blocked]) =>
+            <button key={k} data-ls-keepfor={k} aria-pressed={keepFor === k} disabled={!!blocked} onClick={() => { if (!blocked) { setKeepFor(k); setRangeCheck(false); } }} style={{ textAlign: "left", padding: "10px 12px", borderRadius: 10, border: keepFor === k ? `2px solid ${NL.NAVY}` : "1px solid #DDE2EA", background: keepFor === k ? "#F6F8FD" : "#fff", fontFamily: NLT.FONT, opacity: blocked ? 0.6 : 1, cursor: blocked ? "default" : "pointer" }}>
+              <b style={{ fontSize: 14.5 }}>{t}</b>{k === "range" && <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 700, color: "#7A4D00", background: "#FFF3D6", borderRadius: 999, padding: "1px 7px" }}>ADMIN</span>}<div style={{ fontSize: 12.5, color: NL.SUB, marginTop: 2 }}>{sub}</div></button>)}</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12, alignItems: "center" }}>
+          <button data-ls-check onClick={printCheck} style={tool}>Print one to check</button><span style={{ fontSize: 12.5, color: NL.SUB }}>one label, nothing saved</span>
+          <span style={{ marginLeft: "auto" }} />
+          <button data-ls-cancel onClick={closeEdit} style={tool}>Cancel</button>
+          {!rangeCheck && <button data-ls-save onClick={saveEdit} style={{ ...tool, background: NL.NAVY, color: "#fff", border: 0, padding: "0 26px" }}>{keepFor === "range" ? "Next — check other sizes" : "Save"}</button>}</div>
+        {msg && <div data-ls-msg style={{ fontSize: 13.5, color: /no box code|Box code back/.test(msg) ? "#B3261E" : "#1F7A4D", fontWeight: 600, marginTop: 8 }}>{msg}</div>}
+        <div data-ls-history style={{ borderTop: "1px solid #E2E6EE", marginTop: 14, paddingTop: 10 }}>
+          <div style={head}>CHANGES TO THIS LABEL</div>
+          {!history.length && <div style={{ fontSize: 13.5, color: NL.SUB }}>None yet — it prints as it always has.</div>}
+          {history.map(e => { const k = `${e.entityId}|${e.at}`, opened = histOpen === k, isPrefs = String(e.entityId).startsWith("print:"), isBase = e.entityId === "baseWords";
+            const bLook = !isPrefs && !isBase ? cfgLook(e.entityId, e.before) : null, aLook = !isPrefs && !isBase ? cfgLook(e.entityId, e.after) : null;
+            return <div key={k} data-ls-hist={e.entityId} style={{ padding: "6px 0", borderBottom: "1px solid #EEF1F6" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                <div style={{ fontSize: 13.5, minWidth: 0 }}><b>{hhmm(e.at)} · {e.actor || "someone"}</b><div style={{ color: NL.SUB }}>{e.summary}</div></div>
+                {!isBase && <button data-ls-hist-open onClick={() => setHistOpen(opened ? null : k)} style={{ ...lsTb, height: 34, flex: "none" }}>{opened ? "Hide" : "Before / after"}</button>}</div>
+              {opened && <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginTop: 8, alignItems: "flex-start" }}>
+                {[["Before", e.before, bLook], ["After", e.after, aLook]].map(([t, c, look]) => <div key={t} data-ls-hist-side={t} style={{ display: "grid", gap: 4 }}><span style={{ fontSize: 12.5, color: NL.SUB }}>{t}</span>
+                  {isPrefs ? <span style={{ fontSize: 14, fontWeight: 600 }}>{prefsSay(c)}</span> : look ? mini(look, { ...f, code: clean || " " }, 0.7) : <span style={{ fontSize: 13, color: NL.SUB }}>{String(e.entityId).startsWith("size:") ? "nothing of its own — the range's label" : "the original label"}</span>}</div>)}
+                {canPutBack(e.entityId) && <button data-ls-hist-undo onClick={() => putBack(e)} style={{ ...tool, alignSelf: "flex-end", background: "#C8102E", color: "#fff", border: 0, fontSize: 13.5 }}>Put it back to before</button>}</div>}
+            </div>; })}
         </div>
-      </div>
-    </div>
-  );
+      </div>}
+    </div></div>
+  </div>);
 }
 
 /* A RUN STARTED BEFORE ITS BOXES. (Chris, 23 Sep 2026: "they normally have a guess at how many labels they
