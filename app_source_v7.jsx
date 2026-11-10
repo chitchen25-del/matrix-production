@@ -31,7 +31,7 @@ import { GAP_LIGHT_SHIFT, gapCalChecks, gapScaleFor, gapCalVerdict, gapWidthSeen
 import { glueRuns, reelGlueFault, GLUE_MIN_MM, GLUE_OPEN_END_M, GLUE_LINE_M, GLUE_CAUSES } from "./mx_gaptrace.js";
 import { learnedLineSpeed, gapMayLink, glueReelTraceKeep, gapCarryOf, gapJoinTraces, gapNextPiece, misreadStep, centringHint, reelGapWarning, gapCorrFor, gapSizePart, GAP_CORR_DAY_MAX, GAP_CORR_SIZE_AGREE, READOUT_SPAN_MS, READOUT_BIN_MS, GT_WOBBLE_FLAG, readoutTrend, readoutFigures, HAUL_MIN_LEARN_M, GAP_STEADY_MIN_N, CAM_GOOD_MM, CAM_OK_MM, camMetrics, blockCalib, blockHeights, heightOfSpec, CAP_FACTOR_REELS, CPK_WORDS, GAP_BAND_ROWS, GAP_LIMITS_DEFAULT, GAP_VERDICT_WORDS, GAP_LIGHT_WORDS, GAP_SETUP_CHECKS, gapTraceWaiting, gapNextTraceNo, gapPickWaiting, glueTraceChoice, glueReelWants, gapLiveFresh, gapLinkTrace, gapUnlinkTrace, glueDayTimeline, gapMoveCut, gapOffsets, nomOf, gapLightOf, gapRangeOf, gapCorrKey, gapCorrSets, lightShift, steadyRaw, gapWander, gapCheckOdd, binTrace, capability, sizeCapability, colourNameOf, haulFactor, haulMatch, rowProfile, gapCheck, gapCorrCheck, gapCorrection, gapCorrStands, gapLimitsFor, gapRecordDoc, motionGate, patchDiff, gapTraceRow, gapVerdict, guessStripColour, gapSteady, metresAlong, readBand, reelLoggedSince, sizeCheck, sizesDiffer, suggestSizes, traceEvents, traceStats, widthFrom, widthMmFor, widthValid } from "./mx_gaptrace.js";
 import { learningNow, LEARN_MIN } from "./mx_learning.js";
-import { reelSizeFill, usualBay, withTapeSuffix, dropEmptyAllocations, mergeSameOrder, trimAllocationsTo, withoutOrders, withOrderQty, allToShelf, heldDetail, heldEntryOf, heldWhy, firstRefusalLine, dedupeFixes } from "./mx_bondfix.js";
+import { reelSizeFill, labelSizeClash, usualBay, withTapeSuffix, dropEmptyAllocations, mergeSameOrder, trimAllocationsTo, withoutOrders, withOrderQty, allToShelf, heldDetail, heldEntryOf, heldWhy, firstRefusalLine, dedupeFixes } from "./mx_bondfix.js";
 import { STOP_REASONS, isFalseStop, STOP_MIN_MS, WATCH_TICK_MS, lineStopStep, reasonOf, isChangeReason, changePlanMin, changeoverTimes, efficiencyWeek, biggestWins, scrappedReels, weekStartOf, fmtClock, fmtMin, fmtLen, stopEndMs } from "./mx_linestops.js";
 import { walkProducts, walkCards, walkCases, caseRoute, pickFacts, notThereFacts, putBackFacts, damagedFacts, notThereOpen, tickStatus, foundBoxRecord, foundBoxCartonGuess, walkProductKey, runFillsLine, bondingOfferFromWalk, shelfRemainderGoesTo } from "./mx_pickwalk.js";
 import { applyOrderRenames, applyRackCheck, setExtrudedCleared, applyCaseFix, applyPhotoRearrange, photoOrderVerdict, photoCaseCheck, photoReport, photoReportSnapshot, photoReportMatches, applyPhotoMoves, photoReportHolds, photoOrderLines, recordedByCase, undoAutoEntry, appendLog, appendPlanDifference, applyCaseAction, applyMovementToCaseRow, applyPatchMapsToCasesRaw, boxSpecOf, closeUpCaseNumbers, closeUpSummary, fillCustomerReferences, planCarry, planMissingCases, raiseIssue, reconcilePickSheet, recordMovement, recordMovements, recordPickSheet, refuseMovement, relabelCasesInLedger, resolveIssue, sameProductSpec } from "./mx_writes.js";
@@ -584,7 +584,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-09.4";
+const APP_VERSION = "2026-11-10.1";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -36621,6 +36621,14 @@ function BondingLineView({ data, setData, jumpToPacking }) {
         const nx = !f.runStartId && sfx ? nextCodeFor(f, sfx) : "";
         if (nx && nx !== box) offer({ label: `Use the next code: ${nx}`, run: answer(`next code ${nx}`, x => ({ ...x, boxNumber: nx, boxAuto: false })) });
         return `Box code ${box} is already ${other.productSize} — one code is one product. Use the next code.`;
+      }
+      /* the labels printed for this code say another size (10 Nov 2026, K61003SDB) */
+      const lab = box && dimsF && f.labelsChecked !== box ? labelSizeClash(data.changeLog, box, specF) : null;
+      if (lab) {
+        const bare = lab.replace(/\s+(\d-\d|\d{1,2})\s*pt\b/i, "").trim(), fill = reelSizeFill(bare, ptOf), ptL = (lab.match(/\b(\d-\dpt|\d{1,2}pt)\b/i) || [])[1] || "";
+        if (fill) offer({ label: `It's ${lab} — use that`, run: answer(`size from the labels of ${box}`, x => ({ ...x, size: fill.size, ...(ptL ? { pt: ptL } : {}), ...(f.range === "Custom" ? { range: fill.range } : {}) })) });
+        offer({ label: `It's ${specF} — the labels were wrong`, run: answer(`kept ${specF}; labels of ${box} were for ${lab}`, x => ({ ...x, labelsChecked: box })) });
+        return `${box}'s labels were printed for ${lab}, but this entry says ${specF}. Which went in the boxes?`;
       }
       return null;
     };
