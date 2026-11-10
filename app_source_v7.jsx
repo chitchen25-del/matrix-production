@@ -584,7 +584,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-10.4";
+const APP_VERSION = "2026-11-10.5";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -5614,6 +5614,10 @@ function BoxLabelStudio({ data, setData }) {
   const boxM = size ? (Number(boxMetresFor(data, size)) || null) : null;
   const sizeReelM = size && reelForms.has(size) ? (Number((reelForms.get(size) || [])[0].metres) || null) : null;
   const catM = isReel ? sizeReelM : boxM;
+  /* the box lengths of this size's own versions too (Chris, 10 Nov 2026: Exceed 7.25 x 8.00mm "@ 22.4m per box" — BJ's
+     700 mm lengths are "Exceed 7.25 x 8.00mm BJ 700mm", 22.4 m a box), so they're one tap here */
+  const kinM = useMemo(() => { if (!size) return []; const ids = new Set((data.products || []).filter(p => p && !p.deleted && p.displayName && p.displayName.startsWith(size + " ")).map(p => p.id));
+    return [...new Set((data.productForms || []).filter(fm => fm && !fm.deleted && fm.active !== false && ids.has(fm.productId) && !/reel/i.test(String(fm.form || ""))).map(fm => Number(fm.metres)).filter(x => x > 0))]; }, [size, data.products, data.productForms]);
   const normM = prefs && prefs.metres && !!prefs.reel === isReel ? prefs.metres : catM;
   const otherNum = Number(String(otherM).replace(",", "."));
   const curM = otherOn ? (otherNum > 0 ? Math.round(otherNum * 100) / 100 : null) : (reelM != null ? reelM : normM);
@@ -5791,7 +5795,7 @@ function BoxLabelStudio({ data, setData }) {
         </div></>}
       {usesM && <><b style={{ fontSize: 15 }}>{isReel ? "Metres on the reel" : "Metres"}</b>
         <div data-ls-lengths style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-          {[...new Set([...commonMetres, ...(isReel ? reelLengths : []), catM, normM].filter(x => x > 0))].sort((a, b) => a - b).map(m => { const on = !otherOn && curM === m; return <button key={m} data-ls-metres={m} aria-pressed={on} onClick={() => { setOtherOn(false); setReelM(m); setMsg(null); }} style={chipS(on)}>
+          {[...new Set([...commonMetres, ...(isReel ? reelLengths : kinM), catM, normM].filter(x => x > 0))].sort((a, b) => a - b).map(m => { const on = !otherOn && curM === m; return <button key={m} data-ls-metres={m} aria-pressed={on} onClick={() => { setOtherOn(false); setReelM(m); setMsg(null); }} style={chipS(on)}>
             {m} m{m === catM ? <span style={small}>· this size{isReel ? "" : "'s box"}</span> : m === normM ? <span style={small}>· kept for this size</span> : null}</button>; })}
           <button data-ls-metres-other aria-pressed={otherOn} onClick={() => { setOtherOn(true); setMsg(null); }} style={chipS(otherOn)}>Other…</button>
           {otherOn && <input data-ls-metres-input autoFocus inputMode="decimal" value={otherM} onChange={e => { setOtherM(e.target.value.replace(/[^\d.,]/g, "")); setMsg(null); }} placeholder="metres" style={{ width: 90, height: 44, boxSizing: "border-box", borderRadius: 10, border: `2px solid ${NL.NAVY}`, padding: "0 10px", fontSize: 17, fontWeight: 700, fontFamily: NLT.FONT, color: NL.INK }} />}
