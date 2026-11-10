@@ -11,7 +11,7 @@ import { classifyScan, decodeFrame, decodeRuns128, decodeRuns93 } from "./mx_sca
 import { readBoxCodes, readWords } from "./mx_ocr.js";
 import { BOX_LOCATIONS, MOVEMENT_KINDS, SIGNED_MOVEMENT_KINDS, boxLinesFor, boxWhereabouts, cartonForNewEntry, cartonLedger, cartonOfEntry, caseProducts, casesHoldingBox, casesWithLedgerContents, freeInCartonFor, identityGateRefusal, inLiveCases, ledgerCaseContents, moveAdjusted, moveAllocated, moveCounted, moveMade, movePlaced, moveSampled, moveScrapped, moveShipped, moveUnallocated, moveUnplaced, movementRefusal, orderBoxes, orderCaseProducts, orderHoldings, placeLabel, placeOf, placeRefusalFor, runWhereabouts, placedBoxForm, placedBoxesByCase, projectBox, reconcileLedgerToStored, repackFacts, sizeWhereabouts, syncCaseRowsToLedger, takeOffOrder, traceLot, withLedgerFigures } from "./mx_ledger.js";
 import { fullCaseNums, orderPalletPlan, caseWeightsEstimate, palletPlanByWeight, BOX_CASE_SIZES, CASES_PER_PALLET, palletPlan, casePalletShown, ONE_PALLET_MAX_BOXES, onePalletCheck, CASE_BAND_ORDER, CASE_MAX_SIZE_DEFAULT, EMPTY_ON_PURPOSE, MONTH_LETTERS, PLAN_BAND_ORDER, STANDARD_BOX_TYPES, allocateCaseDetails, allocationRefusal, amendmentsFor, applyAmendmentReduction, arrangeBoxesThenReels, arrangeCases, arrangedCasesForOrder, backfillPlannedCases, batchesAvailableRows, batchesAvailableRowsFresh, boxOutOfOrderCases, buildCombinedCases, buildPackingPlan, cartonFor, cartonMismatch, caseContentLines, caseFill, caseKindOf, casePalletOf, casePlanLines, casePlanned, caseRangeLabel, caseRecordFor, caseRowId, caseRunsLabel, caseSortKey, caseState, caseView, caseWeightOf, caseWeightQuery, oddCaseWeights, compareCaseSort, computeMakeLists, dateFromReelCode, dedupeCaseRows, dismissalMap, findDiscrepancies, findDiscrepanciesFresh, hasCasePlan, isCaseClosed, isReelCase, isReelFulfilled, isStrongTapeOrder, liveMapEntries, mergePlannedRows, openCasesForOrder, openIssues, openPickSheets, orderBoxTypes, orderCaseCount, orderHasStarted, orderShortfall, ordersMissingPlan, ordersNeedingSpec, packedOutsideSpecs, packingShort, parseCodeDate, patchMapsFromCaseRecords, planAmendment, planBandFor, planCutForLine, planForMove, planOrderMismatches, planOrderRefusal, planRowsForNewOrder, planSpacesFor, plannableLines, plannedCasesFor, proposeCut, readDiscrepancyDismissals, reelsPerCase, refillCases, renumberAfterRemoval, resolveCaseContents, sameContents, shortCaseSpec, sortLinesForCases, specInCarton, specOfBoxInCase, subtractConfirmed, subtractPlanned, tapeFits, tapeRefusal, twinCartonSpec, bondedTwinSpecs, upBox, planVsOrder, discrepancyTriage, discrepancyWords, reelPlanInputs, orderMakePlan, caseWorkState } from "./mx_packing.js";
-import { ackVatKey, orderAddressFor, tidyAddress, newerShipmentFor, shippedDayOf, EMPTY_CASE_KG, glueSheetDoc, manifestWeights, officeSummary, money, bondingListDoc, caseLabelDoc, caseLabelInner, caseLabelRange, caseLabelLayoutKey, CASE_LABEL_CSS, CASE_LABEL_LAYOUTS, ACK_VAT_TREATMENTS, LOGO_B64, MATRIX_EORI, MATRIX_VAT_NUMBER, PAPER_CSS, boxContentsLine, lastPriceFor, manifestReadiness, orderAckDoc, orderShipmentWeight, orderThreads, ordersLeftDoc, pEsc, pN2, packingListRows, paperFoot, paperHead, paperRunHead, pickSheetDoc, portalOrdersWaiting, productionSheetDoc, shippingManifestDoc, shippingManifestEmail, suggestedVatTreatment, unreadFromCustomers, customerGaps, VAT_RECORD_VALUE, VAT_WORDS, correctedManifest, manifestBoughtIn } from "./mx_papers.js";
+import { ackVatKey, orderAddressFor, tidyAddress, newerShipmentFor, shippedDayOf, EMPTY_CASE_KG, glueSheetDoc, manifestWeights, officeSummary, money, bondingListDoc, caseLabelDoc, caseLabelInner, caseLabelRange, caseLabelLayoutKey, CASE_LABEL_CSS, CASE_LABEL_LAYOUTS, ACK_VAT_TREATMENTS, LOGO_B64, MATRIX_EORI, MATRIX_VAT_NUMBER, PAPER_CSS, boxContentsLine, lastPriceFor, manifestReadiness, orderAckDoc, orderShipmentWeight, orderThreads, ordersLeftDoc, pEsc, pN2, packingListRows, paperFoot, paperHead, paperRunHead, pickSheetDoc, portalOrdersWaiting, productionSheetDoc, shippingManifestDoc, shippingManifestEmail, suggestedVatTreatment, unreadFromCustomers, customerGaps, VAT_RECORD_VALUE, VAT_WORDS, correctedManifest, caseDimsOf, manifestBoughtIn } from "./mx_papers.js";
 import { ALL_GLUE_DIES, dpCardsState, dpClearReelEstimate, DEFAULT_SCHEDULE_SETTINGS, GLUE_DIES_10MM, GLUE_DIES_12MM, GLUE_DIES_7MM, GLUE_DIES_7MM_OS, GLUE_DIE_12_DOUBLE, GLUE_DIE_GROUPS, SMALL_KEYWORDS, ULTRA_SR_COLOURS, WORK_HOURS, addWorkHours, addWorkingDays, batchMeterageUsed, glueReelHours, planDayAmount, workDayFraction, rackReels, reelIsCleared, reelState, reelUsedByCode, scrappedReelCodes, buildDailyPlan, classifySize, dueDateLabel, dueDateRows, formatOrderBreakdown, gapFromSpec, glueDiesForSpec, glueLineSequence, glueSizeOfProduct, glueReelPool, glueUsableFrom, scheduleTweaksOf, glueChangeBetween, scheduleRulesOf, glueChangeoverStats, learnFromTweaks, glueRangeOf, LEARN_AFTER, glueReelOffAt, SAME_PVC_CHANGE_MIN, hoursOn, isDelivery, isSmallItem, localDateKey, measuredRates, nextWorkMoment, nextWorkingMorning, orderDialSegments, orderFinishDates, planOrderCompare, glueListOrdersFor, packingReadyRows, packingReadyRowsStored, planDaysUntil, planDueReason, planScore, planSlips, planSnapshotRow, promiseOptions, readyToShip, schedulePrep, scheduleSettingsOf, sizeKeyOfProduct, top2PriorityOrders, top2SizeRows, unrankableOrders, workCalendar } from "./mx_planning.js";
 import { pvcCodeCheck, BONDING_BOXES_PER_DAY_MIN, DERIVED_RUN_GAP_HOURS, DERIVED_RUN_KEYS, EVA_YIELD_MIN_SAMPLE, GLUE_MEASURE_TOLERANCE_PCT, PVC_COLOUR_BY_HEIGHT, PVC_DEFAULT_COLOUR, REEL_METRES_TYPICAL, batchDeleteWarning, bondingOutputByDay, categoryLowest, categoryTotal, deriveRuntimeHours, derivedGlueRuns, evaDieForRow, evaRackRows, evaYieldByDie, extrudedReelCheck, extrudedReelsForSize, extrudedReelsForSpec, extrudedReelsMatching, extrusionScheduleRows, glueDieByLabel, glueDiesForWidthOf, glueLineScheduleRows, glueLineScheduleRowsFresh, glueRunReels, glueRunTarget, glueRunTotals, glueSizeKey, glueSpecMalformed, lastGlueBatchUsed, lastToolingUse, toolingUseHistory, glueDieUseHistory, glueDieSpells, learnedReelMetres, materialBatchCode, materialStockFrom, materialsGroupedByCategory, metersPerBoxWarning, minutesSinceLastReel, normalWeightFor, productPipeline, pvcCodeForSpec, pvcColourForSpec, recommendedBatch, recordMaterialMovement, reelCapacityWarning, reelDiscrepancy, reelIsIndirect, reelOverConsumption, runningReelDiscrepancy, samePin, toolingUnplaced, unknownReelWarning, withGlueRunSettings, withMaterialFigures, withPrefixFor, evaOutlook, evaDieForSpec, evaCodeFacts, EXTRUDED_REEL_SOFT_DAYS, extrudedOn } from "./mx_production.js";
 // (mx_promises.js — the retired promise readers — removed 24 Sep 2026)
@@ -584,7 +584,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-10.2";
+const APP_VERSION = "2026-11-10.3";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -20154,11 +20154,11 @@ function CorrectPaperworkPanel({ order, setData, onClose, nl = false }) {
   const m = order.shippingManifest || {};
   const rows = (m.caseRows || []).slice().sort((a, b) => Number(a.caseNum) - Number(b.caseNum));
   const items = manifestBoughtIn(m);
-  const [weights, setWeights] = useState({}); const [places, setPlaces] = useState({}); const [reason, setReason] = useState("");
+  const [weights, setWeights] = useState({}); const [places, setPlaces] = useState({}); const [sizes, setSizes] = useState({}); const [reason, setReason] = useState("");
   const [error, setError] = useState(null); const [done, setDone] = useState(null);
-  const trial = correctedManifest(order, { weights, places, reason: reason || "—" });
+  const trial = correctedManifest(order, { weights, places, sizes, reason: reason || "—" });
   const save = () => {
-    const r = correctedManifest(order, { weights, places, reason });
+    const r = correctedManifest(order, { weights, places, sizes, reason });
     if (r.error) { setError(r.error); return; }
     setData(prev => {
       let next = { ...prev, orders: (prev.orders || []).map(o => o && o.id === order.id ? { ...o, shippingManifest: r.manifest } : o) };
@@ -20167,7 +20167,7 @@ function CorrectPaperworkPanel({ order, setData, onClose, nl = false }) {
         summary: `${order.id}: shipped paperwork corrected — ${r.changes.join("; ")} — because: ${String(reason).trim()}`,
         before: { shippingManifest: order.shippingManifest }, after: { changes: r.changes, reason: String(reason).trim() } }) };
     });
-    setDone(r.changes.join("; ")); setWeights({}); setPlaces({}); setReason(""); setError(null);
+    setDone(r.changes.join("; ")); setWeights({}); setPlaces({}); setSizes({}); setReason(""); setError(null);
   };
   const box = { width: 84, height: 40, boxSizing: "border-box", border: `1px solid #B9BBC2`, borderRadius: 6, padding: "0 8px", fontSize: 16, textAlign: "right" };
   const kg = (v) => Number(v) > 0 ? (Number(v) || 0).toFixed(2) : "";
@@ -20175,7 +20175,7 @@ function CorrectPaperworkPanel({ order, setData, onClose, nl = false }) {
     <div data-correct-paperwork="1" style={{ border: nl ? 0 : `1px solid ${BORDER}`, borderRadius: 8, padding: nl ? 0 : 12, marginTop: nl ? 0 : 8, background: "#fff", maxWidth: 620 }}>
       <div style={{ fontWeight: 700, fontSize: 15.5, color: NAVY }}>Correct the shipped paperwork</div>
       <div className="text-xs" style={{ color: INK_MUTED, margin: "4px 0 10px", lineHeight: 1.45 }}>
-        For what the paperwork says, not what is in stock: a case's weight, and which case a bought-in item went in. {order.id} stays shipped.
+        For what the paperwork says, not what is in stock: a case's weight and size, and which case a bought-in item went in. {order.id} stays shipped.
       </div>
       {done && <div data-correct-done style={{ background: "rgba(63,125,92,0.10)", border: `1px solid ${GREEN}`, borderRadius: 6, padding: "8px 10px", fontSize: 13.5, marginBottom: 10 }}>✓ Corrected: {done}. Print the manifest again for the new copy.</div>}
       <div className="mx-eyebrow" style={{ color: INK_MUTED, marginBottom: 4 }}>Case weights (as weighed, kg)</div>
@@ -20187,6 +20187,18 @@ function CorrectPaperworkPanel({ order, setData, onClose, nl = false }) {
               onChange={e => { setError(null); setDone(null); setWeights(w => ({ ...w, [r.caseNum]: e.target.value.replace(/[^\d.,]/g, "") })); }} style={box} />
           </label>
         ))}
+      </div>
+      {/* CASE SIZES (10 Nov 2026): the size printed for a case sent on no pallet — a 20-box case is 330 x 170 x 680 by itself;
+          a bespoke case (MITEX's reel case, 700 x 720 x 220) is written here. Emptying the box goes back to the standard size. */}
+      <div className="mx-eyebrow" style={{ color: INK_MUTED, marginBottom: 4 }}>Case sizes, mm (printed for cases not on a pallet)</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 6, marginBottom: 12 }}>
+        {rows.map(r => { const cur = caseDimsOf(r);
+          return (<label key={r.caseNum} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
+            <span style={{ minWidth: 52, fontWeight: 700 }}>Case {r.caseNum}</span>
+            <input data-correct-size={r.caseNum} value={sizes[r.caseNum] ?? (cur && !cur.standard ? `${cur.w} x ${cur.d} x ${cur.h}` : "")}
+              placeholder={cur ? `${cur.w} x ${cur.d} x ${cur.h} (standard)` : "e.g. 700 x 720 x 220"}
+              onChange={e => { setError(null); setDone(null); setSizes(z => ({ ...z, [r.caseNum]: e.target.value })); }} style={{ ...box, width: 160, textAlign: "left" }} />
+          </label>); })}
       </div>
       {items.length > 0 && <>
         <div className="mx-eyebrow" style={{ color: INK_MUTED, marginBottom: 4 }}>Bought-in items — packed in</div>
