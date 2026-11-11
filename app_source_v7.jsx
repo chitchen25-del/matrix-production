@@ -584,7 +584,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-11.3";
+const APP_VERSION = "2026-11-11.4";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -4168,6 +4168,74 @@ function CasePhotos({ orderId, data = null }) {
     </div>, document.body)}
     {err && <div data-case-photo-err style={{ marginTop: 8, fontSize: 13.5, color: "#B3261E", fontWeight: 600 }}>{err}</div>}
   </div>);
+}
+
+/* ===================== CASE PHOTOS, ON THEIR OWN BUTTON (Chris, 11 Nov 2026: "I want a new section on the orders, next to
+   packing list … called case photos. When selected it brings up the photos, and then a list of what the photos recognize
+   under them"). A third button beside Packing list and Case labels. It opens a sheet: every case photo of the order, case by
+   case, newest first, each photo large (tap for full size) with what was read off it underneath — each box code, how many,
+   and the product that code is — and whether it was taken at weighing. Reading only: nothing here changes a case. */
+function useCasePhotoRows(orderId, on = true) {
+  const [st, setSt] = useState({ rows: null, urls: {} }); const [tick, setTick] = useState(0);
+  useCloudRetry(setTick);
+  useEffect(() => { const f = (e) => { if (!e.detail || e.detail.orderId === orderId) setTick(t => t + 1); }; window.addEventListener("mx-case-photo", f); return () => window.removeEventListener("mx-case-photo", f); }, [orderId]);
+  useEffect(() => { if (!on) return undefined; let live = true;
+    (async () => { try {
+      if (typeof window !== "undefined" && typeof window.__listCasePhotosFn === "function") { const r = await window.__listCasePhotosFn(orderId); if (live) setSt({ rows: (r.rows || []).filter(x => x.source !== "pallet"), urls: r.urls || {} }); return; }
+      const c = EVENT_CLIENT; if (!c || !c.storage) return;
+      const { data: r, error } = await c.from("case_photos").select("*").eq("order_id", orderId).eq("deleted", false).neq("source", "pallet").order("case_num", { ascending: true }).order("taken_at", { ascending: false }).limit(300);
+      if (error || !Array.isArray(r)) { if (live) setTimeout(() => live && setTick(t => t + 1), 4000); return; }
+      const want = [...new Set(r.flatMap(x => [x.path, x.thumb_path]).filter(Boolean))]; const m = {};
+      if (want.length) { const s = await c.storage.from("case-photos").createSignedUrls(want, 3600); for (const x of (s.data || [])) if (x.signedUrl) m[x.path] = x.signedUrl; }
+      if (live) setSt({ rows: r, urls: m });
+    } catch (e) { if (live) setSt({ rows: [], urls: {} }); } })();
+    return () => { live = false; }; }, [orderId, tick, on]);
+  return st;
+}
+function CasePhotosButton({ order, data }) {
+  const [open, setOpen] = useState(false); const [big, setBig] = useState(null);
+  const { rows, urls } = useCasePhotoRows(order.id);
+  const n = rows ? rows.length : null;
+  const specOf = useMemo(() => { const m = new Map(); for (const b of (data.bondingRuns || [])) if (b && !b.deleted && b.boxNumber && !m.has(String(b.boxNumber).toUpperCase())) m.set(String(b.boxNumber).toUpperCase(), b.productSize || ""); return m; }, [data.bondingRuns]);
+  const when = (t) => { try { return new Date(t).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); } catch (e) { return ""; } };
+  const byCase = useMemo(() => { const m = new Map(); for (const r of (rows || [])) { const k = r.case_num == null ? "—" : Number(r.case_num); if (!m.has(k)) m.set(k, []); m.get(k).push(r); }
+    return [...m.entries()].sort((a, b) => (a[0] === "—" ? 1e9 : a[0]) - (b[0] === "—" ? 1e9 : b[0])); }, [rows]);
+  return (<>
+    <button type="button" data-nl-casephotos={n == null ? "" : n} onClick={() => { nlHaptic(); setOpen(true); }} style={{ flex: 1, minWidth: 0, minHeight: 46, borderRadius: 12, border: "1.5px solid #DDE0E8", background: "#fff", color: NAVY, fontFamily: NLT.FONT, cursor: "pointer", padding: "4px 3px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1, overflow: "hidden" }}>
+      <span style={{ fontSize: 13.5, fontWeight: 700, whiteSpace: "nowrap" }}>📷 Case photos</span>
+      <span style={{ fontSize: 11.5, fontWeight: 600, color: INK_MUTED, whiteSpace: "nowrap" }}>{n == null ? "…" : n === 0 ? "none yet" : `${n} photo${n === 1 ? "" : "s"}`}</span></button>
+    {open && ReactDOM.createPortal(<div data-case-photos-sheet style={{ position: "fixed", inset: 0, zIndex: 1150, background: NL.PANEL || "#F3F5FA", display: "flex", flexDirection: "column", fontFamily: NLT.FONT }}>
+      <div style={{ flex: "none", display: "flex", alignItems: "center", gap: 10, padding: "calc(env(safe-area-inset-top, 0px) + 12px) 16px 12px", background: NAVY, color: "#fff" }}>
+        <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 18, fontWeight: 700 }}>Case photos</div>
+          <div style={{ fontSize: 13, opacity: 0.85, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{order.id} · {order.customer}{n ? ` · ${n} photo${n === 1 ? "" : "s"}` : ""}</div></div>
+        <button type="button" data-case-photos-close onClick={() => setOpen(false)} style={{ height: 40, padding: "0 16px", borderRadius: 20, border: 0, background: "#fff", color: NAVY, fontSize: 15, fontWeight: 700, fontFamily: "inherit", cursor: "pointer" }}>Close</button></div>
+      <div style={{ flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch", padding: "14px 16px calc(env(safe-area-inset-bottom, 0px) + 24px)" }}>
+        <div style={{ maxWidth: 720, margin: "0 auto" }}>
+        {rows == null && <div style={{ padding: 30, textAlign: "center", color: NL.SUB, fontSize: 15 }}>Getting the photos…</div>}
+        {rows && rows.length === 0 && <div data-case-photos-none style={{ padding: "30px 10px", textAlign: "center", color: NL.SUB, fontSize: 15.5 }}>No case photos for this order yet.<br />They appear here as each case is photographed.</div>}
+        {byCase.map(([cn, list]) => <div key={cn} data-cps-case={cn} style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 1.2, color: NL.SUB, margin: "0 4px 8px" }}>CASE {cn}{list.length > 1 ? ` · ${list.length} PHOTOS` : ""}</div>
+          {list.map(r => { const res = r.result || {}; const codes = Object.entries(res.codes || {}).sort((a, b) => a[0].localeCompare(b[0])); const total = codes.reduce((t, [, k]) => t + (Number(k) || 0), 0);
+            const u = urls[r.path] || urls[r.thumb_path];
+            return (<div key={r.id} data-cps-photo={r.id} style={{ background: "#fff", borderRadius: 16, overflow: "hidden", marginBottom: 10, boxShadow: "0 1px 2px rgba(27,43,107,.06), 0 6px 16px rgba(27,43,107,.07)" }}>
+              {u ? <img src={u} alt={`Case ${cn}`} loading="lazy" onClick={() => setBig(u)} style={{ display: "block", width: "100%", maxHeight: "50vh", objectFit: "contain", background: "#10152B", cursor: "zoom-in" }} />
+                : <div style={{ height: 120, background: "#E7EBF5", display: "flex", alignItems: "center", justifyContent: "center", color: NL.SUB, fontSize: 13.5 }}>Photo not available</div>}
+              <div style={{ padding: "10px 14px 12px" }}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 6 }}>
+                  <span style={{ fontSize: 15.5, fontWeight: 700, color: NL.INK }}>{total ? `${total} box${total === 1 ? "" : "es"} recognised` : res.error ? "Couldn't be read" : res.weigh ? "Taken when weighed — not read" : "No labels recognised"}</span>
+                  <span style={{ marginLeft: "auto", fontSize: 12, color: NL.FAINT, whiteSpace: "nowrap" }}>{when(r.taken_at)}{r.taken_by ? ` · ${String(r.taken_by).split("@")[0]}` : ""}</span></div>
+                {codes.map(([code, k]) => <div key={code} data-cps-code={code} style={{ display: "flex", alignItems: "baseline", gap: 10, padding: "6px 0", borderTop: `1px solid ${NL.LINE || "#E7EBF5"}`, fontSize: 14.5 }}>
+                  <span style={{ flex: "none", minWidth: 34, fontWeight: 800, color: NAVY }}>{k} ×</span>
+                  <span style={{ flex: "none", fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 600, color: NL.INK }}>{code}</span>
+                  <span style={{ flex: 1, minWidth: 0, textAlign: "right", color: specOf.get(code) ? NL.SUB : "#B45309", fontSize: 13.5 }}>{specOf.get(code) || "not a box on the system"}</span></div>)}
+                {(Number(res.unreadable) > 0 || (total > 0 && res.weigh)) && <div style={{ marginTop: 6, fontSize: 12.5, color: Number(res.unreadable) > 0 ? "#B45309" : NL.SUB }}>{[Number(res.unreadable) > 0 ? `${res.unreadable} label${Number(res.unreadable) === 1 ? "" : "s"} couldn't be read` : "", res.weigh ? "taken when weighed" : ""].filter(Boolean).join(" · ")}</div>}
+              </div></div>); })}
+        </div>)}
+        </div>
+      </div>
+      {big && <div data-case-photos-big onClick={() => setBig(null)} style={{ position: "fixed", inset: 0, zIndex: 1160, background: "rgba(10,14,30,.94)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "auto" }}><img src={big} alt="" style={{ maxWidth: "100%", maxHeight: "100%" }} /></div>}
+    </div>, document.body)}
+  </>);
 }
 
 /* (6 Nov 2026 — admin had a pallet photo already on the phone and asked for it on BFS WO-0055: the button no longer forces the
@@ -20273,8 +20341,8 @@ function PackingListStrip({ data, order, onPrint, docHtml = null, compact = fals
   if (compact) return (<>
     <div className="no-print" data-packing-list-strip="compact" style={{ display: "flex", gap: 8, marginBottom: 10 }}>
       <button type="button" data-packing-list-print="1" onClick={() => { if (docHtml && nlOnNow()) setShowing(true); else onPrint && onPrint(); }}
-        style={{ flex: 1, minWidth: 0, minHeight: 46, borderRadius: 12, border: `1.5px solid ${!st.printedAt || st.changedSince ? NAVY : "#DDE0E8"}`, background: "#fff", color: NAVY, fontFamily: NLT.FONT, cursor: "pointer", padding: "4px 8px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1 }}>
-        <span style={{ fontSize: 14.5, fontWeight: 700, whiteSpace: "nowrap" }}>🖨 Packing list</span>
+        style={{ flex: 1, minWidth: 0, minHeight: 46, borderRadius: 12, border: `1.5px solid ${!st.printedAt || st.changedSince ? NAVY : "#DDE0E8"}`, background: "#fff", color: NAVY, fontFamily: NLT.FONT, cursor: "pointer", padding: "4px 3px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1 }}>
+        <span style={{ fontSize: 13.5, fontWeight: 700, whiteSpace: "nowrap" }}>🖨 Packing list</span>
         <span data-packing-list-state style={{ fontSize: 11.5, fontWeight: 600, color: !st.printedAt ? NAVY : st.changedSince ? "#B45309" : INK_MUTED, whiteSpace: "nowrap" }}>{!st.printedAt ? "not printed yet" : st.changedSince ? "changed — print again" : `printed ${plainDate(new Date(st.printedAt))}`}</span></button>
       {extra}
     </div>
@@ -22084,6 +22152,7 @@ function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = nu
             the same one we use for shipping manifest should be used for packing list". On the new phone page it's the
             compact row under Check order (packRow), beside the case labels. */}
         {!tilesOnPack && <PackingListStrip data={data} order={order} onPrint={() => printPackingListSheet(order, caseRows, setData)} docHtml={() => packingListDoc(order, caseRows)} />}
+        {!tilesOnPack && <div className="no-print" data-case-photos-row style={{ display: "flex", margin: "0 0 10px" }}><div style={{ width: 230, display: "flex" }}><CasePhotosButton order={order} data={data} /></div></div>}
         {/* THE FLOOR NOTE ONLY (22 Sep 2026) — office notes stay on the order card.
             CLAMPED TO THREE LINES. Order notes grow — Avrupa's carries the whole
             history of an amendment — and the full text was the first thing you
@@ -22213,9 +22282,9 @@ function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = nu
             caseOverrides={caseOverrides} setCaseOverrides={setCaseOverrides}
             editOrder={order} editData={data}
             packRow={tilesOnPack ? <PackingListStrip compact data={data} order={order} onPrint={() => printPackingListSheet(order, caseRows, setData)} docHtml={() => packingListDoc(order, caseRows)}
-              extra={tilesOnPack.go && screenAllowed("caselabels") && order.stage !== "Cancelled" ? (() => { const n = caseRows.length; const done = caseLabelsPrintedFor(data, order.id); const left = (data.cases || []).filter(c => c && !c.deleted && c.orderId === order.id && !done.has(Number(c.caseNum))).length;
-                return <button type="button" data-nl-caselabels onClick={() => { nlHaptic(); openCaseLabelsFor(tilesOnPack.go, order.id); }} style={{ flex: 1, minWidth: 0, minHeight: 46, borderRadius: 12, border: `1.5px solid ${left ? NAVY : "#DDE0E8"}`, background: "#fff", color: NAVY, fontFamily: NLT.FONT, cursor: "pointer", padding: "4px 8px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1 }}>
-                  <span style={{ fontSize: 14.5, fontWeight: 700, whiteSpace: "nowrap" }}>🏷 Case labels</span><span style={{ fontSize: 11.5, fontWeight: 600, color: left ? NAVY : INK_MUTED, whiteSpace: "nowrap" }}>{left === 0 && n ? "all printed" : done.size ? `${left} not printed` : `${n} case${n === 1 ? "" : "s"}`}</span></button>; })() : null} /> : null}
+              extra={<>{tilesOnPack.go && screenAllowed("caselabels") && order.stage !== "Cancelled" ? (() => { const n = caseRows.length; const done = caseLabelsPrintedFor(data, order.id); const left = (data.cases || []).filter(c => c && !c.deleted && c.orderId === order.id && !done.has(Number(c.caseNum))).length;
+                return <button type="button" data-nl-caselabels onClick={() => { nlHaptic(); openCaseLabelsFor(tilesOnPack.go, order.id); }} style={{ flex: 1, minWidth: 0, minHeight: 46, borderRadius: 12, border: `1.5px solid ${left ? NAVY : "#DDE0E8"}`, background: "#fff", color: NAVY, fontFamily: NLT.FONT, cursor: "pointer", padding: "4px 3px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1 }}>
+                  <span style={{ fontSize: 13.5, fontWeight: 700, whiteSpace: "nowrap" }}>🏷 Case labels</span><span style={{ fontSize: 11.5, fontWeight: 600, color: left ? NAVY : INK_MUTED, whiteSpace: "nowrap" }}>{left === 0 && n ? "all printed" : done.size ? `${left} not printed` : `${n} case${n === 1 ? "" : "s"}`}</span></button>; })() : null}<CasePhotosButton order={order} data={data} /></>} /> : null}
             onEditCase={(caseNum, rows, flags, removed, lost) => saveCaseContents(caseNum, rows, flags, removed, lost)}
             onCaseAction={(a) => { setData(prev => { const r = applyCaseAction(prev, order, a); return r.error ? prev : r.patch; }); return {}; }} />
         )}
