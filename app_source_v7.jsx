@@ -584,7 +584,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-11.4";
+const APP_VERSION = "2026-11-12.1";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -3349,11 +3349,13 @@ function PullToRefresh({ onRefresh, children }) {
    (about 1600 px, a few hundred KB, labels still readable) with a small thumbnail, sent to the private case-photos store,
    and recorded against its order and case with who took it, when, and what was read. The order shows them. Three months
    after an order ships its photos are cleared — by the admin's app, once a day. Nothing is kept on the device. */
-const CASE_PHOTO_KEEP_DAYS = 90;
+/* A YEAR (Chris, 12 Nov 2026: "keep photos for a year please") — full size and all, for 365 days after the order ships. The
+   storage meter (More → storage) warns from 70% of the 1 GB; at about 10 MB a week a year is roughly half of it. */
+const CASE_PHOTO_KEEP_DAYS = 365;
 /* THE FULL-SIZE PHOTO GOES FIRST (Chris, 6 Oct 2026: the case photos "will max out 1gb in quite a quick fashion"): 30 days
    after an order ships its full-size case photos are cleared and each keeps its thumbnail and what was read; at 90 days the
    rest goes, as before. Pallet photos are never cleared. */
-const CASE_PHOTO_FULL_DAYS = 30;
+const CASE_PHOTO_FULL_DAYS = 365;
 function casePhotoShrink(file, maxPx, quality) {
   return new Promise((resolve) => { try {
     const url = URL.createObjectURL(file); const img = new Image();
@@ -4155,7 +4157,7 @@ function CasePhotos({ orderId, data = null }) {
     </div>
     {big && ReactDOM.createPortal(<div data-case-photo-big onClick={() => setBig(null)} style={{ position: "fixed", inset: 0, zIndex: 1200, background: "rgba(10,14,30,.88)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 16 }}>
       {big.url ? <img src={big.url} alt={`Case ${big.row.case_num}`} style={{ maxWidth: "100%", maxHeight: "80vh", borderRadius: 12 }} /> : <div style={{ color: "#fff" }}>Loading…</div>}
-      {big.row.thumb_path && big.row.path === big.row.thumb_path && <div style={{ color: "rgba(255,255,255,.75)", marginTop: 8, fontSize: 12.5 }}>The full-size photo was cleared 30 days after shipping — this is the small copy, with what was read.</div>}
+      {big.row.thumb_path && big.row.path === big.row.thumb_path && <div style={{ color: "rgba(255,255,255,.75)", marginTop: 8, fontSize: 12.5 }}>The full-size photo was cleared after shipping — this is the small copy, with what was read.</div>}
       <div style={{ color: "#fff", marginTop: 10, fontSize: 14, textAlign: "center" }}><b>{orderId} · case {big.row.case_num}</b> · {when(big.row.taken_at)}{big.row.taken_by ? ` · ${String(big.row.taken_by).split("@")[0]}` : ""}
         {big.row.result && big.row.result.codes && Object.keys(big.row.result.codes).length ? <div style={{ opacity: 0.8, fontSize: 12.5, marginTop: 4 }}>{Object.entries(big.row.result.codes).map(([c, n]) => `${c} × ${n}`).join(" · ")}</div> : null}</div>
       {/* REMOVE A CASE PHOTO (Chris, 6 Oct 2026: "There is no ability to delete case photos") — as the pallet photos have:
@@ -4359,7 +4361,7 @@ function StorageGauge({ P, card }) {
       <span data-storage-used style={{ fontSize: 13.5, fontWeight: 600, color: col }}>{s.used.toLocaleString("en-GB")} MB of {STORAGE_LIMIT_MB.toLocaleString("en-GB")} MB · {s.pct}%</span></div>
     <div style={{ height: 10, borderRadius: 5, background: "#E2E6EE", marginTop: 8, overflow: "hidden" }}><div style={{ height: 10, width: `${Math.min(100, s.pct)}%`, background: col, borderRadius: 5 }} /></div>
     {s.rows.map(r => <div key={r.name} style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "6px 0", borderBottom: `1px solid ${P.line}` }}><span>{r.name}</span><span style={{ color: P.dim }}>{r.files} files · {r.mb.toLocaleString("en-GB")} MB</span></div>)}
-    <div style={{ color: s.pct >= 70 ? col : P.dim, fontSize: 12.5, marginTop: 8, fontWeight: s.pct >= 70 ? 600 : 400 }}>{s.pct >= 90 ? "Nearly full — uploads will fail at 100%. Clear old photos sooner, or move to Supabase's paid plan (100 GB)." : s.pct >= 70 ? "Over 70% — keep an eye on it." : `Case photos keep their full size for ${CASE_PHOTO_FULL_DAYS} days after an order ships, then just a small copy until ${CASE_PHOTO_KEEP_DAYS} days; pallet photos are kept.`}</div>
+    <div style={{ color: s.pct >= 70 ? col : P.dim, fontSize: 12.5, marginTop: 8, fontWeight: s.pct >= 70 ? 600 : 400 }}>{s.pct >= 90 ? "Nearly full — uploads will fail at 100%. Clear old photos sooner, or move to Supabase's paid plan (100 GB)." : s.pct >= 70 ? "Over 70% — keep an eye on it." : CASE_PHOTO_FULL_DAYS >= CASE_PHOTO_KEEP_DAYS ? `Case photos are kept for a year after an order ships; pallet photos are kept.` : `Case photos keep their full size for ${CASE_PHOTO_FULL_DAYS} days after an order ships, then just a small copy until ${CASE_PHOTO_KEEP_DAYS} days; pallet photos are kept.`}</div>
   </div>);
 }
 /* THE DATABASE GAUGE (11 Oct 2026 review B20): the free plan stops saving (read-only) at 500 MB — nothing watched it. Read
