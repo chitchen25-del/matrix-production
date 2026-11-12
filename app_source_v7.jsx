@@ -584,7 +584,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-12.2";
+const APP_VERSION = "2026-11-12.3";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -5542,6 +5542,14 @@ function CaseLabelsView({ data, setData, initialOrderId = null }) {
           {pickedCust && <div data-cl-cust-note style={{ fontSize: 13.5, color: NL.SUB, marginTop: 10 }}>Labels for {pickedCust.companyName} without an order — say which case numbers below.</div>}
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, color: NL.SUB, marginTop: 8 }}><input type="checkbox" checked={showShipped} onChange={e => setShowShipped(e.target.checked)} /> Show shipped orders too</label>
           {order && <div data-cl-cases style={{ fontSize: 14, marginTop: 10 }}>{nCases ? <>This order has <b>{nCases} case{nCases === 1 ? "" : "s"}</b>{printed.size ? <> · labels printed before for {printed.size === nCases && !notYet.length ? "all of them" : `${[...printed].filter(n => n <= nCases).length} of them`}</> : " · no case labels printed yet"}.</> : "This order has no cases yet."}</div>}
+          {/* PART CASES SAY SO (Chris, 12 Nov 2026: Seryani's case 31 holds 5 sample boxes and he'd put its label on a 20-box
+              case — "you need to declare that on the case label screen"). Every case the plan doesn't fill, with how many
+              boxes it holds and the smallest standard case that takes them. */}
+          {order && fullInfo.part.length > 0 && <div data-cl-part-cases style={{ marginTop: 12, padding: "12px 14px", borderRadius: 10, background: "#FFF4E0", border: "2px solid #C97A00", color: "#5C3600", fontSize: 16, fontWeight: 700 }}>
+            NOT FULL CASES — check the case size before you stick the label on
+            {fullInfo.part.map(x => { const fit = [2, 5, 10, 15, 20].find(n => n >= x.qty) || x.capacity;
+              return <div key={x.n} data-cl-part-case={x.n} style={{ fontSize: 17, marginTop: 6 }}>Case {x.n}: {x.qty} box{x.qty === 1 ? "" : "es"} only{fit < x.capacity ? <> — use a {fit}-box case</> : null}</div>; })}
+          </div>}
         </div>
         <div style={box}><div style={lab}>Which cases</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
