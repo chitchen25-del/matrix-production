@@ -626,7 +626,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-16.3";
+const APP_VERSION = "2026-11-16.5";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -932,6 +932,19 @@ function currentSyncActor() {
 // reads every local row as new and pushes the device's entire copy of that
 // table over the server. Skipping the table is the only safe move; it will
 // be fetched and diffed properly on the next successful poll.
+/* A LONG LIST OF ROWS IS ASKED FOR IN PIECES (16 Nov 2026). Asking the cloud for hundreds of rows by id in one go makes an
+   address too long for it to take: it answers "bad request" with nothing, and the caller carries on as if there were no
+   rows. That is how a PC whose copy of the size list had gone wrong (1,150 rows refused at once) could not take the
+   cloud's copy back, and showed five sizes on the Labels screen until a later catch-up happened to get through. */
+async function mxSelectByIds(client, table, cols, col, ids, size = 80) {
+  const out = [];
+  for (let i = 0; i < (ids || []).length; i += size) {
+    const { data, error } = await client.from(table).select(cols).in(col, ids.slice(i, i + size));
+    if (error) throw error;
+    for (const r of (data || [])) out.push(r);
+  }
+  return out;
+}
 async function pushSyncChanges(client, prevData, nextData, opts = {}) {
   prevData = storableData(prevData); nextData = storableData(nextData);
   const skip = new Set(opts.skipTables || []);
@@ -1061,7 +1074,7 @@ async function pushSyncChanges(client, prevData, nextData, opts = {}) {
           const quietIds = ids.filter(id => !saidIds.includes(id));
           if (saidIds.length) refused.push({ table, ids: saidIds, reasons: saidIds.map(id => ({ row_id: id, reason: `${ordOf.get(id) || "that order"} has shipped — the change to its case wasn't kept (the paperwork went with the goods)`, at: new Date().toISOString() })) });
           if (quietIds.length) refused.push({ table, ids: quietIds, quiet: true, reasons: [] });
-          try { const { data: fresh } = await client.from(table).select("*").in("id", ids); if (fresh && fresh.length) refusedFresh.push({ table, rows: fresh }); }
+          try { const fresh = await mxSelectByIds(client, table, "*", "id", ids); if (fresh && fresh.length) refusedFresh.push({ table, rows: fresh }); }
           catch (e) { console.warn("Could not fetch the cloud copy of a shipped order's cases:", e); }
         }
       }
@@ -1160,8 +1173,8 @@ async function pushSyncChanges(client, prevData, nextData, opts = {}) {
              the device can drop it and say why. */
           let reasons = [];
           try {
-            const { data: why } = await client.from("refused_writes").select("row_id, reason, at").in("row_id", refusedIds).order("at", { ascending: false });
-            reasons = why || [];
+            const why = await mxSelectByIds(client, "refused_writes", "row_id, reason, at", "row_id", refusedIds);
+            reasons = (why || []).sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
           } catch (e) { /* older database without the table — the stale-write path below still runs */ }
           /* A clash the push itself took out of the batch (uniqueClash, 2 Oct 2026) has no cloud copy and no
              refused_writes row — its reason travels with the warning, so the device drops it and says why. */
@@ -1169,7 +1182,7 @@ async function pushSyncChanges(client, prevData, nextData, opts = {}) {
             for (const x of w.refusedRows) if (!reasons.some(y => y.row_id === x.id)) reasons.push({ row_id: x.id, reason: x.reason, at: new Date().toISOString() });
           refused.push({ table, ids: refusedIds, reasons });
           try {
-            const { data: fresh } = await client.from(table).select("*").in("id", refusedIds);
+            const fresh = await mxSelectByIds(client, table, "*", "id", refusedIds);
             if (fresh && fresh.length) refusedFresh.push({ table, rows: fresh });
           } catch (e) { console.warn(`Could not pull back the newer copy of ${refusedIds.length} ${table} row(s):`, e); }
         }
@@ -1189,7 +1202,8 @@ async function pushSyncChanges(client, prevData, nextData, opts = {}) {
            failed the whole table, so everything else from that device queued behind it for good. Now the rows that took it
            come back; any that didn't are fetched and put back here, with the reason, and the rest of the table carries on. */
         const deleteRefused = [];
-        for (const [t, ids] of byTime) {
+        for (const [t, allIds] of byTime) for (let di = 0; di < allIds.length; di += 80) {
+          const ids = allIds.slice(di, di + 80);   /* in pieces, for the same reason as mxSelectByIds */
           const { data: took, error } = await client.from(table)
             .update(actor ? { deleted: true, updated_by: actor, updated_at: t } : { deleted: true, updated_at: t })
             .in("id", ids).select("id");
@@ -1201,7 +1215,7 @@ async function pushSyncChanges(client, prevData, nextData, opts = {}) {
           const missing = ids.filter(id => !tookIds.has(id));
           if (missing.length) {
             /* not there at all, or already deleted: nothing to undo — only a live row that kept its newer edit is refused */
-            const { data: there } = await client.from(table).select("id, deleted").in("id", missing);
+            let there = []; try { there = await mxSelectByIds(client, table, "id, deleted", "id", missing); } catch (e) { there = []; }
             for (const r of (there || [])) if (r && !r.deleted) deleteRefused.push({ row_id: r.id, reason: "a newer change to it was made on another device, so it wasn't deleted — it's back as it is now", at: new Date().toISOString() });
           }
         }
@@ -1210,7 +1224,7 @@ async function pushSyncChanges(client, prevData, nextData, opts = {}) {
           refused.push({ table, ids, reasons: deleteRefused });
           warnings.push({ table, dropped: [], message: `${ids.length} delete${ids.length === 1 ? "" : "s"} didn't go — ${deleteRefused[0].reason}` });
           try {
-            const { data: fresh } = await client.from(table).select("*").in("id", ids);
+            const fresh = await mxSelectByIds(client, table, "*", "id", ids);
             if (fresh && fresh.length) refusedFresh.push({ table, rows: fresh });
           } catch (e) { console.warn(`Could not pull back ${ids.length} ${table} row(s) whose delete didn't go:`, e); }
         }
@@ -4247,7 +4261,7 @@ function CasePhotosButton({ order, data }) {
   return (<>
     <button type="button" data-nl-casephotos={n == null ? "" : n} onClick={() => { nlHaptic(); setOpen(true); }} style={{ flex: 1, minWidth: 0, minHeight: 46, borderRadius: 12, border: "1.5px solid #DDE0E8", background: "#fff", color: NAVY, fontFamily: NLT.FONT, cursor: "pointer", padding: "4px 3px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1, overflow: "hidden" }}>
       <span style={{ fontSize: 13.5, fontWeight: 700, whiteSpace: "nowrap" }}>📷 Case photos</span>
-      <span style={{ fontSize: 11.5, fontWeight: 600, color: INK_MUTED, whiteSpace: "nowrap" }}>{n == null ? "…" : n === 0 ? "none yet" : `${n} photo${n === 1 ? "" : "s"}`}</span></button>
+      <span style={{ fontSize: 11.5, fontWeight: 600, color: INK_MUTED, whiteSpace: "nowrap" }}>{n == null ? "…" : n === 0 ? (order.stage === "Shipped" ? "none kept" : "none yet") : `${n} photo${n === 1 ? "" : "s"}`}</span></button>
     {open && ReactDOM.createPortal(<div data-case-photos-sheet style={{ position: "fixed", inset: 0, zIndex: 1150, background: NL.PANEL || "#F3F5FA", display: "flex", flexDirection: "column", fontFamily: NLT.FONT }}>
       <div style={{ flex: "none", display: "flex", alignItems: "center", gap: 10, padding: "calc(env(safe-area-inset-top, 0px) + 12px) 16px 12px", background: NAVY, color: "#fff" }}>
         <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 18, fontWeight: 700 }}>Case photos</div>
@@ -4256,7 +4270,9 @@ function CasePhotosButton({ order, data }) {
       <div style={{ flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch", padding: "14px 16px calc(env(safe-area-inset-bottom, 0px) + 24px)" }}>
         <div style={{ maxWidth: 720, margin: "0 auto" }}>
         {rows == null && <div style={{ padding: 30, textAlign: "center", color: NL.SUB, fontSize: 15 }}>Getting the photos…</div>}
-        {rows && rows.length === 0 && <div data-case-photos-none style={{ padding: "30px 10px", textAlign: "center", color: NL.SUB, fontSize: 15.5 }}>No case photos for this order yet.<br />They appear here as each case is photographed.</div>}
+        {rows && rows.length === 0 && <div data-case-photos-none style={{ padding: "30px 10px", textAlign: "center", color: NL.SUB, fontSize: 15.5 }}>{order.stage === "Shipped"
+          ? <>No case photos were kept for this order.<br />{String(order.shippedDate || "") && String(order.shippedDate) < "2026-10-06" ? "It shipped before the app started keeping case photos (6 October 2026)." : "None were taken, or they have since been cleared."}</>
+          : <>No case photos for this order yet.<br />They appear here as each case is photographed.</>}</div>}
         {byCase.map(([cn, list]) => <div key={cn} data-cps-case={cn} style={{ marginBottom: 18 }}>
           <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 1.2, color: NL.SUB, margin: "0 4px 8px" }}>CASE {cn}{list.length > 1 ? ` · ${list.length} PHOTOS` : ""}</div>
           {list.map(r => { const res = r.result || {}; const codes = Object.entries(res.codes || {}).sort((a, b) => a[0].localeCompare(b[0])); const total = codes.reduce((t, [, k]) => t + (Number(k) || 0), 0);
@@ -13795,7 +13811,10 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
     if (held.pickFor) setPendingPickFor(held.pickFor);
     if (Array.isArray(held.pickItems)) setPendingPickItems(held.pickItems);
     setPendingPrint(held.pendingPrint);
-    setExpanded(held.pendingPrint.order.id);
+    /* ONLY WHEN NO ORDER WAS ASKED FOR (16 Nov 2026). This used to open the unanswered sheet's order every time the screen
+       opened — so with a Plaza pick sheet unanswered on Dave's PC, opening Seryani flipped to Plaza a moment later, and the
+       admin was one click from shipping the wrong order. The red bar across the top still asks, and leads there. */
+    if (!initialExpandedId) setExpanded(held.pendingPrint.order.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   /* THE PICK WALK SURVIVES A RELOAD.
@@ -26600,7 +26619,7 @@ function FixFoundIt({ data, setData, P, card, btn, initialCode = "" }) {
      the creed), then any near miss. Adding one of those as new is exactly how a box ends up on the system twice. */
   const allCodes = [...new Set((data.bondingRuns || []).filter(r => r && !r.deleted).map(r => String(r.boxNumber || "").toUpperCase()))];
   const twinKey = (x) => String(x).replace(/(\d)([A-Z]{3}S?)$/, (m, d, s) => d + s.slice(0, 1) + [...s.slice(1, 3)].sort().join("") + s.slice(3));
-  const twins = c && !known ? [...new Set([...allCodes.filter(x => x !== c && twinKey(x) === twinKey(c)), ...boxCodeNearMisses(c, allCodes)])] : [];
+  const twins = c && !known ? [...new Set([...allCodes.filter(x => x !== c && twinKey(x) === twinKey(c)), ...boxCodeNearMisses(c, allCodes).map(n => (n && typeof n === "object") ? n.code : n).filter(Boolean)])] : [];   /* near misses are {code, distance, swapped} — showing one as it stood brought the screen down (Dave's PC, 16 Nov 2026) */
   const forms = (data.productForms || []).filter(x => x && !x.deleted && x.active !== false && /box/i.test(String(x.form || "")));
   const prod = (fid) => { const x = forms.find(y => y.id === fid); const p = x && (data.products || []).find(q => q.id === x.productId); return p ? p.displayName : fid; };
   const at = () => new Date().toISOString();
