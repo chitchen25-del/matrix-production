@@ -156,13 +156,15 @@ function partsFor(stored: any) {
 }
 const partName = (p: { parts: string[]; slice?: number; of?: number }) => p.parts.join("+") + (p.of ? ` ${(p.slice || 0) + 1}/${p.of}` : "");
 // deno-lint-ignore no-explicit-any
-async function askPartOnce(p: { parts: string[]; slice?: number; of?: number }, payload: Uint8Array, key: string, runId: string): Promise<any> {
-  const r = await fetch(`${URL_}/functions/v1/mx-truth`, { method: "POST", signal: AbortSignal.timeout(100_000),
+async function askPartOnce(p: { parts: string[]; slice?: number; of?: number }, payload: Uint8Array, key: string, runId: string, fn = "mx-truth"): Promise<any> {
+  const r = await fetch(`${URL_}/functions/v1/${fn}`, { method: "POST", signal: AbortSignal.timeout(100_000),
     headers: { "x-mx-key": key, "x-mx-part": JSON.stringify(p), "x-mx-run": runId, "content-type": "application/gzip" }, body: payload });
   const text = await r.text();
   if (!r.ok) { const err = new Error(`part ${partName(p)}: ${r.status} ${text.slice(0, 300)}`); (err as Error & { status?: number }).status = r.status; throw err; }
   const j = JSON.parse(text);
   if (!j || !j.ok || !Array.isArray(j.rows)) throw new Error(`part ${partName(p)}: ${String(j && j.error || "no answer").slice(0, 300)}`);
+  /* the pieces' own copy must be running this very code, or its answer isn't taken */
+  if (fn !== "mx-truth" && j.sha !== CODE_SHA) { const err = new Error(`part ${partName(p)}: ${fn} is on other code`); (err as Error & { status?: number }).status = 409; throw err; }
   return j;
 }
 /* A PIECE THAT FALLS OVER IS ASKED AGAIN (9 Nov 2026). No good run from 03:00 to 14:40: every piece was asked at once, the
@@ -170,13 +172,23 @@ async function askPartOnce(p: { parts: string[]; slice?: number; of?: number }, 
    over together — the run with them, often before it could even say so (runs left with no answer). Now the pieces go two
    at a time, and one that falls over for want of room, or a timeout, is asked twice more after a pause. */
 const PIECES_AT_ONCE = 2, PIECE_TRIES = 3;
+/* THE PIECES ARE WORKED OUT SOMEWHERE ELSE (16 Nov 2026). Since 13 Nov the first try of most runs died without a word: the
+   run and its first two pieces shared one worker, and together they used up that worker's 2 seconds ("CPU Time exceeded",
+   three 546s in the same instant) — the answer then came a few minutes late, from the next try. The pieces are now asked of
+   a second copy of this same function (mx-truth-part, deployed from the same commit by the same job), so a piece can never
+   take the run down with it. If that copy isn't there, is on other code, or keeps failing, the pieces are asked of this
+   function as before — nothing is lost, only the old risk comes back for that run. */
+const PART_FN = "mx-truth-part";
 // deno-lint-ignore no-explicit-any
-async function askPart(p: { parts: string[]; slice?: number; of?: number }, payload: Uint8Array, key: string, runId: string, tries: Record<string, number>): Promise<any> {
+async function askPart(p: { parts: string[]; slice?: number; of?: number }, payload: Uint8Array, key: string, runId: string, tries: Record<string, number>, where: { elsewhere: boolean }): Promise<any> {
   for (let i = 1; ; i++) {
-    try { return await askPartOnce(p, payload, key, runId); }
+    const fn = where.elsewhere ? PART_FN : "mx-truth";
+    try { return await askPartOnce(p, payload, key, runId, fn); }
     catch (e) {
       const st = Number((e as Error & { status?: number }).status) || 0;
       const again = st === 546 || st === 502 || st === 503 || st === 504 || /timed? ?out|aborted|connection/i.test(String((e as Error)?.message || ""));
+      /* the second copy can't be used (missing, other code, refused) or has failed every try: back to this function */
+      if (fn !== "mx-truth" && (!again || i >= PIECE_TRIES)) { where.elsewhere = false; i = 0; continue; }
       if (!again || i >= PIECE_TRIES) throw e;
       tries[partName(p)] = i;
       await new Promise(r => setTimeout(r, 700 * i));
@@ -185,10 +197,10 @@ async function askPart(p: { parts: string[]; slice?: number; of?: number }, payl
 }
 /* the pieces, a few at a time, in order */
 // deno-lint-ignore no-explicit-any
-async function askParts(PARTS: { parts: string[]; slice?: number; of?: number }[], payload: Uint8Array, key: string, runId: string, tries: Record<string, number>): Promise<any[]> {
+async function askParts(PARTS: { parts: string[]; slice?: number; of?: number }[], payload: Uint8Array, key: string, runId: string, tries: Record<string, number>, where: { elsewhere: boolean } = { elsewhere: true }): Promise<any[]> {
   // deno-lint-ignore no-explicit-any
   const out: any[] = new Array(PARTS.length); let next = 0;
-  const worker = async () => { while (next < PARTS.length) { const i = next++; out[i] = await askPart(PARTS[i], payload, key, runId, tries); } };
+  const worker = async () => { while (next < PARTS.length) { const i = next++; out[i] = await askPart(PARTS[i], payload, key, runId, tries, where); } };
   await Promise.all(Array.from({ length: Math.min(PIECES_AT_ONCE, PARTS.length) }, worker));
   return out;
 }
@@ -202,7 +214,7 @@ async function part(p: { parts: string[]; slice?: number; of?: number }, bytes: 
   const stored = v.stored;
   const out = m.selectTruth(stored, new Date(v.now), CODE_BUILD, { parts: p.parts, slice: p.slice, of: p.of });
   ms.compute = Math.round(performance.now() - t);
-  return { ok: true, rows: out.rows, problems: out.problems || [], asOf: out.asOf, ms: { ...ms, ...Object.fromEntries(Object.entries(out.ms || {}).map(([k, x]) => [`c_${k}`, x])) } };
+  return { ok: true, sha: CODE_SHA, rows: out.rows, problems: out.problems || [], asOf: out.asOf, ms: { ...ms, ...Object.fromEntries(Object.entries(out.ms || {}).map(([k, x]) => [`c_${k}`, x])) } };
 }
 
 async function run(reason: string, key: string) {
@@ -230,9 +242,11 @@ async function run(reason: string, key: string) {
     stored = null as any;   // the pieces have their own copy; this one is only room taken up while they work
     t = performance.now();
     const tries: Record<string, number> = {};
-    const answers = await askParts(PARTS, payload, key, runId, tries);
+    const where = { elsewhere: true };
+    const answers = await askParts(PARTS, payload, key, runId, tries, where);
     ms.parts = Math.round(performance.now() - t);
     ms.retried = Object.keys(tries).length;
+    ms.elsewhere = where.elsewhere ? 1 : 0;   // 1 = every piece came from the second copy; 0 = this function did them
     const out = { asOf: answers[0].asOf as string, rows: answers.flatMap(a => a.rows) as TRow[], problems: answers.flatMap(a => a.problems || []) as string[] };
     answers.forEach((a, i) => { for (const k of ["code", "read", "compute"]) if (a.ms && a.ms[k] != null) ms[`p${i + 1}_${k}`] = a.ms[k]; });
     /* the slowest piece, start to finish — the figure to watch against the 2 seconds */
