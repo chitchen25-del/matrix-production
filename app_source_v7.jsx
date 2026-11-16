@@ -626,7 +626,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-16.2";
+const APP_VERSION = "2026-11-16.3";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -15733,6 +15733,8 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
                     {/* EMAIL ACCOUNTS (Chris, 24 Sep 2026). Opens this device's mail app
                         addressed to accounts, with the manifest written in; the person
                         presses Send. shippingManifestEmail, mx_papers.js. */}
+                    {/* case photos of a shipped order, on the PC's Shipped orders too (16 Nov 2026) */}
+                    {(o.stage === "Shipped" || mode === "completed") && <span data-shipped-casephotos style={{ display: "inline-flex", width: 180, verticalAlign: "middle" }}><CasePhotosButton order={o} data={data} /></span>}
                     {(o.stage === "Shipped" || mode === "completed") && o.shippingManifest && (
                       <Button variant="ghost" data-email-accounts onClick={() => {
                         /* the same question as printing when the customer has shipped since (27 Oct 2026, SIMB) */
@@ -46707,6 +46709,10 @@ function NLOrderPage({ data, setData, orderId, go, jumpToPacking, onPick, render
     </>}
     {/* one photo line on screen: on Cases the live one in the packing section is the line (Chris, 7 Oct 2026: "Why both photo checks here") */}
     {seg !== "cases" && (o.stage === "Shipped" || (o.photoReport && o.photoReport.allClear)) && <div style={{ marginTop: 14 }}><PhotoReportLine order={o} report={null} onOpen={o.stage === "Shipped" ? null : () => { nlHaptic(); pickSeg("cases"); }} /></div>}
+    {/* CASE PHOTOS ON A SHIPPED ORDER (Chris, 16 Nov 2026: "I want to be able to check case photos on shipped orders"). The
+        same sheet as on a live order's packing — every case's photos with what each one read — reached from the shipped
+        order's own page. Photos are kept a year after shipping (CASE_PHOTO_KEEP_DAYS). */}
+    {o.stage === "Shipped" && <div data-nl-shipped-casephotos style={{ display: "flex", marginTop: 12 }}><CasePhotosButton order={o} data={data} /></div>}
     {go && screenAllowed("caselabels") && o.stage !== "Cancelled" && !only && <button data-nl-caselabels onClick={() => { nlHaptic(); openCaseLabelsFor(go, o.id); }}
       style={{ width: "100%", marginTop: 12, height: 46, borderRadius: 14, border: `1.5px solid ${NL.NAVY}`, background: "#fff", color: NL.NAVY, fontFamily: NLT.FONT, fontSize: 15.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, cursor: "pointer" }}>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M3 7h18v12H3zM6 11h7M6 14h5M15.5 13.5h3" /></svg>
