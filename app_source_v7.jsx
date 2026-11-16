@@ -371,6 +371,24 @@ let BOOT_SNAPSHOT = null;          // what loadData() hands App at mount
 let LAST_STORED_KB = null;         // what was last COMMITTED, for the Sync panel
 
 function storeMode() { return STORE_MODE; }
+/* WHY THE DEVICE'S COPY WASN'T KEPT, AND A SECOND GO (16 Nov 2026 — Chris's iPhone said "its storage is full" for days).
+   The banner used to say "full" whatever had gone wrong. iPhones in particular drop their connection to the device's
+   database when the app has been in the background, and every save after that fails until the page is loaded again —
+   nothing to do with room. So: the real reason is kept (storeWhy) and shown, and a save that fails is tried once more
+   on a fresh connection before anything is said. Only for a database that opened at the start: its copy is what this
+   session was loaded from, so writing the session back can't lose anything. */
+const STORE_WHY = { text: "", full: false, at: 0, reopenAt: 0 };
+function storeWhy() { return STORE_WHY; }
+function noteStoreFault(e, where) {
+  const name = String((e && e.name) || ""), msg = String((e && e.message) || e || "");
+  STORE_WHY.full = /quota/i.test(name) || /quota|exceeded the|not enough (space|storage)|disk.*full/i.test(msg);
+  STORE_WHY.text = `${where}: ${name ? name + " — " : ""}${msg}`.slice(0, 220); STORE_WHY.at = Date.now();
+}
+async function reopenStore() {
+  try { try { if (IDB_HANDLE && IDB_HANDLE.close) IDB_HANDLE.close(); } catch { /* already gone */ }
+    IDB_HANDLE = await idbOpen(); return true; }
+  catch (e) { noteStoreFault(e, "the device's database would not open again"); return false; }
+}
 function storedSizeKB() { return LAST_STORED_KB; }
 
 function idbOpen() {
@@ -428,6 +446,7 @@ async function initStore() {
     return;
   } catch (e) {
     console.error("IndexedDB unavailable — falling back to localStorage:", e);
+    noteStoreFault(e, "the device's database would not open");
     STORE_MODE = "localStorage";
     IDB_HANDLE = null;
   }
@@ -495,7 +514,7 @@ function flushWrites() {
   idbPut(IDB_HANDLE, IDB_KEY, payload)
     .then(() => {
       LAST_STORED_KB = Math.round(payload.length * 2 / 1024);
-      window.__matrixStorageFailed = false;
+      window.__matrixStorageFailed = false; STORE_WHY.text = ""; STORE_WHY.full = false;
       /* TEST PAGE ONLY (19 Sep 2026): index_test.html sets this so the older
          suites, which read the saved data from localStorage, read what was
          really saved. Never set on the real app. */
@@ -506,13 +525,35 @@ function flushWrites() {
       else if (!OLD_COPY.cleared) { try { localStorage.removeItem(STORAGE_KEY); localStorage.setItem("mxStoreWasIdb", "1"); } catch { /* blocked: nothing to free */ } OLD_COPY.cleared = true; }
       cbs.forEach(cb => { try { cb(true); } catch { /* a listener throwing must not stall the queue */ } });
     })
-    .catch(e => {
+    .catch(async e => {
       console.error("IndexedDB save failed:", e);
+      noteStoreFault(e, "the save to the device's database failed");
+      /* once more on a fresh connection (at most every 15 s — a device that really is full shouldn't be hammered) */
+      if (Date.now() - STORE_WHY.reopenAt > 15000) {
+        STORE_WHY.reopenAt = Date.now();
+        try {
+          if (await reopenStore()) {
+            await idbPut(IDB_HANDLE, IDB_KEY, payload);   // anything newer is still queued and goes next, in order
+            LAST_STORED_KB = Math.round(payload.length * 2 / 1024);
+            window.__matrixStorageFailed = false; STORE_WHY.text = ""; STORE_WHY.full = false;
+            cbs.forEach(cb => { try { cb(true); } catch { /* same */ } });
+            return;
+          }
+        } catch (e2) { console.error("IndexedDB save failed again on a fresh connection:", e2); noteStoreFault(e2, "the save failed again on a fresh connection"); }
+      }
       window.__matrixStorageFailed = true;
       cbs.forEach(cb => { try { cb(false); } catch { /* same */ } });
     })
     .then(() => { mxWriteInFlight = false; flushWrites(); });
 }
+
+/* TEST PAGE ONLY: save the last copy again and say whether the device took it, and why not (storeretry_ui_test.js). */
+const MX_LAST_PAYLOAD = { s: null };
+if (typeof window !== "undefined") window.__mxResave = (cb) => {
+  if (!window.__MX_TEST_MIRROR__ || !IDB_HANDLE) return cb("nohook");
+  idbGet(IDB_HANDLE, IDB_KEY).then(cur => { mxPendingWrite = MX_LAST_PAYLOAD.s != null ? MX_LAST_PAYLOAD.s : cur;
+    mxPendingCallbacks.push(ok => cb({ ok, failed: !!window.__matrixStorageFailed, why: storeWhy().text, full: storeWhy().full })); flushWrites(); }).catch(() => cb("noread"));
+};
 
 /* onResult is how the truth gets back. The IndexedDB write has not happened
    yet when this returns, so the return value is provisional and only the
@@ -523,6 +564,7 @@ function saveData(data, onResult) {
   if (STORE_MODE === "idb" && IDB_HANDLE) {
     // Rule 4: full fidelity. No localOnly() on this path.
     mxPendingWrite = JSON.stringify(storableData(data));
+    MX_LAST_PAYLOAD.s = mxPendingWrite;
     if (onResult) mxPendingCallbacks.push(onResult);
     flushWrites();
     return true;
@@ -584,7 +626,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-16.1";
+const APP_VERSION = "2026-11-16.2";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -50638,12 +50680,14 @@ function dataContainsId(storedData, id) {
             const syncedAgo = lastSyncedAt ? formatAgo(lastSyncedAt) : null;
             return (
               <div className="no-print mb-5 px-4 py-2.5" style={{ background: syncLive ? ORANGE : RED, color: "#fff", borderRadius: 5, fontWeight: 700, fontSize: 13, letterSpacing: 0.3 }}>
-                ⚠ THIS DEVICE CAN NO LONGER KEEP ITS OWN COPY — its storage is full.
+                {(() => { const w = storeWhy(); return <span data-store-banner>⚠ THIS DEVICE CAN NO LONGER KEEP ITS OWN COPY — {w.full ? "its storage is full." : storeMode() !== "idb" ? "its own database would not open." : "the save to the device did not go through."}</span>; })()}
                 {syncLive ? (
                   <span style={{ fontWeight: 500, display: "block", marginTop: 4 }}>
                     Cloud Sync is live{syncedAgo ? ` (last saved ${syncedAgo})` : ""}, so what you enter is still being saved to the cloud.
                     The risk is closing or reloading the app before a save goes out — there is no local copy to fall back on.
-                    Keep going, but don't close the app, and get the storage cleared when you can.
+                    {storeWhy().full ? "Keep going, but don't close the app, and get the storage cleared when you can."
+                      : "Wait for the save to go out (the time above), then close the app fully and open it again — that usually puts it right."}
+                    {storeWhy().text ? <span data-store-why style={{ display: "block", marginTop: 4, fontWeight: 400, fontSize: 12, opacity: 0.9 }}>What the device said: {storeWhy().text}</span> : null}
                   </span>
                 ) : (
                   <span style={{ fontWeight: 500, display: "block", marginTop: 4 }}>
