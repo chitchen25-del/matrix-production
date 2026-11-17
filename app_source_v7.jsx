@@ -10,7 +10,7 @@ import { CODE128_WIDTHS, code128Svg, code128Widths } from "./mx_barcode.js";
 import { classifyScan, decodeFrame, decodeRuns128, decodeRuns93 } from "./mx_scan.js";
 import { readBoxCodes, readWords } from "./mx_ocr.js";
 import { BOX_LOCATIONS, MOVEMENT_KINDS, SIGNED_MOVEMENT_KINDS, boxLinesFor, boxWhereabouts, cartonForNewEntry, cartonLedger, cartonOfEntry, caseProducts, casesHoldingBox, casesWithLedgerContents, freeInCartonFor, identityGateRefusal, inLiveCases, ledgerCaseContents, moveAdjusted, moveAllocated, moveCounted, moveMade, movePlaced, moveSampled, moveScrapped, moveShipped, moveUnallocated, moveUnplaced, movementRefusal, orderBoxes, orderCaseProducts, orderHoldings, placeLabel, placeOf, placeRefusalFor, runWhereabouts, placedBoxForm, placedBoxesByCase, projectBox, reconcileLedgerToStored, repackFacts, sizeWhereabouts, syncCaseRowsToLedger, takeOffOrder, traceLot, withLedgerFigures } from "./mx_ledger.js";
-import { fullCaseNums, orderPalletPlan, caseWeightsEstimate, palletPlanByWeight, BOX_CASE_SIZES, CASES_PER_PALLET, palletPlan, casePalletShown, ONE_PALLET_MAX_BOXES, onePalletCheck, CASE_BAND_ORDER, CASE_MAX_SIZE_DEFAULT, EMPTY_ON_PURPOSE, MONTH_LETTERS, PLAN_BAND_ORDER, STANDARD_BOX_TYPES, allocateCaseDetails, allocationRefusal, amendmentsFor, applyAmendmentReduction, arrangeBoxesThenReels, arrangeCases, arrangedCasesForOrder, backfillPlannedCases, batchesAvailableRows, batchesAvailableRowsFresh, boxOutOfOrderCases, buildCombinedCases, buildPackingPlan, cartonFor, cartonMismatch, caseContentLines, caseFill, caseKindOf, casePalletOf, casePlanLines, casePlanned, caseRangeLabel, caseRecordFor, caseRowId, caseRunsLabel, caseSortKey, caseState, caseView, caseWeightOf, caseWeightQuery, oddCaseWeights, compareCaseSort, computeMakeLists, dateFromReelCode, dedupeCaseRows, dismissalMap, findDiscrepancies, findDiscrepanciesFresh, hasCasePlan, isCaseClosed, isReelCase, isReelFulfilled, isStrongTapeOrder, liveMapEntries, mergePlannedRows, openCasesForOrder, openIssues, openPickSheets, orderBoxTypes, orderCaseCount, orderHasStarted, orderShortfall, ordersMissingPlan, ordersNeedingSpec, packedOutsideSpecs, packingShort, parseCodeDate, patchMapsFromCaseRecords, planAmendment, planBandFor, planCutForLine, planForMove, planOrderMismatches, planOrderRefusal, planRowsForNewOrder, planSpacesFor, plannableLines, plannedCasesFor, proposeCut, readDiscrepancyDismissals, reelsPerCase, refillCases, renumberAfterRemoval, resolveCaseContents, sameContents, shortCaseSpec, sortLinesForCases, specInCarton, specOfBoxInCase, subtractConfirmed, subtractPlanned, tapeFits, tapeRefusal, twinCartonSpec, bondedTwinSpecs, upBox, planVsOrder, discrepancyTriage, discrepancyWords, reelPlanInputs, orderMakePlan, caseWorkState } from "./mx_packing.js";
+import { fullCaseNums, orderPalletPlan, caseWeightsEstimate, palletPlanByWeight, BOX_CASE_SIZES, CASES_PER_PALLET, palletPlan, casePalletShown, ONE_PALLET_MAX_BOXES, onePalletCheck, CASE_BAND_ORDER, CASE_MAX_SIZE_DEFAULT, EMPTY_ON_PURPOSE, MONTH_LETTERS, PLAN_BAND_ORDER, STANDARD_BOX_TYPES, allocateCaseDetails, allocationRefusal, amendmentsFor, applyAmendmentReduction, arrangeBoxesThenReels, arrangeCases, arrangedCasesForOrder, backfillPlannedCases, batchesAvailableRows, batchesAvailableRowsFresh, boxOutOfOrderCases, buildCombinedCases, buildPackingPlan, caseShownSize, caseTileScale, cartonFor, cartonMismatch, caseContentLines, caseFill, caseKindOf, casePalletOf, casePlanLines, casePlanned, caseRangeLabel, caseRecordFor, caseRowId, caseRunsLabel, caseSortKey, caseState, caseView, caseWeightOf, caseWeightQuery, oddCaseWeights, compareCaseSort, computeMakeLists, dateFromReelCode, dedupeCaseRows, dismissalMap, findDiscrepancies, findDiscrepanciesFresh, hasCasePlan, isCaseClosed, isReelCase, isReelFulfilled, isStrongTapeOrder, liveMapEntries, mergePlannedRows, openCasesForOrder, openIssues, openPickSheets, orderBoxTypes, orderCaseCount, orderHasStarted, orderShortfall, ordersMissingPlan, ordersNeedingSpec, packedOutsideSpecs, packingShort, parseCodeDate, patchMapsFromCaseRecords, planAmendment, planBandFor, planCutForLine, planForMove, planOrderMismatches, planOrderRefusal, planRowsForNewOrder, planSpacesFor, plannableLines, plannedCasesFor, proposeCut, readDiscrepancyDismissals, reelsPerCase, refillCases, renumberAfterRemoval, resolveCaseContents, sameContents, shortCaseSpec, sortLinesForCases, specInCarton, specOfBoxInCase, subtractConfirmed, subtractPlanned, tapeFits, tapeRefusal, twinCartonSpec, bondedTwinSpecs, upBox, planVsOrder, discrepancyTriage, discrepancyWords, reelPlanInputs, orderMakePlan, caseWorkState } from "./mx_packing.js";
 import { ackVatKey, orderAddressFor, tidyAddress, newerShipmentFor, shippedDayOf, EMPTY_CASE_KG, glueSheetDoc, manifestWeights, officeSummary, money, bondingListDoc, caseLabelDoc, caseLabelInner, caseLabelRange, caseLabelLayoutKey, CASE_LABEL_CSS, CASE_LABEL_LAYOUTS, ACK_VAT_TREATMENTS, LOGO_B64, MATRIX_EORI, MATRIX_VAT_NUMBER, PAPER_CSS, boxContentsLine, lastPriceFor, manifestReadiness, orderAckDoc, orderShipmentWeight, orderThreads, ordersLeftDoc, pEsc, pN2, packingListRows, paperFoot, paperHead, paperRunHead, pickSheetDoc, portalOrdersWaiting, productionSheetDoc, shippingManifestDoc, shippingManifestEmail, suggestedVatTreatment, unreadFromCustomers, customerGaps, VAT_RECORD_VALUE, VAT_WORDS, correctedManifest, caseDimsOf, manifestBoughtIn } from "./mx_papers.js";
 import { ALL_GLUE_DIES, dpCardsState, dpClearReelEstimate, DEFAULT_SCHEDULE_SETTINGS, GLUE_DIES_10MM, GLUE_DIES_12MM, GLUE_DIES_7MM, GLUE_DIES_7MM_OS, GLUE_DIE_12_DOUBLE, GLUE_DIE_GROUPS, SMALL_KEYWORDS, ULTRA_SR_COLOURS, WORK_HOURS, addWorkHours, addWorkingDays, batchMeterageUsed, glueReelHours, planDayAmount, workDayFraction, rackReels, reelIsCleared, reelState, reelUsedByCode, scrappedReelCodes, buildDailyPlan, classifySize, dueDateLabel, dueDateRows, formatOrderBreakdown, gapFromSpec, glueDiesForSpec, glueLineSequence, glueSizeOfProduct, glueReelPool, glueUsableFrom, scheduleTweaksOf, glueChangeBetween, scheduleRulesOf, glueChangeoverStats, learnFromTweaks, glueRangeOf, LEARN_AFTER, glueReelOffAt, SAME_PVC_CHANGE_MIN, hoursOn, isDelivery, isSmallItem, boughtInToPick, boughtInShort, localDateKey, measuredRates, nextWorkMoment, nextWorkingMorning, orderDialSegments, orderFinishDates, planOrderCompare, glueListOrdersFor, packingReadyRows, packingReadyRowsStored, planDaysUntil, planDueReason, planScore, planSlips, planSnapshotRow, promiseOptions, readyToShip, schedulePrep, scheduleSettingsOf, sizeKeyOfProduct, top2PriorityOrders, top2SizeRows, unrankableOrders, workCalendar } from "./mx_planning.js";
 import { pvcCodeCheck, BONDING_BOXES_PER_DAY_MIN, DERIVED_RUN_GAP_HOURS, DERIVED_RUN_KEYS, EVA_YIELD_MIN_SAMPLE, GLUE_MEASURE_TOLERANCE_PCT, PVC_COLOUR_BY_HEIGHT, PVC_DEFAULT_COLOUR, REEL_METRES_TYPICAL, batchDeleteWarning, bondingOutputByDay, categoryLowest, categoryTotal, deriveRuntimeHours, derivedGlueRuns, evaDieForRow, evaRackRows, evaYieldByDie, extrudedReelCheck, extrudedReelsForSize, extrudedReelsForSpec, extrudedReelsMatching, extrusionScheduleRows, glueDieByLabel, glueDiesForWidthOf, glueLineScheduleRows, glueLineScheduleRowsFresh, glueRunReels, glueRunTarget, glueRunTotals, glueSizeKey, glueSpecMalformed, lastGlueBatchUsed, lastToolingUse, toolingUseHistory, glueDieUseHistory, glueDieSpells, learnedReelMetres, materialBatchCode, materialStockFrom, materialsGroupedByCategory, metersPerBoxWarning, minutesSinceLastReel, normalWeightFor, productPipeline, pvcCodeForSpec, pvcColourForSpec, recommendedBatch, recordMaterialMovement, reelCapacityWarning, reelDiscrepancy, reelIsIndirect, reelOverConsumption, runningReelDiscrepancy, samePin, toolingUnplaced, unknownReelWarning, withGlueRunSettings, withMaterialFigures, withPrefixFor, evaOutlook, evaDieForSpec, evaCodeFacts, EXTRUDED_REEL_SOFT_DAYS, extrudedOn } from "./mx_production.js";
@@ -626,7 +626,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-16.5";
+const APP_VERSION = "2026-11-16.6";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -19491,7 +19491,10 @@ function CaseTile({ c, selected, onSelect, lit = false, onWay = {}, photoMark = 
       background = `linear-gradient(to top, ${shade} 0 ${pct}%, #fff ${pct}% 100%)`;
     }
   }
-  const fillLabel = !fill ? "" : fill.allocated > 0 ? ` — ${fill.allocated} of ${fill.capacity} boxes in` : "";
+  /* smaller cases drawn smaller (17 Nov 2026) — a 10 sits beside the 20s at three-quarters of their size */
+  const shownSize = (!fill || isReelCase(c)) ? null : caseShownSize(c.maxSize, fill.planned, fill.allocated);
+  const scale = shownSize ? caseTileScale(shownSize) : 1, cap = shownSize || (fill ? fill.capacity : 0);
+  const fillLabel = !fill ? "" : fill.allocated > 0 ? ` — ${fill.allocated} of ${cap} boxes in` : "";
   /* Chris, 4 Sep: "put the sizes on the case icons as it's a good visual for
      the operator." One line per size in the case, quantity first, merged
      across box codes — the packer does not care which code the boxes came
@@ -19525,19 +19528,20 @@ function CaseTile({ c, selected, onSelect, lit = false, onWay = {}, photoMark = 
   };
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+    <div style={{ minHeight: 54, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
     <button onClick={() => onSelect(c.caseNum)} id={`case-tile-${c.caseNum}`}
-      title={`Case ${c.caseNum} — ${st.label}${c.confirmed ? " · confirmed by hand" : ""}${fillLabel}`}
-      className={lit ? "mx-case-lit" : ""}
+      title={`Case ${c.caseNum} — ${scale < 1 ? `${shownSize}-box case — ` : ""}${st.label}${c.confirmed ? " · confirmed by hand" : ""}${fillLabel}`}
+      className={lit ? "mx-case-lit" : ""} data-case-size={shownSize || undefined}
       data-fill={fill ? (fill.complete ? "full" : fill.allocated > 0 ? Math.round(fill.fraction * 100) : "0") : "outside"}
       style={{
         /* Tightened 7 Sep: 76px and a 26px numeral made twenty rows of tile on
            a phone. The number still reads from across the bench at 21px and
            the tile lost a third of its height. */
-        position: "relative", minHeight: 54, border: `1px solid ${selected ? "#1E2A5E" : BORDER}`,
+        position: "relative", minHeight: Math.round(54 * scale), width: `${Math.round(scale * 100)}%`, boxSizing: "border-box", border: `1px solid ${selected ? "#1E2A5E" : BORDER}`,
         borderRadius: 5, background,
         borderStyle: c.packedOutside ? "dashed" : "solid",
         display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-        cursor: "pointer", padding: "8px 5px 9px", outline: selected ? `2px solid #1E2A5E` : "none", outlineOffset: 1,
+        cursor: "pointer", padding: scale < 1 ? `${Math.round(8 * scale) - 2}px 5px ${Math.round(9 * scale) - 2}px` : "8px 5px 9px", outline: selected ? `2px solid #1E2A5E` : "none", outlineOffset: 1,
       }}>
       <span style={{
         position: "absolute", top: 0, left: 0, right: 0, height: 4, borderRadius: "4px 4px 0 0",
@@ -19545,11 +19549,11 @@ function CaseTile({ c, selected, onSelect, lit = false, onWay = {}, photoMark = 
           ? "repeating-linear-gradient(45deg,#B9BBC2 0 3px,#EDEDEA 3px 6px)"
           : edge,
       }} />
-      <span className="font-mono" style={{ fontSize: 21, fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 1,
+      <span className="font-mono" style={{ fontSize: scale < 1 ? Math.max(13, Math.round(21 * scale)) : 21, fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 1,
                                            color: c.packedOutside ? "#9A9CA3" : INK }}>{c.caseNum}</span>
       {!c.packedOutside && (
         <span style={{ fontSize: 9.5, color: fill && fill.allocated > 0 ? "#6B6E76" : "#9A9CA3", marginTop: 3, fontWeight: 600 }}>
-          {c.confirmed ? `${fill.allocated}/${fill.capacity} ✓` : fill.full || fill.allocated === 0 ? `${fill.planned}` : `${fill.allocated}/${fill.capacity}`}
+          {c.confirmed ? `${fill.allocated}/${cap} ✓` : fill.full || fill.allocated === 0 ? `${fill.planned}` : `${fill.allocated}/${cap}`}
         </span>
       )}
       {/* AN AMENDMENT CASE IS MARKED ON THE TILE.
@@ -19576,6 +19580,7 @@ function CaseTile({ c, selected, onSelect, lit = false, onWay = {}, photoMark = 
         <span style={{ position: "absolute", bottom: 4, right: 5, fontSize: 9, fontWeight: 800, color: INK_MUTED }}>{c.pallet}</span>
       )}
     </button>
+    </div>
     {!c.packedOutside && sizeLines.length > 0 && (
       <div style={{ fontSize: 10.5, lineHeight: 1.35, color: INK, padding: "0 2px" }}>
         {sizeLines.map((l, i) => {
@@ -21090,12 +21095,14 @@ function CaseGrid({ palletStored = null, cases, caseWeights, setCaseWeights, wei
           {visibleCases.map(c => { const f = factsBy && factsBy.get(Number(c.caseNum));
             if (!f) return <CaseTile key={c.caseNum} c={c} selected={c.caseNum === sel} onSelect={pickTile} lit={pulse && litCases.includes(c.caseNum)} onWay={{}} photoMark={photoMarks[c.caseNum] || null} />;
             const [bg, ink] = { full: ["#2F7D4F", "#fff"], part: ["#CFE6D8", "#2C3550"], waiting: ["#F4F5F8", "#2C3550"] }[f.state];
+            const shown = isReelCase(c) ? null : caseShownSize(f.cap, f.plan, f.held), sc = shown ? caseTileScale(shown) : 1;
             const lit = pulse && litCases.includes(c.caseNum), pm = photoMarks[c.caseNum] || null, kg = Number(caseWeights[c.caseNum]) > 0 ? `${caseWeights[c.caseNum]} kg` : "";
-            return (<button key={c.caseNum} type="button" id={`case-tile-${c.caseNum}`} data-nl5-tile={c.caseNum} onClick={() => { nlHaptic(); pickTile(c.caseNum); }}
-              style={{ minHeight: 92, borderRadius: 12, overflow: "hidden", display: "flex", flexDirection: "column", padding: 0, border: 0, background: "#fff", textAlign: "left", fontFamily: NLT.FONT, cursor: "pointer",
+            return (<button key={c.caseNum} type="button" id={`case-tile-${c.caseNum}`} data-nl5-tile={c.caseNum} onClick={() => { nlHaptic(); pickTile(c.caseNum); }} data-case-size={shown || undefined}
+              title={sc < 1 ? `${shown}-box case` : undefined}
+              style={{ minHeight: Math.round(92 * sc), width: `${Math.round(sc * 100)}%`, justifySelf: "center", alignSelf: "end", boxSizing: "border-box", borderRadius: 12, overflow: "hidden", display: "flex", flexDirection: "column", padding: 0, border: 0, background: "#fff", textAlign: "left", fontFamily: NLT.FONT, cursor: "pointer",
                 boxShadow: lit ? "0 0 0 3px #E09A4E" : c.caseNum === sel && (weigh || cardSheet) ? "0 0 0 3px #23306B" : f.state === "waiting" ? "inset 0 0 0 1px #DDE0E8" : "0 1px 2px rgba(22,26,43,0.08)" }}>
               <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", boxSizing: "border-box", padding: "6px 9px", background: bg, color: ink }}>
-                <span style={{ fontSize: 17, fontWeight: 700 }}>{f.n}</span><span style={{ fontSize: 11.5, fontWeight: 700 }}>{f.state === "full" ? "full" : `${f.held}/${f.plan || f.cap}`}</span></span>
+                <span style={{ fontSize: sc < 1 ? Math.max(12, Math.round(17 * sc)) : 17, fontWeight: 700 }}>{f.n}</span><span style={{ fontSize: 11.5, fontWeight: 700 }}>{f.state === "full" ? (sc < 1 ? `full · ${shown}` : "full") : `${f.held}/${f.plan || shown || f.cap}`}</span></span>
               <span style={{ height: 4, width: "100%", background: f.edge }} />
               <span style={{ display: "flex", flexDirection: "column", gap: 1, padding: "6px 9px 7px", width: "100%", boxSizing: "border-box", flex: 1 }}>
                 {f.sizes.slice(0, 3).map(sz => <span key={sz.key} style={{ display: "flex", justifyContent: "space-between", gap: 4, fontSize: 12.5, color: NL.INK }}><span style={{ fontWeight: 600, overflowWrap: "anywhere" }}>{deskTile(sz.key)}</span><span style={{ color: "#4A5170" }}>{sz.plan || sz.got}</span></span>)}
