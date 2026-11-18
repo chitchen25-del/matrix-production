@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-18.4";
+const APP_VERSION = "2026-11-18.5";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -20344,7 +20344,7 @@ function CorrectPaperworkPanel({ order, setData, onClose, nl = false }) {
           </label>
         ))}
       </div>
-      {/* CASE SIZES (10 Nov 2026): the size printed for a case sent on no pallet — a 20-box case is 330 x 170 x 680 by itself;
+      {/* CASE SIZES (10 Nov 2026): the size printed for a case sent on no pallet — a 20-box case is 330 x 170 x 770 by itself;
           a bespoke case (MITEX's reel case, 700 x 720 x 220) is written here. Emptying the box goes back to the standard size. */}
       <div className="mx-eyebrow" style={{ color: INK_MUTED, marginBottom: 4 }}>Case sizes, mm (printed for cases not on a pallet)</div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 6, marginBottom: 12 }}>
