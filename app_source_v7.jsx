@@ -9,7 +9,7 @@ import { BOX_LABEL_CSS, glueReelLabelDoc, reelOver, reelLabelItems, SHRINK_TO_FI
 import { CODE128_WIDTHS, code128Svg, code128Widths } from "./mx_barcode.js";
 import { classifyScan, decodeFrame, decodeRuns128, decodeRuns93 } from "./mx_scan.js";
 import { readBoxCodes, readWords } from "./mx_ocr.js";
-import { BOX_LOCATIONS, MOVEMENT_KINDS, SIGNED_MOVEMENT_KINDS, boxLinesFor, boxWhereabouts, cartonForNewEntry, cartonLedger, cartonOfEntry, caseProducts, casesHoldingBox, casesWithLedgerContents, freeInCartonFor, identityGateRefusal, inLiveCases, ledgerCaseContents, moveAdjusted, moveAllocated, moveCounted, moveMade, movePlaced, moveSampled, moveScrapped, moveShipped, moveUnallocated, moveUnplaced, movementRefusal, orderBoxes, orderCaseProducts, orderHoldings, placeLabel, placeOf, placeRefusalFor, runWhereabouts, placedBoxForm, placedBoxesByCase, projectBox, reconcileLedgerToStored, repackFacts, sizeWhereabouts, syncCaseRowsToLedger, takeOffOrder, traceLot, withLedgerFigures } from "./mx_ledger.js";
+import { BOX_LOCATIONS, madeCorrectionMoves, MOVEMENT_KINDS, SIGNED_MOVEMENT_KINDS, boxLinesFor, boxWhereabouts, cartonForNewEntry, cartonLedger, cartonOfEntry, caseProducts, casesHoldingBox, casesWithLedgerContents, freeInCartonFor, identityGateRefusal, inLiveCases, ledgerCaseContents, moveAdjusted, moveAllocated, moveCounted, moveMade, movePlaced, moveSampled, moveScrapped, moveShipped, moveUnallocated, moveUnplaced, movementRefusal, orderBoxes, orderCaseProducts, orderHoldings, placeLabel, placeOf, placeRefusalFor, runWhereabouts, placedBoxForm, placedBoxesByCase, projectBox, reconcileLedgerToStored, repackFacts, sizeWhereabouts, syncCaseRowsToLedger, takeOffOrder, traceLot, withLedgerFigures } from "./mx_ledger.js";
 import { fullCaseNums, orderPalletPlan, caseWeightsEstimate, palletPlanByWeight, BOX_CASE_SIZES, CASES_PER_PALLET, palletPlan, casePalletShown, ONE_PALLET_MAX_BOXES, onePalletCheck, CASE_BAND_ORDER, CASE_MAX_SIZE_DEFAULT, EMPTY_ON_PURPOSE, MONTH_LETTERS, PLAN_BAND_ORDER, STANDARD_BOX_TYPES, allocateCaseDetails, allocationRefusal, amendmentsFor, applyAmendmentReduction, arrangeBoxesThenReels, arrangeCases, arrangedCasesForOrder, backfillPlannedCases, batchesAvailableRows, batchesAvailableRowsFresh, boxOutOfOrderCases, buildCombinedCases, buildPackingPlan, caseShownSize, caseTileScale, cartonFor, cartonMismatch, caseContentLines, caseFill, caseKindOf, casePalletOf, casePlanLines, casePlanned, caseRangeLabel, caseRecordFor, caseRowId, caseRunsLabel, caseSortKey, caseState, caseView, caseWeightOf, caseWeightQuery, oddCaseWeights, compareCaseSort, computeMakeLists, dateFromReelCode, dedupeCaseRows, dismissalMap, findDiscrepancies, findDiscrepanciesFresh, hasCasePlan, isCaseClosed, isReelCase, isReelFulfilled, isStrongTapeOrder, liveMapEntries, mergePlannedRows, openCasesForOrder, openIssues, openPickSheets, orderBoxTypes, orderCaseCount, orderHasStarted, orderShortfall, ordersMissingPlan, ordersNeedingSpec, packedOutsideSpecs, packingShort, parseCodeDate, patchMapsFromCaseRecords, planAmendment, planBandFor, planCutForLine, planForMove, planOrderMismatches, planOrderRefusal, planRowsForNewOrder, planSpacesFor, plannableLines, plannedCasesFor, proposeCut, readDiscrepancyDismissals, reelsPerCase, refillCases, renumberAfterRemoval, resolveCaseContents, sameContents, shortCaseSpec, sortLinesForCases, specInCarton, specOfBoxInCase, subtractConfirmed, subtractPlanned, tapeFits, tapeRefusal, twinCartonSpec, bondedTwinSpecs, upBox, planVsOrder, discrepancyTriage, discrepancyWords, reelPlanInputs, orderMakePlan, caseWorkState } from "./mx_packing.js";
 import { ackVatKey, orderAddressFor, tidyAddress, newerShipmentFor, shippedDayOf, EMPTY_CASE_KG, glueSheetDoc, manifestWeights, officeSummary, money, bondingListDoc, caseLabelDoc, caseLabelInner, caseLabelRange, caseLabelLayoutKey, CASE_LABEL_CSS, CASE_LABEL_LAYOUTS, ACK_VAT_TREATMENTS, LOGO_B64, MATRIX_EORI, MATRIX_VAT_NUMBER, PAPER_CSS, boxContentsLine, lastPriceFor, manifestReadiness, orderAckDoc, orderShipmentWeight, orderThreads, ordersLeftDoc, pEsc, pN2, packingListRows, paperFoot, paperHead, paperRunHead, pickSheetDoc, portalOrdersWaiting, productionSheetDoc, shippingManifestDoc, shippingManifestEmail, suggestedVatTreatment, unreadFromCustomers, customerGaps, VAT_RECORD_VALUE, VAT_WORDS, correctedManifest, caseDimsOf, manifestBoughtIn } from "./mx_papers.js";
 import { ALL_GLUE_DIES, dpCardsState, dpClearReelEstimate, DEFAULT_SCHEDULE_SETTINGS, GLUE_DIES_10MM, GLUE_DIES_12MM, GLUE_DIES_7MM, GLUE_DIES_7MM_OS, GLUE_DIE_12_DOUBLE, GLUE_DIE_GROUPS, SMALL_KEYWORDS, ULTRA_SR_COLOURS, WORK_HOURS, addWorkHours, addWorkingDays, batchMeterageUsed, glueReelHours, planDayAmount, workDayFraction, rackReels, reelIsCleared, reelState, reelUsedByCode, scrappedReelCodes, buildDailyPlan, classifySize, dueDateLabel, dueDateRows, formatOrderBreakdown, gapFromSpec, glueDiesForSpec, glueLineSequence, glueSizeOfProduct, glueReelPool, glueUsableFrom, scheduleTweaksOf, glueChangeBetween, scheduleRulesOf, glueChangeoverStats, learnFromTweaks, glueRangeOf, LEARN_AFTER, glueReelOffAt, SAME_PVC_CHANGE_MIN, hoursOn, isDelivery, isSmallItem, boughtInToPick, boughtInShort, localDateKey, measuredRates, nextWorkMoment, nextWorkingMorning, orderDialSegments, orderFinishDates, planOrderCompare, glueListOrdersFor, packingReadyRows, packingReadyRowsStored, planDaysUntil, planDueReason, planScore, planSlips, planSnapshotRow, promiseOptions, readyToShip, schedulePrep, scheduleSettingsOf, sizeKeyOfProduct, top2PriorityOrders, top2SizeRows, unrankableOrders, workCalendar } from "./mx_planning.js";
@@ -626,7 +626,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-18.2";
+const APP_VERSION = "2026-11-18.3";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -35553,7 +35553,7 @@ function BondingRestFields({ values, setValues, orderOptions, availableBatches =
 // outright, since each commit here writes a change-log entry — typing
 // "150" letter by letter would otherwise leave three separate log
 // entries instead of one real edit.
-function EditableQty({ value, onCommit }) {
+function EditableQty({ value, onCommit, onEnterOnly = false }) {
   const [local, setLocal] = useState(value ?? "");
   useEffect(() => { setLocal(value ?? ""); }, [value]);
   const debounceRef = useRef(null);
@@ -35572,7 +35572,7 @@ function EditableQty({ value, onCommit }) {
   };
   return (
     <input type="number" value={local}
-      onChange={e => { const v = e.target.value; setLocal(v); clearTimeout(debounceRef.current); debounceRef.current = setTimeout(() => commit(v), 600); }}
+      onChange={e => { const v = e.target.value; setLocal(v); clearTimeout(debounceRef.current); if (!onEnterOnly) debounceRef.current = setTimeout(() => commit(v), 600); }}
       onBlur={() => commit(local)} onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
       onClick={e => e.stopPropagation()}
       className="text-right text-xs px-1.5 py-1 outline-none bg-white"
@@ -36472,6 +36472,21 @@ function BondingLineView({ data, setData, jumpToPacking }) {
   const updateRowQty = (row, field, newValue) => {
     const oldValue = Number(row[field] || 0);
     const label = field === "amountMade" ? "Amount Made" : "To Stock";
+    /* the boxes move with the figure (18 Nov 2026 — madeCorrectionMoves): more made, fewer made, the cases they went to */
+    if (field === "amountMade") {
+      setData(prevData => {
+        const cur = (prevData.bondingRuns || []).find(r => r.id === row.id) || row;
+        const { moves, to } = madeCorrectionMoves(prevData, cur, newValue);
+        const n0 = { ...prevData, bondingRuns: prevData.bondingRuns.map(r => r.id === row.id ? { ...r, amountMade: newValue, updatedAt: new Date().toISOString() } : r) };
+        const n1 = moves.length ? recordMovements(n0, moves) : n0;
+        if (moves.length && (n1.movements || []).length === (n0.movements || []).length) return prevData;   // refused — it says why; nothing saved
+        const d = Number(newValue) - oldValue, where = d > 0 ? (to && to.orderId ? ` — the ${d} extra into ${to.orderId} case ${to.caseNum} with the rest` : ` — the ${d} extra on the shelf`) : "";
+        return { ...n1, ...appendLog(n1, { action: "stock_adjustment", entity: "bondingRun", entityId: row.id,
+          summary: `Corrected ${label} for box ${row.boxNumber || row.id}: ${oldValue} → ${newValue}${where}`,
+          before: { [field]: oldValue }, after: { [field]: newValue, moved: moves.map(m => ({ kind: m.kind, qty: m.qty, orderId: m.orderId || null, caseNum: m.caseNum ?? null })) } }) };
+      });
+      return;
+    }
     setData(prevData => ({
       ...prevData,
       bondingRuns: prevData.bondingRuns.map(r => r.id === row.id ? { ...r, [field]: newValue } : r),
@@ -37726,7 +37741,7 @@ function BondingLineView({ data, setData, jumpToPacking }) {
                       <td className="px-3 py-1.5">
                         <span style={{ color: manufactureDateLabel(r.boxNumber, "") ? INK : INK_MUTED }}>{manufactureDateLabel(r.boxNumber, "") || "—"}</span>
                       </td>
-                      <td className="px-3 py-1.5 text-right"><EditableQty value={r.amountMade} onCommit={v => updateRowQty(r, "amountMade", v)} /></td>
+                      <td className="px-3 py-1.5 text-right"><EditableQty value={r.amountMade} onEnterOnly onCommit={v => updateRowQty(r, "amountMade", v)} /></td>
                       <td className="px-3 py-1.5">
                         <WhereItWent data={data} run={r} rows={bondingRuns} />
                         {/* the order, split, to-stock count and bay that sat in their own columns: behind Change */}
