@@ -29,6 +29,7 @@ import { edgesWander, motionVoted, isRepeatPicture, stripWidthsMm, widthsSteady,
 import { gaugeOne, gaugePush, gaugeMedian, gaugeKey, gaugeZeroValid, gaugeRead, gaugePicture, gaugeRezero, gaugeZeroFrom, gaugeZeroFind, gaugeKeyNorm, GAUGE_ZERO_MAX_MS, GAUGE_AGREE_MM } from "./mx_gapgauge.js";
 import { GAP_LIGHT_SHIFT, gapCalChecks, gapScaleFor, gapCalVerdict, gapWidthSeen, gapTraceUncal, gapMarkUncal, gapReelGapFrom, glueGapProblem, gapPointUncal, GAP_CAL_AGREE, GAP_CAL_DRIFT_RUN } from "./mx_gaptrace.js";
 import { glueRuns, reelGlueFault, GLUE_MIN_MM, GLUE_OPEN_END_M, GLUE_LINE_M, GLUE_CAUSES } from "./mx_gaptrace.js";
+import { pinEvidence, pinsToTry, parsePinSize } from "./mx_pins.js";
 import { learnedLineSpeed, gapMayLink, glueReelTraceKeep, gapCarryOf, gapJoinTraces, gapNextPiece, misreadStep, centringHint, reelGapWarning, gapCorrFor, gapSizePart, GAP_CORR_DAY_MAX, GAP_CORR_SIZE_AGREE, READOUT_SPAN_MS, READOUT_BIN_MS, GT_WOBBLE_FLAG, readoutTrend, readoutFigures, HAUL_MIN_LEARN_M, GAP_STEADY_MIN_N, CAM_GOOD_MM, CAM_OK_MM, camMetrics, blockCalib, blockHeights, heightOfSpec, CAP_FACTOR_REELS, CPK_WORDS, GAP_BAND_ROWS, GAP_LIMITS_DEFAULT, GAP_VERDICT_WORDS, GAP_LIGHT_WORDS, GAP_SETUP_CHECKS, gapTraceWaiting, gapNextTraceNo, gapPickWaiting, glueTraceChoice, glueReelWants, gapLiveFresh, gapLinkTrace, gapUnlinkTrace, glueDayTimeline, gapMoveCut, gapOffsets, nomOf, gapLightOf, gapRangeOf, gapCorrKey, gapCorrSets, lightShift, steadyRaw, gapWander, gapCheckOdd, binTrace, capability, sizeCapability, colourNameOf, haulFactor, haulMatch, rowProfile, gapCheck, gapCorrCheck, gapCorrection, gapCorrStands, gapLimitsFor, gapRecordDoc, motionGate, patchDiff, gapTraceRow, gapVerdict, guessStripColour, gapSteady, metresAlong, readBand, reelLoggedSince, sizeCheck, sizesDiffer, suggestSizes, traceEvents, traceStats, widthFrom, widthMmFor, widthValid } from "./mx_gaptrace.js";
 import { learningNow, LEARN_MIN } from "./mx_learning.js";
 import { reelSizeFill, labelSizeClash, usualBay, withTapeSuffix, dropEmptyAllocations, mergeSameOrder, trimAllocationsTo, withoutOrders, withOrderQty, allToShelf, heldDetail, heldEntryOf, heldWhy, firstRefusalLine, dedupeFixes } from "./mx_bondfix.js";
@@ -626,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-18.3";
+const APP_VERSION = "2026-11-18.4";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -33620,7 +33621,30 @@ function UltraMakes({ note, big = false }) {
       <span style={{ width: big ? 14 : 12, height: big ? 14 : 12, borderRadius: 4, background: m.hex, boxShadow: "inset 0 0 0 1px rgba(0,0,0,.25)", flex: "none" }} />
       Ultra SR {m.colour}{m.width ? ` ${m.width}` : ""}</span>)}</span>);
 }
-function ToolingSimple({ tooling, subTabs, setCategory, lastRunFor, history = new Map(), glueHistory = new Map(), testedChart = null, setTestedChart = null }) {
+/* PINS TO TRY FOR A SIZE (Chris, 18 Nov 2026: "give me multiple tooling to try and make each size based on this system").
+   Typing a size in the Tooling search shows, above the list: the aim (base − gap wide, 0.05 under the size ± 0.02 high) and
+   up to five pins, best first, each with why and where to start. The working is in mx_pins.js; nothing here is saved. */
+const PIN_KIND = { made: ["MADE IT", "#166534", "#E6F4EA"], sheet: ["ON THE LIST", "#1E2A5E", "#E8ECF7"], height: ["RUNS THE HEIGHT", "#7C4A03", "#FDF3E1"], rule: ["BY THE RULE", "#5B21B6", "#F1EAFD"] };
+function PinsToTry({ result }) {
+  if (!result) return null;
+  const { aim, pins, more } = result;
+  return (<div data-pins-to-try={result.size} style={{ background: "#fff", borderRadius: 16, boxShadow: "0 1px 2px rgba(27,43,107,.08)", padding: "12px 14px", margin: "0 0 12px" }}>
+    <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+      <b style={{ fontSize: 16 }}>Pins to try for {result.size.replace(" x ", " × ")}</b>
+      <span data-pins-aim style={{ fontSize: 13, color: NL.SUB }}>aim {aim.width.toFixed(2)} wide ({Math.round(aim.width * 100)}), {aim.height.toFixed(2)} high (± 0.02) on a {aim.base} mm base</span></div>
+    {pins.length === 0 && <div style={{ fontSize: 14, color: NL.SUB, marginTop: 8 }}>No pin on the records makes this height or reaches it by the rule — nothing to suggest yet.</div>}
+    {pins.map((p, i) => { const k = PIN_KIND[p.kind] || PIN_KIND.rule, f = p.from || {};
+      const start = [f.screw ? `screw ${f.screw}` : null, f.haul ? `haul-off ${f.haul}` : null].filter(Boolean).join(" · ");
+      return (<div key={p.key} data-pin-try={p.pin} style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "10px 0", borderTop: i ? `1px solid ${NL.LINE}` : 0, marginTop: i ? 0 : 8 }}>
+        <b style={{ minWidth: 56, fontSize: 20, color: NL.NAVY, fontVariantNumeric: "tabular-nums" }}>{p.pin}</b>
+        <span style={{ flex: 1, minWidth: 0, fontSize: 14, lineHeight: 1.4 }}>
+          <span style={{ display: "inline-block", fontSize: 10.5, fontWeight: 800, letterSpacing: 0.6, color: k[1], background: k[2], borderRadius: 999, padding: "2px 8px", marginRight: 6 }}>{k[0]}</span>
+          {p.why}{start ? <span style={{ color: NL.SUB }}> · start at {start}</span> : null}
+          {p.warn ? <span data-pin-warn style={{ display: "block", color: NL.RED, fontWeight: 600 }}>{p.warn}</span> : null}</span></div>); })}
+    <div style={{ fontSize: 12, color: NL.SUB, marginTop: 4 }}>Best first. The rule: turning the extruder up makes the strip wider, and every 0.10 wider is 0.10 higher.{more ? ` ${more} more pin${more === 1 ? "" : "s"} could reach it.` : ""}</div>
+  </div>);
+}
+function ToolingSimple({ tooling, subTabs, setCategory, lastRunFor, history = new Map(), glueHistory = new Map(), testedChart = null, setTestedChart = null, pinEv = [], ncrs = [] }) {
   useDeskTick();
   const tp = useToolPhotos();
   const [photoOf, setPhotoOf] = useState(null);   // { fam, row } — its shadowgraph sheet
@@ -33665,6 +33689,7 @@ function ToolingSimple({ tooling, subTabs, setCategory, lastRunFor, history = ne
       return <button key={t.key} type="button" data-tooling-fam={t.key} onClick={() => { setQ(""); setFam(t.key); }} style={{ padding: "6px 12px", borderRadius: 16, border: 0, cursor: "pointer", fontFamily: NLT.FONT, fontSize: 13, fontWeight: 600, background: on ? NL.NAVY : "#fff", color: on ? "#fff" : NL.INK, boxShadow: on ? "none" : `inset 0 0 0 1px ${NL.LINE}`, flex: "none", whiteSpace: "nowrap" }}>{t.label} · {(tooling[t.key] || []).length}</button>; })}</div>
     {tp.input}
     {tp.err && !photoOf && <div data-tool-photo-err style={{ background: "#FBE3E3", color: NL.RED, borderRadius: 10, padding: "8px 12px", fontSize: 13.5, margin: "0 0 10px" }}>Shadowgraph photo: {tp.err.text}</div>}
+    {parsePinSize(q) && <PinsToTry result={pinsToTry(q, pinEv, { ncrs })} />}
     {photoOf && <ToolPhotoSheet fam={photoOf.fam} row={(tooling[photoOf.fam] || []).find(x => x.id === photoOf.row.id) || photoOf.row} label={famLabel(photoOf.fam)} tp={tp} onClose={() => setPhotoOf(null)} />}
     {!term.length && fam === "tested" ? <TestedToolingList rows={tooling.tested} setRows={r => setCategory("tested", r)} chart={testedChart || testedChartOf({})} setChart={setTestedChart} open={testedOpen} setOpen={setTestedOpen} tp={tp} onPhoto={(fm, rw) => setPhotoOf({ fam: fm, row: rw })} /> : <>
     <div style={{ background: "#fff", borderRadius: 16, overflow: "hidden", boxShadow: "0 1px 2px rgba(27,43,107,.08)" }}>
@@ -33828,6 +33853,8 @@ function BaselineToolingView({ data, setData }) {
   const unplacedByList = useMemo(() => toolingUnplaced(data, tooling),
     [data.extrusion1, data.extrusion2, data.glueLineBatches, data.glueRuns, data.products, data.productAliases, data.tooling]);
   /* the glue die each size was last glued on, and every die since (Chris, 27 Oct 2026) — glueDieUseHistory, mx_production.js */
+  /* every pin with what it made, for "Pins to try" (18 Nov 2026 — mx_pins.js) */
+  const pinEv = useMemo(() => pinEvidence(data, tooling), [data.glueLineBatches, data.extrusion1, data.extrusion2, data.tooling]);   // eslint-disable-line
   const glueHistory = useMemo(() => glueDieUseHistory(data, tooling),
     [data.glueLineBatches, data.glueRuns, data.products, data.productAliases, data.tooling]);
   const glueDieFor = (row) => { const h = glueHistory.get(row.id) || []; return h.length ? h[h.length - 1].glueDie : ""; };
@@ -33855,7 +33882,7 @@ function BaselineToolingView({ data, setData }) {
   const [testedOpen, setTestedOpen] = useState(null);
 
   useDeskTick();
-  if (listsSimpleHere()) return <ToolingSimple tooling={tooling} subTabs={subTabs} setCategory={setCategory} lastRunFor={lastRunFor} history={toolHistory} glueHistory={glueHistory} testedChart={testedChart} setTestedChart={setChart} />;
+  if (listsSimpleHere()) return <ToolingSimple tooling={tooling} subTabs={subTabs} setCategory={setCategory} lastRunFor={lastRunFor} history={toolHistory} glueHistory={glueHistory} testedChart={testedChart} setTestedChart={setChart} pinEv={pinEv} ncrs={data.ncrs || []} />;
   return (
     <div>
       {DESK_ORDER_V5_LOGINS.includes(nlEmail()) && !listsSimpleHere() && <button type="button" data-lists-try onClick={() => setListsSimple("new")} style={{ marginBottom: 10, height: 40, borderRadius: 12, border: 0, background: NAVY, color: "#fff", fontWeight: 700, padding: "0 16px", cursor: "pointer" }}>Switch to the simple Tooling page ›</button>}
