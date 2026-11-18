@@ -626,7 +626,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-18.1";
+const APP_VERSION = "2026-11-18.2";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -46407,6 +46407,7 @@ function NLOrderV5({ data, setData, orderId, go, jumpToPacking, onPick, onBack, 
   const live = isLiveOrder(o), shipped = o.stage === "Shipped";
   const items = (data.lineItems || []).filter(l => l && !l.deleted && l.orderId === o.id);
   const boxLines = lines.filter(l => !l.delivery && !l.tapeOrShim), extras = lines.filter(l => l.delivery || l.tapeOrShim);
+  const boxTypesHere = o ? orderBoxTypes(o, data.lineItems || []) : [];
   const sum = (k, ls = boxLines) => ls.reduce((t, l) => t + (Number(l[k]) || 0), 0);
   const ordered = sum("ordered"), packed = sum("packed"), shelf = sum("shelf"), glue = sum("glue"), bond = sum("bond"), glueM = sum("glueM");
   const full = facts.filter(f => f.state === "full").length, done = shipped || (ordered > 0 && packed >= ordered);
@@ -46499,6 +46500,10 @@ function NLOrderV5({ data, setData, orderId, go, jumpToPacking, onPick, onBack, 
       <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: 0.6, color: "#AEB7DD", marginTop: 8 }}>{o.id}{o.reference ? ` · THEIR ORDER ${String(o.reference).toUpperCase()}` : ""}</div>
       <div data-nl5-customer style={{ fontSize: 28, fontWeight: 700, letterSpacing: -0.4 }}>{o.customer}</div>
       <div style={{ display: "flex", gap: 16, marginTop: 6, fontSize: 13.5, flexWrap: "wrap" }}><span><span style={{ color: "#AEB7DD" }}>READY</span> {shipped ? "shipped" : readyIso ? dayStr(readyIso) : "—"}</span><span><span style={{ color: "#AEB7DD" }}>DUE</span> {o.dueDate ? dayStr(o.dueDate) : "not set"}</span>{pOn && <span data-nl5-promised><span style={{ color: "#AEB7DD" }}>PROMISED</span> {prom ? dayStr(prom.date) : "not given"}</span>}<span><span style={{ color: "#AEB7DD" }}>P</span> {o.priority || "—"}</span></div>
+      {/* HOW IT'S PACKED (Chris, 18 Nov 2026: "I also need to see if things need strong tape or which boxes on this mobile page") */}
+      <div data-nl5-pack style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+        {o.strongTape === true && <span data-nl5-strong style={{ background: "#FDE2DE", color: "#B42318", fontWeight: 800, fontSize: 12.5, letterSpacing: 0.4, padding: "4px 10px", borderRadius: 999 }}>STRONG TAPE · S boxes only</span>}
+        <span data-nl5-boxes style={{ background: "rgba(255,255,255,0.16)", color: "#fff", fontWeight: 600, fontSize: 12.5, padding: "4px 10px", borderRadius: 999 }}>{boxTypesHere.join(" + ")} boxes</span></div>
     </div> : <>
       <div style={{ background: NL.NAVY, color: "#fff", padding: "calc(env(safe-area-inset-top, 0px) + 14px) 16px 12px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <button data-nl5-edit-discard onClick={T.stopEditing} style={{ border: 0, background: "none", color: "#C9D0EC", fontFamily: NLT.FONT, fontSize: 16 }}>Throw away</button>
@@ -46542,7 +46547,7 @@ function NLOrderV5({ data, setData, orderId, go, jumpToPacking, onPick, onBack, 
               </div></div>); }
           return (<button key={l.id} data-nl5-line={l.id} onClick={() => { nlHaptic(); setSheet({ kind: "size", id: l.id }); }} style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "11px 14px", border: 0, borderTop: i ? `1px solid ${NL.LINE}` : 0, background: "#fff", textAlign: "left", fontFamily: NLT.FONT }}>
             <MatrixFace spec={l.spec} w={34} />
-            <span style={{ flex: 1, minWidth: 0 }}><span style={{ display: "block", fontSize: 15, fontWeight: 600, color: NL.INK }}>{nm(l.spec)}{l.sample ? <span style={{ fontSize: 11.5, color: NL.AMBERTXT }}> · SAMPLE</span> : null}</span>
+            <span style={{ flex: 1, minWidth: 0 }}><span style={{ display: "block", fontSize: 15, fontWeight: 600, color: NL.INK }}>{nm(l.spec)}{l.sample ? <span style={{ fontSize: 11.5, color: NL.AMBERTXT }}> · SAMPLE</span> : null}{boxTypesHere.length > 1 ? <span data-nl5-line-box style={{ fontSize: 11.5, color: NL.SUB }}> · {orderBoxTypeFor(o, l.spec)} box</span> : null}</span>
               <span style={{ display: "flex", height: 4, borderRadius: 2, overflow: "hidden", background: "#EEF0F4", marginTop: 6 }}><i style={{ width: w(l.packed), background: NL.OK }} /><i style={{ width: w(l.shelf), background: NL.NAVY }} /><i style={{ width: w(l.make), background: "#E09A4E" }} /></span></span>
             <span style={{ textAlign: "right", flex: "none" }}><span style={{ display: "block", fontSize: 16, fontWeight: 700, color: NL.INK }}>{fmt(l.ordered)}</span><span style={{ fontSize: 11.5, color: state[1] }}>{state[0]}</span></span></button>); })}
         {!E && extras.length > 0 && <div style={{ padding: "10px 14px", fontSize: 13, color: NL.SUB, borderTop: `1px solid ${NL.LINE}` }}>Also on the order: {extras.map(l => `${fmt(l.ordered)} × ${name(l.spec)}`).join(" · ")}</div>}
