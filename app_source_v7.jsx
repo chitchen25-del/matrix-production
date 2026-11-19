@@ -11,7 +11,7 @@ import { classifyScan, decodeFrame, decodeRuns128, decodeRuns93 } from "./mx_sca
 import { readBoxCodes, readWords } from "./mx_ocr.js";
 import { BOX_LOCATIONS, madeCorrectionMoves, MOVEMENT_KINDS, SIGNED_MOVEMENT_KINDS, boxLinesFor, boxWhereabouts, cartonForNewEntry, cartonLedger, cartonOfEntry, caseProducts, casesHoldingBox, casesWithLedgerContents, freeInCartonFor, identityGateRefusal, inLiveCases, ledgerCaseContents, moveAdjusted, moveAllocated, moveCounted, moveMade, movePlaced, moveSampled, moveScrapped, moveShipped, moveUnallocated, moveUnplaced, movementRefusal, orderBoxes, orderCaseProducts, orderHoldings, placeLabel, placeOf, placeRefusalFor, runWhereabouts, placedBoxForm, placedBoxesByCase, projectBox, reconcileLedgerToStored, repackFacts, sizeWhereabouts, syncCaseRowsToLedger, takeOffOrder, traceLot, withLedgerFigures } from "./mx_ledger.js";
 import { fullCaseNums, orderPalletPlan, caseWeightsEstimate, palletPlanByWeight, BOX_CASE_SIZES, CASES_PER_PALLET, palletPlan, casePalletShown, ONE_PALLET_MAX_BOXES, onePalletCheck, CASE_BAND_ORDER, CASE_MAX_SIZE_DEFAULT, EMPTY_ON_PURPOSE, MONTH_LETTERS, PLAN_BAND_ORDER, STANDARD_BOX_TYPES, allocateCaseDetails, allocationRefusal, amendmentsFor, applyAmendmentReduction, arrangeBoxesThenReels, arrangeCases, arrangedCasesForOrder, backfillPlannedCases, batchesAvailableRows, batchesAvailableRowsFresh, boxOutOfOrderCases, buildCombinedCases, buildPackingPlan, caseShownSize, caseTileScale, cartonFor, cartonMismatch, caseContentLines, caseFill, caseKindOf, casePalletOf, casePlanLines, casePlanned, caseRangeLabel, caseRecordFor, caseRowId, caseRunsLabel, caseSortKey, caseState, caseView, caseWeightOf, caseWeightQuery, oddCaseWeights, compareCaseSort, computeMakeLists, dateFromReelCode, dedupeCaseRows, dismissalMap, findDiscrepancies, findDiscrepanciesFresh, hasCasePlan, isCaseClosed, isReelCase, isReelFulfilled, isStrongTapeOrder, liveMapEntries, mergePlannedRows, openCasesForOrder, openIssues, openPickSheets, orderBoxTypes, orderCaseCount, orderHasStarted, orderShortfall, ordersMissingPlan, ordersNeedingSpec, packedOutsideSpecs, packingShort, parseCodeDate, patchMapsFromCaseRecords, planAmendment, planBandFor, planCutForLine, planForMove, planOrderMismatches, planOrderRefusal, planRowsForNewOrder, planSpacesFor, plannableLines, plannedCasesFor, proposeCut, readDiscrepancyDismissals, reelsPerCase, refillCases, renumberAfterRemoval, resolveCaseContents, sameContents, shortCaseSpec, sortLinesForCases, specInCarton, specOfBoxInCase, subtractConfirmed, subtractPlanned, tapeFits, tapeRefusal, twinCartonSpec, bondedTwinSpecs, upBox, planVsOrder, discrepancyTriage, discrepancyWords, reelPlanInputs, orderMakePlan, caseWorkState } from "./mx_packing.js";
-import { ackVatKey, orderAddressFor, tidyAddress, newerShipmentFor, shippedDayOf, EMPTY_CASE_KG, glueSheetDoc, manifestWeights, officeSummary, money, bondingListDoc, caseLabelDoc, caseLabelInner, caseLabelRange, caseLabelLayoutKey, CASE_LABEL_CSS, CASE_LABEL_LAYOUTS, ACK_VAT_TREATMENTS, LOGO_B64, MATRIX_EORI, MATRIX_VAT_NUMBER, PAPER_CSS, boxContentsLine, lastPriceFor, manifestReadiness, orderAckDoc, orderShipmentWeight, orderThreads, ordersLeftDoc, pEsc, pN2, packingListRows, paperFoot, paperHead, paperRunHead, pickSheetDoc, portalOrdersWaiting, productionSheetDoc, shippingManifestDoc, shippingManifestEmail, suggestedVatTreatment, unreadFromCustomers, customerGaps, VAT_RECORD_VALUE, VAT_WORDS, correctedManifest, caseDimsOf, manifestBoughtIn } from "./mx_papers.js";
+import { ackVatKey, orderAddressFor, tidyAddress, newerShipmentFor, shippedDayOf, EMPTY_CASE_KG, glueSheetDoc, manifestWeights, officeSummary, money, bondingListDoc, caseLabelDoc, caseLabelInner, caseLabelRange, caseLabelLayoutKey, CASE_LABEL_CSS, CASE_LABEL_LAYOUTS, ACK_VAT_TREATMENTS, LOGO_B64, MATRIX_EORI, MATRIX_VAT_NUMBER, PAPER_CSS, boxContentsLine, lastPriceFor, manifestReadiness, orderAckDoc, orderShipmentWeight, orderThreads, ordersLeftDoc, pEsc, pN2, packingListRows, paperFoot, paperHead, paperRunHead, pickSheetDoc, portalOrdersWaiting, productionSheetDoc, shippingManifestDoc, shippingManifestEmail, suggestedVatTreatment, unreadFromCustomers, customerGaps, VAT_RECORD_VALUE, VAT_WORDS, correctedManifest, caseDimsOf, manifestBoughtIn, deliveryAddressesOf, deliverToChoice } from "./mx_papers.js";
 import { ALL_GLUE_DIES, dpCardsState, dpClearReelEstimate, DEFAULT_SCHEDULE_SETTINGS, GLUE_DIES_10MM, GLUE_DIES_12MM, GLUE_DIES_7MM, GLUE_DIES_7MM_OS, GLUE_DIE_12_DOUBLE, GLUE_DIE_GROUPS, SMALL_KEYWORDS, ULTRA_SR_COLOURS, WORK_HOURS, addWorkHours, addWorkingDays, batchMeterageUsed, glueReelHours, planDayAmount, workDayFraction, rackReels, reelIsCleared, reelState, reelUsedByCode, scrappedReelCodes, buildDailyPlan, classifySize, dueDateLabel, dueDateRows, formatOrderBreakdown, gapFromSpec, glueDiesForSpec, glueLineSequence, glueSizeOfProduct, glueReelPool, glueUsableFrom, scheduleTweaksOf, glueChangeBetween, scheduleRulesOf, glueChangeoverStats, learnFromTweaks, glueRangeOf, LEARN_AFTER, glueReelOffAt, SAME_PVC_CHANGE_MIN, hoursOn, isDelivery, isSmallItem, boughtInToPick, boughtInShort, localDateKey, measuredRates, nextWorkMoment, nextWorkingMorning, orderDialSegments, orderFinishDates, planOrderCompare, glueListOrdersFor, packingReadyRows, packingReadyRowsStored, planDaysUntil, planDueReason, planScore, planSlips, planSnapshotRow, promiseOptions, readyToShip, schedulePrep, scheduleSettingsOf, sizeKeyOfProduct, top2PriorityOrders, top2SizeRows, unrankableOrders, workCalendar } from "./mx_planning.js";
 import { pvcCodeCheck, BONDING_BOXES_PER_DAY_MIN, DERIVED_RUN_GAP_HOURS, DERIVED_RUN_KEYS, EVA_YIELD_MIN_SAMPLE, GLUE_MEASURE_TOLERANCE_PCT, PVC_COLOUR_BY_HEIGHT, PVC_DEFAULT_COLOUR, REEL_METRES_TYPICAL, batchDeleteWarning, bondingOutputByDay, categoryLowest, categoryTotal, deriveRuntimeHours, derivedGlueRuns, evaDieForRow, evaRackRows, evaYieldByDie, extrudedReelCheck, extrudedReelsForSize, extrudedReelsForSpec, extrudedReelsMatching, extrusionScheduleRows, glueDieByLabel, glueDiesForWidthOf, glueLineScheduleRows, glueLineScheduleRowsFresh, glueRunReels, glueRunTarget, glueRunTotals, glueSizeKey, glueSpecMalformed, lastGlueBatchUsed, lastToolingUse, toolingUseHistory, glueDieUseHistory, glueDieSpells, learnedReelMetres, materialBatchCode, materialStockFrom, materialsGroupedByCategory, metersPerBoxWarning, minutesSinceLastReel, normalWeightFor, productPipeline, pvcCodeForSpec, pvcColourForSpec, recommendedBatch, recordMaterialMovement, reelCapacityWarning, reelDiscrepancy, reelIsIndirect, reelOverConsumption, runningReelDiscrepancy, samePin, toolingUnplaced, unknownReelWarning, withGlueRunSettings, withMaterialFigures, withPrefixFor, evaOutlook, evaDieForSpec, evaCodeFacts, EXTRUDED_REEL_SOFT_DAYS, extrudedOn } from "./mx_production.js";
 // (mx_promises.js — the retired promise readers — removed 24 Sep 2026)
@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-19.4";
+const APP_VERSION = "2026-11-19.5";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -5484,11 +5484,41 @@ function CaseLabelsView({ data, setData, initialOrderId = null }) {
      this" — LLP Genius Loci, Almaty, Kazakhstan, with Dmitry's email — while JSC's record, and so its manifest and acknowledgement
      Bill to, is LLC Polygrafspezsnab in Moscow). A customer can carry its own case label details (rules.caseLabel: name, attn,
      address, tel, email); when it does, every case label for them uses those, and the paperwork keeps the billing address. */
-  const labelTo = (cust && cust.rules && cust.rules.caseLabel && typeof cust.rules.caseLabel === "object") ? cust.rules.caseLabel : null;
-  const fromCust = () => isNew ? { attn: "", name: "", address: "", tel: "", email: "" } : labelTo
-    ? { attn: labelTo.attn || "", name: labelTo.name || (cust && cust.companyName) || "", address: labelTo.address || "", tel: labelTo.tel || "", email: labelTo.email || "" }
-    : ({ attn: (cust && cust.contactName) || "", name: (cust && cust.companyName) || (order && order.customer) || "", address: (cust && cust.address) || (order && order.address) || "", tel: (cust && cust.contactPhone) || "", email: (cust && cust.contactEmail) || "" });
+  /* WHICH ADDRESS (Chris, 19 Nov 2026: Eskolor — billed in Costa Rica, samples to Mixco, Guatemala — "make a facility whereby we
+     can select which address in future for them"). "Send to" picks the billing address, the customer's own case label details,
+     or one of their saved delivery addresses (rules.deliveryAddresses), or a new one typed in and saved to them. The choice is
+     kept per order on the customer (rules.deliverTo, deliverToFor in mx_papers) — the manifest's Deliver to and its customs
+     country follow it. Labels with no order set the customer's default. */
+  const ownLabel0 = (cust && cust.rules && cust.rules.caseLabel && typeof cust.rules.caseLabel === "object") ? cust.rules.caseLabel : null;
+  const addrs = deliveryAddressesOf(cust);
+  const choiceKey = order ? order.id : "default";
+  const rawChoice = cust ? deliverToChoice(cust, order ? order.id : null) : null;
+  const baseSend = rawChoice === "billing" ? "billing" : rawChoice && addrs.some(a => a.id === rawChoice) ? rawChoice : ownLabel0 ? "own" : "billing";
+  const [newAddr, setNewAddr] = useState(false);
+  const sendTo = newAddr ? "new" : baseSend;
+  const labelTo = isNew || sendTo === "billing" || sendTo === "new" ? null : sendTo === "own" ? ownLabel0 : (addrs.find(a => a.id === sendTo) || null);
+  const blankTo = { attn: "", name: "", address: "", tel: "", email: "" };
+  const fieldsFor = (v) => { const a = v === "own" ? ownLabel0 : v && v !== "billing" ? addrs.find(x => x.id === v) : null;
+    return a ? { attn: a.attn || "", name: a.name || (cust && cust.companyName) || "", address: a.address || "", tel: a.tel || "", email: a.email || "" }
+      : ({ attn: (cust && cust.contactName) || "", name: (cust && cust.companyName) || (order && order.customer) || "", address: (cust && cust.address) || (order && order.address) || "", tel: (cust && cust.contactPhone) || "", email: (cust && cust.contactEmail) || "" }); };
+  const fromCust = () => isNew ? blankTo : fieldsFor(baseSend);
   const [f, setF] = useState(fromCust);
+  const addrShort = (a) => { const ls = String(a || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean); return ls.length ? ls.slice(-2).join(", ") : "no address on file"; };
+  const setCustRules = (fn, summary) => { if (!cust) return; const now = new Date().toISOString();
+    setData(prev => { const list = prev.customers || []; const had = list.find(c => c && c.id === cust.id); if (!had) return prev;
+      const next = { ...had, rules: fn({ ...(had.rules && typeof had.rules === "object" ? had.rules : {}) }), updatedAt: now, updatedBy: currentActor() };
+      return { ...prev, customers: list.map(c => c.id === had.id ? next : c), ...appendLog(prev, { action: "update", entity: "customer", entityId: had.id, summary, before: { deliverTo: (had.rules || {}).deliverTo || null }, after: { deliverTo: next.rules.deliverTo || null, deliveryAddresses: (next.rules.deliveryAddresses || []).length } }) }; }); };
+  const pickSendTo = (v) => { setMsg(null);
+    if (v === "new") { setNewAddr(true); setF(blankTo); return; }
+    setNewAddr(false); setF(fieldsFor(v));
+    const what = v === "billing" ? "their billing address" : v === "own" ? (ownLabel0 && ownLabel0.name) || "their delivery address" : ((addrs.find(a => a.id === v) || {}).name || "a saved address");
+    setCustRules(r => ({ ...r, deliverTo: { ...(r.deliverTo && typeof r.deliverTo === "object" ? r.deliverTo : {}), [choiceKey]: v } }), `${cust.companyName} — ${order ? order.id : "labels with no order"} send to ${what} (Case Labels)`); };
+  const saveNewAddress = () => { if (!cust || !(String(f.name || "").trim() || String(f.address || "").trim())) return;
+    const id = "addr-" + Date.now().toString(36);
+    const entry = { id, name: String(f.name || "").trim() || cust.companyName || "", attn: String(f.attn || "").trim(), address: tidyAddress(f.address), tel: String(f.tel || "").trim(), email: String(f.email || "").trim() };
+    setCustRules(r => ({ ...r, deliveryAddresses: [...(Array.isArray(r.deliveryAddresses) ? r.deliveryAddresses : []), entry], deliverTo: { ...(r.deliverTo && typeof r.deliverTo === "object" ? r.deliverTo : {}), [choiceKey]: id } }),
+      `${cust.companyName} — new delivery address ${entry.name}, ${addrShort(entry.address)}${order ? ` — ${order.id} goes there` : ""} (Case Labels)`);
+    setNewAddr(false); setMsg(`Saved — ${cust.companyName} now has this address to pick${order ? `, and ${order.id} goes there` : ""}.`); };
   const [from, setFrom] = useState(1), [to, setTo] = useState(1);
   /* FULL CASES ONLY (Chris, 26 Oct 2026): a list of case numbers picked by the button — not always in a run, as a part case can sit
      between full ones. Typing a range, or another button, goes back to the range. */
@@ -5506,7 +5536,7 @@ function CaseLabelsView({ data, setData, initialOrderId = null }) {
   /* the TEC's 8 x 4 in labels unless this device chose A4 (the earlier "sheet"/"single" choices fall back to the TEC) */
   const [layout, setLayout] = useState(() => { try { return caseLabelLayoutKey(localStorage.getItem(CASE_LABEL_LAYOUT_KEY)); } catch (e) { return "tec"; } });
   const [msg, setMsg] = useState(null);
-  useEffect(() => { setF(fromCust()); setMsg(null); setReprint(false); setPick(null);
+  useEffect(() => { setNewAddr(false); setF(fromCust()); setMsg(null); setReprint(false); setPick(null);
     const ny = caseNums.filter(n => !printed.has(n)), ask = askedRange.current; askedRange.current = null;
     if (ask) { setFrom(ask.from); setTo(ask.to); if (ask.list) setPick(ask.list); setReprint(true); }   /* a pallet's labels: those cases, printed again if they were before */
     else if (printed.size && ny.length) { setFrom(ny[0]); setTo(ny[ny.length - 1]); } else { setFrom(1); setTo(Math.max(1, nCases)); } }, [orderId]);
@@ -5541,8 +5571,11 @@ function CaseLabelsView({ data, setData, initialOrderId = null }) {
   const saveToCustomer = () => { if (!order && !pickedCust && !newName) return; const now = new Date().toISOString(); let savedId = null;
     setData(prev => { const list = prev.customers || [];
       const had = order ? caseLabelCustomer(prev, order) : pickedCust ? list.find(c => c.id === pickedCust.id) : list.find(c => c && !c.deleted && custNorm(c.companyName) === custNorm(newName)) || null;
-      const ownLabel = had && had.rules && had.rules.caseLabel && typeof had.rules.caseLabel === "object";
-      const next = ownLabel   /* a customer with its own case label details: those are what's changed, not the billing contact */
+      const ownLabel = sendTo === "own" && had && had.rules && had.rules.caseLabel && typeof had.rules.caseLabel === "object";
+      const entryId = had && addrs.some(a => a.id === sendTo) ? sendTo : null;   /* a saved delivery address: that's what's changed */
+      const next = entryId
+        ? { ...had, rules: { ...had.rules, deliveryAddresses: (had.rules.deliveryAddresses || []).map(a => a && a.id === entryId ? { ...a, attn: String(f.attn || "").trim(), name: String(f.name || "").trim() || a.name || "", address: tidyAddress(f.address), tel: String(f.tel || "").trim(), email: String(f.email || "").trim() } : a) }, updatedAt: now, updatedBy: currentActor() }
+        : ownLabel   /* a customer with its own case label details: those are what's changed, not the billing contact */
         ? { ...had, rules: { ...had.rules, caseLabel: { ...had.rules.caseLabel, attn: String(f.attn || "").trim(), name: String(f.name || "").trim() || had.rules.caseLabel.name || "", address: tidyAddress(f.address), tel: String(f.tel || "").trim(), email: String(f.email || "").trim() } }, updatedAt: now, updatedBy: currentActor() }
         : { ...(had || { id: "cust-" + custNorm(target || (order && order.id)), companyName: target, createdAt: now, deleted: false }),
         contactName: String(f.attn || "").trim() || null, address: tidyAddress(f.address) || null, contactPhone: String(f.tel || "").trim() || null, contactEmail: String(f.email || "").trim() || null, updatedAt: now, updatedBy: currentActor() };
@@ -5629,9 +5662,21 @@ function CaseLabelsView({ data, setData, initialOrderId = null }) {
           {nCases > 0 && nums.length > 0 && nums[nums.length - 1] > nCases && <div data-cl-beyond style={{ fontSize: 13.5, color: "#8A5300", marginTop: 10 }}>The order has {nCases} case{nCases === 1 ? "" : "s"} on the system — {nums[nums.length - 1] === nCases + 1 ? `case ${nCases + 1} isn't` : `cases ${Math.max(nums[0], nCases + 1)} to ${nums[nums.length - 1]} aren't`} on it yet. They'll still print.</div>}
         </div>
         <div style={box}><div style={lab}>Who it's going to</div>
+          {cust && !isNew && <label style={{ display: "block", marginBottom: 12 }}><div style={lab}>Send to</div>
+            <select data-cl-sendto value={sendTo} onChange={e => pickSendTo(e.target.value)} style={{ ...inp, fontWeight: 600 }}>
+              <option value="billing">Billing address — {addrShort(cust.address || (order && order.address))}</option>
+              {ownLabel0 && <option value="own">{ownLabel0.name || "Their delivery address"} — {addrShort(ownLabel0.address)}</option>}
+              {addrs.map(a => <option key={a.id} value={a.id}>{a.name || cust.companyName} — {addrShort(a.address)}</option>)}
+              <option value="new">+ Another address — type it below</option>
+            </select>
+            {!newAddr && <div data-cl-sendto-note style={{ fontSize: 13, color: NL.SUB, marginTop: 6 }}>{order ? `Kept for ${order.id} — its case labels and shipping manifest use it.` : `Kept for ${cust.companyName}'s labels with no order.`}</div>}
+            {newAddr && <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
+              <button data-cl-save-addr disabled={!(String(f.name || "").trim() || String(f.address || "").trim())} onClick={saveNewAddress} style={{ ...chip(false), background: NL.NAVY, color: "#fff" }}>Save as another address for {cust.companyName}</button>
+              <span style={{ fontSize: 13, color: NL.SUB }}>It prints as typed either way; saving keeps it to pick next time.</span></div>}
+          </label>}
           {field("attn", "Attn", "e.g. Eliza Kalogirou")}{field("name", "Name", "Company or person")}{field("address", "Address — one line each", "Street\nTown and postcode\nCITY\nCOUNTRY", true)}
           {field("tel", "Tel", "+30 …")}{field("email", "Email", "name@company.com")}
-          {changed && !isNew && <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}><span style={{ fontSize: 13.5, color: NL.SUB }}>Changed for this print.</span>
+          {changed && !isNew && !newAddr && <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}><span style={{ fontSize: 13.5, color: NL.SUB }}>Changed for this print.</span>
             <button data-cl-save-cust onClick={saveToCustomer} style={{ ...chip(false), background: "#fff", border: `1px solid ${NL.LINE}` }}>Save to {target || "the customer"}</button></div>}
           {isNew && <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <button data-cl-save-new disabled={!newName} onClick={saveToCustomer} style={{ ...chip(false), background: newName ? NL.NAVY : "#E7EBF5", color: newName ? "#fff" : NL.SUB, cursor: newName ? "pointer" : "default" }}>{sameNameCust ? `Update ${sameNameCust.companyName}` : "Save as new customer"}</button>
