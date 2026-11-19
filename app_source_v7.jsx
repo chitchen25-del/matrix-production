@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-19.6";
+const APP_VERSION = "2026-11-19.7";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -12199,6 +12199,10 @@ function PasteOrderPanel({ data, setData, initialRaw = null, onDone = null }) {
        cannot match. Every line resolves to a catalogue product first. */
     if (unresolvedLines(data, parsed.lineItems).length) return;
     if (formGapLines(data, parsed.lineItems).length) return;   // a reel / length the catalogue doesn't sell (MITEX, 9 Nov)
+    let pxFixed = null;
+    { const tws = parsed.lineItems.map(li => ({ li, tw: pxPlusTwinFor(data, boxType, li) })).filter(x => x.tw);
+      if (tws.length && askPxPlus(parsed.customer, tws.map(x => x.li.description))) { const m = new Map(tws.map(x => [x.li, x.tw]));
+        pxFixed = parsed.lineItems.map(li => { const tw = m.get(li); if (!tw) return li; const n = { ...li, description: tw.description }; if (tw.formId) n.formId = tw.formId; else delete n.formId; return n; }); } }
     let custName = parsed.customer.trim();
     const near = nearCustomer(data, custName);
     if (near && window.confirm(`Is "${custName}" the same customer as "${near.companyName}", already on file?\n\nOK = yes, use ${near.companyName}\nCancel = no, add ${custName} as a new customer`)) custName = near.companyName;
@@ -12217,7 +12221,7 @@ function PasteOrderPanel({ data, setData, initialRaw = null, onDone = null }) {
         order: { id, customer: custName, address: parsed.address || "", reference: parsed.reference || "", currency: parsed.currency || "",
           orderDate: parsed.orderDate || todayISO(), dueDate: parsed.dueDate || null, stage: "Received", priority: priority ?? null, notes: parsed.notes || "", floorNote: "",
           strongTape: !!strongTape, boxType: boxType || "" },
-        lines: parsed.lineItems.map(li => ({ description: li.description || "", customerRef: li.customerRef || null, qty: Number(li.qty) || 0, unitPrice: Number(li.unitPrice) || 0 })) });
+        lines: (pxFixed || parsed.lineItems).map(li => ({ description: li.description || "", customerRef: li.customerRef || null, qty: Number(li.qty) || 0, unitPrice: Number(li.unitPrice) || 0 })) });
       if (r.kNotes.length) setTimeout(() => window.alert(`${custName} is made on K pins — lines converted for you to check:\n\n${r.kNotes.join("\n")}`), 0);
       return r.data;
     });
@@ -13027,6 +13031,20 @@ function mayReplanOrder(data, orderId) {
   const hasAmendment = (data.lineItems || []).some(l => l && !l.deleted && l.orderId === orderId && l.amendmentLabel);
   const labelsOut = caseLabelsPrintedFor(data, orderId).size > 0;
   return { ok: !anyPacked && !hasAmendment && !labelsOut, anyPacked, hasAmendment, labelsOut };
+}
+/* PX ON A PX PLUS ORDER IS ASKED ABOUT (Chris, 19 Nov 2026: Bar-Plate WO-0088 — Clare's 0.50 x 1.70 line went on as PX while the
+   order is PX Plus boxes; PX goes in its own cartons, so the plan gave it two cases to itself — 4 cases for 60 boxes, not 3).
+   A plain PX line on an order in PX Plus boxes → its PX Plus twin (description and catalogue form), offered before it's saved. */
+function pxPlusTwinFor(data, boxType, li) {
+  if (String(boxType || "").trim() !== "PX Plus" || !li) return null;
+  const d = String(li.description || "").trim(); if (!/^PX\s+(?!Plus\b)/i.test(d)) return null;
+  const description = d.replace(/^PX\s+/i, "PX Plus ");
+  const f = String(li.formId || ""); let formId;
+  if (f.startsWith("px-") && !f.startsWith("px-plus-")) { const cand = "px-plus-" + f.slice(3); if (((data && data.productForms) || []).some(x => x && !x.deleted && x.id === cand)) formId = cand; }
+  return { description, ...(formId ? { formId } : { formId: undefined }) };
+}
+function askPxPlus(customer, lines) {
+  return window.confirm(`${customer || "This order"} is in PX Plus boxes, but ${lines.length === 1 ? "this line is" : "these lines are"} plain PX:\n${lines.map(l => "  " + l).join("\n")}\n\nPX goes in its own cartons, so it gets its own cases.\n\nOK = make ${lines.length === 1 ? "it" : "them"} PX Plus\nCancel = keep ${lines.length === 1 ? "it" : "them"} as PX`);
 }
 function addLineToOrderData(prevData, orderId, newLi, opts = {}) {
   const extrasLabel = !!opts.extras;
@@ -14326,12 +14344,14 @@ function OrdersView({ data, setData, mode = "active", initialExpandedId = null, 
       if (ord && isKPinCustomer(data, ord.customer)) { const k = kPinEquivalent(data, description);
         if (k && k.description) { lineDesc = k.description; window.alert(`${ord.customer} is made on K pins —\n${k.from}\nis entered as\n${k.description}\n(${k.why})`); }
         else if (k && k.flag) window.alert(`${ord.customer} is made on K pins — CHECK:\n${k.flag}`); } }
+    { const ord = (data.orders || []).find(o => o.id === orderId); const tw = ord ? pxPlusTwinFor(data, ord.boxType, { description: lineDesc }) : null;
+      if (tw && askPxPlus(ord.customer, [lineDesc])) lineDesc = tw.description; }
     const newLi = { id: uid("li"), orderId, description: lineDesc,
       qty: Number(newLine.qty), unitPrice: Number(newLine.unitPrice || 0),
       ...(extrasLabel ? { amendmentLabel: extrasLabel } : {}) };
     const pc = partCaseRoom(data, orderId, newLi);
     const topUpPacked = !!(pc && window.confirm(`Case ${pc.caseNum} is partly packed (${pc.inCase} in it) with room for ${pc.room} more.\n\nOK = top up case ${pc.caseNum}\nCancel = start a new case`));
-    setData(prevData => addLineToOrderData(prevData, orderId, newLi, { extras: !!extrasLabel, description, topUpPacked }));
+    setData(prevData => addLineToOrderData(prevData, orderId, newLi, { extras: !!extrasLabel, description: lineDesc !== description && /^PX Plus /i.test(lineDesc) ? lineDesc : description, topUpPacked }));
     setNewLine({ range: newLine.range, size: "", pt: "", packType: newLine.packType, amount: "", qty: "", unitPrice: "" });
   };
   // Deleting a line while already inside Edit order mode doesn't re-prompt
@@ -44951,7 +44971,9 @@ function NLAddToOrder({ data, setData, order, onClose, onAdded, change = null, o
     setData(prev => { const r = changeLineProductData(prev, o.id, change.id, { description: named.desc, formId: named.formId, unitPrice: unit }); if (r.refused) return prev; ok = true; return r.data; });
     onChanged && onChanged({ lineId: change.id, from: change.description, to: named.desc, qty: Number(change.qty) || 0, beforeLine, beforeCases, where: chg.text }); };
   const add = () => { if (!newLi || !qtyN) return; nlHaptic("landed");
-    const li = { ...newLi, id: uid("li") }; const beforeCases = (data.cases || []).filter(c => c && c.orderId === o.id).map(c => ({ ...c }));
+    let li = { ...newLi, id: uid("li") };
+    { const tw = pxPlusTwinFor(data, o.boxType, li); if (tw && askPxPlus(o.customer, [li.description])) { li = { ...li, description: tw.description }; if (tw.formId) li.formId = tw.formId; else delete li.formId; } }
+    const beforeCases = (data.cases || []).filter(c => c && c.orderId === o.id).map(c => ({ ...c }));
     setData(prev => addLineToOrderData(prev, o.id, li, { extras, description: li.description, lastCaseSize: caseSize, topUpPacked: !!(partRoom && topUp) }));
     onAdded && onAdded({ lineId: li.id, desc: li.description, qty: qtyN, beforeCases, where: where ? where.text : "" }); };
   const head = { fontSize: 12, fontWeight: 700, letterSpacing: 1, color: NL.SUB, margin: "0 2px 8px" };
