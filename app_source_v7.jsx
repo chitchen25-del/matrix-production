@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-18.5";
+const APP_VERSION = "2026-11-19.1";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -43546,7 +43546,8 @@ function NLOrders({ data, go, jumpToOrder, onRefresh = null, setData = null, onS
   const live = (data.orders || []).filter(isLiveOrder);   // a cancelled order isn't live work (second review item 12)
   const shipped = (data.orders || []).filter(o => o && !o.deleted && o.stage === "Shipped").sort((a, b) => String(b.shippedAt || b.updatedAt || "").localeCompare(String(a.shippedAt || a.updatedAt || "")));
   const term = q.trim().toLowerCase();
-  const match = (o) => !term || [o.id, o.customer, o.reference].some(x => String(x || "").toLowerCase().includes(term))
+  const woFound = ordersByWo(data.orders, term);   /* a WO number finds that order alone, shipped or cancelled too (19 Nov 2026) */
+  const match = (o) => !term || (woFound.length ? woFound.some(w => w.id === o.id) : false) || (!woFound.length && [o.id, o.customer, o.reference].some(x => String(x || "").toLowerCase().includes(term)))
     || (data.lineItems || []).some(l => l && !l.deleted && l.orderId === o.id && String(l.description || "").toLowerCase().includes(term));
   const today = todayISO(), wk = daysFromTodayISO(7);
   const day = (o) => String(o.dueDate || "").slice(0, 10);
@@ -43559,7 +43560,7 @@ function NLOrders({ data, go, jumpToOrder, onRefresh = null, setData = null, onS
   /* THE TILES ARE THE FILTER; THE SEARCH LOOKS AT EVERYTHING (Chris, 3 Oct 2026). Typing ignores the tile, and a shipped
      order that matches is offered too — "WO-0020 shipped Tue 29 Sep — open it". */
   const [strongOnly, setStrongOnly] = useState(false);
-  const shippedHits = term ? (data.orders || []).filter(o => o && !o.deleted && o.stage === "Shipped" && match(o)).sort((a, b) => String(b.shippedDate || "").localeCompare(String(a.shippedDate || ""))).slice(0, 5) : [];
+  const shippedHits = term ? (data.orders || []).filter(o => o && !o.deleted && (o.stage === "Shipped" || (woFound.length && o.stage === "Cancelled")) && match(o)).sort((a, b) => String(b.shippedDate || "").localeCompare(String(a.shippedDate || ""))).slice(0, 5) : [];
   const shown = live.filter(match).filter(term ? (() => true) : (byChip[chip] || (() => true))).filter(o => !strongOnly || !!o.strongTape)
     .sort((a, b) => (day(a) || "9999").localeCompare(day(b) || "9999") || String(a.id).localeCompare(String(b.id)));
   /* Worked out when the data changes, not on every keystroke in the search box (speed, 2 Oct 2026). */
@@ -43574,7 +43575,7 @@ function NLOrders({ data, go, jumpToOrder, onRefresh = null, setData = null, onS
     {segOn === "shipped" && (<>
       <label style={{ display: "flex", alignItems: "center", gap: 10, height: 46, marginTop: 12, padding: "0 14px", background: NL.PANEL, borderRadius: 14, color: NL.SUB }}>
         <NLIcon name="search" size={18} color={NL.SUB} sw={1.8} />
-        <input data-nl-shipped-search value={q} onChange={e => setQ(e.target.value)} placeholder="Customer, WO or product" aria-label="Search shipped orders" style={{ border: 0, outline: "none", fontFamily: NLT.FONT, fontSize: 15.5, flex: 1, background: "transparent", color: NL.INK }} /></label>
+        <input data-nl-shipped-search value={q} onChange={e => setQ(e.target.value)} placeholder="WO number, customer or product" aria-label="Search shipped orders" style={{ border: 0, outline: "none", fontFamily: NLT.FONT, fontSize: 15.5, flex: 1, background: "transparent", color: NL.INK }} /></label>
       <NLEyebrow right={<span style={{ letterSpacing: 0, textTransform: "none", fontWeight: 500 }}>{shipped.length}</span>}>Shipped · newest first</NLEyebrow>
       {shipped.filter(match).length === 0 && <div style={{ fontSize: 14.5, color: NL.SUB, padding: "4px 2px" }}>Nothing shipped matches.</div>}
       {shipped.filter(match).slice(0, 60).map((o, i) => { const items = (data.lineItems || []).filter(l => l && !l.deleted && l.orderId === o.id); const n = items.reduce((t, l) => t + (Number(l.qty) || 0), 0); const value = items.reduce((t, l) => t + (Number(l.qty) || 0) * (Number(l.unitPrice ?? l.price) || 0), 0);
@@ -43593,12 +43594,12 @@ function NLOrders({ data, go, jumpToOrder, onRefresh = null, setData = null, onS
     {orderPhotoOn && setData && <OrderPhotoButtons data={data} setData={setData} hidden />}
     <label style={{ display: "flex", alignItems: "center", gap: 10, height: 46, marginTop: 12, padding: "0 14px", background: NL.PANEL, borderRadius: 14, color: NL.SUB }}>
       <NLIcon name="search" size={18} color={NL.SUB} sw={1.8} />
-      <input data-nl-order-search value={q} onChange={e => setQ(e.target.value)} placeholder={chip !== "All" && !term ? `Search every order (showing ${chip.toLowerCase()})` : "Customer, WO or product"} aria-label="Search every order" style={{ border: 0, outline: "none", fontFamily: NLT.FONT, fontSize: 15.5, flex: 1, minWidth: 0, background: "transparent", color: NL.INK }} />
+      <input data-nl-order-search value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && woFound.length === 1) { e.preventDefault(); jumpToOrder(woFound[0].id, woFound[0].stage); } }} enterKeyHint="search" placeholder={chip !== "All" && !term ? `Search every order (showing ${chip.toLowerCase()})` : "WO number, customer or product"} aria-label="Search every order" style={{ border: 0, outline: "none", fontFamily: NLT.FONT, fontSize: 15.5, flex: 1, minWidth: 0, background: "transparent", color: NL.INK }} />
       {q && <button type="button" aria-label="Clear the search" onClick={() => setQ("")} style={{ border: 0, background: "none", padding: 4, color: NL.SUB, fontSize: 18, lineHeight: 1 }}>×</button>}
       <button type="button" data-nl-strong onClick={() => { nlHaptic(); setStrongOnly(v => !v); }} aria-pressed={strongOnly} aria-label="Strong tape orders only" style={{ height: 32, padding: "0 10px", borderRadius: 16, border: 0, background: strongOnly ? NL.NAVY : "#fff", color: strongOnly ? "#fff" : NL.SUB, fontFamily: NLT.FONT, fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap", flex: "none" }}>S tape</button></label>
     {!term && chip !== "All" && <button data-nl-filter-clear onClick={() => setChip("All")} style={{ alignSelf: "flex-start", marginTop: 10, height: 32, padding: "0 12px", borderRadius: 16, border: 0, background: NLT.TINT.navy, color: NL.NAVY, fontFamily: NLT.FONT, fontSize: 13.5, fontWeight: 600 }}>Showing {chip.toLowerCase()} · show all ×</button>}
     {shown.length === 0 && shippedHits.length === 0 && <div style={{ fontSize: 14.5, color: NL.SUB, padding: "14px 2px" }}>{term ? `No order matches "${q.trim()}".` : "Nothing here."}</div>}
-    {shippedHits.length > 0 && <NLIn i={0}><NLEyebrow>Shipped</NLEyebrow><NLCard>{shippedHits.map((o, i) => <NLRow key={o.id} first={i === 0} lead={<NLSq name="finish" tone="green" />} title={`${o.customer}`} sub={`${o.id} shipped ${o.shippedDate ? new Date(String(o.shippedDate).slice(0, 10) + "T12:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }) : ""} — open it`} right={<NLIcon name="chev" size={18} color="#8A93A8" sw={2} />} onClick={() => jumpToOrder(o.id, o.stage)} />)}</NLCard></NLIn>}
+    {shippedHits.length > 0 && <NLIn i={0}><NLEyebrow>{woFound.length ? "Order" : "Shipped"}</NLEyebrow><NLCard>{shippedHits.map((o, i) => <NLRow key={o.id} first={i === 0} lead={<NLSq name="finish" tone="green" />} title={`${o.customer}`} sub={o.stage === "Cancelled" ? `${o.id} cancelled — open it` : `${o.id} shipped ${o.shippedDate ? new Date(String(o.shippedDate).slice(0, 10) + "T12:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }) : ""} — open it`} right={<NLIcon name="chev" size={18} color="#8A93A8" sw={2} />} onClick={() => jumpToOrder(o.id, o.stage)} />)}</NLCard></NLIn>}
     {groups.map(([title, os, col], gi) => <NLIn key={title} i={gi}><NLEyebrow><span style={{ color: col }}>{title}</span></NLEyebrow>{os.map(o => <NLOrderCard key={o.id} data={data} o={o} plan={plans.get(o.id)} onOpen={() => jumpToOrder(o.id, o.stage)} onPick={pickOrder} onShip={shipOrder} />)}</NLIn>)}
     </>)}
     {newSheet && ReactDOM.createPortal(<div data-nl-new-sheet style={{ position: "fixed", inset: 0, zIndex: 1150, background: "rgba(20,33,82,0.35)" }} onClick={() => setNewSheet(false)}>
@@ -47410,6 +47411,22 @@ function AdminScreenAccess({ P, card, btn, setData, data = {} }) {
   );
 }
 
+/* FIND AN ORDER BY ITS WO NUMBER (Chris, 19 Nov 2026: "Make me a search facility to find an order by it's wo number").
+   "55", "wo55", "WO 55", "WO-0055" and "0055" all mean WO-0055 (and its split, WO-0055-B); "55b" means WO-0055-B only.
+   Null when the words aren't a WO number, so a size or a customer still searches as before. */
+function woSearchNumber(term) {
+  const m = /^\s*(?:w\s*o?\s*[-#.:]?\s*)?0*(\d{1,5})\s*(?:-?\s*([a-z]))?\s*$/i.exec(String(term || ""));
+  return m ? { n: Number(m[1]), part: m[2] ? m[2].toUpperCase() : null } : null;
+}
+function orderMatchesWo(id, wo) {
+  const m = /^WO-0*(\d+)(?:-([A-Z]))?$/i.exec(String(id || "").trim());
+  return !!(m && wo && Number(m[1]) === wo.n && (!wo.part || String(m[2] || "").toUpperCase() === wo.part));
+}
+function ordersByWo(orders, term) {
+  const wo = woSearchNumber(term); if (!wo) return [];
+  return (orders || []).filter(o => o && !o.deleted && orderMatchesWo(o.id, wo)).sort((a, b) => String(a.id).localeCompare(String(b.id)));
+}
+
 // Searches order IDs, customer names, box codes, and batch numbers all at
 // once — the alternative is remembering which of ~15 screens a given piece
 // of information lives on. Deliberately capped at a handful of results per
@@ -47432,10 +47449,11 @@ function GlobalSearch({ data, onJump, look = "classic", onCancel = null, onScan 
       .slice(0, 4)
       .map(n => ({ type: "screen", value: n.key, label: n.label, sublabel: "Go to screen" }));
 
-    const orderResults = data.orders
-      .filter(o => o.id.toLowerCase().includes(q) || (o.customer || "").toLowerCase().includes(q))
+    const woHits = ordersByWo(data.orders, q);
+    const orderResults = (woHits.length ? woHits : data.orders
+      .filter(o => o && !o.deleted && (o.id.toLowerCase().includes(q) || (o.customer || "").toLowerCase().includes(q) || String(o.reference || "").toLowerCase().includes(q))))
       .slice(0, 6)
-      .map(o => ({ type: "order", id: o.id, value: o.id, label: o.id, sublabel: o.customer, stage: o.stage }));
+      .map(o => ({ type: "order", id: o.id, value: o.id, label: o.id, sublabel: `${o.customer || ""}${o.stage === "Shipped" ? " · shipped" : o.stage === "Cancelled" ? " · cancelled" : ""}`, stage: o.stage }));
 
     const boxCodes = [...new Set([
       ...data.bondingRuns.map(r => r.boxNumber).filter(Boolean),
@@ -47457,11 +47475,14 @@ function GlobalSearch({ data, onJump, look = "classic", onCancel = null, onScan 
     if (things) {
       const glue = new Set((data.glueLineBatches || []).filter(g => g && !g.deleted).map(g => String(g.batchNumber || "").toUpperCase()));
       const jobs = thingJobsFor(q).map(j => ({ type: "job", value: j.key, label: j.title, sublabel: j.sub, job: j }));
+      if (woHits.length) return [...orderResults, ...jobs, ...screenResults,
+        ...boxResults.map(r => ({ ...r, type: "box", sublabel: thingWhereWords(data, "box", String(r.value).toUpperCase()) || "Box code" })),
+        ...batchResults.map(r => glue.has(String(r.value).toUpperCase()) ? { ...r, type: "reel", sublabel: thingWhereWords(data, "reel", String(r.value).toUpperCase()) || "Reel" } : r)];
       return [...jobs, ...screenResults, ...orderResults,
         ...boxResults.map(r => ({ ...r, type: "box", sublabel: thingWhereWords(data, "box", String(r.value).toUpperCase()) || "Box code" })),
         ...batchResults.map(r => glue.has(String(r.value).toUpperCase()) ? { ...r, type: "reel", sublabel: thingWhereWords(data, "reel", String(r.value).toUpperCase()) || "Reel" } : r)];
     }
-    return [...screenResults, ...orderResults, ...boxResults, ...batchResults];
+    return woHits.length ? [...orderResults, ...screenResults, ...boxResults, ...batchResults] : [...screenResults, ...orderResults, ...boxResults, ...batchResults];
   }, [q, data, things]);
 
   /* THE PHONE'S SEARCH (Chris, 30 Sep 2026, screenshot of the old boxed field under the top bar: "Don't like how this
