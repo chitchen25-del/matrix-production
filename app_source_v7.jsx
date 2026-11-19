@@ -32,7 +32,7 @@ import { glueRuns, reelGlueFault, GLUE_MIN_MM, GLUE_OPEN_END_M, GLUE_LINE_M, GLU
 import { pinEvidence, pinsToTry, parsePinSize } from "./mx_pins.js";
 import { learnedLineSpeed, gapMayLink, glueReelTraceKeep, gapCarryOf, gapJoinTraces, gapNextPiece, misreadStep, centringHint, reelGapWarning, gapCorrFor, gapSizePart, GAP_CORR_DAY_MAX, GAP_CORR_SIZE_AGREE, READOUT_SPAN_MS, READOUT_BIN_MS, GT_WOBBLE_FLAG, readoutTrend, readoutFigures, HAUL_MIN_LEARN_M, GAP_STEADY_MIN_N, CAM_GOOD_MM, CAM_OK_MM, camMetrics, blockCalib, blockHeights, heightOfSpec, CAP_FACTOR_REELS, CPK_WORDS, GAP_BAND_ROWS, GAP_LIMITS_DEFAULT, GAP_VERDICT_WORDS, GAP_LIGHT_WORDS, GAP_SETUP_CHECKS, gapTraceWaiting, gapNextTraceNo, gapPickWaiting, glueTraceChoice, glueReelWants, gapLiveFresh, gapLinkTrace, gapUnlinkTrace, glueDayTimeline, gapMoveCut, gapOffsets, nomOf, gapLightOf, gapRangeOf, gapCorrKey, gapCorrSets, lightShift, steadyRaw, gapWander, gapCheckOdd, binTrace, capability, sizeCapability, colourNameOf, haulFactor, haulMatch, rowProfile, gapCheck, gapCorrCheck, gapCorrection, gapCorrStands, gapLimitsFor, gapRecordDoc, motionGate, patchDiff, gapTraceRow, gapVerdict, guessStripColour, gapSteady, metresAlong, readBand, reelLoggedSince, sizeCheck, sizesDiffer, suggestSizes, traceEvents, traceStats, widthFrom, widthMmFor, widthValid } from "./mx_gaptrace.js";
 import { learningNow, LEARN_MIN } from "./mx_learning.js";
-import { reelSizeFill, labelSizeClash, usualBay, withTapeSuffix, dropEmptyAllocations, mergeSameOrder, trimAllocationsTo, withoutOrders, withOrderQty, allToShelf, heldDetail, heldEntryOf, heldWhy, firstRefusalLine, dedupeFixes } from "./mx_bondfix.js";
+import { reelSizeFill, labelSizeClash, labelCodeToBook, usualBay, withTapeSuffix, dropEmptyAllocations, mergeSameOrder, trimAllocationsTo, withoutOrders, withOrderQty, allToShelf, heldDetail, heldEntryOf, heldWhy, firstRefusalLine, dedupeFixes } from "./mx_bondfix.js";
 import { STOP_REASONS, isFalseStop, STOP_MIN_MS, WATCH_TICK_MS, lineStopStep, reasonOf, isChangeReason, changePlanMin, changeoverTimes, efficiencyWeek, biggestWins, scrappedReels, weekStartOf, fmtClock, fmtMin, fmtLen, stopEndMs } from "./mx_linestops.js";
 import { walkProducts, walkCards, walkCases, caseRoute, pickFacts, notThereFacts, putBackFacts, damagedFacts, notThereOpen, tickStatus, foundBoxRecord, foundBoxCartonGuess, walkProductKey, runFillsLine, bondingOfferFromWalk, shelfRemainderGoesTo } from "./mx_pickwalk.js";
 import { applyOrderRenames, applyRackCheck, setExtrudedCleared, applyCaseFix, applyPhotoRearrange, photoOrderVerdict, photoCaseCheck, photoReport, photoReportSnapshot, photoReportMatches, applyPhotoMoves, photoReportHolds, photoOrderLines, recordedByCase, undoAutoEntry, appendLog, appendPlanDifference, applyCaseAction, applyMovementToCaseRow, applyPatchMapsToCasesRaw, boxSpecOf, closeUpCaseNumbers, closeUpSummary, fillCustomerReferences, planCarry, planMissingCases, raiseIssue, reconcilePickSheet, recordMovement, recordMovements, recordPickSheet, refuseMovement, relabelCasesInLedger, resolveIssue, sameProductSpec } from "./mx_writes.js";
@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-19.3";
+const APP_VERSION = "2026-11-19.4";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -34598,7 +34598,9 @@ function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRun
      device (Dave works on the PC and the Android) that hadn't synced yet was invisible and its number was offered again.
      Now the day's codes are also read straight from the database each time the form is ready for a new code, deleted
      runs included (a printed label is a used number), and the highest wins. */
-  const dayCore = (nextBatchCode(form.date, [], {}) || "").slice(0, 5);
+  /* the day's part only — letter, year, day ("K619"). It was cut at 5 ("K6190"), so from the 10th code of a day the
+     database look-up below found none of the day's later codes (19 Nov 2026). */
+  const dayCore = (nextBatchCode(form.date, [], {}) || "").slice(0, 4);
   const [cloudCodes, setCloudCodes] = useState([]);
   useEffect(() => {
     if (!dayCore || typeof EVENT_CLIENT === "undefined" || !EVENT_CLIENT) return;
@@ -34613,7 +34615,11 @@ function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRun
      recommended code"). Biesse → SDB, Scapa → SD4, Strong → SDBS. Nothing is offered until the tape is picked; then the
      code is filled in with that tape's ending. */
   const tapeSuffix = TAPE_TYPES[form.tapeType] || "";
-  const suggestedBox = tapeSuffix ? nextBatchCode(form.date, allCodesToday, { suffix: tapeSuffix }) : null;
+  /* labels printed today for this size and not yet booked come first (labelCodeToBook, 19 Nov 2026) — only once the
+     reel is chosen, so it is this run's size */
+  const labelledBox = tapeSuffix && spec && String(form.baselineBatchCode || "").trim()
+    ? labelCodeToBook(data && data.changeLog, specPt || spec, allCodesToday, dayCore, tapeSuffix) : null;
+  const suggestedBox = tapeSuffix ? (labelledBox || nextBatchCode(form.date, allCodesToday, { suffix: tapeSuffix })) : null;
   const suggestedBoxes = suggestedBox ? [suggestedBox] : [];
   useEffect(() => {   // a code that came in from a scan or a draft names its own tape
     if (form.runStartId || (form.tapeType && !form.tapeInferred) || !form.boxNumber) return;
@@ -35025,6 +35031,7 @@ function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRun
         <BondStep n={4} q={form.runStartId ? "Box code" : "Which tape — then the box code"} hint={form.runStartId
             ? "From the labels printed at the start of this run (23 Sep 2026: the code is the labels' code, so it is shown, not typed)."
             : !form.tapeType ? "Pick the tape first — the code's ending comes from it: Biesse SDB · Scapa SD4 · Strong SDBS."
+            : labelledBox && String(form.boxNumber || "").trim().toUpperCase() === labelledBox ? `${labelledBox} — the labels printed today for this size that aren't booked yet. Type over it only if the label says otherwise.`
             : "Filled in from the last code used today, with this tape's ending. Type over it only if the label says otherwise."}>
           {form.runStartId ? (
             <div data-reserved-code style={{ border: `2px solid ${NAVY}`, borderRadius: 6, padding: "10px 12px", background: "#F4F6FB" }}>
