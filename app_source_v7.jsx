@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-19.5";
+const APP_VERSION = "2026-11-19.6";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -20630,7 +20630,11 @@ function WeighCheckCard({ n, ck, hasWeight, onRetake, photoOnly = false }) {
 
 function WeighSheet({ palletStored = null, cases, startAt, walk, caseWeights, setCaseWeights, palletAssignments, setPalletAssignments,
                       weightQueryFor, acceptCaseWeight, onClose, onMore, orderId = null,
-                      check = false, data = null, order = null, onCheckDone = null, onReads = null, bigNumber = false, noPallets = false }) {
+                      check = false, data = null, order = null, onCheckDone = null, onReads = null, bigNumber = false, noPallets = false, photoToo = false }) {
+  /* PHOTO AND WEIGH ONE CASE (Chris, 19 Nov 2026: "click on a case in the case map and be able to photo and weigh it, and that it
+     also goes into the photo report"). photoToo: the one case's photo is taken, read and saved as Photo cases saves it (it counts
+     in the photo report), and the weight is typed on the same sheet. pc = this sheet takes and reads photos. */
+  const pc = check || photoToo;
   const ordered = [...cases].sort((a, b) => a.caseNum - b.caseNum);
   const holds = (c) => c.packedOutside || (c.contributions || []).some(r => Number(r.qty) > 0);
   const weightOf = (n) => String(caseWeights[n] ?? "").trim();
@@ -20646,8 +20650,8 @@ function WeighSheet({ palletStored = null, cases, startAt, walk, caseWeights, se
   /* WEIGH & CHECK: each case's photo, read in the background while the weight is typed. reads: case → "reading" | result. */
   const [reads, setReads] = useState({});
   /* photos already taken of these cases (earlierCasePhotos): used as read, or read now from the saved copy */
-  const [earlierDone, setEarlierDone] = useState(!check || !orderId);
-  useEffect(() => { if (!check || !orderId) return; let live = true;
+  const [earlierDone, setEarlierDone] = useState(!pc || !orderId);
+  useEffect(() => { if (!pc || !orderId) return; let live = true;
     (async () => { const got = await earlierCasePhotos(orderId); if (!live) return;
       const withBoxes = new Set(cases.filter(c => (c.contributions || []).some(r => Number(r.qty) > 0)).map(c => c.caseNum));
       const todo = Object.entries(got).filter(([n]) => withBoxes.has(Number(n)));
@@ -20678,7 +20682,7 @@ function WeighSheet({ palletStored = null, cases, startAt, walk, caseWeights, se
   const needsWork = (c) => check ? (hasBoxes(c) && !reads[c.caseNum] && !["skip", "done", "kept"].includes(shot[c.caseNum])) : needsWeight(c);
   const [lastShot, setLastShot] = useState(null);   // the case photographed just before this one, its read shown here
   /* each read handed up as it lands, so the order's tiles and Check order know about it before the photo store answers */
-  useEffect(() => { if (!check || !onReads) return; const done = Object.fromEntries(Object.entries(reads).filter(([, r]) => r && r !== "reading")); if (Object.keys(done).length) onReads(done); },
+  useEffect(() => { if (!pc || !onReads) return; const done = Object.fromEntries(Object.entries(reads).filter(([, r]) => r && r !== "reading")); if (Object.keys(done).length) onReads(done); },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [reads]);
   /* THE CASE AGAINST THE SYSTEM, THE ORDER AND ITS WEIGHT — worked out when the read or a saved weight changes, never per
@@ -20688,7 +20692,7 @@ function WeighSheet({ palletStored = null, cases, startAt, walk, caseWeights, se
   /* the figure being typed counts as soon as there is one (a wrong weight is still questioned when it's saved, before the
      sheet moves on) — as a yes/no, so the check isn't worked out again for every key */
   const typedNow = !!(draft && draft.n === nowN && Number(draft.v) > 0);
-  const caseCheck = useMemo(() => { if (!check || !data || !order || nowN == null) return null;
+  const caseCheck = useMemo(() => { if (!pc || !data || !order || nowN == null) return null;
     try { return photoCaseCheck(data, order, nowN, reads[nowN] || null, { weightOk: typedNow ? !queryOf(nowN) : weightOkOf(nowN) }); } catch (e) { return null; } },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [check, data, order, nowN, reads[nowN], caseWeights, queries, typedNow]);
@@ -20734,7 +20738,7 @@ function WeighSheet({ palletStored = null, cases, startAt, walk, caseWeights, se
     idle.current = setTimeout(() => { setTyping(false); }, 900);
   };
   const readHere = reads[n] && reads[n] !== "reading";
-  const photoFirst = check && !!orderId && !["done", "skip", "kept"].includes(shot[n]) && !reads[n] && hasBoxes(c);
+  const photoFirst = pc && !!orderId && !["done", "skip", "kept"].includes(shot[n]) && !reads[n] && hasBoxes(c);
   /* WEIGH & CHECK: the photo is kept at once and read in the background — the weight can be typed while it's read; the
      photo is saved with what was read. */
   /* on to the next case still wanting a photo (or the end) — after a photo, and after Skip (Chris, 17 Oct 2026, 22:16: "it moves
@@ -20749,7 +20753,7 @@ function WeighSheet({ palletStored = null, cases, startAt, walk, caseWeights, se
       setReads(r => ({ ...r, [cn]: res || { error: "No answer came back — try again." } }));
       const saved = await saveCasePhoto({ file, orderId, caseNum: cn, source: "case-check", result: res && !res.error ? { ...res, weigh: true } : { weigh: true } });
       const st = photoSaveState(saved); if (st !== "saved") setShot(s => ({ ...s, [cn]: st })); })(); };
-  const takePhoto = async (file) => { if (check) { takeAndRead(file, n, !!walk); return; } if (!file) return; nlHaptic && nlHaptic(); setShot(s => ({ ...s, [n]: "busy" }));
+  const takePhoto = async (file) => { if (pc) { takeAndRead(file, n, !!walk && check); return; } if (!file) return; nlHaptic && nlHaptic(); setShot(s => ({ ...s, [n]: "busy" }));
     const r = await saveCasePhoto({ file, orderId, caseNum: n, source: "case-check", result: { weigh: true } });
     const st = photoSaveState(r); setShot(s => ({ ...s, [n]: st === "saved" ? "done" : st })); };
   const press = (k) => {
@@ -20863,7 +20867,7 @@ function WeighSheet({ palletStored = null, cases, startAt, walk, caseWeights, se
               </div>)}
             {shot[n] === "done" && !check && <div data-weigh-photo-done={n} style={{ fontSize: 14, fontWeight: 600, color: "#1E7F3C" }}>✓ Photo of case {n} saved — now the weight</div>}
             {shot[n] === "kept" && <div data-weigh-photo-kept={n} style={{ fontSize: 14, fontWeight: 600, color: NL.AMBERTXT }}>📷 Photo of case {n} not sent yet — kept on this phone, it sends itself{check ? "" : " — now the weight"}</div>}
-            {check && caseCheck && caseCheck.state !== "none" && <WeighCheckCard photoOnly n={n} ck={caseCheck} hasWeight={Number(weightOf(n)) > 0} onRetake={(f) => takeAndRead(f, n, false)} />}
+            {pc && caseCheck && caseCheck.state !== "none" && <WeighCheckCard photoOnly n={n} ck={caseCheck} hasWeight={Number(weightOf(n)) > 0} onRetake={(f) => takeAndRead(f, n, false)} />}
             {check && lastCk && lastCk.state !== "none" && <div data-photo-last={lastShot} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               <span style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: 0.3, color: NL.SUB }}>CASE {lastShot}, JUST TAKEN</span>
               <WeighCheckCard photoOnly n={lastShot} ck={lastCk} hasWeight={Number(weightOf(lastShot)) > 0} onRetake={(f) => takeAndRead(f, lastShot, false)} /></div>}
@@ -20999,7 +21003,9 @@ function CaseGrid({ palletStored = null, cases, caseWeights, setCaseWeights, wei
   /* a tile opens the same check as Weigh & check where photos are read (Chris, 7 Oct 2026: AmeriKen photographed and
      weighed from the tiles, and nothing came at the end) */
   /* a tile opens the Weights sheet for that case — photos are their own walk now (9 Oct 2026) */
-  const pickTile = (n) => { setSel(n); if (phoneWeigh) setWeigh({ at: n, walk: false, check: false }); else if (tilesOn) setCardSheet("card"); };
+  /* …and the photo with it again where photos are read (Chris, 19 Nov 2026: "click on a case … photo and weigh it, and that it also
+     goes into the photo report") — the one case only; Photo cases stays the walk. */
+  const pickTile = (n) => { setSel(n); if (phoneWeigh) setWeigh({ at: n, walk: false, check: false, photoToo: !!checkHere }); else if (tilesOn) setCardSheet("card"); };
   /* Check this case from a photo — admin's phone only (30 Sep 2026). */
   const photoOn = usePhotoReader();
   const [caseCheck, setCaseCheck] = useState(null);   // { caseNum, result }
@@ -21129,7 +21135,7 @@ function CaseGrid({ palletStored = null, cases, caseWeights, setCaseWeights, wei
       <CaseFilterChips cases={cases} value={caseFilter} onChange={setCaseFilter} />
       {weigh && (
         <WeighSheet key={`${weigh.check ? "k" : weigh.walk ? "w" : "c"}-${weigh.at}`} palletStored={editOrder && !editOrder.noPallets ? editOrder.palletPlan || null : null} cases={cases} startAt={weigh.at} walk={weigh.walk} bigNumber={!!tilesOn} noPallets={!!(editOrder && editOrder.noPallets)}
-          check={!!weigh.check} data={editData || null} order={editOrder || null}
+          check={!!weigh.check} photoToo={!!weigh.photoToo} data={editData || null} order={editOrder || null}
           onReads={photoView && photoView.ph && photoView.ph.seed ? photoView.ph.seed : null}
           onCheckDone={(reads) => { setWeigh(null); if (onCheckOrder) onCheckOrder(reads, (n) => Number(caseWeights[n]) > 0 && !(weightQueryFor && weightQueryFor(n))); }}
           caseWeights={caseWeights} setCaseWeights={setCaseWeights} palletAssignments={palletAssignments} setPalletAssignments={setPalletAssignments}
@@ -21270,7 +21276,7 @@ function CaseGrid({ palletStored = null, cases, caseWeights, setCaseWeights, wei
                 weighs and which pallet; changing either is the weigh sheet — the same one as Weigh cases */}
             <div data-nl5-card-weight style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 12, background: NL.PANEL, marginBottom: 6, fontFamily: NLT.FONT }}>
               <span style={{ flex: 1, fontSize: 15 }}><b>{Number(caseWeights[chosen.caseNum]) > 0 ? `${caseWeights[chosen.caseNum]} kg` : "Not weighed"}</b><span style={{ color: NL.SUB }}> · {editOrder && editOrder.noPallets ? "going loose" : palletAssignments[chosen.caseNum] ? `pallet ${palletAssignments[chosen.caseNum]}` : planPalOf(chosen.caseNum) ? `goes on pallet ${planPalOf(chosen.caseNum)} (the plan)` : "no pallet yet"}</span></span>
-              {phoneWeigh && <button type="button" data-nl5-card-weigh onClick={() => { setCardSheet(null); setWeigh({ at: chosen.caseNum, walk: false, check: false }); }}
+              {phoneWeigh && <button type="button" data-nl5-card-weigh onClick={() => { setCardSheet(null); setWeigh({ at: chosen.caseNum, walk: false, check: false, photoToo: !!checkHere }); }}
                 style={{ flex: "none", height: 40, padding: "0 14px", borderRadius: 10, border: 0, background: NL.NAVY, color: "#fff", fontFamily: NLT.FONT, fontSize: 14.5, fontWeight: 700 }}>⚖ Weigh</button>}</div>
             {cardEl}
             {tilesOn.order && tilesOn.setData && <button type="button" data-nl5-card-change onClick={() => { setCaseAct(null); setEditingCase(null); setCardSheet("change"); }}
@@ -45608,6 +45614,14 @@ function DeskCasePanel({ data, setData, order, caseNum, onClose, onApply, applyE
   const [editing, setEditing] = useState(false); const [draft, setDraft] = useState({}); const [addCode, setAddCode] = useState(""); const [choices, setChoices] = useState({ src: {} }); const [intent, setIntent] = useState(null);
   const [w, setW] = useState(""); const [p, setP] = useState(""); const [swapWith, setSwapWith] = useState("");
   useEffect(() => { setEditing(false); setDraft({}); setChoices({ src: {} }); setW(""); setP(""); setSwapWith(""); }, [caseNum]);
+  /* PHOTO AND WEIGH FROM THE CASE MAP (Chris, 19 Nov 2026: "click on a case in the case map and be able to photo and weigh it, and
+     that it also goes into the photo report"). The photo is the Photo & weigh walk's own — read for its labels and saved as a
+     case-check photo with what was read (useOrderPhotos.take) — and the weight is the case's weight, so the order's photo report
+     (orderPhotoReport) counts both, and is kept on the order once it is all clear, the same as from the walk. */
+  const ph = useOrderPhotos(order && order.id);
+  const photoRep = useMemo(() => (ph.loaded && order ? orderPhotoReport(data, order, ph.photos) : null), [data, order, ph.photos, ph.loaded]);
+  usePhotoReportKeeper(order, photoRep, setData, ph.loaded);
+  const [reportOpen, setReportOpen] = useState(null);
   if (!f) return null;
   const rec = recordedByCase(data, order.id)[f.n] || {};
   const start = (why = null) => { const d = {}; for (const [c, n] of Object.entries(rec)) d[c.toUpperCase()] = String(n); setDraft(d); setIntent(why); setEditing(true); };
@@ -45665,6 +45679,19 @@ function DeskCasePanel({ data, setData, order, caseNum, onClose, onApply, applyE
           {s.plan > s.got && <div style={{ fontSize: 12.5, color: "#A85A16" }}>waiting for {s.plan - s.got} more</div>}</div>)}
         {f.sizes.length === 0 && <div style={{ padding: 12, fontSize: 14, color: "#5E6A82" }}>Nothing planned or in it.</div>}
       </div>
+      {!phone && order.stage !== "Shipped" && setData && <div data-v5-case-photoweigh={f.n} style={{ border: "1px solid #ECEEF3", borderRadius: 12, padding: "12px 0 0", display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ ...eyebrow, padding: "0 14px" }}>PHOTO AND WEIGHT — THEY GO INTO THE PHOTO REPORT</div>
+        {photoRep ? <CasePhotoResult report={photoRep} caseNum={f.n} ph={ph} data={data} order={order} setData={setData} onOpen={(n) => setReportOpen({ focus: n })} />
+          : <div style={{ padding: "0 14px", fontSize: 13.5, color: "#5E6A82" }}>{ph.signedOut ? "Can't reach the photos — this device needs signing in again." : "Loading this case's photo…"}</div>}
+        <div style={{ padding: "0 14px" }}><PhotoTakeButtons caseNum={f.n} onFile={(file) => ph.take(f.n, file)} label={photoRep && (photoRep.cases.find(x => x.caseNum === f.n) || {}).photo ? `Retake case ${f.n}` : `Photo case ${f.n}`} /></div>
+        <div style={{ padding: "0 14px 12px", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 14.5, fontWeight: 600 }}>Weight</span>
+          <span data-v5-case-weight-now style={{ fontSize: 14, color: f.weight ? "#161A2B" : "#A85A16" }}>{f.weight ? `${f.weight} kg` : "not weighed"}</span>
+          <input data-v5-case-weight inputMode="decimal" value={w} onChange={e => setW(e.target.value.replace(/[^0-9.]/g, ""))} onKeyDown={e => { if (e.key === "Enter") saveFact("weight", w); }} placeholder="kg" style={{ width: 90, height: 40, border: "1px solid #DDE0E8", borderRadius: 8, padding: "0 10px", font: "inherit", fontSize: 16 }} />
+          <button data-v5-case-weight-save disabled={!(Number(w) > 0)} onClick={() => saveFact("weight", w)} style={{ ...btn(Number(w) > 0), height: 40 }}>{f.weight ? "Save new weight" : "Save weight"}</button>
+        </div>
+      </div>}
+      {reportOpen && photoRep && <PhotoReportSheet order={order} data={data} setData={setData} ph={ph} report={photoRep} focus={reportOpen.focus} onClose={() => setReportOpen(null)} />}
       {order.stage !== "Shipped" && setData && (f.state !== "full" || isAdminLogin()) && <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <div style={eyebrow}>CHANGE THIS CASE</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
@@ -45674,9 +45701,7 @@ function DeskCasePanel({ data, setData, order, caseNum, onClose, onApply, applyE
         </div>
         <div style={{ fontSize: 13, color: "#6A6F85" }}>Each one: change it to what's really there, see where the boxes go, then apply — with Undo.</div></div>}
       {order.stage !== "Shipped" && setData && f.state === "full" && !isAdminLogin() && <div data-v5-case-locked style={{ fontSize: 13.5, color: "#5E6A82", background: "#F4F5F8", borderRadius: 10, padding: "8px 10px" }}>Full, so it's locked — only an admin login can change what's in it.</div>}
-      {!phone && <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-        <div style={{ border: "1px solid #ECEEF3", borderRadius: 10, padding: 10 }}><div style={eyebrow}>WEIGHT</div><div style={{ fontSize: 14, margin: "4px 0" }}>{f.weight ? `${f.weight} kg` : "not weighed"}</div>
-          <div style={{ display: "flex", gap: 6 }}><input data-v5-case-weight value={w} onChange={e => setW(e.target.value)} placeholder="kg" style={{ width: 70, height: 32, border: "1px solid #DDE0E8", borderRadius: 8, padding: "0 8px", font: "inherit" }} /><button data-v5-case-weight-save onClick={() => saveFact("weight", w)} style={btn(true)}>Save</button></div></div>
+      {!phone && <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
         <div style={{ border: "1px solid #ECEEF3", borderRadius: 10, padding: 10 }}><div style={eyebrow}>PALLET</div><div style={{ fontSize: 14, margin: "4px 0" }}>{f.pallet ? `pallet ${f.pallet}` : "none yet"}</div>
           <div style={{ display: "flex", gap: 6 }}><input data-v5-case-pallet-one value={p} onChange={e => setP(e.target.value)} placeholder="no." style={{ width: 70, height: 32, border: "1px solid #DDE0E8", borderRadius: 8, padding: "0 8px", font: "inherit" }} /><button onClick={() => saveFact("pallet", p)} style={btn(true)}>Save</button></div></div>
       </div>}
