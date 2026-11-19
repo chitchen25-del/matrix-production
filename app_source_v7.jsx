@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-19.2";
+const APP_VERSION = "2026-11-19.3";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -34472,7 +34472,8 @@ function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRun
      the carton it takes. On save, each allocation is booked under its carton's
      family (explodeAllocations). */
   const needing = useMemo(() => {
-    if (!offerSpec || !data) return [];
+    /* nothing worked out for the last run's size before this run's reel is chosen (19 Nov 2026) */
+    if (!offerSpec || !data || !String(form.baselineBatchCode || "").trim()) return [];
     const own = ordersNeedingSpec(data, offerSpec).needing.map(n => ({ ...n, lineSpec: offerSpec }));
     /* the strip's other names: Smart Formes, and PX / Viking for PX Plus (12 Oct 2026) */
     const other = [];
@@ -34480,7 +34481,7 @@ function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRun
     /* The case plan says where; the ORDER says how many (23 Sep 2026) — bondingOffer reads the production list's
        engine, so step 3 and the production list cannot disagree. */
     return bondingOfferFromWalk(data, [...own, ...other], orders, lineItems, form.pt);   // the pick walk's own calculation (24 Sep 2026)
-  }, [offerSpec, data, lineItems, form.pt]);
+  }, [offerSpec, data, lineItems, form.pt, form.baselineBatchCode]);
   /* NOTHING OFFERED? SAY WHY (Chris, 29 Sep 2026: PBLI62804 0.60 x 1.30 "not offered" to Coretsis or Custom Cutting).
      The pt and Box/Reel carry over from the last run; if they don't match what the orders want, step 3 used to go
      quietly empty. Now, when nothing is offered, the same reckoning is asked for the other pts and the other form,
@@ -34619,9 +34620,10 @@ function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRun
     const t = tapeFromCode(form.boxNumber); if (t && t !== form.tapeType) setForm(f => ({ ...f, tapeType: t, tapeInferred: true }));
   }, [form.boxNumber, form.tapeType, form.tapeInferred, form.runStartId]);
   useEffect(() => {
-    if (form.runStartId || !suggestedBox) return;
+    /* no code from the last run's size before the reel is chosen (19 Nov 2026 — see reelChosen) */
+    if (form.runStartId || !suggestedBox || !String(form.baselineBatchCode || "").trim()) return;
     setForm(f => (f.boxNumber && !f.boxAuto) || f.boxNumber === suggestedBox ? f : { ...f, boxNumber: suggestedBox, boxAuto: true });
-  }, [suggestedBox, form.runStartId, !form.boxNumber]);
+  }, [suggestedBox, form.runStartId, !form.boxNumber, form.baselineBatchCode]);
   /* THE TIME AND DATE FILL THEMSELVES IN (Chris, 29 Sep 2026: "bonding line still has to enter the time, it should be
      automatic as it is on glue line"). The form used to keep the time it was opened at, and carried it into every entry
      after. Now both follow the clock until someone changes them by hand (logging an earlier run); the date changed by hand
@@ -34645,6 +34647,18 @@ function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRun
       pt: ptOf(b.productSize) || f.pt }));
     setReelQuery(""); setEscapeOpen(false);
   };
+  /* A REEL TYPED IN FULL IS CHOSEN. (Chris, 19 Nov 2026, Dave's screen: PBLK61808 typed, the list under it showing
+     "PBLK61808 PX Plus 0.70 x 2.50mm", but not tapped — so the entry still held the last run's size, PX Plus
+     0.60 x 2.30: step 3 offered Avrupa's 0.60 x 2.30 "covered — 2 of the 16 in E1" instead of FM Plus, and step 4
+     filled in K61910SDB, the 0.60 x 2.30 run's code. Saved, it would have booked 17 boxes of the wrong size.)
+     The typed code matching exactly one offered reel picks it, as a tap would. */
+  useEffect(() => {
+    const q = reelQuery.trim().toUpperCase();
+    if (!q || String(form.baselineBatchCode || "").trim()) return;
+    const hit = availableBatches.filter(b => String(b.batchNumber || "").trim().toUpperCase() === q);
+    if (hit.length === 1) pickReel(hit[0]);
+  }, [reelQuery, availableBatches]);
+  const reelChosen = !!String(form.baselineBatchCode || "").trim();
   const boxesLeftOnReel = reel && mpb > 0 ? Math.floor((Number(reel.remaining) || 0) / mpb) : null;
   /* THE ENTRY FOLLOWS ITS REEL. (23 Sep 2026, Dave's screen: reel PBLI62201 is 0.30 x 1.00, but step 3 offered
      WO-0018 "needs 1 — case 5", the 0.30 x 1.40 plan, and the 1.40 run's box code. The reel had no size when it was
@@ -34806,6 +34820,7 @@ function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRun
 
         <BondStep n={3} q="Where do they go?"
           hint={<>Every order needing this size, most urgent first, filled in already. <span style={{ color: INK, fontWeight: 500 }}>Type over a number to change where they go</span> — the shelf takes what's left. The box comes from the order.</>}>
+          {!reelChosen ? <div data-bond-need-reel style={{ fontSize: 14, color: INK_MUTED }}>Choose the reel in step 1 first — tap it in the list under the box. Nothing is worked out here until then.</div> : <>
           {/* SAY WHAT IS ACTUALLY MISSING. (Chris, 9 Sep, PBLI60806)
               A reel that is on the system with no product size gets picked
               fine and then this said "Pick the reel first" — he had. The
@@ -35004,6 +35019,7 @@ function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRun
               because its own plan still needs this size, with the case that has
               room for it. If nothing needs it, it is stock — and stock is a
               real answer, not a failure. */}
+          </>}
         </BondStep>
 
         <BondStep n={4} q={form.runStartId ? "Box code" : "Which tape — then the box code"} hint={form.runStartId
