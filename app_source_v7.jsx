@@ -1,6 +1,6 @@
 import { customerRecordOf, samePoOrder, sameOrderAgain, BASE_ORDER, BOX_SUFFIXES, PHOENIX_HEIGHT_COLOURS, PRODUCT_COLOUR_HEX, RETIRED_SUFFIX_INITIALS, ULTRA_SR_WIDTHS, analyzeCodeStructure, baseGroupOf, boxCodeNearMisses, boxTypeIdForName, canonicalBoxCode, catalogueBoxFacts, catalogueName, checkUnusualAmount, codeImpliedDateISO, custNorm, customerRows, fillProductReferences, findCustomer, formIdForLine, formIdForRun, isStrongTapeBoxCode, manufactureDateFromCode, manufactureDateLabel, missingFrom, movementFormId, nameForForm, nearCustomer, nextBatchCode, nextOrderId, nextPickSheetRef, nextSplitOrderId, normaliseBoxSuffix, normaliseUltraSpec, ordersWithCustomer, parseOrderSnippet, planFormId, productColourFor, productDescription, productFormsOf, productsMissingForm, runsNamedByReference, slugForProduct, splitCustomerRef, standardTapeBoxCode, strongTapeBoxCode, unmatchedWhy, unresolvedLines, formGapLines, orderLineName, boxMetresRule, rubberSizeFromText, rangesCustomerTakes, orderRulesMap, boxMetresSuggest, guessNewSize, addNewSizeData, newSizeName, newSizeBase, newSizeColour, NEW_SIZE_RANGES, NEW_SIZE_VARIANTS, ultraSrMakes } from "./mx_catalogue.js";
 import { CHANGE_FIELD_LABELS, EDIT_LOG_IGNORE, appendChangeNote, changeAgo, changeCodes, changeDayLabel, changeFieldLabel, changeFieldValue, diffRowFields, draftAt } from "./mx_changes.js";
-import { BOX_MATERIALS, CATALOGUE, setCustomers, setOvermakePct, setOnNotice, DEFAULT_MATERIALS, DISMISSALS, EVA_DIES, LEDGER_CASES, LEDGER_CASE_HOLDINGS, LEDGER_MOVEMENTS, LEDGER_ORDERS, caseHoldingsFrom, currentActor, currentDevice, setActorAndDevice, setBoxMaterials, setCatalogue, setDismissals, setLedgerCaseHoldings, setLedgerMovements, setLedgerNcrs, setOrderRules } from "./mx_context.js";
+import { BOX_MATERIALS, CATALOGUE, setCustomers, setLineItems, setOvermakePct, setOnNotice, DEFAULT_MATERIALS, DISMISSALS, EVA_DIES, LEDGER_CASES, LEDGER_CASE_HOLDINGS, LEDGER_MOVEMENTS, LEDGER_ORDERS, caseHoldingsFrom, currentActor, currentDevice, setActorAndDevice, setBoxMaterials, setCatalogue, setDismissals, setLedgerCaseHoldings, setLedgerMovements, setLedgerNcrs, setOrderRules } from "./mx_context.js";
 import { fmtMoneyTotals, currencyCode, compareSizes, dayStartMs, daysAgoLocal, fmtDay, fmtLogValue, fmtMoney, fmtSize, formatAgo, formatRuntime, medianOf, nowHHMM, sizeSortKey, sortChars, timeToMinutes, timestampFromUid, uid } from "./mx_format.js";
 import { spreadsheetText } from "./mx_sheet.js";
 import { LABEL_W_MM, LABEL_H_MM, labelDocWithOffset, LABEL_OFFSET_MAX_MM, defaultLabelItems, labelItemsFor, itemText, labelItemsDoc, labelLayoutProblems } from "./mx_labels.js";
@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-19.1";
+const APP_VERSION = "2026-11-19.2";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -17952,7 +17952,7 @@ function CustomersView({ data, setData }) {
                     <option value="row">Rest of world — exempt</option>
                   </select>
                 </label>
-                <CustomerField rec={rec} put={put} label="Their VAT number" field="customerVat" placeholder="for EU paperwork" />
+                <CustomerField rec={rec} put={put} label="Their VAT / tax number" field="customerVat" placeholder="VAT, RNC, NIT, BIN, EIN… — goes on the manifest" />
                 <CustomerField rec={rec} put={put} label="Their EORI" field="customerEori" placeholder="for EU paperwork" />
                 <CustomerField rec={rec} put={put} label="Terms" field="terms" placeholder="30 days from invoice" />
                 <CustomerField rec={rec} put={put} label="Delivery address" field="address" wide lines={3}
@@ -47928,6 +47928,7 @@ function App() {
   const orderRules = useMemo(() => orderRulesMap({ orders: storedData.orders, customers: storedData.customers }), [storedData.orders, storedData.customers]);
   setOrderRules(orderRules);
   setCustomers(storedData.customers || []);   // the manifest's Bill to falls back to the customer's address (5 Oct 2026)
+  setLineItems(storedData.lineItems || []);   // an export manifest prices each size and totals the value (19 Nov 2026)
   refreshActorAndDevice();   // who and where, handed to the writers (item 5, 22 Sep 2026)
   setLedgerCaseHoldings(ledgerCases, storedData.orders || []);
   /* Same reason, same place. This was `useEffect(() => setBoxMaterials(...))`
