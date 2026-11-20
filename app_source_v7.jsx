@@ -32,7 +32,7 @@ import { glueRuns, reelGlueFault, GLUE_MIN_MM, GLUE_OPEN_END_M, GLUE_LINE_M, GLU
 import { pinEvidence, pinsToTry, parsePinSize } from "./mx_pins.js";
 import { learnedLineSpeed, gapMayLink, glueReelTraceKeep, gapCarryOf, gapJoinTraces, gapNextPiece, misreadStep, centringHint, reelGapWarning, gapCorrFor, gapSizePart, GAP_CORR_DAY_MAX, GAP_CORR_SIZE_AGREE, READOUT_SPAN_MS, READOUT_BIN_MS, GT_WOBBLE_FLAG, readoutTrend, readoutFigures, HAUL_MIN_LEARN_M, GAP_STEADY_MIN_N, CAM_GOOD_MM, CAM_OK_MM, camMetrics, blockCalib, blockHeights, heightOfSpec, CAP_FACTOR_REELS, CPK_WORDS, GAP_BAND_ROWS, GAP_LIMITS_DEFAULT, GAP_VERDICT_WORDS, GAP_LIGHT_WORDS, GAP_SETUP_CHECKS, gapTraceWaiting, gapNextTraceNo, gapPickWaiting, glueTraceChoice, glueReelWants, gapLiveFresh, gapLinkTrace, gapUnlinkTrace, glueDayTimeline, gapMoveCut, gapOffsets, nomOf, gapLightOf, gapRangeOf, gapCorrKey, gapCorrSets, lightShift, steadyRaw, gapWander, gapCheckOdd, binTrace, capability, sizeCapability, colourNameOf, haulFactor, haulMatch, rowProfile, gapCheck, gapCorrCheck, gapCorrection, gapCorrStands, gapLimitsFor, gapRecordDoc, motionGate, patchDiff, gapTraceRow, gapVerdict, guessStripColour, gapSteady, metresAlong, readBand, reelLoggedSince, sizeCheck, sizesDiffer, suggestSizes, traceEvents, traceStats, widthFrom, widthMmFor, widthValid } from "./mx_gaptrace.js";
 import { learningNow, LEARN_MIN } from "./mx_learning.js";
-import { reelSizeFill, labelSizeClash, labelCodeToBook, usualBay, withTapeSuffix, dropEmptyAllocations, mergeSameOrder, trimAllocationsTo, withoutOrders, withOrderQty, allToShelf, heldDetail, heldEntryOf, heldWhy, firstRefusalLine, dedupeFixes } from "./mx_bondfix.js";
+import { reelSizeFill, labelSizeClash, labelCodeToBook, labelCodeOtherSize, usualBay, withTapeSuffix, dropEmptyAllocations, mergeSameOrder, trimAllocationsTo, withoutOrders, withOrderQty, allToShelf, heldDetail, heldEntryOf, heldWhy, firstRefusalLine, dedupeFixes } from "./mx_bondfix.js";
 import { STOP_REASONS, isFalseStop, STOP_MIN_MS, WATCH_TICK_MS, lineStopStep, reasonOf, isChangeReason, changePlanMin, changeoverTimes, efficiencyWeek, biggestWins, scrappedReels, weekStartOf, fmtClock, fmtMin, fmtLen, stopEndMs } from "./mx_linestops.js";
 import { walkProducts, walkCards, walkCases, caseRoute, pickFacts, notThereFacts, putBackFacts, damagedFacts, notThereOpen, tickStatus, foundBoxRecord, foundBoxCartonGuess, walkProductKey, runFillsLine, bondingOfferFromWalk, shelfRemainderGoesTo } from "./mx_pickwalk.js";
 import { applyOrderRenames, applyRackCheck, setExtrudedCleared, applyCaseFix, applyPhotoRearrange, photoOrderVerdict, photoCaseCheck, photoReport, photoReportSnapshot, photoReportMatches, applyPhotoMoves, photoReportHolds, photoOrderLines, recordedByCase, undoAutoEntry, appendLog, appendPlanDifference, applyCaseAction, applyMovementToCaseRow, applyPatchMapsToCasesRaw, boxSpecOf, closeUpCaseNumbers, closeUpSummary, fillCustomerReferences, planCarry, planMissingCases, raiseIssue, reconcilePickSheet, recordMovement, recordMovements, recordPickSheet, refuseMovement, relabelCasesInLedger, resolveIssue, sameProductSpec } from "./mx_writes.js";
@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-20.2";
+const APP_VERSION = "2026-11-20.3";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -5868,7 +5868,13 @@ function BoxLabelStudio({ data, setData }) {
   useEffect(() => { lsShrink(ref.current); });
   useEffect(() => { const el = boxRef.current; if (!el || typeof ResizeObserver === "undefined") return; const ro = new ResizeObserver(() => setBoxW(el.clientWidth)); ro.observe(el); setBoxW(el.clientWidth); return () => ro.disconnect(); }, []);
   const scale = Math.max(0.9, Math.min(2.4, (boxW - 40) / 290));
+  /* one code, one size: a code already printed today or before for another size is never printed again for this one — the
+     next free code is put in instead (20 Nov 2026, J61605SDB on 0.60 x 3.00 and 0.60 x 2.80) */
+  const labOther = clean && size ? labelCodeOtherSize(data.changeLog, clean, size) : null;
   const print = () => { if (!size || !clean) return;
+    if (labOther) { const when = labOther.at ? new Date(labOther.at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
+      setCode(nextCode); setSource("");
+      setMsg(`${clean} was already printed for ${labOther.size}${when ? ` (${when})` : ""} — one code can't go on two sizes. Changed to ${nextCode}: press Print again.`); return; }
     if (other && !window.confirm(`${clean} is already on ${other.productSize}. Print it on ${size} anyway?`)) return;
     const ptLog = curPt && curPt !== catPt ? curPt : null, said = changes.length ? ` (${changes.join(", ")})` : "";
     if (isReel) { if (!(curM > 0)) return; nlHaptic && nlHaptic();
