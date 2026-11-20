@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-20.3";
+const APP_VERSION = "2026-11-20.4";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -3522,7 +3522,7 @@ function flushPhotoOutbox() {
   PHOTO_RUN.flushing = (async () => { await loadPhotoOutbox(); let sent = 0;
     for (const e of photoOutboxList()) { if (!PHOTO_OUTBOX.has(e.id)) continue;
       const r = await sendPhotoEntry(e);
-      if (r.ok) { sent++; await photoOutboxDrop(e.id); try { window.dispatchEvent(new CustomEvent("mx-case-photo", { detail: { orderId: e.row.order_id } })); } catch (err) { /* ignore */ } continue; }
+      if (r.ok) { sent++; await photoOutboxDrop(e.id); try { window.dispatchEvent(new CustomEvent("mx-case-photo", { detail: { orderId: e.row.order_id, caseNum: e.row.case_num, sent: true } })); } catch (err) { /* ignore */ } continue; }
       e.tries = (Number(e.tries) || 1) + 1; e.lastTryAt = new Date().toISOString(); const changed = e.lastError !== r.reason; e.lastError = r.reason;
       if (PHOTO_OUTBOX.has(e.id)) await photoOutboxKeep(e);
       if (changed || e.tries % 10 === 0) reportAppEvent({ kind: "error", message: `case photo still not sent (try ${e.tries}): ${photoWhat(e)} — ${r.reason}` });
@@ -20700,6 +20700,10 @@ function WeighSheet({ palletStored = null, cases, startAt, walk, caseWeights, se
   const draftRef = useRef(null); draftRef.current = draft;
   const [pendingGo, setPendingGo] = useState(null);   // { target } — move once the saved weight has come back
   const [shot, setShot] = useState({});               // case → "busy" | "done" | "skip" | "failed"
+  /* a kept photo that has since gone up stops saying "not sent yet" (Chris, 20 Nov 2026, case 179 — it had reached the cloud) */
+  useEffect(() => { const h = (ev) => { const d = (ev && ev.detail) || {}; if (!d.sent || d.orderId !== orderId || d.caseNum == null) return;
+    setShot(s => s[d.caseNum] === "kept" ? { ...s, [d.caseNum]: "done" } : s); };
+    window.addEventListener("mx-case-photo", h); return () => window.removeEventListener("mx-case-photo", h); }, [orderId]);
   /* in a check walk a case still wants its photo read as well as its weight */
   const hasBoxes = (c) => (c.contributions || []).some(r => Number(r.qty) > 0);   // packed outside the app: nothing to photograph
   /* PHOTOS AND WEIGHTS ARE TWO JOBS (Chris, 9 Oct 2026: "separate the case photograph from the weighing system as it's not how
