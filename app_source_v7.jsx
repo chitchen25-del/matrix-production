@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-19.7";
+const APP_VERSION = "2026-11-20.2";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -40404,7 +40404,8 @@ function GlueNeedBanner({ data, spec, metres, setData = null }) {
   if (!t) return null;
   const reel = Number(metres) || 0;
   /* who still needs boxes made of this size, and how many — never an order already packed or picked from the shelf (13 Oct 2026) */
-  const orders = (t.orders || []).slice(0, 3).map(o => `${o.customer || o.orderId} ${o.orderId} · ${o.boxes}`).join(" · ") + ((t.orders || []).length > 3 ? ` · and ${t.orders.length - 3} more` : "");
+  /* every order that needs it, not the first three (Chris, 20 Nov 2026: "I want it to show all orders that require it") */
+  const orders = (t.orders || []).map(o => `${o.customer || o.orderId} ${o.orderId} · ${o.boxes}`).join(" · ");
   const reelWords = (t.reels || []).slice(0, 3).map(r => `${r.code} (${r.left} m)`).join(", ") + ((t.reels || []).length > 3 ? ` and ${t.reels.length - 3} more` : "");
   if (t.nothingNeeded || t.still <= 0) {
     return (
@@ -40423,7 +40424,10 @@ function GlueNeedBanner({ data, spec, metres, setData = null }) {
       <div style={{ fontSize: 14, fontWeight: 600 }}>{name}</div>
       <div style={{ fontSize: 12.5, color: INK_MUTED, marginTop: 6 }}>Still needed</div>
       <div data-glue-need-m style={{ fontSize: 46, fontWeight: 800, lineHeight: 1, color: NAVY }}>{t.still.toLocaleString("en-GB")} m</div>
-      <div style={{ fontSize: 14, marginTop: 4 }}>{t.boxes} box{t.boxes === 1 ? "" : "es"} to make{orders ? ` · ${orders}` : ""}{t.onRack > 0 ? ` · ${reelWords || `${t.onRack} m`} already on the reel rack` : ""}{t.overmakePct ? ` · includes ${t.overmakePct}% allowance` : ""}</div>
+      <div style={{ fontSize: 14, marginTop: 4 }}>{t.boxes} box{t.boxes === 1 ? "" : "es"} to make{(t.orders || []).length ? ` for ${(t.orders || []).length} order${(t.orders || []).length === 1 ? "" : "s"}` : ""}{t.onRack > 0 ? ` · ${reelWords || `${t.onRack} m`} already on the reel rack` : ""}{t.overmakePct ? ` · includes ${t.overmakePct}% allowance` : ""}</div>
+      {(t.orders || []).length > 0 && <div data-glue-need-orders style={{ marginTop: 6, display: "grid", gridTemplateColumns: "1fr auto", columnGap: 14, rowGap: 2, fontSize: 14, maxWidth: 560 }}>
+        {(t.orders || []).map(o => <React.Fragment key={o.orderId}><span data-glue-need-order={o.orderId}>{o.customer || o.orderId} <span style={{ color: INK_MUTED }}>{o.orderId}</span></span><span style={{ fontWeight: 700, textAlign: "right" }}>{o.boxes} box{o.boxes === 1 ? "" : "es"}</span></React.Fragment>)}
+      </div>}
       {short != null && (short > 0
         ? <div data-glue-need-short style={{ marginTop: 10, background: "#FDECEA", border: `1px solid ${RED}`, borderRadius: 6, padding: "8px 10px", fontSize: 15, fontWeight: 700, color: RED }}>
             This reel ({reel} m) is {short} m short — run another {short} m</div>
