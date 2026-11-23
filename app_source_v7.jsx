@@ -25,7 +25,7 @@ import { PRICE_CURRENCIES, QUOTE_LOST_REASONS, QUOTE_VALID_DAYS, customerRecordB
 import { orderWithPromise, promiseBehind, promiseDay, promiseOf, promiseStats, promiseWrite } from "./mx_promise.js";
 import { OFFICE_AMBER_DAYS, OFFICE_RED_DAYS, officeAged, officeAgeTone, officeAgeWords, officeEntryWords, officeGuess, officeHistory, officeItems, officeKindWords, officeScreenOf, officeTally } from "./mx_office.js";
 import { OVERNIGHT_MORNINGS, TRUTHS, TRUTH_SHORT, UNDO_CAUSES, WRONG_KINDS, activityDay, causesLines, changesetMatches, describeChangeset, foundWords, healthView, overnightPolicyWords, proposedRowWords, reelDoubleSaves } from "./mx_fix.js";
-import { edgesWander, motionVoted, isRepeatPicture, stripWidthsMm, widthsSteady, beadForget, GAP_BEAD_RELEARN_STOP_MS } from "./mx_gaptrace.js";
+import { gapLooseFor, gapWallCut, edgesWander, motionVoted, isRepeatPicture, stripWidthsMm, widthsSteady, beadForget, GAP_BEAD_RELEARN_STOP_MS } from "./mx_gaptrace.js";
 import { gaugeOne, gaugePush, gaugeMedian, gaugeKey, gaugeZeroValid, gaugeRead, gaugePicture, gaugeRezero, gaugeZeroFrom, gaugeZeroFind, gaugeKeyNorm, GAUGE_ZERO_MAX_MS, GAUGE_AGREE_MM } from "./mx_gapgauge.js";
 import { GAP_LIGHT_SHIFT, gapCalChecks, gapScaleFor, gapCalVerdict, gapWidthSeen, gapTraceUncal, gapMarkUncal, gapReelGapFrom, glueGapProblem, gapPointUncal, GAP_CAL_AGREE, GAP_CAL_DRIFT_RUN } from "./mx_gaptrace.js";
 import { glueRuns, reelGlueFault, GLUE_MIN_MM, GLUE_OPEN_END_M, GLUE_LINE_M, GLUE_CAUSES } from "./mx_gaptrace.js";
@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-20.4";
+const APP_VERSION = "2026-11-23.2";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -7602,6 +7602,13 @@ function gtReadOnce() {
     : readBand(px, w, bh, colour, widthMm, GT_REC.sigKeep || null, expShare, gtBackHelp());
   /* strips that only their colour tells apart (12 Oct 2026) — the old reader's colour fall-back */
   if (newOn && !r.ok && rgb) { const o = readBand(px, w, bh, colour, widthMm, GT_REC.sigKeep || null, expShare, gtBackHelp()); if (o.ok && o.signal === "colour") r = o; }
+  /* a size the camera sees roughly (gapLooseFor, 23 Nov 2026): a reading that hasn't got the whole strip pair is left out */
+  const loose = gapLooseFor(GT_REC.cfg.spec);
+  if (loose && r.ok && r.edges) { const tw = GT_REC.cfg.widthRec && Number(GT_REC.cfg.widthRec.totPx), tot = r.edges.b1 - r.edges.a0;
+    if (tw > 0 && tot < loose.wholeShare * tw) r = { ok: false, rows: r.rows, reader: r.reader, why: "not the whole pair of strips — left out for this size" }; }
+  /* …and a gap the strip's lit wall made narrow (gapWallCut, 23 Nov 2026) */
+  if (loose && r.ok && r.edges) { const wc = gapWallCut(GT_REC.wallHist, nowR, r.edges.b0 - r.edges.a1, loose); GT_REC.wallHist = wc.hist;
+    if (!wc.keep) r = { ok: false, rows: r.rows, reader: r.reader, why: "the strip's wall caught the light — left out for this size" }; }
   if (newOn && r.ok && r.reader === "new") GT_REC.rdPrev = { edges: r.edges, signal: r.signal, at: nowR, track: r.track };
   /* FOCUS AND LIGHT, WATCHED (the new reader): a picture well softer than the last 30 s' usual (the camera hunting for focus)
      or one just after a sudden jump in the light isn't used — the screen says which, and the reading comes back by itself */
@@ -7744,7 +7751,7 @@ function gtReadOnce() {
      (steadyRaw), not one picture; and Gap now's ± is how far the last 4 s of corrected pictures wander (gapWander) */
   const rawOne = r.ok && r.gap > 0 && mmPerPx ? r.gap - corrPx * mmPerPx : null;
   GT_REC.rawHist = (GT_REC.rawHist || []).filter(x => now - x.t <= 8000); if (rawOne > 0) GT_REC.rawHist.push({ t: now, v: rawOne });
-  const steady = steadyRaw(GT_REC.rawHist, now), wander = gapWander((GT_REC.steady && GT_REC.steady.g || []).map(x => ({ t: x.t, v: x.g })), now);
+  const steady = steadyRaw(GT_REC.rawHist, now, loose ? { ms: loose.ms, agree: loose.agree, minN: loose.minN } : undefined), wander = gapWander((GT_REC.steady && GT_REC.steady.g || []).map(x => ({ t: x.t, v: x.g })), now);
   /* THE WIDTHS (Chris, 29 Oct 2026): overall and each strip, from a picture that counted (glue against a strip left out, as the
      gap does), the middle of the last 4 s like Gap now */
   const wOne = r.ok && !gate && !sd.refused ? stripWidthsMm(sd.edges || r.edges, mmPerPx) : null;
