@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-25.3";
+const APP_VERSION = "2026-11-25.4";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -33744,7 +33744,7 @@ function PinsToTry({ result }) {
           <span style={{ display: "inline-block", fontSize: 10.5, fontWeight: 800, letterSpacing: 0.6, color: k[1], background: k[2], borderRadius: 999, padding: "2px 8px", marginRight: 6 }}>{k[0]}</span>
           {p.why}{start ? <span style={{ color: NL.SUB }}> · start at {start}</span> : null}
           {p.warn ? <span data-pin-warn style={{ display: "block", color: NL.RED, fontWeight: 600 }}>{p.warn}</span> : null}</span></div>); })}
-    <div style={{ fontSize: 12, color: NL.SUB, marginTop: 4 }}>Best first. The rule: turning the extruder up makes the strip wider, and every 0.10 wider is 0.10 higher.{more ? ` ${more} more pin${more === 1 ? "" : "s"} could reach it.` : ""}</div>
+    <div style={{ fontSize: 12, color: NL.SUB, marginTop: 4 }}>Best first. The rule: turning the extruder up makes the strip wider, and every 0.10 wider is 0.01 higher.{more ? ` ${more} more pin${more === 1 ? "" : "s"} could reach it.` : ""}</div>
   </div>);
 }
 function ToolingSimple({ tooling, subTabs, setCategory, lastRunFor, history = new Map(), glueHistory = new Map(), testedChart = null, setTestedChart = null, pinEv = [], ncrs = [] }) {
