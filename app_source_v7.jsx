@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-25.4";
+const APP_VERSION = "2026-11-25.5";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -33727,7 +33727,7 @@ function UltraMakes({ note, big = false }) {
 /* PINS TO TRY FOR A SIZE (Chris, 18 Nov 2026: "give me multiple tooling to try and make each size based on this system").
    Typing a size in the Tooling search shows, above the list: the aim (base − gap wide, 0.05 under the size ± 0.02 high) and
    up to five pins, best first, each with why and where to start. The working is in mx_pins.js; nothing here is saved. */
-const PIN_KIND = { made: ["MADE IT", "#166534", "#E6F4EA"], sheet: ["ON THE LIST", "#1E2A5E", "#E8ECF7"], height: ["RUNS THE HEIGHT", "#7C4A03", "#FDF3E1"], rule: ["BY THE RULE", "#5B21B6", "#F1EAFD"] };
+const PIN_KIND = { made: ["MADE IT", "#166534", "#E6F4EA"], sheet: ["ON THE LIST", "#1E2A5E", "#E8ECF7"], height: ["RUNS THE HEIGHT", "#7C4A03", "#FDF3E1"], rule: ["BY THE RULE", "#5B21B6", "#F1EAFD"], close: ["NEAREST", "#5E6A82", "#EEF0F4"] };
 function PinsToTry({ result }) {
   if (!result) return null;
   const { aim, pins, more } = result;
