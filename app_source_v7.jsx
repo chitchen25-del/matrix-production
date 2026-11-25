@@ -25,7 +25,7 @@ import { PRICE_CURRENCIES, QUOTE_LOST_REASONS, QUOTE_VALID_DAYS, customerRecordB
 import { orderWithPromise, promiseBehind, promiseDay, promiseOf, promiseStats, promiseWrite } from "./mx_promise.js";
 import { OFFICE_AMBER_DAYS, OFFICE_RED_DAYS, officeAged, officeAgeTone, officeAgeWords, officeEntryWords, officeGuess, officeHistory, officeItems, officeKindWords, officeScreenOf, officeTally } from "./mx_office.js";
 import { OVERNIGHT_MORNINGS, TRUTHS, TRUTH_SHORT, UNDO_CAUSES, WRONG_KINDS, activityDay, causesLines, changesetMatches, describeChangeset, foundWords, healthView, overnightPolicyWords, proposedRowWords, reelDoubleSaves } from "./mx_fix.js";
-import { gapLooseFor, gapWallCut, edgesWander, motionVoted, isRepeatPicture, stripWidthsMm, widthsSteady, beadForget, GAP_BEAD_RELEARN_STOP_MS } from "./mx_gaptrace.js";
+import { gapBand, GAP_BAND_FILL, gapLooseFor, gapWallCut, edgesWander, motionVoted, isRepeatPicture, stripWidthsMm, widthsSteady, beadForget, GAP_BEAD_RELEARN_STOP_MS } from "./mx_gaptrace.js";
 import { gaugeOne, gaugePush, gaugeMedian, gaugeKey, gaugeZeroValid, gaugeRead, gaugePicture, gaugeRezero, gaugeZeroFrom, gaugeZeroFind, gaugeKeyNorm, GAUGE_ZERO_MAX_MS, GAUGE_AGREE_MM } from "./mx_gapgauge.js";
 import { GAP_LIGHT_SHIFT, gapCalChecks, gapScaleFor, gapCalVerdict, gapWidthSeen, gapTraceUncal, gapMarkUncal, gapReelGapFrom, glueGapProblem, gapPointUncal, GAP_CAL_AGREE, GAP_CAL_DRIFT_RUN } from "./mx_gaptrace.js";
 import { glueRuns, reelGlueFault, GLUE_MIN_MM, GLUE_OPEN_END_M, GLUE_LINE_M, GLUE_CAUSES } from "./mx_gaptrace.js";
@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-25.5";
+const APP_VERSION = "2026-11-25.6";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -10393,6 +10393,8 @@ function GlueLinePortalView({ data, setData }) {
        everything else. The page of cards that was here is "Trace and edge detail" under More…, with the same bottom bar. */
     /* setting up a new size the gap is expected to be off while the die is brought on — no red, the status says SETTING UP */
     const outNow = !GT_REC.settingUp && (verdict === "over" || verdict === "under");
+    /* the gap box filled green / amber / red (Chris, 25 Nov 2026) — not while setting up, nor before calibration */
+    const band = GT_REC.settingUp || !verdict ? null : gapBand(g, lim), fill = band ? GAP_BAND_FILL[band] : null;
     const stopRed = { background: "#C2410C", borderColor: "#C2410C", color: "#fff" };
     /* THE BOTTOM BAR (render A): what is recording and how it was set up; Log the reel · New size · Stop · More… */
     const setupLine = setupGood.length ? `set up ${hhmm(setupGood[0].at)} · ${setupGood.length === GAP_SETUP_CHECKS ? "three checks" : `${setupGood.length} check${setupGood.length === 1 ? "" : "s"}`} ${setupGood.map(c => c.hand.toFixed(3)).join(" / ")}` : null;
@@ -10600,16 +10602,16 @@ function GlueLinePortalView({ data, setData }) {
       const fl = flash && !((flash.reelOff || flash.logged) && flash.at && Date.now() - flash.at > 120000) ? flash : null;
       const edgeInk = outNow ? "#F87171" : "#FACC15", sw2 = Math.max(3, vid.w / 320), dimY = bandY + vid.h * 0.075;
       const beadNote = <GlueNote outNow={outNow} />;
-      const nowBox = <section data-pt-reading={verdict || "none"} style={{ width: 430, boxSizing: "border-box", borderRadius: 18, padding: "20px 24px", display: "flex", flexDirection: "column", gap: 8, background: outNow ? "#B91C1C" : "rgba(255,255,255,0.96)", color: outNow ? "#fff" : P.ink }}>
-        <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: "0.04em", color: outNow ? "#fff" : P.sub }}>GAP NOW</div>
+      const nowBox = <section data-pt-reading={verdict || "none"} style={{ width: 430, boxSizing: "border-box", borderRadius: 18, padding: "20px 24px", display: "flex", flexDirection: "column", gap: 8, background: fill ? fill[0] : "rgba(255,255,255,0.96)", color: fill ? "#fff" : P.ink }} data-pt-band={band || "none"}>
+        <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: "0.04em", color: fill ? "#fff" : P.sub }}>GAP NOW</div>
         <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-          <span data-pt-gap data-gap-out={outNow ? "1" : "0"} style={{ fontFamily: GT_MONO, fontSize: 108, fontWeight: 600, lineHeight: 0.95, fontVariantNumeric: "tabular-nums", ...(outNow ? { animation: "none", color: "#fff" } : {}) }}>{g ? g.toFixed(3) : "—"}</span>
-          <span style={{ fontSize: 26, fontWeight: 600, color: outNow ? "#fff" : P.sub }}>mm</span></div>
+          <span data-pt-gap data-gap-out={outNow ? "1" : "0"} style={{ fontFamily: GT_MONO, fontSize: 108, fontWeight: 600, lineHeight: 0.95, fontVariantNumeric: "tabular-nums", ...(outNow ? { animation: "none" } : {}), ...(fill ? { color: "#fff" } : {}) }}>{g ? g.toFixed(3) : "—"}</span>
+          <span style={{ fontSize: 26, fontWeight: 600, color: fill ? "#fff" : P.sub }}>mm</span></div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <span data-pt-status style={{ fontSize: 18, fontWeight: 700, padding: "6px 14px", borderRadius: 999, background: outNow ? "#fff" : GT_REC.settingUp ? "#FDF6E3" : verdict ? "#1E7F3C" : t[0], color: outNow ? "#B91C1C" : GT_REC.settingUp ? "#B45309" : verdict ? "#fff" : t[2] }}>{GT_REC.settingUp && !outNow ? "SETTING UP" : t[3]}</span>
+          <span data-pt-status style={{ fontSize: 18, fontWeight: 700, padding: "6px 14px", borderRadius: 999, background: fill ? "#fff" : GT_REC.settingUp ? "#FDF6E3" : verdict ? "#1E7F3C" : t[0], color: fill ? fill[1] : GT_REC.settingUp ? "#B45309" : verdict ? "#fff" : t[2] }}>{GT_REC.settingUp && !outNow ? "SETTING UP" : t[3]}</span>
           {outNow && g && lim ? <span style={{ fontSize: 18, fontWeight: 600 }}>by {(verdict === "over" ? g - lim.max : lim.min - g).toFixed(3)}</span>
-            : g > 0 && live && live.wander && live.wander.pm != null ? <span data-pt-steady={live.wander.steady ? "steady" : "settling"} style={{ fontSize: 16, color: live.wander.steady ? "#3F4A60" : "#B45309" }}>{live.wander.steady ? "steady" : "settling"} ± {live.wander.pm.toFixed(3)}</span> : null}</div>
-        {lim ? <div style={{ display: "flex", gap: 18, fontSize: 16, borderTop: `1px solid ${outNow ? "rgba(255,255,255,.35)" : P.line}`, paddingTop: 8 }}>
+            : g > 0 && live && live.wander && live.wander.pm != null ? <span data-pt-steady={live.wander.steady ? "steady" : "settling"} style={{ fontSize: 16, color: fill ? "#fff" : live.wander.steady ? "#3F4A60" : "#B45309" }}>{live.wander.steady ? "steady" : "settling"} ± {live.wander.pm.toFixed(3)}</span> : null}</div>
+        {lim ? <div style={{ display: "flex", gap: 18, fontSize: 16, borderTop: `1px solid ${fill ? "rgba(255,255,255,.35)" : P.line}`, paddingTop: 8 }}>
           {[["min", lim.min], ["nom", nomOf(lim)], ["max", lim.max]].map(([l, v]) => <span key={l}>{l} <b style={{ fontFamily: GT_MONO }}>{v.toFixed(2)}</b></span>)}</div>
           : <div style={{ fontSize: 15, color: P.sub }}>{advice}</div>}
         {beadNote}
@@ -10683,7 +10685,7 @@ function GlueLinePortalView({ data, setData }) {
         const vrow = (l, v, attrs = {}, c = null) => <><div style={{ color: c || "#3F4A60" }}>{l}</div><div {...attrs} style={{ ...mono, fontWeight: 600, textAlign: "right", color: c || P.ink }}>{v}</div></>;
         const tabs = [["readout", "Readout", null], ["reel", "Whole reel", () => setDetail(true)], ["stats", "Statistics", () => { setMoreChart("cpk"); setPpanel("more"); }],
           ["events", `Events${evN ? ` · ${evN}` : ""}`, () => setPpanel("events")], ["camera", "Camera", () => setRview("camera")]];
-        const statusBg = outNow ? "#fff" : GT_REC.settingUp ? "#FDF6E3" : verdict ? "#1E7F3C" : t[0], statusFg = outNow ? "#B91C1C" : GT_REC.settingUp ? "#B45309" : verdict ? "#fff" : t[2];
+        const statusBg = fill ? "#fff" : GT_REC.settingUp ? "#FDF6E3" : verdict ? "#1E7F3C" : t[0], statusFg = fill ? fill[1] : GT_REC.settingUp ? "#B45309" : verdict ? "#fff" : t[2];
         const statusWord = GT_REC.settingUp && !outNow ? "SETTING UP" : outNow ? (verdict === "under" ? "UNDER MIN" : "OVER MAX") : t[3];
         const eventsPanel = ppanel === "events" && side("events", "On this reel", <div data-pt-events>{pEvents.length ? pEvents.map((e, i) => <div key={i} style={{ display: "flex", gap: 12, padding: "10px 0", borderTop: i ? `1px solid ${P.line}` : 0 }}>
             <span style={{ fontSize: 15, color: P.sub, width: 46, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{e.t ? hhmm(e.t) : ""}</span>
@@ -10713,19 +10715,19 @@ function GlueLinePortalView({ data, setData }) {
             <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0, minHeight: 0 }}>
               {flashBox}
               <section data-pt-reading={verdict || "none"} aria-label="Gap now" style={{ flex: "0 0 auto", boxSizing: "border-box", borderRadius: 14, padding: "14px 24px 12px", display: "flex", flexDirection: "column", gap: 2,
-                background: outNow ? "#B91C1C" : "#fff", color: outNow ? "#fff" : P.ink, border: `1px solid ${outNow ? "#B91C1C" : "#DCE2EA"}` }}>
+                background: fill ? fill[0] : "#fff", color: fill ? "#fff" : P.ink, border: `1px solid ${fill ? fill[0] : "#DCE2EA"}` }} data-pt-band={band || "none"}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, letterSpacing: "0.06em", color: outNow ? "#fff" : P.sub }}>GAP</div>
-                  <div style={{ fontSize: 14, color: outNow ? "#FDE2E2" : P.sub }}>over the last 4 seconds</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, letterSpacing: "0.06em", color: fill ? "#fff" : P.sub }}>GAP</div>
+                  <div style={{ fontSize: 14, color: fill ? "rgba(255,255,255,.85)" : P.sub }}>over the last 4 seconds</div>
                   <span style={{ flex: 1 }} />
                   <span data-pt-status style={{ fontSize: 15, fontWeight: 700, padding: "5px 14px", borderRadius: 999, background: statusBg, color: statusFg }}>{statusWord}</span>
                   {outNow && g && lim ? <span style={{ fontSize: 16, fontWeight: 600 }}>by {(verdict === "over" ? g - lim.max : lim.min - g).toFixed(3)}</span>
-                    : g > 0 && live && live.wander && live.wander.pm != null ? <span data-pt-steady={live.wander.steady ? "steady" : "settling"} style={{ fontSize: 15, color: live.wander.steady ? "#3F4A60" : "#B45309" }}>{live.wander.steady ? "steady" : "settling"} ±{live.wander.pm.toFixed(3)}</span> : null}
+                    : g > 0 && live && live.wander && live.wander.pm != null ? <span data-pt-steady={live.wander.steady ? "steady" : "settling"} style={{ fontSize: 15, color: fill ? "#fff" : live.wander.steady ? "#3F4A60" : "#B45309" }}>{live.wander.steady ? "steady" : "settling"} ±{live.wander.pm.toFixed(3)}</span> : null}
                 </div>
                 <div style={{ display: "flex", alignItems: "baseline", justifyContent: "center", gap: 14 }}>
-                  <span data-pt-gap data-gap-out={outNow ? "1" : "0"} style={{ ...mono, fontSize: "min(138px, 16vh)", fontWeight: 600, lineHeight: 1.02, letterSpacing: "-0.02em", ...(outNow ? { animation: "none", color: "#fff" } : {}) }}>{g ? g.toFixed(3) : "—"}</span>
-                  <span style={{ fontSize: 36, fontWeight: 600, color: outNow ? "#FDE2E2" : P.sub }}>mm</span></div>
-                <GtWidths w={live && live.widths} dark={outNow} big align="center" />
+                  <span data-pt-gap data-gap-out={outNow ? "1" : "0"} style={{ ...mono, fontSize: "min(138px, 16vh)", fontWeight: 600, lineHeight: 1.02, letterSpacing: "-0.02em", ...(outNow ? { animation: "none" } : {}), ...(fill ? { color: "#fff" } : {}) }}>{g ? g.toFixed(3) : "—"}</span>
+                  <span style={{ fontSize: 36, fontWeight: 600, color: fill ? "rgba(255,255,255,.85)" : P.sub }}>mm</span></div>
+                <GtWidths w={live && live.widths} dark={!!fill} big align="center" />
                 {outNow && figs && figs.outSince ? <div data-pt-outsince style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", marginTop: 6, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.35)" }}>
                     <div style={{ fontSize: 17, fontWeight: 600 }}>Out since {figs.outSince.from.toFixed(1)} m — {Math.max(1, Math.round(figs.outSince.m - figs.outSince.from))} m so far</div>
                     <div style={{ fontSize: 15, color: "#FDE2E2" }}>min {lim.min.toFixed(2)} · nom {nomOf(lim).toFixed(2)} · max {lim.max.toFixed(2)}</div>
