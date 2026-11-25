@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-25.1";
+const APP_VERSION = "2026-11-25.2";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -33798,6 +33798,8 @@ function ToolingSimple({ tooling, subTabs, setCategory, lastRunFor, history = ne
     </>}
     {open && edit && <SimpleSheet id="tooling" title={open.add ? `Add to ${famLabel(open.fam)}` : `${famLabel(open.fam)} ${row ? row.size : ""}`} onClose={close}>
       {!open.add && row && open.fam === "ultrasr" && <div data-ultra-makes-sheet style={{ margin: "0 0 10px" }}><UltraMakes note={row.comments} big /></div>}
+      {/* …and tapping a size shows them too (admin, 25 Nov 2026: "why can't I see that when I click on 0.40 x 1.60") — the 10 mm lists only */}
+      {!open.add && row && (open.fam === "standard" || open.fam === "ken") && parsePinSize(row.size) && <div data-pins-in-sheet><PinsToTry result={pinsToTry(row.size, pinEv, { ncrs, kPins: open.fam === "ken" })} /></div>}
       {!open.add && row && <div style={{ fontSize: 13, color: NL.SUB, margin: "0 0 10px", lineHeight: 1.5 }}>{row.updatedBy ? `changed ${row.updatedAt ? plainDate(new Date(row.updatedAt)) : ""} by ${String(row.updatedBy).split("@")[0]}` : ""}
         {run ? <><br />last run: pin {run.pin || "—"} · screw {run.screwSpeed || "—"}{run.haulOff ? ` · haul-off ${run.haulOff}` : ""}{run.batch ? ` · ${run.batch}` : ""}{run.at ? ` (${plainDate(new Date(run.at))})` : ""}</> : null}
         {dieNow(row) ? <><br />last glued on glue die <b style={{ color: NL.INK }}>{dieNow(row)}</b></> : null}</div>}
