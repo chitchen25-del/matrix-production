@@ -13,7 +13,7 @@ import { BOX_LOCATIONS, madeCorrectionMoves, MOVEMENT_KINDS, SIGNED_MOVEMENT_KIN
 import { fullCaseNums, orderPalletPlan, caseWeightsEstimate, palletPlanByWeight, BOX_CASE_SIZES, CASES_PER_PALLET, palletPlan, casePalletShown, ONE_PALLET_MAX_BOXES, onePalletCheck, CASE_BAND_ORDER, CASE_MAX_SIZE_DEFAULT, EMPTY_ON_PURPOSE, MONTH_LETTERS, PLAN_BAND_ORDER, STANDARD_BOX_TYPES, allocateCaseDetails, allocationRefusal, amendmentsFor, applyAmendmentReduction, arrangeBoxesThenReels, arrangeCases, arrangedCasesForOrder, backfillPlannedCases, batchesAvailableRows, batchesAvailableRowsFresh, boxOutOfOrderCases, buildCombinedCases, buildPackingPlan, caseShownSize, caseTileScale, cartonFor, cartonMismatch, caseContentLines, caseFill, caseKindOf, casePalletOf, casePlanLines, casePlanned, caseRangeLabel, caseRecordFor, caseRowId, caseRunsLabel, caseSortKey, caseState, caseView, caseWeightOf, caseWeightQuery, oddCaseWeights, compareCaseSort, computeMakeLists, dateFromReelCode, dedupeCaseRows, dismissalMap, findDiscrepancies, findDiscrepanciesFresh, hasCasePlan, isCaseClosed, isReelCase, isReelFulfilled, isStrongTapeOrder, liveMapEntries, mergePlannedRows, openCasesForOrder, openIssues, openPickSheets, orderBoxTypes, orderCaseCount, orderHasStarted, orderShortfall, ordersMissingPlan, ordersNeedingSpec, packedOutsideSpecs, packingShort, parseCodeDate, patchMapsFromCaseRecords, planAmendment, planBandFor, planCutForLine, planForMove, planOrderMismatches, planOrderRefusal, planRowsForNewOrder, planSpacesFor, plannableLines, plannedCasesFor, proposeCut, readDiscrepancyDismissals, reelsPerCase, refillCases, renumberAfterRemoval, resolveCaseContents, sameContents, shortCaseSpec, sortLinesForCases, specInCarton, specOfBoxInCase, subtractConfirmed, subtractPlanned, tapeFits, tapeRefusal, twinCartonSpec, bondedTwinSpecs, upBox, planVsOrder, discrepancyTriage, discrepancyWords, reelPlanInputs, orderMakePlan, caseWorkState } from "./mx_packing.js";
 import { ackVatKey, customerHsCode, orderAddressFor, tidyAddress, newerShipmentFor, shippedDayOf, EMPTY_CASE_KG, glueSheetDoc, manifestWeights, officeSummary, money, bondingListDoc, caseLabelDoc, caseLabelInner, caseLabelRange, caseLabelLayoutKey, CASE_LABEL_CSS, CASE_LABEL_LAYOUTS, ACK_VAT_TREATMENTS, LOGO_B64, MATRIX_EORI, MATRIX_VAT_NUMBER, PAPER_CSS, boxContentsLine, lastPriceFor, manifestReadiness, orderAckDoc, xeroInvoiceText, orderShipmentWeight, orderThreads, ordersLeftDoc, pEsc, pN2, packingListRows, paperFoot, paperHead, paperRunHead, pickSheetDoc, portalOrdersWaiting, productionSheetDoc, shippingManifestDoc, shippingManifestEmail, suggestedVatTreatment, unreadFromCustomers, customerGaps, VAT_RECORD_VALUE, VAT_WORDS, correctedManifest, caseDimsOf, manifestBoughtIn, deliveryAddressesOf, deliverToChoice } from "./mx_papers.js";
 import { ALL_GLUE_DIES, dpCardsState, dpClearReelEstimate, DEFAULT_SCHEDULE_SETTINGS, GLUE_DIES_10MM, GLUE_DIES_12MM, GLUE_DIES_7MM, GLUE_DIES_7MM_OS, GLUE_DIE_12_DOUBLE, GLUE_DIE_GROUPS, SMALL_KEYWORDS, ULTRA_SR_COLOURS, WORK_HOURS, addWorkHours, addWorkingDays, batchMeterageUsed, glueReelHours, planDayAmount, workDayFraction, rackReels, reelIsCleared, reelState, reelUsedByCode, scrappedReelCodes, buildDailyPlan, classifySize, dueDateLabel, dueDateRows, formatOrderBreakdown, gapFromSpec, glueDiesForSpec, glueLineSequence, glueSizeOfProduct, glueReelPool, glueUsableFrom, scheduleTweaksOf, glueChangeBetween, scheduleRulesOf, glueChangeoverStats, learnFromTweaks, glueRangeOf, LEARN_AFTER, glueReelOffAt, SAME_PVC_CHANGE_MIN, hoursOn, isDelivery, isSmallItem, boughtInToPick, boughtInShort, localDateKey, measuredRates, nextWorkMoment, nextWorkingMorning, orderDialSegments, orderFinishDates, planOrderCompare, glueListOrdersFor, packingReadyRows, packingReadyRowsStored, planDaysUntil, planDueReason, planScore, planSlips, planSnapshotRow, promiseOptions, readyToShip, schedulePrep, scheduleSettingsOf, sizeKeyOfProduct, top2PriorityOrders, top2SizeRows, unrankableOrders, workCalendar } from "./mx_planning.js";
-import { pvcCodeCheck, BONDING_BOXES_PER_DAY_MIN, DERIVED_RUN_GAP_HOURS, DERIVED_RUN_KEYS, EVA_YIELD_MIN_SAMPLE, GLUE_MEASURE_TOLERANCE_PCT, PVC_COLOUR_BY_HEIGHT, PVC_DEFAULT_COLOUR, REEL_METRES_TYPICAL, batchDeleteWarning, bondingOutputByDay, categoryLowest, categoryTotal, deriveRuntimeHours, derivedGlueRuns, evaDieForRow, evaRackRows, evaYieldByDie, extrudedReelCheck, extrudedReelsForSize, extrudedReelsForSpec, extrudedReelsMatching, extrusionScheduleRows, glueDieByLabel, glueDiesForWidthOf, glueLineScheduleRows, glueLineScheduleRowsFresh, glueRunReels, glueRunTarget, glueRunTotals, glueSizeKey, glueSpecMalformed, lastGlueBatchUsed, lastToolingUse, toolingUseHistory, glueDieUseHistory, glueDieSpells, learnedReelMetres, materialBatchCode, materialStockFrom, materialsGroupedByCategory, metersPerBoxWarning, minutesSinceLastReel, normalWeightFor, productPipeline, pvcCodeForSpec, pvcColourForSpec, recommendedBatch, recordMaterialMovement, reelCapacityWarning, reelDiscrepancy, reelIsIndirect, reelOverConsumption, runningReelDiscrepancy, samePin, toolingUnplaced, unknownReelWarning, withGlueRunSettings, withMaterialFigures, withPrefixFor, evaOutlook, evaDieForSpec, evaCodeFacts, EXTRUDED_REEL_SOFT_DAYS, extrudedOn } from "./mx_production.js";
+import { pvcCodeCheck, BONDING_BOXES_PER_DAY_MIN, DERIVED_RUN_GAP_HOURS, DERIVED_RUN_KEYS, EVA_YIELD_MIN_SAMPLE, GLUE_MEASURE_TOLERANCE_PCT, PVC_COLOUR_BY_HEIGHT, PVC_DEFAULT_COLOUR, REEL_METRES_TYPICAL, batchDeleteWarning, bondingOutputByDay, categoryLowest, categoryTotal, deriveRuntimeHours, derivedGlueRuns, evaDieForRow, evaRackRows, evaYieldByDie, extrudedReelCheck, extrudedReelsForSize, extrudedReelsForSpec, extrudedReelsMatching, extrusionScheduleRows, glueDieByLabel, glueDiesForWidthOf, glueLineScheduleRows, glueLineScheduleRowsFresh, glueRunReels, glueRunTarget, glueRunTotals, glueSizeKey, glueSpecMalformed, lastGlueBatchUsed, lastToolingUse, toolingUseHistory, glueDieUseHistory, glueDieSpells, toolingRunHistory, runSettingPairs, runLineText, learnedReelMetres, materialBatchCode, materialStockFrom, materialsGroupedByCategory, metersPerBoxWarning, minutesSinceLastReel, normalWeightFor, productPipeline, pvcCodeForSpec, pvcColourForSpec, recommendedBatch, recordMaterialMovement, reelCapacityWarning, reelDiscrepancy, reelIsIndirect, reelOverConsumption, runningReelDiscrepancy, samePin, toolingUnplaced, unknownReelWarning, withGlueRunSettings, withMaterialFigures, withPrefixFor, evaOutlook, evaDieForSpec, evaCodeFacts, EXTRUDED_REEL_SOFT_DAYS, extrudedOn } from "./mx_production.js";
 // (mx_promises.js — the retired promise readers — removed 24 Sep 2026)
 import { bondedAsBoxes, reelAsBoxes, CARTON_MEMO, CORRECTED_OUT, CORRECTED_RUNS, DEFAULT_BOX_TYPE, GLUE_REEL_FROM_RUN_KEYS, GLUE_RUN_SETTING_KEYS, INDIRECT_HISTORY_SAMPLE, KEN_BOX_TYPE, MEMO_STATS, MEMO_STORE, METERS_PER_BOX_DEFAULT, NO_PROMISES, SPEC_REF_CACHE, batchesAvailableRowsStored, bondingOffer, boxTypeNameOf, kPinEquivalent, boxedStockAvailable, boxedStockAvailableFresh, boxedStockAvailableStored, cartonStockFor, cartonStockForFresh, doubleGapOf, evaDiesForGap, extractMeterageSuffix, formById, formIdFor, fullerSpec, glueLineScheduleRowsStored, glueRunOf, glueSettingsFor, groupAssignedRunsByLineItem, isExceed, isKenPin, isMini, isOffCentre, isReelSpec, ledgerCorrectedRuns, ledgerCorrectedRunsFresh, ledgerView, localISO, looseSpecMatch, memoCall, memoDeepFreeze, memoGlobals, memoSameArg, mergeSplitRuns, normalizeSpec, orderBoxTypeFor, orderLineItems, orderMadeQty, orderOutstanding, orderPctComplete, orderPctCompleteStored, orderProgress, orderStageNow, stageNow, dueStateOf, dueCounts, isLiveOrder, isLiveWork, isWebsiteRequest, lineNeeds, reelPoolsOf, reelYieldStats, reelBoxesHonest, orderPickable, orderPickablePercent, orderPickablePercentStored, orderTotalItems, orderTotalValue, otherStockBalance, otherStockUsed, pickableNow, pickableNowFresh, predictRunDestinations, productKey, productParts, productRowKey, sameProductParts, productionOutstandingRows, productionOutstandingRowsFresh, productionOutstandingRowsStored, ptOf, rangeBoxFor, refsEquivalent, resolveProduct, runCustomer, runMatchesLine, runsForOrder, runsIndirect, runsIndirectByRule, sameSizeSpec, shelfBoxFitsBoxType, specCandidateIndex, specDimensions, specIsReel, specMeterage, specRef, sizeSortPair, daysFromTodayISO, metresPerBoxFor, stockFormMatchesLine, todayISO, whatsLeftRows , glueLineNeedRowsAll, resolveOrderLine, planReels, uncheckedShelfStock, tapeLast } from "./mx_stock.js";
 import { autoReloadDue, quietUpdateDue, mergeParked, parkUnsentRows, restoreParked } from "./mx_sync.js";
@@ -35,7 +35,7 @@ import { learningNow, LEARN_MIN } from "./mx_learning.js";
 import { reelSizeFill, labelSizeClash, labelCodeToBook, labelCodeOtherSize, usualBay, withTapeSuffix, dropEmptyAllocations, mergeSameOrder, trimAllocationsTo, withoutOrders, withOrderQty, allToShelf, heldDetail, heldEntryOf, heldWhy, firstRefusalLine, dedupeFixes } from "./mx_bondfix.js";
 import { STOP_REASONS, isFalseStop, STOP_MIN_MS, WATCH_TICK_MS, lineStopStep, reasonOf, isChangeReason, changePlanMin, changeoverTimes, efficiencyWeek, biggestWins, scrappedReels, weekStartOf, fmtClock, fmtMin, fmtLen, stopEndMs } from "./mx_linestops.js";
 import { walkProducts, walkCards, walkCases, caseRoute, pickFacts, notThereFacts, putBackFacts, damagedFacts, notThereOpen, tickStatus, foundBoxRecord, foundBoxCartonGuess, walkProductKey, runFillsLine, bondingOfferFromWalk, shelfRemainderGoesTo } from "./mx_pickwalk.js";
-import { applyOrderRenames, applyRackCheck, setExtrudedCleared, applyCaseFix, applyPhotoRearrange, photoOrderVerdict, photoCaseCheck, photoReport, photoReportSnapshot, photoReportMatches, applyPhotoMoves, photoReportHolds, photoOrderLines, recordedByCase, undoAutoEntry, appendLog, appendPlanDifference, applyCaseAction, applyMovementToCaseRow, applyPatchMapsToCasesRaw, boxSpecOf, closeUpCaseNumbers, closeUpSummary, fillCustomerReferences, planCarry, planMissingCases, raiseIssue, reconcilePickSheet, recordMovement, recordMovements, recordPickSheet, refuseMovement, relabelCasesInLedger, resolveIssue, sameProductSpec } from "./mx_writes.js";
+import { applyOrderRenames, applyRackCheck, setExtrudedCleared, applyCaseFix, applyPhotoRearrange, photoOrderVerdict, photoCaseCheck, photoReport, photoReportSnapshot, photoReportMatches, applyPhotoMoves, photoReportHolds, photoOrderLines, recordedByCase, bondCaseFill, undoAutoEntry, appendLog, appendPlanDifference, applyCaseAction, applyMovementToCaseRow, applyPatchMapsToCasesRaw, boxSpecOf, closeUpCaseNumbers, closeUpSummary, fillCustomerReferences, planCarry, planMissingCases, raiseIssue, reconcilePickSheet, recordMovement, recordMovements, recordPickSheet, refuseMovement, relabelCasesInLedger, resolveIssue, sameProductSpec } from "./mx_writes.js";
 import { GapSimplePortal } from "./mx_gapsimple_view.jsx";
 import { deriveData, TRUTH_SCHEMA, TRUTH_INPUT_KEYS } from "./mx_truth.js";
 import { setCloudTruth, cloudTruthDecision, TRUTH_STORE } from "./mx_truthstore.js";
@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-26.1";
+const APP_VERSION = "2026-11-26.2";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -946,6 +946,7 @@ async function mxSelectByIds(client, table, cols, col, ids, size = 80) {
   }
   return out;
 }
+const PUSH_SOURCE_KEYS = { ...Object.fromEntries(Object.entries(SYNC_TABLES).map(([k, v]) => [v.table, [k]])), extrusion_runs: ["extrusion1", "extrusion2"], tooling: ["tooling"] };
 async function pushSyncChanges(client, prevData, nextData, opts = {}) {
   prevData = storableData(prevData); nextData = storableData(nextData);
   const skip = new Set(opts.skipTables || []);
@@ -1041,6 +1042,11 @@ async function pushSyncChanges(client, prevData, nextData, opts = {}) {
   for (const table of tableOrder) {
     if (salesOnly && !OFFICE_TABLES.has(table)) continue;
     if (skip.has(table)) { console.warn(`Push skipped for table "${table}": its fetch failed, so there is nothing safe to diff against.`); continue; }
+    /* A TABLE THE CHANGE DIDN'T TOUCH HAS NOTHING TO SEND (26 Nov 2026 — admin: "why is it so slow when inputting information on
+       Dave's pc"). Every push compared every row of every table as text, and found deletions by walking every old row against
+       every new one — seconds on Dave's PC, at each save. A list that is the very same list on both sides has no changed row
+       and no deletion, so it goes straight to "went through", exactly as the comparison would have said. */
+    { const keys = PUSH_SOURCE_KEYS[table]; if (keys && keys.every(k => prevData[k] === nextData[k])) { okTables.push(table); continue; } }
     try {
       const prevRows = prevTables[table] || [];
       const nextRows = nextTables[table] || [];
@@ -1094,7 +1100,8 @@ async function pushSyncChanges(client, prevData, nextData, opts = {}) {
       // manufactures a perfect mass-update cluster every time, which is
       // precisely the signature the Data Health check exists to catch. A
       // check that cries wolf on every connect is a check nobody reads.
-      const deletedIds = prevRows.filter(p => !p.deleted && !nextRows.some(r => r.id === p.id)).map(p => p.id);
+      const nextIdSet = new Set(nextRows.map(r => r.id));   // one pass, not every old row against every new one (26 Nov 2026 — Dave's PC)
+      const deletedIds = prevRows.filter(p => !p.deleted && !nextIdSet.has(p.id)).map(p => p.id);
       if (changed.length) {
         // Stamped on the way out, not stored locally: updated_by is a fact
         // about who sent the row, and stripMeta already excludes it from the
@@ -5282,7 +5289,7 @@ function shownActor(a) { const t = String(a || "").trim(); if (!t) return "—";
 function ScanNotice({ notice, onScanAgain, onClose }) {
   if (!notice) return null;
   return (
-    <div data-scan-notice style={{ position: "fixed", left: 10, right: 10, bottom: "calc(env(safe-area-inset-bottom, 0px) + 12px)", zIndex: 79, background: "#fff",
+    <div data-scan-notice data-numlock-notice={notice.numLock ? "1" : undefined} style={{ position: "fixed", left: 10, right: 10, bottom: "calc(env(safe-area-inset-bottom, 0px) + 12px)", zIndex: 79, background: "#fff",
       border: `2px solid ${notice.ok ? GREEN : RED}`, borderRadius: 10, padding: 12, boxShadow: "0 6px 24px rgba(0,0,0,.25)" }}>
       <div style={{ fontWeight: 700, color: notice.ok ? GREEN : RED, fontSize: 15 }}>{notice.title}</div>
       {notice.body && <div style={{ fontSize: 13.5, marginTop: 3, color: INK }}>{notice.body}</div>}
@@ -33749,7 +33756,50 @@ function PinsToTry({ result }) {
     <div style={{ fontSize: 12, color: NL.SUB, marginTop: 4 }}>Best first. The rule: turning the extruder up makes the strip wider, and every 0.10 wider is 0.01 higher.{more ? ` ${more} more pin${more === 1 ? "" : "s"} could reach it.` : ""}</div>
   </div>);
 }
-function ToolingSimple({ tooling, subTabs, setCategory, lastRunFor, history = new Map(), glueHistory = new Map(), testedChart = null, setTestedChart = null, pinEv = [], ncrs = [] }) {
+/* LAST RUN + RUN HISTORY on a size's sheet (admin, 26 Nov 2026: "I want the history on the tooling as well as everything else,
+   last line used and their settings etc"). Every extruded and glue-line reel of the size — the line it ran on and everything
+   written down for it; what changed since the run before shows in amber. The working is toolingRunHistory, mx_production.js. */
+const runDay = (e) => { const t = e && (e.at || (e.date ? Date.parse(e.date + "T12:00:00") : 0)); return t ? new Date(t).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "2-digit" }) : ""; };
+function RunSettings({ pairs, big = false }) {
+  if (!pairs.length) return <span style={{ fontSize: 12.5, color: NL.SUB }}>No settings written down for this reel.</span>;
+  return (<span data-run-settings style={{ display: "flex", flexWrap: "wrap", gap: big ? "6px 16px" : "3px 12px" }}>{pairs.map(p => (
+    <span key={p.key} data-run-set={p.key} style={{ fontSize: big ? 13 : 12.5, color: NL.SUB, whiteSpace: "nowrap" }}>{p.label} <b style={{ color: p.was ? NL.AMBERTXT : NL.INK, fontSize: big ? 15.5 : 13 }}>{p.value}</b>{p.was ? <span style={{ color: NL.AMBERTXT }}> (was {p.was})</span> : null}</span>))}</span>);
+}
+/* the last run that says something — a reel with nothing written down (added at bonding, say) isn't "the settings", it's named under it */
+const runSays = (e) => !!e && (runSettingPairs(e).length > 0 || !!e.fromReel);
+const lastTelling = (runs) => { for (let i = runs.length - 1; i >= 0; i--) if (runSays(runs[i])) return i; return runs.length - 1; };
+function ToolingLastRun({ runs }) {
+  const at = lastTelling(runs), e = at >= 0 ? runs[at] : null, blankAfter = runs.slice(at + 1);
+  if (!e) return <div data-tooling-lastrun="" style={{ background: NL.PANEL, borderRadius: 12, padding: "10px 12px", fontSize: 13.5, color: NL.SUB, marginBottom: 12 }}>Not made since the sheet — no runs recorded for this size yet.</div>;
+  const prev = runs.slice(0, at).reverse().find(x => x.kind === e.kind) || null;
+  return (<div data-tooling-lastrun={e.batch || "run"} style={{ background: "#E7EBF5", borderRadius: 12, padding: "10px 12px", marginBottom: 12 }}>
+    <div style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: 0.7, color: NL.NAVY }}>LAST RUN · {runDay(e)}</div>
+    <div data-tooling-lastline style={{ fontSize: 17, fontWeight: 800, margin: "2px 0 6px" }}>{runLineText(e)}</div>
+    <div style={{ fontSize: 12.5, color: NL.SUB, marginBottom: 6 }}>{[e.batch, e.metres && `${e.metres} m`].filter(Boolean).join(" · ")}{e.ncr ? <b style={{ color: NL.RED }}> · NCR written</b> : null}</div>
+    <RunSettings pairs={runSettingPairs(e, prev)} big />
+    {blankAfter.length ? <div data-tooling-lastrun-blank style={{ fontSize: 12.5, color: NL.SUB, marginTop: 8 }}>Since then: {blankAfter.map(x => `${x.batch || "a reel"} (${runDay(x)})`).join(", ")} — nothing written down for {blankAfter.length === 1 ? "it" : "them"}.</div> : null}</div>);
+}
+function ToolingRunHistory({ runs }) {
+  const [all, setAll] = useState(false);
+  if (!runs.length) return null;
+  const newest = runs.map((e, i) => ({ e, prev: runs.slice(0, i).reverse().find(x => x.kind === e.kind) || null })).reverse();
+  const shown = all ? newest : newest.slice(0, 8);
+  return (<div data-tooling-runs style={{ marginBottom: 14 }}>
+    <div style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: 0.7, color: NL.SUB, margin: "4px 0 6px" }}>RUN HISTORY · {runs.length} reel{runs.length === 1 ? "" : "s"}, newest first</div>
+    <div style={{ background: NL.PANEL, borderRadius: 12, overflow: "hidden" }}>
+      {shown.map(({ e, prev }, i) => (<div key={i} data-tooling-run={e.batch || i} style={{ padding: "9px 12px", borderTop: i ? `1px solid ${NL.LINE}` : 0 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap", marginBottom: 3 }}>
+          <span style={{ fontSize: 12.5, color: NL.SUB, minWidth: 64 }}>{runDay(e)}</span>
+          <b style={{ fontSize: 14 }}>{runLineText(e)}</b>
+          <span style={{ fontSize: 12.5, color: NL.SUB }}>{[e.batch, e.metres && `${e.metres} m`].filter(Boolean).join(" · ")}</span>
+          {e.ncr ? <b style={{ fontSize: 12, color: NL.RED }}>NCR</b> : null}</div>
+        <RunSettings pairs={runSettingPairs(e, prev)} /></div>))}
+    </div>
+    {newest.length > 8 && <button type="button" data-tooling-runs-all onClick={() => setAll(!all)} style={{ border: 0, background: "none", color: NL.NAVY, fontWeight: 600, fontSize: 13, fontFamily: NLT.FONT, cursor: "pointer", padding: "6px 0" }}>{all ? "Show the newest 8" : `Show all ${newest.length}`}</button>}
+    <div style={{ fontSize: 11.5, color: NL.SUB, marginTop: 4 }}>Every reel of this size — Extruder 1, the orange extruder and the glue line. A glue-line reel made off an extruded reel shows that reel's line and extruder settings. Amber = changed since the run before on the same kind of line.</div>
+  </div>);
+}
+function ToolingSimple({ tooling, subTabs, setCategory, lastRunFor, history = new Map(), glueHistory = new Map(), runHistory = new Map(), testedChart = null, setTestedChart = null, pinEv = [], ncrs = [] }) {
   useDeskTick();
   const tp = useToolPhotos();
   const [photoOf, setPhotoOf] = useState(null);   // { fam, row } — its shadowgraph sheet
@@ -33784,6 +33834,8 @@ function ToolingSimple({ tooling, subTabs, setCategory, lastRunFor, history = ne
   const pinNow = (r) => { const h = history.get(r.id) || []; const last = h.length ? h[h.length - 1] : null; return (last && String(last.pin || "").trim()) || r.pin || ""; };
   /* the glue die the size was last glued on (Chris, 27 Oct 2026) — from the glue line's reels, never typed here */
   const dieNow = (r) => { const h = glueHistory.get(r.id) || []; return h.length ? h[h.length - 1].glueDie : ""; };
+  /* the line the size last ran on and when (26 Nov 2026) */
+  const lastLine = (r) => { const h = runHistory.get(r.id) || []; const e = h.length ? h[lastTelling(h)] : null; return e ? `last ${runLineText(e)} · ${runDay(e)}` : ""; };
   const TOOL_SIMPLE_COLS = (!term.length && fam === "ultrasr") ? "2.6fr .6fr .7fr .5fr .5fr .6fr 1fr 18px" : "1.3fr .7fr .8fr .6fr .6fr .7fr 1.4fr 18px";   /* room for what each Ultra SR pin makes */
   return (<div data-tooling-simple style={{ fontFamily: NLT.FONT, color: NL.INK, maxWidth: 980 }}>
     <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}><b style={{ fontSize: isPhoneScreen(761) ? 0 : 22, flex: 1 }}>{isPhoneScreen(761) ? "" : screenName("tooling", "Tooling")}</b>
@@ -33803,11 +33855,11 @@ function ToolingSimple({ tooling, subTabs, setCategory, lastRunFor, history = ne
       {sorted.length === 0 && <div style={{ padding: 14, fontSize: 14, color: NL.SUB }}>{term.length ? `Nothing matches "${q.trim()}".` : "No sizes yet."}</div>}
       {sorted.map(({ fam: f, r }) => phoneT ? (<div key={f + r.id} role="button" tabIndex={0} data-tooling-item={r.id} onClick={() => openRow(f, r)} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openRow(f, r); } }}
         style={{ display: "flex", width: "100%", boxSizing: "border-box", alignItems: "center", gap: 10, padding: "10px 14px", border: 0, borderTop: `1px solid ${NL.LINE}`, background: "#fff", textAlign: "left", fontFamily: NLT.FONT, cursor: "pointer" }}>
-        <span style={{ flex: 1, minWidth: 0 }}><b style={{ fontSize: 15.5 }}>{r.size}</b>{f === "ultrasr" ? <UltraMakes note={r.comments} /> : null}<br /><span style={{ fontSize: 12.5, color: NL.SUB }}>{[dieNow(r) && `glue die ${dieNow(r)}`, r.screwSpeed && `screw ${r.screwSpeed}`, r.guide && `guide ${r.guide}`, r.haulOff && `haul-off ${r.haulOff}`, term.length ? famLabel(f) : r.comments].filter(Boolean).join(" · ")}</span></span>
+        <span style={{ flex: 1, minWidth: 0 }}><b style={{ fontSize: 15.5 }}>{r.size}</b>{f === "ultrasr" ? <UltraMakes note={r.comments} /> : null}{lastLine(r) ? <span data-tooling-item-last style={{ display: "block", fontSize: 12, color: NL.NAVY, fontWeight: 600 }}>{lastLine(r)}</span> : null}<span style={{ display: "block", fontSize: 12.5, color: NL.SUB }}>{[dieNow(r) && `glue die ${dieNow(r)}`, r.screwSpeed && `screw ${r.screwSpeed}`, r.guide && `guide ${r.guide}`, r.haulOff && `haul-off ${r.haulOff}`, term.length ? famLabel(f) : r.comments].filter(Boolean).join(" · ")}</span></span>
         <ToolPhotoButton fam={f} row={r} tp={tp} onView={(fm, rw) => setPhotoOf({ fam: fm, row: rw })} size={34} />
         <span style={{ textAlign: "right" }}><b data-tooling-pin style={{ fontSize: 20, color: NL.NAVY }}>{pinNow(r) || "—"}</b>{pinNow(r) && r.pin && !samePin(pinNow(r), r.pin) ? <span style={{ display: "block", fontSize: 11.5, color: NL.SUB }}>sheet {r.pin}</span> : null}</span><span style={{ color: "#8B94A8" }}>›</span></div>) : (<div key={f + r.id} role="button" tabIndex={0} data-tooling-item={r.id} onClick={() => openRow(f, r)} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openRow(f, r); } }}
         style={{ display: "grid", width: "100%", boxSizing: "border-box", gridTemplateColumns: TOOL_SIMPLE_COLS, gap: 8, alignItems: "center", padding: "10px 14px", border: 0, borderTop: `1px solid ${NL.LINE}`, background: "#fff", textAlign: "left", fontFamily: NLT.FONT, cursor: "pointer" }}>
-        <span style={{ minWidth: 0 }}><b style={{ ...cell, fontWeight: 700 }}>{r.size}</b>{f === "ultrasr" ? <UltraMakes note={r.comments} /> : null}</span><span style={{ display: "flex", alignItems: "center", gap: 8 }}><span data-tooling-pin style={{ ...cell, color: NL.NAVY, fontWeight: 700 }}>{pinNow(r) || "—"}{pinNow(r) && r.pin && !samePin(pinNow(r), r.pin) ? <span style={{ display: "block", fontSize: 11, color: NL.SUB, fontWeight: 500 }}>sheet {r.pin}</span> : null}</span>
+        <span style={{ minWidth: 0 }}><b style={{ ...cell, fontWeight: 700 }}>{r.size}</b>{f === "ultrasr" ? <UltraMakes note={r.comments} /> : null}{lastLine(r) ? <span data-tooling-item-last style={{ display: "block", fontSize: 11.5, color: NL.NAVY, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{lastLine(r)}</span> : null}</span><span style={{ display: "flex", alignItems: "center", gap: 8 }}><span data-tooling-pin style={{ ...cell, color: NL.NAVY, fontWeight: 700 }}>{pinNow(r) || "—"}{pinNow(r) && r.pin && !samePin(pinNow(r), r.pin) ? <span style={{ display: "block", fontSize: 11, color: NL.SUB, fontWeight: 500 }}>sheet {r.pin}</span> : null}</span>
           <ToolPhotoButton fam={f} row={r} tp={tp} onView={(fm, rw) => setPhotoOf({ fam: fm, row: rw })} /></span><span data-tooling-die style={{ ...cell, fontWeight: 600 }}>{dieNow(r) || <span style={{ color: NL.SUB, fontWeight: 400 }}>—</span>}</span><span style={cell}>{r.screwSpeed || "—"}</span><span style={cell}>{r.guide || "—"}</span><span style={cell}>{r.haulOff || "—"}</span>
         <span style={{ fontSize: 12.5, color: NL.SUB, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{term.length ? famLabel(f) : (r.comments || "")}</span><span style={{ color: "#8B94A8" }}>›</span></div>))}
     </div>
@@ -33818,12 +33870,13 @@ function ToolingSimple({ tooling, subTabs, setCategory, lastRunFor, history = ne
       {/* …and tapping a size shows them too (admin, 25 Nov 2026: "why can't I see that when I click on 0.40 x 1.60") — the 10 mm lists only */}
       {!open.add && row && (open.fam === "standard" || open.fam === "ken") && parsePinSize(row.size) && <div data-pins-in-sheet><PinsToTry result={pinsToTry(row.size, pinEv, { ncrs, kPins: open.fam === "ken" })} /></div>}
       {!open.add && row && <div style={{ fontSize: 13, color: NL.SUB, margin: "0 0 10px", lineHeight: 1.5 }}>{row.updatedBy ? `changed ${row.updatedAt ? plainDate(new Date(row.updatedAt)) : ""} by ${String(row.updatedBy).split("@")[0]}` : ""}
-        {run ? <><br />last run: pin {run.pin || "—"} · screw {run.screwSpeed || "—"}{run.haulOff ? ` · haul-off ${run.haulOff}` : ""}{run.batch ? ` · ${run.batch}` : ""}{run.at ? ` (${plainDate(new Date(run.at))})` : ""}</> : null}
         {dieNow(row) ? <><br />last glued on glue die <b style={{ color: NL.INK }}>{dieNow(row)}</b></> : null}</div>}
+      {!open.add && row && <ToolingLastRun runs={runHistory.get(row.id) || []} />}
       {!open.add && row && (() => { const ps = tp.byId.get(row.id) || [];
         return (<div data-tooling-sheet-photo style={{ display: "flex", alignItems: "center", gap: 10, background: NL.PANEL, borderRadius: 12, padding: "8px 12px", marginBottom: 12 }}>
           <ToolPhotoButton fam={open.fam} row={row} tp={tp} onView={(fm, rw) => setPhotoOf({ fam: fm, row: rw })} size={44} />
           <span style={{ flex: 1, fontSize: 13, color: NL.SUB }}><b style={{ display: "block", color: NL.INK, fontSize: 13.5 }}>Shadowgraph</b>{ps.length ? `latest ${ps[0].taken_at ? plainDate(new Date(ps[0].taken_at)) : ""}${ps.length > 1 ? ` · ${ps.length} photos` : ""} — tap it to see it` : "No photo yet — tap 📷 to add one"}</span></div>); })()}
+      {!open.add && row && <ToolingRunHistory key={row.id} runs={runHistory.get(row.id) || []} />}
       {!open.add && row && (() => { const h = history.get(row.id) || [];
         const when = (e) => e.at ? plainDate(new Date(e.at)) : e.date ? plainDate(new Date(e.date + "T12:00:00")) : "";
         return (<div data-tooling-history style={{ marginBottom: 14 }}>
@@ -33965,6 +34018,9 @@ function BaselineToolingView({ data, setData }) {
   const glueHistory = useMemo(() => glueDieUseHistory(data, tooling),
     [data.glueLineBatches, data.glueRuns, data.products, data.productAliases, data.tooling]);
   const glueDieFor = (row) => { const h = glueHistory.get(row.id) || []; return h.length ? h[h.length - 1].glueDie : ""; };
+  /* every reel of each size with its line and settings (26 Nov 2026) — toolingRunHistory, mx_production.js */
+  const runHistory = useMemo(() => toolingRunHistory(data, tooling),
+    [data.extrusion1, data.extrusion2, data.glueLineBatches, data.glueRuns, data.ncrs, data.products, data.productAliases, data.tooling]);
 
   const setCategory = (key, updater) => setData(prevData => ({
     ...prevData,
@@ -33989,7 +34045,7 @@ function BaselineToolingView({ data, setData }) {
   const [testedOpen, setTestedOpen] = useState(null);
 
   useDeskTick();
-  if (listsSimpleHere()) return <ToolingSimple tooling={tooling} subTabs={subTabs} setCategory={setCategory} lastRunFor={lastRunFor} history={toolHistory} glueHistory={glueHistory} testedChart={testedChart} setTestedChart={setChart} pinEv={pinEv} ncrs={data.ncrs || []} />;
+  if (listsSimpleHere()) return <ToolingSimple tooling={tooling} subTabs={subTabs} setCategory={setCategory} lastRunFor={lastRunFor} history={toolHistory} glueHistory={glueHistory} runHistory={runHistory} testedChart={testedChart} setTestedChart={setChart} pinEv={pinEv} ncrs={data.ncrs || []} />;
   return (
     <div>
       {DESK_ORDER_V5_LOGINS.includes(nlEmail()) && !listsSimpleHere() && <button type="button" data-lists-try onClick={() => setListsSimple("new")} style={{ marginBottom: 10, height: 40, borderRadius: 12, border: 0, background: NAVY, color: "#fff", fontWeight: 700, padding: "0 16px", cursor: "pointer" }}>Switch to the simple Tooling page ›</button>}
@@ -34509,6 +34565,42 @@ function tapeFromCode(code) {
   const hit = Object.entries(TAPE_TYPES).sort((a, b) => b[1].length - a[1].length).find(([, sfx]) => up.endsWith(sfx));
   return hit ? hit[0] : "";
 }
+/* THE CASES THIS BOOKING GOES INTO, AND WHAT'S IN THEM ALREADY (admin, 26 Nov 2026 — render approved: "build the bonding
+   line design we just spoke about now please"). Under an order's number on step 3: one card per case the boxes go in —
+   ALREADY HALF PACKED (boxes booked in it: find it, add on top, with the codes and when), EMPTY — NEW CASE, or NEW CASE —
+   ONLY PART FILLED (more still to come: leave it open). From the ledger (bondCaseFill, mx_writes.js); nothing is written. */
+const BOND_CASE_LOOK = {
+  part: { word: "ALREADY HALF PACKED", fill: "#FFF6F3", edge: ORANGE, solid: true, bar: ORANGE },
+  short: { word: "NEW CASE — ONLY PART FILLED", fill: "#F4F6FC", edge: BLUE, solid: true, bar: BLUE },
+  new: { word: "EMPTY — NEW CASE", fill: "#fff", edge: BORDER, solid: false, bar: NAVY },
+};
+const bondWhen = (iso) => { if (!iso) return ""; const d = new Date(iso); if (isNaN(d.getTime())) return "";
+  const hm = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  return localDateKey(d) === todayISO() ? `${hm} today` : `${d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })} ${hm}`; };
+function BondCaseCards({ data, orderId, room, qty }) {
+  let cards = [];
+  try { cards = bondCaseFill(data, orderId, room, qty); } catch (e) { cards = []; }
+  if (!cards.length) return null;
+  return (<div data-bond-cases={orderId} style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6, maxWidth: 620 }}>
+    {cards.map(c => { const k = BOND_CASE_LOOK[c.state] || BOND_CASE_LOOK.new; const pctIn = c.size ? Math.min(100, c.inNow / c.size * 100) : 0, pctNow = c.size ? Math.min(100 - pctIn, c.put / c.size * 100) : 0;
+      const codes = c.codes.map(x => `${x.qty} × ${x.box}`).join(", "), last = c.codes.length ? bondWhen(c.codes[c.codes.length - 1].at) : "";
+      return (<div key={c.caseNum} data-bond-case={c.caseNum} data-bond-case-state={c.state}
+        style={{ display: "grid", gridTemplateColumns: "58px minmax(0, 1fr) 46px", gap: 10, alignItems: "center", border: `${k.solid ? 2 : 1}px solid ${k.edge}`, background: k.fill, borderRadius: 6, padding: "8px 10px" }}>
+        <div><div style={{ fontSize: 10.5, fontWeight: 700, color: INK_MUTED, letterSpacing: ".05em" }}>CASE</div><div style={{ fontSize: 24, fontWeight: 800, lineHeight: 1 }}>{c.caseNum}</div></div>
+        <div style={{ minWidth: 0 }}>
+          <span style={{ display: "inline-block", fontSize: 11, fontWeight: 800, letterSpacing: ".05em", borderRadius: 3, padding: "1px 6px", color: k.solid ? "#fff" : GREEN, background: k.solid ? k.edge : "transparent", border: k.solid ? 0 : `1.5px solid ${GREEN}` }}>{k.word}</span>
+          {c.state === "part" && <div style={{ fontSize: 13.5, fontWeight: 600, marginTop: 3 }}>{c.inNow} already in it — {codes}{last ? `, booked ${last}` : ""}. Put these {c.put} on top — don't start a new case.</div>}
+          {c.state === "short" && <div style={{ fontSize: 13.5, fontWeight: 600, marginTop: 3 }}>These {c.put} start it. {c.toCome} more still to go in — leave it open, don't close it.</div>}
+          {c.state === "new" && <div style={{ fontSize: 13, color: INK_MUTED, marginTop: 3 }}>Nothing in it yet.</div>}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 5 }}>
+            <div style={{ flex: 1, height: 8, background: "#EEE", borderRadius: 4, overflow: "hidden", display: "flex" }}><div style={{ width: `${pctIn}%`, background: LIGHTGREY }} /><div style={{ width: `${pctNow}%`, background: k.bar }} /></div>
+            <span data-bond-case-sum style={{ fontSize: 12, color: INK_MUTED, whiteSpace: "nowrap" }}>{c.inNow} in + {c.put} now = {c.after}{c.after >= c.size ? " · full" : ` of ${c.size}`}</span>
+          </div>
+        </div>
+        <div style={{ textAlign: "center" }}><div style={{ fontSize: 10.5, color: INK_MUTED }}>PUT IN</div><div className="font-mono" style={{ fontSize: 20, fontWeight: 700 }}>{c.put}</div></div>
+      </div>); })}
+  </div>);
+}
 function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRuns = [], existingBoxCodes = [], orders = [], lineItems = [], data, materials = [], onUnknownBatch, onReelFix, onSubmit, submitLabel, error, warnings = [], children, renderFullForm, setData = null, fixes = [], onLeave = null }) {
   const [reelQuery, setReelQuery] = useState("");
   const [escapeOpen, setEscapeOpen] = useState(false);
@@ -35021,7 +35113,7 @@ function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRun
                         <span style={{ fontSize: 12.5, color: INK_MUTED }} data-bond-covered={r.orderId}>
                           {r.noLine ? <span style={{ color: RED }}>can't find this order's line for this product — check the order's lines before booking</span>
                             : r.planOver > 0 ? <>has all it ordered — <span style={{ color: RED }}>its plan holds {r.planOver} more</span></>
-                            : r.toMake > 0 ? <>needs {r.toMake}{(r.room || []).length > 0 && <span style={{ color: NAVY, fontWeight: 600 }}>{" \u2192 case "}{(r.room || []).slice(0, 3).map(x => `${x.caseNum} (${Math.min(x.spaces, r.toMake)})`).join(", ")}</span>} · {r.covered} covered by the shelf{bays.length ? ` in ${bays.slice(0, 3).join(", ")}` : ""}</>
+                            : r.toMake > 0 ? <>needs {r.toMake}{(r.room || []).length > 0 && !(Number(r.qty) > 0) && <span style={{ color: NAVY, fontWeight: 600 }}>{" \u2192 case "}{(r.room || []).slice(0, 3).map(x => `${x.caseNum} (${Math.min(x.spaces, r.toMake)})`).join(", ")}</span>} · {r.covered} covered by the shelf{bays.length ? ` in ${bays.slice(0, 3).join(", ")}` : ""}</>
                             : <>covered — {r.covered < onShelf ? `${r.covered} of the ${onShelf}` : onShelf} on the shelf{bays.length ? ` in ${bays.slice(0, 3).join(", ")}` : ""}{unchecked ? " (check them first)" : ""}</>}
                           {/* WHERE THE REST OF THE SHELF WENT (21 Oct 2026): the shelf is shared in the running order — say so,
                               with who has the rest, so "needs 16" next to 14 on the shelf is never a puzzle. */}
@@ -35032,7 +35124,7 @@ function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRun
                     {r.needs > 0 && !(r.toMake < r.needs || r.planOver > 0) && (
                       <span style={{ fontSize: 12.5, color: INK_MUTED }}>
                         needs {r.needs}
-                        {(r.room || []).length > 0 && (
+                        {(r.room || []).length > 0 && !(Number(r.qty) > 0) && (
                           <span style={{ color: NAVY, fontWeight: 600 }}>
                             {" \u2192 case "}{(r.room || []).slice(0, 3).map(x => `${x.caseNum} (${x.spaces})`).join(", ")}
                             {(r.room || []).length > 3 ? "…" : ""}
@@ -35042,6 +35134,7 @@ function BondingEntrySteps({ form, setForm, availableBatches = [], allBondingRun
                     )}
                     {r.extra && <span style={{ fontSize: 12.5, color: RED }}>doesn't need this size</span>}
                   </div>
+                  {Number(r.qty) > 0 && (r.room || []).length > 0 && <BondCaseCards data={data} orderId={r.orderId} room={r.room} qty={r.qty} />}
                 </div>
                 <input type="number" inputMode="numeric" value={r.qty || ""} onChange={e => setAlloc(r.orderId, e.target.value)} disabled={closed}
                   className="font-mono" style={{ width: 76, minHeight: 44, fontSize: 20, fontWeight: 600, textAlign: "center", border: `1px solid ${r.strong ? RED : "#CFCFCA"}`, borderRadius: 4, background: closed ? "#F2F2EE" : "#fff" }} />
@@ -40732,7 +40825,8 @@ function GlueLineView({ data, setData, phone = false }) {
      run's settings and a legacy reel shows its own. From here down — the
      table, the phone cards, sorting, searching, printing — nothing knows or
      cares which it is: `rows` is the same shape it always was. */
-  const rows = (data.glueLineBatches || []).map(b => glueSettingsFor(b, data.glueRuns));
+  /* kept between keys (26 Nov 2026 — the size box re-ran every reel and every run on each letter typed on Dave's PC) */
+  const rows = useMemo(() => (data.glueLineBatches || []).map(b => glueSettingsFor(b, data.glueRuns)), [data.glueLineBatches, data.glueRuns]);
   const reelHours = useMemo(() => glueReelHours(data.glueLineBatches || []), [data.glueLineBatches]);   // worked out, never stored (third review item 37)
   /* each reel's gap trace, where there is one (part 2 of the Gap trace, 9 Oct 2026) */
   const gapByReel = useMemo(() => gapTraceByReel(data.gapTraces), [data.gapTraces]);
@@ -40765,12 +40859,12 @@ function GlueLineView({ data, setData, phone = false }) {
   const rq = reelQuery.trim().toUpperCase();
   const searching = rq.length >= 3;
   const matchesQuery = (r) => String(r.batchNumber || "").toUpperCase().includes(rq) || String(r.productSize || "").toUpperCase().includes(rq);
-  const visibleGlueRows = searching ? rows.filter(matchesQuery) : showTodayOnly ? rows.filter(isToday) : rows;
+  const visibleGlueRows = useMemo(() => searching ? rows.filter(matchesQuery) : showTodayOnly ? rows.filter(isToday) : rows, [rows, rq, showTodayOnly, todayStr]);   // eslint-disable-line
   /* One list, grouped by run (18 Sep 2026). Runs are worked out from the
      reels on show, newest first. Ten at a time; the run holding a reel that
      is open for editing is always shown, so an edit restored after a reload
      is never hidden below "Show more". */
-  const visibleRuns = derivedGlueRuns(visibleGlueRows);
+  const visibleRuns = useMemo(() => derivedGlueRuns(visibleGlueRows), [visibleGlueRows]);
   const [runsShown, setRunsShown] = useState(10);
   const listId = "size-catalog-glueline";
   /* live work only, in the plan's running order (third review item 42: "For an order" listed every order ever made, shipped
@@ -48570,7 +48664,18 @@ function App() {
   useEffect(() => {
     let buf = "", last = 0, gaps = [], startEl = null, startVal = null;
     const editable = (el) => !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
+    let numLockSaidAt = -Infinity;
     const onKey = (e) => {
+      /* NUMBER LOCK OFF (26 Nov 2026 — admin's video of Dave's PC: the size box kept ending up " x ", the figures typed on the
+         number pad never arriving; with Num Lock off those keys are arrows and Delete). A number-pad key that arrives as an arrow,
+         Home/End or Delete instead of its figure, in a box, says so, once a minute at most. Nothing is typed for him and nothing is stopped. */
+      try {
+        if (/^Numpad(\d|Decimal)$/.test(String(e.code || "")) && !/^[0-9.,]$/.test(String(e.key || "")) && editable(document.activeElement)
+          && (Number(e.timeStamp) || performance.now()) - numLockSaidAt > 60000) {
+          numLockSaidAt = Number(e.timeStamp) || performance.now();
+          setScanNotice({ ok: false, wedge: true, numLock: true, title: "Number lock is off", body: "The number pad is moving the cursor instead of typing figures. Press Num Lock (top left of the number pad) and type it again." });
+        }
+      } catch (err) { /* a help, never a gate */ }
       if (scanOpenRef.current) return;
       // when the key ARRIVED (not when this ran), so a busy PC doesn't stretch a scanner's burst into typing speed
       const now = Number(e.timeStamp) || performance.now();
