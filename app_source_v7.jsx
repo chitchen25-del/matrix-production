@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-25.6";
+const APP_VERSION = "2026-11-26.1";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -44837,6 +44837,8 @@ function nlLineFigures(data, o, plan) {
       cantPlace: left + noFormN, noLengthN, guessN, guessMpb, handN: other, packedUnknown };
   });
 }
+/* the phone order page's "bond off reels" colour (26 Nov 2026): bar, and its words */
+const NL5_BOND = "#378ADD", NL5_BOND_TXT = "#1F6FC2";
 function NLBar3({ packed, shelf, make, total }) {
   const w = (n) => total > 0 ? `${Math.max(0, Math.min(100, 100 * n / total))}%` : "0%";
   return (<span aria-hidden="true" style={{ display: "flex", height: 5, borderRadius: 3, overflow: "hidden", background: NLT.TINT.navy, marginTop: 0 }}>
@@ -46731,9 +46733,14 @@ function NLOrderV5({ data, setData, orderId, go, jumpToPacking, onPick, onBack, 
       </>}
       {/* SIZES */}
       {(E || tab === "lines") && <div style={{ ...card, overflow: "hidden" }}>
+        {!E && boxLines.length > 0 && <div data-nl5-bar-key style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", padding: "9px 14px", fontSize: 12, color: NL.SUB, borderBottom: `1px solid ${NL.LINE}` }}>{[[NL.OK, "in cases"], [NL.NAVY, "to pick"], [NL5_BOND, "bond off reels"], ["#E09A4E", "glue first"]].map(([c, t]) => <span key={t} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><i style={{ width: 9, height: 9, borderRadius: 5, background: c, display: "inline-block" }} />{t}</span>)}</div>}
         {boxLines.length === 0 && <div style={{ padding: 14, color: NL.SUB }}>No box lines on this order.</div>}
         {boxLines.map((l, i) => { const w = (n) => l.ordered > 0 ? `${Math.max(0, Math.min(100, 100 * n / l.ordered))}%` : "0%";
-          const state = l.ordered > 0 && l.packed >= l.ordered ? ["all in cases ✓", NL.OK] : l.shelf ? [`${fmt(l.shelf)} to pick`, NL.NAVY] : l.make ? [`${fmt(l.make)} to make`, NL.AMBERTXT] : ["", NL.SUB];
+          /* WHAT'S LEFT, BY WHAT IT NEEDS (Chris, 26 Nov 2026 — "represent what's complete, what can be bonded from reels on rack,
+             and what needs gluing ready for bonding"): to make splits into bond off the reel rack and glue first */
+          const bondN = Math.min(l.bond || 0, l.make || 0), glueN = Math.max(0, (l.make || 0) - bondN);
+          const allIn = l.ordered > 0 && l.packed >= l.ordered;
+          const states = allIn ? [["all in cases ✓", NL.OK]] : [l.shelf ? [`${fmt(l.shelf)} to pick`, NL.NAVY] : null, bondN ? [`${fmt(bondN)} to bond`, NL5_BOND_TXT] : null, glueN ? [`${fmt(glueN)} to glue`, NL.AMBERTXT] : null].filter(Boolean);
           if (E) { const it = items.find(x => x.id === l.id) || {}; const qd = qOf(l), qc = qd !== l.ordered, pc = Math.round(Number(pOf(l)) * 100) !== Math.round(Number(it.unitPrice || 0) * 100);
             return (<div key={l.id} data-nl5-edit-line={l.id} style={{ padding: "10px 14px", borderTop: i ? `1px solid ${NL.LINE}` : 0, background: qc || pc ? "#FFF8EF" : "#fff" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}><MatrixFace spec={l.spec} w={30} /><span style={{ flex: 1, fontSize: 15, fontWeight: 600 }}>{nm(l.spec)}</span>{qc && <span style={{ fontSize: 12, color: NL.AMBERTXT, textDecoration: "line-through" }}>{fmt(l.ordered)}</span>}</div>
@@ -46748,8 +46755,8 @@ function NLOrderV5({ data, setData, orderId, go, jumpToPacking, onPick, onBack, 
           return (<button key={l.id} data-nl5-line={l.id} onClick={() => { nlHaptic(); setSheet({ kind: "size", id: l.id }); }} style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "11px 14px", border: 0, borderTop: i ? `1px solid ${NL.LINE}` : 0, background: "#fff", textAlign: "left", fontFamily: NLT.FONT }}>
             <MatrixFace spec={l.spec} w={34} />
             <span style={{ flex: 1, minWidth: 0 }}><span style={{ display: "block", fontSize: 15, fontWeight: 600, color: NL.INK }}>{nm(l.spec)}{l.sample ? <span style={{ fontSize: 11.5, color: NL.AMBERTXT }}> · SAMPLE</span> : null}{boxTypesHere.length > 1 ? <span data-nl5-line-box style={{ fontSize: 11.5, color: NL.SUB }}> · {orderBoxTypeFor(o, l.spec)} box</span> : null}</span>
-              <span style={{ display: "flex", height: 4, borderRadius: 2, overflow: "hidden", background: "#EEF0F4", marginTop: 6 }}><i style={{ width: w(l.packed), background: NL.OK }} /><i style={{ width: w(l.shelf), background: NL.NAVY }} /><i style={{ width: w(l.make), background: "#E09A4E" }} /></span></span>
-            <span style={{ textAlign: "right", flex: "none" }}><span style={{ display: "block", fontSize: 16, fontWeight: 700, color: NL.INK }}>{fmt(l.ordered)}</span><span style={{ fontSize: 11.5, color: state[1] }}>{state[0]}</span></span></button>); })}
+              <span style={{ display: "flex", height: 4, borderRadius: 2, overflow: "hidden", background: "#EEF0F4", marginTop: 6 }}><i style={{ width: w(l.packed), background: NL.OK }} /><i style={{ width: w(l.shelf), background: NL.NAVY }} /><i data-nl5-bar-bond style={{ width: w(bondN), background: NL5_BOND }} /><i data-nl5-bar-glue style={{ width: w(glueN), background: "#E09A4E" }} /></span></span>
+            <span style={{ textAlign: "right", flex: "none" }}><span style={{ display: "block", fontSize: 16, fontWeight: 700, color: NL.INK }}>{fmt(l.ordered)}</span>{states.map(([t, c]) => <span key={t} data-nl5-line-state style={{ display: "block", fontSize: 11.5, lineHeight: 1.35, color: c }}>{t}</span>)}</span></button>); })}
         {!E && extras.length > 0 && <div style={{ padding: "10px 14px", fontSize: 13, color: NL.SUB, borderTop: `1px solid ${NL.LINE}` }}>Also on the order: {extras.map(l => `${fmt(l.ordered)} × ${name(l.spec)}`).join(" · ")}</div>}
       </div>}
       {E && <div data-nl5-facts style={{ ...card, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
