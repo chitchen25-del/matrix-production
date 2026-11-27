@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-27.6";
+const APP_VERSION = "2026-11-27.7";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -20689,7 +20689,7 @@ function PackingListStrip({ data, order, onPrint, docHtml = null, compact = fals
   /* THE NEW PHONE PAGE'S ROW (17 Oct 2026 board "the Cases tab, whole"): one button for the packing list (it opens the preview,
      Print is on it) beside the case labels — the status in a line under its name. */
   if (compact) return (<>
-    <div className="no-print" data-packing-list-strip="compact" style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+    <div className="no-print" data-packing-list-strip="compact" style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, marginBottom: 10 }}>{/* two by two, so nothing is cut off on a phone (27 Nov 2026) */}
       <button type="button" data-packing-list-print="1" onClick={() => { if (docHtml && nlOnNow()) setShowing(true); else onPrint && onPrint(); }}
         style={{ flex: 1, minWidth: 0, minHeight: 46, borderRadius: 12, border: `1.5px solid ${!st.printedAt || st.changedSince ? NAVY : "#DDE0E8"}`, background: "#fff", color: NAVY, fontFamily: NLT.FONT, cursor: "pointer", padding: "4px 3px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1 }}>
         <span style={{ fontSize: 13.5, fontWeight: 700, whiteSpace: "nowrap" }}>🖨 Packing list</span>
@@ -21009,7 +21009,7 @@ function WeighSheet({ palletStored = null, cases, startAt, walk, caseWeights, se
   const pal = String(palletAssignments[n] ?? "").trim();
   const prevPal = prevC ? String(palletAssignments[prevC.caseNum] ?? "").trim() : "";
   /* the pallet plan (21 Oct 2026): the pallet this case should go on, offered in one tap when none is set */
-  const planPal = (() => { const p = palletPlan(ordered.map(x => ({ orderId: "_", caseNum: x.caseNum })), "_", { stored: palletStored }); return p.pallets.length > 1 ? p.of.get(Number(n)) || null : null; })();
+  const planPal = (() => { const p = palletPlan(ordered.map(x => ({ orderId: "_", caseNum: x.caseNum, pallet: palletAssignments[x.caseNum] ?? null })), "_", { stored: palletStored }); return p.pallets.length > 1 ? p.of.get(Number(n)) || null : null; })();
   const setPal = (v) => setPalletAssignments({ ...palletAssignments, [n]: v });
   const nextPlain = i >= 0 && i < ordered.length - 1 ? ordered[i + 1] : null;
   const nextWalk = ordered.find(x => x.caseNum !== n && needsWork(x) && x.caseNum > n) || ordered.find(x => x.caseNum !== n && needsWork(x));
@@ -22646,7 +22646,7 @@ function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = nu
           : !splitPanel && ((photoRep && photoRep.counted > 0 && (Object.keys(ph.photos).length > 0 || photoReaderHere())) || order.stage === "Shipped") ? <div style={{ margin: "4px 0 12px" }}><PhotoReportLine order={order} report={photoRep} onOpen={() => setReportOpen({ focus: null })} onPhotos={() => { nlHaptic(); setShippedPhotos(v => !v); }} photosShown={shippedPhotos} /></div> : null}
         {(() => { const shippedClear = order.stage === "Shipped" && order.shippingManifest && order.shippingManifest.photoReport && order.shippingManifest.photoReport.allClear;
           const behind = order.stage === "Shipped" ? !!shippedClear && !shippedPhotos : !!(ph.loaded && photoRep && photoRep.allClear);
-          return behind ? null : <CasePhotos orderId={order.id} data={data} folded />; })()}
+          return behind || true ? null : <CasePhotos orderId={order.id} data={data} folded />; })()}{/* (27 Nov 2026, Chris: "looks proper shit" — the Case photos tile beside Packing list is the one button; no second one, no wall) */}
         {showGrid && (
           <CaseGrid palletStored={order && !order.noPallets ? order.palletPlan || null : null} cases={allCases} caseWeights={caseWeights} setCaseWeights={setCaseWeights} weightQueryFor={weightQueryFor} acceptCaseWeight={acceptCaseWeight}
             onPhotoFix={onPhotoFix} onCheckOrder={(reads) => { ph.seed(reads); setReportOpen({ focus: null }); }}
