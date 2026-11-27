@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-27.5";
+const APP_VERSION = "2026-11-27.6";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -3430,6 +3430,7 @@ function casePhotoShrink(file, maxPx, quality) {
 }
 function casePhotoSummary(res) {
   /* a weighing photo that was also read (Weigh & check) keeps what was read, and says it was taken when weighed */
+  if (res && res.extras) return { extras: true, weigh: true };   // a case of bought-in items: no labels to read (27 Nov 2026)
   if (res && res.weigh && !Array.isArray(res.labels)) return { weigh: true };
   if (!res || res.error) return { error: res ? String(res.error) : "no result" };
   const codes = {}; for (const l of (res.labels || [])) { const c = String(l.code || "").toUpperCase(); if (c) codes[c] = (codes[c] || 0) + 1; }
@@ -3807,7 +3808,7 @@ function useOrderPhotos(orderId, { enabled = true } = {}) {
   const latest = useMemo(() => { const m = {}; for (const r of (rows || [])) { const n = Number(r && r.case_num); if (!n) continue;
     if (!m[n] || (Date.parse(r.taken_at) || 0) > (Date.parse(m[n].taken_at) || 0)) m[n] = r; } return m; }, [rows]);
   useEffect(() => { if (!enabled || !photoReaderHere()) return;
-    for (const r of Object.values(latest)) { const res = r.result || {}; if (res.codes || res.error || asked.current.has(r.id) || !r.path) continue;
+    for (const r of Object.values(latest)) { const res = r.result || {}; if (res.codes || res.error || res.extras || asked.current.has(r.id) || !r.path) continue;
       asked.current.add(r.id); setReads(x => ({ ...x, [r.id]: "reading" }));
       readSavedCasePhoto({ id: r.id, path: r.path }).then(out => setReads(x => ({ ...x, [r.id]: out }))); } }, [latest, enabled]);
   const photos = useMemo(() => { const out = {};
@@ -4187,7 +4188,8 @@ async function casePhotoCleanup(data) {
   } catch (e) { /* next time */ }
 }
 /* The order's photos — case by case, newest first, each with what was read; tap for the full photo. */
-function CasePhotos({ orderId, data = null }) {
+function CasePhotos({ orderId, data = null, folded = false }) {
+  const [open, setOpen] = useState(!folded);
   const [rows, setRows] = useState(null); const [urls, setUrls] = useState({}); const [big, setBig] = useState(null); const [tick, setTick] = useState(0); const [err, setErr] = useState("");
   useCloudRetry(setTick);
   useEffect(() => { const f = (e) => { if (!e.detail || e.detail.orderId === orderId) setTick(t => t + 1); }; window.addEventListener("mx-case-photo", f); return () => window.removeEventListener("mx-case-photo", f); }, [orderId]);
@@ -4209,8 +4211,16 @@ function CasePhotos({ orderId, data = null }) {
   const shipped = data ? (data.orders || []).find(o => o && o.id === orderId) : null;
   const clears = shipped && shipped.stage === "Shipped" && shipped.shippedDate ? new Date(Date.parse(`${String(shipped.shippedDate).slice(0, 10)}T12:00:00`) + CASE_PHOTO_KEEP_DAYS * 86400000).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : null;
   const when = (t) => new Date(t).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  /* ONE BUTTON, NOT A WALL OF PHOTOS (Chris, 27 Nov 2026: "I don't want to have to scroll through the case photos every time I go
+     down to the case plan, make it a button at top for photos"). On the Cases tab the photos sit behind one button; tap it and
+     they open, tap Hide and the case plan is straight under the button again. */
+  if (folded && !open) return (<button type="button" data-case-photos-fold={rows.length} onClick={() => { nlHaptic(); setOpen(true); }}
+    style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", margin: "4px 0 12px", padding: "0 14px", height: 50, borderRadius: 14, border: "1.5px solid #DDE0E8", background: "#fff", color: NL.NAVY, fontFamily: NLT.FONT, cursor: "pointer" }}>
+    <span style={{ fontSize: 15.5, fontWeight: 700 }}>📷 Case photos</span><span style={{ fontSize: 13.5, color: NL.SUB }}>{rows.length} photo{rows.length === 1 ? "" : "s"}</span>
+    <span style={{ marginLeft: "auto", fontSize: 20, fontWeight: 700 }}>›</span></button>);
   return (<div data-case-photos style={{ margin: "14px 0", fontFamily: NLT.FONT }}>
     <div style={{ display: "flex", alignItems: "baseline", gap: 8, margin: "0 4px 8px" }}><span style={{ fontSize: 12.5, fontWeight: 700, letterSpacing: 1.2, color: NL.SUB }}>PHOTOS OF THE CASES · {rows.length}</span>
+      {folded && <button type="button" data-case-photos-hide onClick={() => setOpen(false)} style={{ alignSelf: "center", height: 30, padding: "0 12px", borderRadius: 15, border: `1px solid ${NL.NAVY}`, background: "#fff", color: NL.NAVY, fontSize: 13, fontWeight: 700, fontFamily: NLT.FONT }}>Hide photos</button>}
       <span style={{ marginLeft: "auto", fontSize: 12, color: NL.SUB }}>{clears ? `kept until ${clears}` : "kept for 3 months after it ships"}</span></div>
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 10 }}>
       {rows.map(r => { const res = r.result || {}; const u = urls[r.thumb_path] || urls[r.path];
@@ -4463,7 +4473,7 @@ function CasePhotosButton({ order, data }) {
                 : <div style={{ height: 120, background: "#E7EBF5", display: "flex", alignItems: "center", justifyContent: "center", color: NL.SUB, fontSize: 13.5 }}>Photo not available</div>}
               <div style={{ padding: "10px 14px 12px" }}>
                 <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 6 }}>
-                  <span style={{ fontSize: 15.5, fontWeight: 700, color: NL.INK }}>{total ? `${total} box${total === 1 ? "" : "es"} recognised` : res.error ? "Couldn't be read" : res.weigh ? "Taken when weighed — not read" : "No labels recognised"}</span>
+                  <span style={{ fontSize: 15.5, fontWeight: 700, color: NL.INK }}>{res.extras ? "Bought-in items — no labels to check" : total ? `${total} box${total === 1 ? "" : "es"} recognised` : res.error ? "Couldn't be read" : res.weigh ? "Taken when weighed — not read" : "No labels recognised"}</span>
                   <span style={{ marginLeft: "auto", fontSize: 12, color: NL.FAINT, whiteSpace: "nowrap" }}>{when(r.taken_at)}{r.taken_by ? ` · ${String(r.taken_by).split("@")[0]}` : ""}</span></div>
                 {codes.map(([code, k]) => <div key={code} data-cps-code={code} style={{ display: "flex", alignItems: "baseline", gap: 10, padding: "6px 0", borderTop: `1px solid ${NL.LINE || "#E7EBF5"}`, fontSize: 14.5 }}>
                   <span style={{ flex: "none", minWidth: 34, fontWeight: 800, color: NAVY }}>{k} ×</span>
@@ -20873,6 +20883,7 @@ function WeighSheet({ palletStored = null, cases, startAt, walk, caseWeights, se
       const todo = Object.entries(got).filter(([n]) => withBoxes.has(Number(n)));
       setReads(r => { const o = { ...r }; for (const [n, x] of todo) if (!o[n]) o[n] = x.read || "reading"; return o; });
       setShot(s => { const o = { ...s }; for (const [n] of todo) if (!o[n]) o[n] = "done"; return o; });
+      setExtraShots(m => { const o = { ...m }; for (const [n] of todo) if (extrasOf(n).length && !o[n]) o[n] = 1; return o; });
       setEarlierDone(true);
       for (const [n, x] of todo) if (!x.read) { readSavedCasePhoto(x).then(res => { if (live) setReads(r => r[n] === "reading" ? { ...r, [n]: res } : r); }); }
     })();
@@ -20890,6 +20901,7 @@ function WeighSheet({ palletStored = null, cases, startAt, walk, caseWeights, se
   const draftRef = useRef(null); draftRef.current = draft;
   const [pendingGo, setPendingGo] = useState(null);   // { target } — move once the saved weight has come back
   const [shot, setShot] = useState({});               // case → "busy" | "done" | "skip" | "failed"
+  const [extraShots, setExtraShots] = useState({});   // case of bought-in items → photos taken here
   /* a kept photo that has since gone up stops saying "not sent yet" (Chris, 20 Nov 2026, case 179 — it had reached the cloud) */
   useEffect(() => { const h = (ev) => { const d = (ev && ev.detail) || {}; if (!d.sent || d.orderId !== orderId || d.caseNum == null) return;
     setShot(s => s[d.caseNum] === "kept" ? { ...s, [d.caseNum]: "done" } : s); };
@@ -20961,7 +20973,7 @@ function WeighSheet({ palletStored = null, cases, startAt, walk, caseWeights, se
     idle.current = setTimeout(() => { setTyping(false); }, 900);
   };
   const readHere = reads[n] && reads[n] !== "reading";
-  const photoFirst = pc && !!orderId && !["done", "skip", "kept"].includes(shot[n]) && !reads[n] && hasBoxes(c);
+  const photoFirst = (pc && !!orderId && !["done", "skip", "kept"].includes(shot[n]) && !reads[n] && hasBoxes(c)) || (!!orderId && extrasOf(n).length > 0);
   /* WEIGH & CHECK: the photo is kept at once and read in the background — the weight can be typed while it's read; the
      photo is saved with what was read. */
   /* on to the next case still wanting a photo (or the end) — after a photo, and after Skip (Chris, 17 Oct 2026, 22:16: "it moves
@@ -20976,7 +20988,13 @@ function WeighSheet({ palletStored = null, cases, startAt, walk, caseWeights, se
       setReads(r => ({ ...r, [cn]: res || { error: "No answer came back — try again." } }));
       const saved = await saveCasePhoto({ file, orderId, caseNum: cn, source: "case-check", result: res && !res.error ? { ...res, weigh: true } : { weigh: true } });
       const st = photoSaveState(saved); if (st !== "saved") setShot(s => ({ ...s, [cn]: st })); })(); };
-  const takePhoto = async (file) => { if (pc) { takeAndRead(file, n, !!walk && check); return; } if (!file) return; nlHaptic && nlHaptic(); setShot(s => ({ ...s, [n]: "busy" }));
+  /* A CASE OF BOUGHT-IN ITEMS (Chris, 27 Nov 2026: "I also want to add more than one photo for case 181, I also don't need it to be
+     checked because it's Profitape"): as many photos as wanted, each saved as it is — nothing read, nothing checked. */
+  const extrasHere = extrasOf(n).length > 0;
+  const takeExtras = async (files) => { const fs = [...(files || [])].filter(Boolean); if (!fs.length) return; nlHaptic && nlHaptic(); setShot(s => ({ ...s, [n]: "busy" }));
+    let st = "saved"; for (const f of fs) { const r = await saveCasePhoto({ file: f, orderId, caseNum: n, source: "case-check", result: { extras: true } }); const x = photoSaveState(r); if (x !== "saved") st = x; }
+    setExtraShots(m => ({ ...m, [n]: (m[n] || 0) + fs.length })); setShot(s => ({ ...s, [n]: st === "saved" ? "done" : st })); };
+  const takePhoto = async (file) => { if (extrasHere) { await takeExtras([file]); return; } if (pc) { takeAndRead(file, n, !!walk && check); return; } if (!file) return; nlHaptic && nlHaptic(); setShot(s => ({ ...s, [n]: "busy" }));
     const r = await saveCasePhoto({ file, orderId, caseNum: n, source: "case-check", result: { weigh: true } });
     const st = photoSaveState(r); setShot(s => ({ ...s, [n]: st === "saved" ? "done" : st })); };
   const press = (k) => {
@@ -21081,16 +21099,17 @@ function WeighSheet({ palletStored = null, cases, startAt, walk, caseWeights, se
             {orderId && (photoFirst || shot[n] === "busy" || shot[n] === "failed") && (
               <div data-weigh-photo-step={n} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: bigNumber ? "wrap" : "nowrap" }}>
                 <label data-weigh-photo={n} style={{ flex: bigNumber ? "1 1 100%" : 1, height: 52, borderRadius: 26, background: shot[n] === "busy" ? "#9AA3B8" : NL.NAVY, color: "#fff", fontSize: 16.5, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, cursor: "pointer" }}>
-                  <NLIcon name="photo" size={20} color="#fff" sw={1.8} />{shot[n] === "busy" ? "Saving the photo…" : shot[n] === "failed" ? "Didn't save — again" : bigNumber ? `Take photo of case ${n}` : "Take photo"}
+                  <NLIcon name="photo" size={20} color="#fff" sw={1.8} />{shot[n] === "busy" ? "Saving the photo…" : shot[n] === "failed" ? "Didn't save — again" : extrasHere && (extraShots[n] || 0) > 0 ? "Add another photo" : bigNumber ? `Take photo of case ${n}` : "Take photo"}
                   <input data-weigh-photo-input={n} type="file" accept="image/*" capture="environment" disabled={shot[n] === "busy"} onChange={e => { const f = e.target.files && e.target.files[0]; e.target.value = ""; takePhoto(f); }} style={{ display: "none" }} /></label>
                 {shot[n] !== "busy" && <label data-weigh-photo-roll={n} style={{ height: 52, padding: "0 14px", flex: bigNumber ? 1 : "none", justifyContent: "center", border: `1px solid ${NL.NAVY}`, borderRadius: 26, background: "#fff", color: NL.NAVY, fontSize: 15, fontWeight: 600, display: "inline-flex", alignItems: "center", cursor: "pointer" }}>
                   From photos
-                  <input data-weigh-roll-input={n} type="file" accept="image/*" onChange={e => { const f = e.target.files && e.target.files[0]; e.target.value = ""; takePhoto(f); }} style={{ display: "none" }} /></label>}
-                <button type="button" data-weigh-photo-skip={n} onClick={() => { setShot(s => ({ ...s, [n]: "skip" })); if (check && walk) moveOnFrom(n); }} style={{ height: 52, padding: "0 14px", flex: bigNumber ? 1 : "none", border: "1px solid #C5CBD8", borderRadius: 26, background: "#fff", color: NL.SUB, fontSize: 15, fontWeight: 600 }}>{bigNumber ? `Skip case ${n} ›` : "Skip photo"}</button>
+                  <input data-weigh-roll-input={n} type="file" accept="image/*" multiple={extrasHere} onChange={e => { const fs = [...(e.target.files || [])]; e.target.value = ""; if (extrasHere) takeExtras(fs); else takePhoto(fs[0]); }} style={{ display: "none" }} /></label>}
+                {!extrasHere && <button type="button" data-weigh-photo-skip={n} onClick={() => { setShot(s => ({ ...s, [n]: "skip" })); if (check && walk) moveOnFrom(n); }} style={{ height: 52, padding: "0 14px", flex: bigNumber ? 1 : "none", border: "1px solid #C5CBD8", borderRadius: 26, background: "#fff", color: NL.SUB, fontSize: 15, fontWeight: 600 }}>{bigNumber ? `Skip case ${n} ›` : "Skip photo"}</button>}
               </div>)}
-            {shot[n] === "done" && !check && <div data-weigh-photo-done={n} style={{ fontSize: 14, fontWeight: 600, color: "#1E7F3C" }}>✓ Photo of case {n} saved — now the weight</div>}
-            {shot[n] === "kept" && <div data-weigh-photo-kept={n} style={{ fontSize: 14, fontWeight: 600, color: NL.AMBERTXT }}>📷 Photo of case {n} not sent yet — kept on this phone, it sends itself{check ? "" : " — now the weight"}</div>}
-            {pc && caseCheck && caseCheck.state !== "none" && <WeighCheckCard photoOnly n={n} ck={caseCheck} hasWeight={Number(weightOf(n)) > 0} onRetake={(f) => takeAndRead(f, n, false)} />}
+            {extrasHere && (extraShots[n] || 0) > 0 && shot[n] !== "busy" && <div data-weigh-extras-saved={n} style={{ fontSize: 14, fontWeight: 600, color: shot[n] === "kept" ? NL.AMBERTXT : "#1E7F3C" }}>✓ {extraShots[n]} photo{extraShots[n] === 1 ? "" : "s"} of case {n} {shot[n] === "kept" ? "kept on this phone — it sends itself" : "saved"} — nothing to check, it's bought-in items</div>}
+            {shot[n] === "done" && !check && !extrasHere && <div data-weigh-photo-done={n} style={{ fontSize: 14, fontWeight: 600, color: "#1E7F3C" }}>✓ Photo of case {n} saved — now the weight</div>}
+            {shot[n] === "kept" && !extrasHere && <div data-weigh-photo-kept={n} style={{ fontSize: 14, fontWeight: 600, color: NL.AMBERTXT }}>📷 Photo of case {n} not sent yet — kept on this phone, it sends itself{check ? "" : " — now the weight"}</div>}
+            {pc && !extrasHere && caseCheck && caseCheck.state !== "none" && <WeighCheckCard photoOnly n={n} ck={caseCheck} hasWeight={Number(weightOf(n)) > 0} onRetake={(f) => takeAndRead(f, n, false)} />}
             {check && lastCk && lastCk.state !== "none" && <div data-photo-last={lastShot} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               <span style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: 0.3, color: NL.SUB }}>CASE {lastShot}, JUST TAKEN</span>
               <WeighCheckCard photoOnly n={lastShot} ck={lastCk} hasWeight={Number(weightOf(lastShot)) > 0} onRetake={(f) => takeAndRead(f, lastShot, false)} /></div>}
@@ -22627,7 +22646,7 @@ function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = nu
           : !splitPanel && ((photoRep && photoRep.counted > 0 && (Object.keys(ph.photos).length > 0 || photoReaderHere())) || order.stage === "Shipped") ? <div style={{ margin: "4px 0 12px" }}><PhotoReportLine order={order} report={photoRep} onOpen={() => setReportOpen({ focus: null })} onPhotos={() => { nlHaptic(); setShippedPhotos(v => !v); }} photosShown={shippedPhotos} /></div> : null}
         {(() => { const shippedClear = order.stage === "Shipped" && order.shippingManifest && order.shippingManifest.photoReport && order.shippingManifest.photoReport.allClear;
           const behind = order.stage === "Shipped" ? !!shippedClear && !shippedPhotos : !!(ph.loaded && photoRep && photoRep.allClear);
-          return behind ? null : <CasePhotos orderId={order.id} data={data} />; })()}
+          return behind ? null : <CasePhotos orderId={order.id} data={data} folded />; })()}
         {showGrid && (
           <CaseGrid palletStored={order && !order.noPallets ? order.palletPlan || null : null} cases={allCases} caseWeights={caseWeights} setCaseWeights={setCaseWeights} weightQueryFor={weightQueryFor} acceptCaseWeight={acceptCaseWeight}
             onPhotoFix={onPhotoFix} onCheckOrder={(reads) => { ph.seed(reads); setReportOpen({ focus: null }); }}
