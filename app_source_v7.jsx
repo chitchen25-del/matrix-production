@@ -26,7 +26,7 @@ import { orderWithPromise, promiseBehind, promiseDay, promiseOf, promiseStats, p
 import { OFFICE_AMBER_DAYS, OFFICE_RED_DAYS, officeAged, officeAgeTone, officeAgeWords, officeEntryWords, officeGuess, officeHistory, officeItems, officeKindWords, officeScreenOf, officeTally } from "./mx_office.js";
 import { OVERNIGHT_MORNINGS, TRUTHS, TRUTH_SHORT, UNDO_CAUSES, WRONG_KINDS, activityDay, causesLines, changesetMatches, describeChangeset, foundWords, healthView, overnightPolicyWords, proposedRowWords, reelDoubleSaves } from "./mx_fix.js";
 import { gapBand, GAP_BAND_FILL, gapLooseFor, gapWallCut, edgesWander, motionVoted, isRepeatPicture, stripWidthsMm, widthsSteady, beadForget, GAP_BEAD_RELEARN_STOP_MS } from "./mx_gaptrace.js";
-import { gaugeOne, gaugePush, gaugeMedian, gaugeKey, gaugeZeroValid, gaugeRead, gaugePicture, gaugeRezero, gaugeZeroFrom, gaugeZeroFind, gaugeKeyNorm, GAUGE_ZERO_MAX_MS, GAUGE_AGREE_MM } from "./mx_gapgauge.js";
+import { gaugeOne, gaugePush, gaugeMedian, gaugeKey, gaugeZeroValid, gaugeRead, gaugePicture, gaugeRezero, gaugeZeroFrom, gaugeZeroFind, gaugeKeyNorm, GAUGE_ZERO_MAX_MS, GAUGE_AGREE_MM, GAUGE_SIZE_MAX } from "./mx_gapgauge.js";
 import { GAP_LIGHT_SHIFT, gapCalChecks, gapScaleFor, gapCalVerdict, gapWidthSeen, gapTraceUncal, gapMarkUncal, gapReelGapFrom, glueGapProblem, gapPointUncal, GAP_CAL_AGREE, GAP_CAL_DRIFT_RUN } from "./mx_gaptrace.js";
 import { glueRuns, reelGlueFault, GLUE_MIN_MM, GLUE_OPEN_END_M, GLUE_LINE_M, GLUE_CAUSES } from "./mx_gaptrace.js";
 import { pinEvidence, pinsToTry, parsePinSize } from "./mx_pins.js";
@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-27.8";
+const APP_VERSION = "2026-11-27.9";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -7573,7 +7573,16 @@ function gtGaugeOn() { try { const v = localStorage.getItem("mxGapGauge"); if (v
   if (window.__MX_TEST_MIRROR__ && localStorage.getItem("__mxRealDefaults") !== "1") return false; } catch (e) { /* private mode */ } return true; }
 function gtZeroKey() { return gaugeKey(GT_REC.cfg && GT_REC.cfg.spec, gtLightNow()); }
 function gtZeroAll() { try { return JSON.parse(localStorage.getItem("mxGapZero") || "{}") || {}; } catch (e) { return {}; } }
-function gtZeroNow() { return gaugeZeroFind(gtZeroAll(), gtZeroKey()); }
+/* THE ZERO DOESN'T DROP WHEN THE LIGHT LABEL FLIPS (admin, 27 Nov 2026, T7 PX 0.60 x 2.80, 131–149 m: "Something weird is happening to
+   the gap trace"). The zero is kept per size and light, and the light is the reader's own guess (dark strips on light = backlight,
+   light on dark = lamp). Mid-run the guess flipped while the picture stayed exactly the same — a gap of 481 pixels in 1,750, the
+   very picture zeroed at 2.85 — so no zero was found for "lamp" and the trace fell back to the plain reading, 2.75, marked not
+   zeroed. A zero of the same size under the other light still holds when the picture now is the same size as the zero's (overall
+   width within GAUGE_SIZE_MAX): same camera, same strips, same pixels. */
+function gtZeroNow() { const all = gtZeroAll(), key = gtZeroKey(), z = gaugeZeroFind(all, key); if (z) return z;
+  const [sp, lt] = String(key).split("|"), other = `${sp}|${lt === "backlight" ? "lamp" : "backlight"}`, o = gaugeZeroFind(all, other); if (!o) return null;
+  const m = gaugeMedian(GT_REC.gaugeHist || [], Date.now()); if (!m || !(m.tot > 0) || Math.abs(m.tot / o.tot - 1) > GAUGE_SIZE_MAX) return null;
+  return o; }
 function gtZeroSave(z) { if (!z || !z.key) return; try { const all = gtZeroAll(), now = Date.now(); const keep = {}; for (const [k, v] of Object.entries(all)) if (v && now - Number(v.at || 0) <= GAUGE_ZERO_MAX_MS) keep[k] = v;
   for (const k of Object.keys(keep)) if (gaugeKeyNorm(keep[k] && keep[k].key) === gaugeKeyNorm(z.key)) delete keep[k];   /* one zero per size, by any of its names */
   keep[z.key] = z; localStorage.setItem("mxGapZero", JSON.stringify(keep)); } catch (e) { /* private mode */ } GT_REC.zeros = [...(GT_REC.zeros || []), { ...z }].slice(-40); }
@@ -7828,6 +7837,18 @@ function gtReadOnce() {
   /* Backlight help (4): no strips and the band nearly white → washed out → a shorter exposure (once every 5 s) */
   if (!r.ok && gtBackHelp() && (GT_REC.sigKeep === "darkness" || GT_REC.lightSeen === "backlight")) { let sum = 0, cnt = 0; for (let i = 0; i < px.length; i += 4 * 37) { sum += (px[i] + px[i + 1] + px[i + 2]) / 3; cnt++; }
     const tNow = Date.now(); if (cnt && sum / cnt >= 235 && !(GT_REC.backExpoAt && tNow - GT_REC.backExpoAt < 5000)) { GT_REC.backExpoAt = tNow; gtBackExpoShorten("the picture was washed out and the strips couldn't be seen"); } }
+  /* THE WRONG EDGES ARE NO READING (admin, 27 Nov 2026, T7 PX 0.60 x 2.80 backlit: "Why was it so off then came back … was it edge
+     recognition?" — yes). From 7 m to 80 m the backlit picture stopped reading as dark strips on the light; read the other way (light
+     strips on dark) it found the bright GAP as if it were the matrix — an "overall width" of 484 pixels where the matrix is 1,740 —
+     and after 20 pictures like that it switched to "lit from above", where there was no zero, so 6–8 mm went on the trace for 73 m.
+     A picture whose overall width is nowhere near the zero's (under 80 % or over 125 %) can't be the matrix: it's no reading, it
+     doesn't count towards switching the light, and the screen says the camera has lost the edges. */
+  if (r.ok && r.edges && gtGaugeOn()) { const zk = gtZeroNow() || (GT_REC.wrongEdgesZero && Date.now() - GT_REC.wrongEdgesZero.seen < 600000 ? GT_REC.wrongEdgesZero : null);
+    if (zk) { GT_REC.wrongEdgesZero = { ...zk, seen: Date.now() }; const totNow = r.edges.b1 - r.edges.a0;
+      if (zk.tot > 0 && (totNow < zk.tot * 0.8 || totNow > zk.tot * 1.25)) {
+        if (!GT_REC.wrongEdgesSince) { GT_REC.wrongEdgesSince = Date.now(); gtLog(`The camera picked out the wrong edges (a width of ${Math.round(totNow)} pixels, the matrix is ${Math.round(zk.tot)}) — not counted`, "#F59E0B"); }
+        r = { ok: false, why: "the camera has lost the matrix's edges — it's picking out the wrong ones", wrongEdges: true };
+      } else if (GT_REC.wrongEdgesSince) { gtLog(`Edges found again after ${Math.round((Date.now() - GT_REC.wrongEdgesSince) / 1000)} s`, "#60A5FA"); GT_REC.wrongEdgesSince = null; } } }
   if (r.ok && r.signal === "darkness") GT_REC.lightSeen = "backlight";   /* Backlight help: a backlit picture is read by its four steps too (20 Oct 2026, 08:38) */
   if (r.ok && r.signal !== "colour") { if (r.signal === GT_REC.sigLast) GT_REC.sigRun = (GT_REC.sigRun || 0) + 1; else { GT_REC.sigLast = r.signal; GT_REC.sigRun = 1; }
     if (GT_REC.sigRun >= 20 && GT_REC.sigKeep !== r.signal) { GT_REC.sigKeep = r.signal; gtLog(r.signal === "darkness" ? "Backlit: reading dark strips against the light" : "Lit from above: reading light strips against the dark", "#60A5FA");
@@ -7967,11 +7988,17 @@ function gtReadOnce() {
     /* MISREADS LEFT OUT AS THEY'RE READ (15 Oct 2026 — misreadStep): a picture far from the last second's is left off the
        trace and counted; a second of them running is the gap really moving, and they count from there */
     const mr = r.ok && r.gap > 0 ? misreadStep(GT_REC.mr, r.gap, now) : { ok: true, state: GT_REC.mr };
-    GT_REC.mr = mr.state; const gKeep = r.ok && r.gap > 0 && mr.ok ? r.gap : null;
+    /* THE TRACE IS THE STEADY FIGURE (admin, 27 Nov 2026: "Gap is consistently 2.75 but the trace keeps moving … Fix gap trace now").
+       The big number has been the steady figure (the middle of the last 4 s of pictures — gaugeRead) since 4 Nov, but the trace and
+       the readout chart still drew every single picture, and one picture wanders ±0.04 on a gap the callipers hold at 2.75, so the
+       line jumped in and out of a ±0.02 band that the gap never left. Now, zeroed, the trace draws the same steady figure the big
+       number shows; each picture's own figure is still kept with the reading (gr) for looking back. */
+    const gSteadyNow = gaugeOn && gzero && gread && gread.ok && r.ok && r.gap > 0 && !gate ? gread.mm : null;
+    GT_REC.mr = mr.state; const gKeep = gSteadyNow != null ? gSteadyNow : r.ok && r.gap > 0 && mr.ok ? r.gap : null;
     /* the pixels go with each reading, and a reading before the camera was calibrated says so (18 Oct 2026) */
     const g1 = gaugeOn && r.ok ? gaugeOne(r.edges) : null;
     const pxNow = gaugeOn ? (gKeep && g1 ? { gp: Math.round(g1.ge * 10) / 10, tp: Math.round(g1.tot * 10) / 10 } : {}) : gKeep && sd.gapPx > 0 && sd.totPx > 0 ? { gp: Math.round(sd.gapPx * 10) / 10, tp: Math.round(sd.totPx * 10) / 10 } : {};
-    if (!GT_REC.settingUp && !GT_REC.blockOn) GT_REC.samples.push({ t: now, g: r.ok ? gKeep : null, run: !!(r.ok && !GT_REC.paused), stopped: moving === false, ...(mr.ok ? {} : { mis: true }), ...(glNow ? { gl: glNow } : {}), ...pxNow, ...(uncal ? { u: 1 } : {}), ...(gate ? { q: gate === "focusing" ? "f" : "l" } : {}) });
+    if (!GT_REC.settingUp && !GT_REC.blockOn) GT_REC.samples.push({ t: now, g: r.ok ? gKeep : null, ...(gSteadyNow != null && r.gap > 0 ? { gr: Math.round(r.gap * 10000) / 10000 } : {}), run: !!(r.ok && !GT_REC.paused), stopped: moving === false, ...(mr.ok || gSteadyNow != null ? {} : { mis: true }), ...(glNow ? { gl: glNow } : {}), ...pxNow, ...(uncal ? { u: 1 } : {}), ...(gate ? { q: gate === "focusing" ? "f" : "l" } : {}) });
     gtGlueWatch(now);
     /* THE READOUT'S LAST TEN MINUTES (14 Oct 2026, the Sikora-style readout): every picture's gap by the clock, across Reel
        off and a new size's set-up, with the line's running metres — readoutTrend slices it for the chart */
