@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-27.4";
+const APP_VERSION = "2026-11-27.5";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -20869,7 +20869,7 @@ function WeighSheet({ palletStored = null, cases, startAt, walk, caseWeights, se
   const [earlierDone, setEarlierDone] = useState(!pc || !orderId);
   useEffect(() => { if (!pc || !orderId) return; let live = true;
     (async () => { const got = await earlierCasePhotos(orderId); if (!live) return;
-      const withBoxes = new Set(cases.filter(c => (c.contributions || []).some(r => Number(r.qty) > 0)).map(c => c.caseNum));
+      const withBoxes = new Set(cases.filter(c => (c.contributions || []).some(r => Number(r.qty) > 0) || (data && (data.lineItems || []).some(l => l && !l.deleted && l.orderId === orderId && Number(l.packedCase) === Number(c.caseNum)))).map(c => c.caseNum));
       const todo = Object.entries(got).filter(([n]) => withBoxes.has(Number(n)));
       setReads(r => { const o = { ...r }; for (const [n, x] of todo) if (!o[n]) o[n] = x.read || "reading"; return o; });
       setShot(s => { const o = { ...s }; for (const [n] of todo) if (!o[n]) o[n] = "done"; return o; });
@@ -20895,7 +20895,10 @@ function WeighSheet({ palletStored = null, cases, startAt, walk, caseWeights, se
     setShot(s => s[d.caseNum] === "kept" ? { ...s, [d.caseNum]: "done" } : s); };
     window.addEventListener("mx-case-photo", h); return () => window.removeEventListener("mx-case-photo", h); }, [orderId]);
   /* in a check walk a case still wants its photo read as well as its weight */
-  const hasBoxes = (c) => (c.contributions || []).some(r => Number(r.qty) > 0);   // packed outside the app: nothing to photograph
+  /* a case of bought-in items (Viking's case 181 of Profitape, 27 Nov 2026: "Still can't add photos to this case") has no boxes
+     but is photographed like any case — the photo is its record */
+  const extrasOf = (cn) => (data && orderId ? (data.lineItems || []).filter(l => l && !l.deleted && l.orderId === orderId && Number(l.packedCase) === Number(cn)) : []);
+  const hasBoxes = (c) => (c.contributions || []).some(r => Number(r.qty) > 0) || extrasOf(c.caseNum).length > 0;   // packed outside the app with nothing in the app: nothing to photograph
   /* PHOTOS AND WEIGHTS ARE TWO JOBS (Chris, 9 Oct 2026: "separate the case photograph from the weighing system as it's not how
      we work, I want one system for case photos, and another for weights"). check = the Case Photos walk: a photo per case,
      read in the background, no weight, no pallet. Not check = Weights: the number pad and the pallet, no camera. */
@@ -21048,7 +21051,7 @@ function WeighSheet({ palletStored = null, cases, startAt, walk, caseWeights, se
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "6px 16px 10px" }}>
-            {bigNumber && <CaseNumBlock c={c} n={n} sub={c.packedOutside ? "Packed outside the app" : null}
+            {bigNumber && <CaseNumBlock c={c} n={n} sub={extrasOf(n).length ? extrasOf(n).map(l => `${(Number(l.packedOutsideQty) > 0 ? Number(l.packedOutsideQty) : Number(l.qty) || 0).toLocaleString("en-GB")} × ${String(l.description || "").trim()}`).join(" · ") : c.packedOutside ? "Packed outside the app" : null}
               right={<button type="button" aria-label="Close" onClick={() => { commit(); onClose(); }} style={{ width: 40, height: 40, border: 0, borderRadius: 20, background: NL.PANEL, fontSize: 18, color: NL.INK }}>✕</button>} />}
             {walk && (
               <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
@@ -21061,7 +21064,7 @@ function WeighSheet({ palletStored = null, cases, startAt, walk, caseWeights, se
             {!bigNumber && <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
               <span style={{ flex: 1, display: "flex", flexDirection: "column", gap: 2 }}>
                 <span data-weigh-case={n} style={{ fontSize: 28, fontWeight: 700, letterSpacing: "-0.5px" }}>Case {n}</span>
-                <span style={{ fontSize: 13.5, color: NL.SUB }}>{c.packedOutside ? "Packed outside the app" : `${f.held} boxes in it · plan ${f.plan}`}</span>
+                <span style={{ fontSize: 13.5, color: NL.SUB }}>{extrasOf(n).length ? extrasOf(n).map(l => `${(Number(l.packedOutsideQty) > 0 ? Number(l.packedOutsideQty) : Number(l.qty) || 0).toLocaleString("en-GB")} × ${String(l.description || "").trim()}`).join(" · ") : c.packedOutside ? "Packed outside the app" : `${f.held} boxes in it · plan ${f.plan}`}</span>
               </span>
               <button type="button" aria-label="Close" onClick={() => { commit(); onClose(); }} style={{ width: 40, height: 40, border: 0, borderRadius: 20, background: NL.PANEL, fontSize: 18, color: NL.INK }}>✕</button>
             </div>}
@@ -21292,7 +21295,7 @@ function CaseGrid({ palletStored = null, cases, caseWeights, setCaseWeights, wei
         /* TWO JOBS, ONE PANEL (Chris, 9 Oct 2026). Photos at the bench, weights at the scale — each button carries its own
            count and bar; Check order under them is the photo report (the separate Photo report card is gone: "two buttons in
            quick succession sending me to do similar things"). At the top, before the key and the filters. */
-        const withBoxes = orderedCases.filter(c => (c.contributions || []).some(r => Number(r.qty) > 0));
+        const withBoxes = orderedCases.filter(c => (c.contributions || []).some(r => Number(r.qty) > 0) || (editOrder && editData && (editData.lineItems || []).some(l => l && !l.deleted && l.orderId === editOrder.id && Number(l.packedCase) === Number(c.caseNum))));   // + a case of bought-in items (27 Nov 2026)
         const toWeigh = orderedCases.filter(holdsBoxes);
         const weighedN = toWeigh.length - stillToWeigh.length;
         /* the photos not yet fetched from the cloud aren't "missing" — the panel waits for them, as the case card does
