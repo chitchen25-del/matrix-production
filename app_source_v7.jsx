@@ -35,7 +35,7 @@ import { learningNow, LEARN_MIN } from "./mx_learning.js";
 import { reelSizeFill, labelSizeClash, labelCodeToBook, labelCodeOtherSize, usualBay, withTapeSuffix, dropEmptyAllocations, mergeSameOrder, trimAllocationsTo, withoutOrders, withOrderQty, allToShelf, heldDetail, heldEntryOf, heldWhy, firstRefusalLine, dedupeFixes } from "./mx_bondfix.js";
 import { STOP_REASONS, isFalseStop, STOP_MIN_MS, WATCH_TICK_MS, lineStopStep, reasonOf, isChangeReason, changePlanMin, changeoverTimes, efficiencyWeek, biggestWins, scrappedReels, weekStartOf, fmtClock, fmtMin, fmtLen, stopEndMs } from "./mx_linestops.js";
 import { walkProducts, walkCards, walkCases, caseRoute, pickFacts, notThereFacts, putBackFacts, damagedFacts, notThereOpen, tickStatus, foundBoxRecord, foundBoxCartonGuess, walkProductKey, runFillsLine, bondingOfferFromWalk, shelfRemainderGoesTo } from "./mx_pickwalk.js";
-import { applyOrderRenames, applyRackCheck, setExtrudedCleared, applyCaseFix, applyPhotoRearrange, photoOrderVerdict, photoCaseCheck, photoReport, photoReportSnapshot, photoReportMatches, applyPhotoMoves, photoReportHolds, photoOrderLines, recordedByCase, bondCaseFill, undoAutoEntry, appendLog, appendPlanDifference, applyCaseAction, applyMovementToCaseRow, applyPatchMapsToCasesRaw, boxSpecOf, closeUpCaseNumbers, closeUpSummary, fillCustomerReferences, planCarry, planMissingCases, raiseIssue, reconcilePickSheet, recordMovement, recordMovements, recordPickSheet, refuseMovement, relabelCasesInLedger, resolveIssue, sameProductSpec } from "./mx_writes.js";
+import { applyOrderRenames, applyRackCheck, setExtrudedCleared, applyCaseFix, applyPhotoRearrange, photoOrderVerdict, photoCaseCheck, photoReport, photoReportSnapshot, photoReportMatches, applyPhotoMoves, photoReportHolds, photoOrderLines, recordedByCase, bondCaseFill, palletBoard, palletNextCases, undoAutoEntry, appendLog, appendPlanDifference, applyCaseAction, applyMovementToCaseRow, applyPatchMapsToCasesRaw, boxSpecOf, closeUpCaseNumbers, closeUpSummary, fillCustomerReferences, planCarry, planMissingCases, raiseIssue, reconcilePickSheet, recordMovement, recordMovements, recordPickSheet, refuseMovement, relabelCasesInLedger, resolveIssue, sameProductSpec } from "./mx_writes.js";
 import { GapSimplePortal } from "./mx_gapsimple_view.jsx";
 import { deriveData, TRUTH_SCHEMA, TRUTH_INPUT_KEYS } from "./mx_truth.js";
 import { setCloudTruth, cloudTruthDecision, TRUTH_STORE } from "./mx_truthstore.js";
@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-26.2";
+const APP_VERSION = "2026-11-27.1";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -4257,6 +4257,178 @@ function useCasePhotoRows(orderId, on = true) {
     } catch (e) { if (live) setSt({ rows: [], urls: {} }); } })();
     return () => { live = false; }; }, [orderId, tick, on]);
   return st;
+}
+/* ===================== THE PALLET BUILD (admin, 27 Nov 2026: "a really cool new page on orders where it shows you a graphic of
+   the pallet with all the case numbers on, and it shows as it's filling" — three mock-ups on the canvas, then "Perfect make it
+   happen"). A Pallets button beside Case photos opens a sheet: every pallet of the order as a small stack along the top (tap one),
+   the chosen pallet drawn large — its cases four across on a wooden pallet, each with its number, what size and how many boxes,
+   dark green done, pale green full but still to photograph or weigh, amber rising as it fills, dashed when empty, the case being
+   packed now pulsing — a READY TO WRAP stamp when every case is done, and beside it what to pack now and next, the chosen case's
+   boxes, and what is still open. Reading only: the ledger, the pallet plan, the photos and the weights (palletBoard). */
+const PB_LOOK = {
+  done: { bg: "#2F6B4F", bd: "2px solid #2F6B4F", fg: "#FFFFFF", fg2: "rgba(255,255,255,0.85)" },
+  checks: { bg: "#DCEFE4", bd: "2px solid #2F6B4F", fg: "#18203A", fg2: "#3F4A60" },
+  part: { bg: "#FFFFFF", bd: "2px solid #D48A12", fg: "#18203A", fg2: "#3F4A60" },
+  empty: { bg: "#FFFFFF", bd: "2px dashed #9AA1B2", fg: "#5E6A82", fg2: "#6B7385" },
+};
+const PB_MINI = {
+  done: { bg: "#2F6B4F", bd: "1.5px solid #2F6B4F", fg: "#FFFFFF" },
+  checks: { bg: "#DCEFE4", bd: "1.5px solid #2F6B4F", fg: "#18203A" },
+  part: { bg: "#FFFFFF", bd: "1.5px solid #D48A12", fg: "#18203A" },
+  empty: { bg: "transparent", bd: "1.5px dashed #9AA1B2", fg: "#6B7385" },
+};
+function pbRows(cases, per = 4, minRows = 1) {
+  const cells = [...cases]; const target = Math.max(minRows * per, Math.ceil(cells.length / per) * per);
+  while (cells.length < target) cells.push(null);
+  const rows = []; for (let i = 0; i < cells.length; i += per) rows.push(cells.slice(i, i + per));
+  return rows.reverse();   // the first cases sit at the bottom of the stack, as they're loaded
+}
+const pbNeed = (c) => c.status === "checks" ? (!c.photo && !c.kg ? "Photo + weigh" : !c.photo ? "Photo" : !c.kg ? "Weigh" : "Tick full")
+  : c.status === "part" ? `${c.size - c.inNow} to go` : c.status === "empty" ? "Empty" : "Done";
+function PalletCaseBrick({ c, filling, selected, onPick }) {
+  if (!c) return <div style={{ height: 62 }} />;
+  const L = PB_LOOK[c.status] || PB_LOOK.empty, pct = c.status === "part" ? Math.round(c.inNow * 100 / c.size) : 0;
+  return (<button type="button" data-pb-case={c.caseNum} data-pb-status={c.status} data-pb-filling={filling ? "1" : undefined} onClick={() => { nlHaptic(); onPick(c.caseNum); }}
+    aria-label={`Case ${c.caseNum}, ${c.inNow} of ${c.size} boxes`}
+    className={filling ? "mx-pb-filling" : undefined}
+    title={`Case ${c.caseNum} · ${c.spec} · ${c.inNow} of ${c.size}`} style={{ position: "relative", overflow: "hidden", height: 62, minWidth: 0, borderRadius: 7, cursor: "pointer", padding: 0, textAlign: "left", fontFamily: "inherit", background: L.bg, border: L.bd,
+      outline: selected ? `3px solid ${NAVY}` : "none", outlineOffset: 2, boxShadow: "inset 0 -5px 0 rgba(0,0,0,0.10)" }}>
+    {pct > 0 && <span style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: `${pct}%`, background: "#F2B544", transition: "height .4s ease" }} />}
+    <span style={{ position: "relative", display: "flex", flexDirection: "column", padding: "6px 8px", gap: 1, minWidth: 0 }}>
+      <span style={{ display: "flex", alignItems: "baseline", gap: 4, flexWrap: "wrap", rowGap: 0 }}>
+        <span style={{ fontSize: 17, fontWeight: 800, color: L.fg, lineHeight: 1.15 }}>{c.caseNum}</span>
+        <span style={{ fontSize: 11.5, fontWeight: 700, color: L.fg, marginLeft: "auto" }}>{c.inNow}/{c.size}</span></span>
+      <span style={{ fontSize: 11, color: L.fg2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.spec}</span></span>
+  </button>);
+}
+function PalletStackMini({ p, filling, selected, onPick }) {
+  const rows = pbRows(p.cases);
+  return (<button type="button" data-pb-pallet={p.key} data-pb-ready={p.ready ? "1" : undefined} onClick={() => { nlHaptic(); onPick(p.key); }}
+    style={{ flex: "0 0 170px", textAlign: "left", cursor: "pointer", padding: 10, borderRadius: 14, fontFamily: "inherit", background: "#FFFFFF", border: `2px solid ${selected ? NAVY : "#E1E4EB"}`, display: "flex", flexDirection: "column", gap: 6 }}>
+    <span style={{ position: "relative", display: "flex", flexDirection: "column", gap: 2, padding: 4, borderRadius: 6, background: "#F6F7FA" }}>
+      {rows.map((r, i) => <span key={i} style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 2 }}>
+        {r.map((c, j) => { if (!c) return <span key={j} style={{ height: 13 }} />; const L = PB_MINI[c.status] || PB_MINI.empty, pct = c.status === "part" ? Math.round(c.inNow * 100 / c.size) : 0;
+          return <span key={j} className={c.caseNum === filling ? "mx-pb-filling" : undefined} style={{ position: "relative", overflow: "hidden", height: 13, borderRadius: 3, background: L.bg, border: L.bd, boxSizing: "border-box" }}>
+            {pct > 0 && <span style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: `${pct}%`, background: "#F2B544" }} />}</span>; })}
+      </span>)}
+      {p.ready && <span style={{ position: "absolute", inset: 0, borderRadius: 6, background: "repeating-linear-gradient(115deg, rgba(255,255,255,0) 0 8px, rgba(255,255,255,0.35) 8px 11px)", pointerEvents: "none" }} />}
+    </span>
+    <span style={{ height: 6, background: "#C79B67", borderRadius: 2, margin: "0 4px" }} />
+    <span style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+      <span style={{ fontSize: 15, fontWeight: 800, color: NL.INK }}>{p.label}</span>
+      <span style={{ flex: "1 1 4px" }} />
+      <span style={{ fontSize: 15, fontWeight: 800, color: p.ready ? "#2F6B4F" : "#B45309" }}>{p.pct}%</span></span>
+    <span style={{ fontSize: 12, fontWeight: 700, alignSelf: "flex-start", padding: "3px 8px", borderRadius: 99, background: p.ready ? "#DCEFE4" : p.open ? "#FFF3D6" : "#E8F3EC", color: p.ready ? "#1F5A3E" : p.open ? "#8A5A00" : "#1F5A3E" }}>
+      {p.ready ? "Ready to wrap" : p.open ? `${p.open} boxes to pack` : `${p.toCheck} to photo / weigh`}</span>
+  </button>);
+}
+function PalletBuildSheet({ order, data, onClose }) {
+  const { rows } = useCasePhotoRows(order.id);
+  const [tick, setTick] = useState(0);
+  useEffect(() => { const iv = setInterval(() => setTick(t => t + 1), 60000); return () => clearInterval(iv); }, []);
+  const photoCases = useMemo(() => new Set((rows || []).filter(r => r.case_num != null).map(r => Number(r.case_num))), [rows]);
+  const board = useMemo(() => palletBoard(data, order, photoCases), [data.cases, data.movements, order, photoCases, tick]);
+  const firstKey = useMemo(() => { const f = board.fillingNow != null && board.pallets.find(p => p.cases.some(c => c.caseNum === board.fillingNow));
+    return (f || board.pallets.find(p => !p.ready && p.open) || board.pallets.find(p => !p.ready) || board.pallets[0] || {}).key || null; }, [board]);
+  const [palKey, setPalKey] = useState(null); const [sel, setSel] = useState(null);
+  const pal = board.pallets.find(p => p.key === (palKey || firstKey)) || board.pallets[0] || null;
+  const selCase = pal && sel != null ? pal.cases.find(c => c.caseNum === sel) : null;
+  const next = pal ? palletNextCases(pal, board.fillingNow) : [];
+  const readyN = board.pallets.filter(p => p.ready).length;
+  const kg = Math.round(board.pallets.reduce((t, p) => t + p.kg, 0));
+  const stat = (label, value) => <div style={{ borderRadius: 10, background: "#F6F7FA", padding: 12 }}><div style={{ fontSize: 12, color: NL.SUB }}>{label}</div><div style={{ fontSize: 21, fontWeight: 800, color: NL.INK }}>{value}</div></div>;
+  return ReactDOM.createPortal(<div data-pallet-sheet style={{ position: "fixed", inset: 0, zIndex: 1150, background: "#EEF0F4", display: "flex", flexDirection: "column", fontFamily: NLT.FONT, color: NL.INK }}>
+    <style>{"@keyframes mxPbPulse{0%{box-shadow:0 0 0 0 rgba(242,181,68,.8)}70%{box-shadow:0 0 0 10px rgba(242,181,68,0)}100%{box-shadow:0 0 0 0 rgba(242,181,68,0)}}.mx-pb-filling{animation:mxPbPulse 1.2s ease-out infinite}"}</style>
+    <div style={{ flex: "none", display: "flex", alignItems: "center", gap: 10, padding: "calc(env(safe-area-inset-top, 0px) + 12px) 16px 12px", background: NAVY, color: "#fff" }}>
+      <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 18, fontWeight: 700 }}>Pallets</div>
+        <div style={{ fontSize: 13, opacity: 0.85, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{order.id} · {order.customer} · {board.pct}% packed{kg ? ` · ${kg} kg weighed` : ""}</div></div>
+      <button type="button" data-pallet-close onClick={onClose} style={{ height: 40, padding: "0 16px", borderRadius: 20, border: 0, background: "#fff", color: NAVY, fontSize: 15, fontWeight: 700, fontFamily: "inherit", cursor: "pointer" }}>Close</button>
+    </div>
+    <div style={{ flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch", padding: "14px 16px calc(env(safe-area-inset-bottom, 0px) + 24px)" }}>
+      <div style={{ maxWidth: 1240, margin: "0 auto" }}>
+        {!board.pallets.length ? <div data-pallet-none style={{ padding: 30, textAlign: "center", color: NL.SUB, fontSize: 15.5 }}>This order has no cases yet.</div> : <>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 10, margin: "2px 2px 10px", flexWrap: "wrap" }}>
+          <div data-pallet-headline style={{ fontSize: 20, fontWeight: 800 }}>{readyN} of {board.pallets.length} pallet{board.pallets.length === 1 ? "" : "s"} ready to wrap</div>
+          <div style={{ fontSize: 14, color: NL.SUB }}>{board.cap - board.boxes ? `${board.cap - board.boxes} boxes still to pack` : "every box is packed"}</div></div>
+        <div data-pallet-strip style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 6, marginBottom: 14, WebkitOverflowScrolling: "touch" }}>
+          {board.pallets.map(p => <PalletStackMini key={p.key} p={p} filling={board.fillingNow} selected={pal && p.key === pal.key} onPick={(k) => { setPalKey(k); setSel(null); }} />)}
+        </div>
+        {pal && <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "flex-start" }}>
+          <div style={{ flex: "999 1 560px", minWidth: 0, background: "#fff", borderRadius: 16, padding: "18px 18px 22px", boxSizing: "border-box" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
+              <div data-pallet-title style={{ fontSize: 22, fontWeight: 800 }}>{pal.label}</div>
+              <div style={{ fontSize: 14.5, color: NL.SUB }}>{pal.count} case{pal.count === 1 ? "" : "s"} · {pal.pct}% full</div>
+              <div style={{ flex: "1 1 10px" }} />
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 12.5, color: "#3F4A60" }}>
+                {[["Done", { background: "#2F6B4F" }], ["Full, needs photo or weight", { background: "#DCEFE4", border: "2px solid #2F6B4F" }], ["Filling", { background: "#F2B544" }], ["Empty", { border: "2px dashed #9AA1B2" }]].map(([t, st]) =>
+                  <span key={t} style={{ display: "flex", alignItems: "center", gap: 6 }}><span style={{ width: 14, height: 14, borderRadius: 4, boxSizing: "border-box", ...st }} />{t}</span>)}
+              </div></div>
+            <div style={{ position: "relative", maxWidth: 720, margin: "0 auto" }}>
+              <div data-pallet-stack style={{ position: "relative", display: "flex", flexDirection: "column", gap: 6, padding: 10, borderRadius: 10, background: "#F6F7FA" }}>
+                {pbRows(pal.cases).map((r, i) => <div key={i} style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 6 }}>
+                  {r.map((c, j) => <PalletCaseBrick key={c ? c.caseNum : `g${j}`} c={c} filling={c && c.caseNum === board.fillingNow} selected={c && c.caseNum === sel} onPick={setSel} />)}</div>)}
+                {pal.ready && <>
+                  <div style={{ position: "absolute", inset: 0, borderRadius: 10, background: "repeating-linear-gradient(115deg, rgba(255,255,255,0) 0 14px, rgba(255,255,255,0.28) 14px 18px)", border: "2px solid rgba(47,107,79,0.35)", pointerEvents: "none" }} />
+                  <div data-pallet-wrap style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%) rotate(-8deg)", background: "#fff", color: "#2F6B4F", border: "3px solid #2F6B4F", borderRadius: 10, padding: "10px 22px", fontWeight: 800, fontSize: 22, letterSpacing: "0.04em", pointerEvents: "none", whiteSpace: "nowrap" }}>READY TO WRAP</div></>}
+              </div>
+              <div style={{ margin: "0 4px", height: 14, background: "#C79B67", borderRadius: 3, boxShadow: "inset 0 -3px 0 rgba(0,0,0,0.15)" }} />
+              <div style={{ display: "flex", justifyContent: "space-between", margin: "0 4px" }}>{[0, 1, 2].map(i => <div key={i} style={{ width: 70, height: 16, background: "#B0844F" }} />)}</div>
+              <div style={{ margin: "0 4px", height: 10, background: "#C79B67", borderRadius: "0 0 3px 3px" }} />
+            </div>
+          </div>
+          <div style={{ flex: "1 1 300px", minWidth: 0, display: "flex", flexDirection: "column", gap: 14 }}>
+            {next[0] && <div data-pallet-now style={{ background: "#fff", borderRadius: 16, padding: 16, border: "2px solid #F2B544" }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 800, color: "#B45309", letterSpacing: "0.06em" }}>{next[0].caseNum === board.fillingNow ? "PACKING NOW" : "PACK NEXT"}</div>
+                <div style={{ flex: "1 1 4px" }} /><div style={{ fontSize: 14, fontWeight: 700, color: "#3F4A60" }}>{next[0].inNow} of {next[0].size}</div></div>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 4 }}>
+                <div style={{ fontSize: 40, fontWeight: 800, lineHeight: 1 }}>{next[0].caseNum}</div>
+                <div style={{ fontSize: 15, color: "#3F4A60" }}>{next[0].spec}</div></div>
+              <div style={{ height: 12, borderRadius: 99, background: "#E6E8EE", overflow: "hidden", margin: "12px 0 8px" }}><div style={{ height: 12, width: `${Math.round(next[0].inNow * 100 / next[0].size)}%`, background: "#F2B544" }} /></div>
+              <div style={{ fontSize: 16, fontWeight: 700 }}>{next[0].size - next[0].inNow === 1 ? "1 more box and it's full" : `${next[0].size - next[0].inNow} more boxes to fill it`}</div>
+              {next[1] && <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${NL.LINE}`, display: "flex", alignItems: "baseline", gap: 10, fontSize: 14 }}>
+                <span style={{ color: NL.SUB }}>After that</span><span style={{ fontWeight: 800, fontSize: 17 }}>{next[1].caseNum}</span><span style={{ color: "#3F4A60" }}>{next[1].spec}{next[1].inNow ? ` · ${next[1].inNow} in` : " · empty"}</span></div>}
+            </div>}
+            {selCase && <div data-pallet-case={selCase.caseNum} style={{ background: "#fff", borderRadius: 16, padding: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 800, color: NL.SUB, letterSpacing: "0.06em" }}>CASE</div><div style={{ flex: "1 1 4px" }} />
+                <button type="button" aria-label="Close case" onClick={() => setSel(null)} style={{ minWidth: 44, minHeight: 44, borderRadius: 10, border: `1px solid ${NL.LINE}`, background: "#fff", cursor: "pointer", fontSize: 18, color: "#3F4A60", fontFamily: "inherit" }}>×</button></div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}><div style={{ fontSize: 36, fontWeight: 800 }}>{selCase.caseNum}</div><div style={{ fontSize: 15, color: "#3F4A60" }}>{selCase.spec}</div></div>
+              <div style={{ fontSize: 14.5, fontWeight: 600, margin: "4px 0 10px" }}>{selCase.inNow} of {selCase.size} boxes · {pbNeed(selCase)}</div>
+              {selCase.codes.map(x => <div key={x.box} style={{ display: "flex", gap: 10, padding: "5px 0", borderTop: `1px solid ${NL.LINE}`, fontSize: 14 }}>
+                <span style={{ fontWeight: 800, color: NAVY, minWidth: 32 }}>{x.qty} ×</span><span style={{ fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 600 }}>{x.box}</span></div>)}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, marginTop: 10 }}>
+                {stat("Weight", selCase.kg ? `${selCase.kg.toFixed(2)} kg` : "Not weighed")}{stat("Photo", selCase.photo ? "Taken" : "Not yet")}</div>
+            </div>}
+            <div style={{ background: "#fff", borderRadius: 16, padding: 16 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 800, color: NL.SUB, letterSpacing: "0.06em", marginBottom: 10 }}>{pal.label.toUpperCase()} AT A GLANCE</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, marginBottom: 12 }}>
+                {stat("Cases done", `${pal.done} / ${pal.count}`)}{stat("Boxes on", `${pal.boxes} / ${pal.cap}`)}{stat("Weighed so far", `${Math.round(pal.kg)} kg`)}{stat("Still to pack", pal.open ? `${pal.open} boxes` : "Nothing")}</div>
+              {(() => { const open = pal.cases.filter(c => c.status !== "done"); return <>
+                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>{open.length ? "Still open on this pallet" : "Every case on this pallet is done"}</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>{open.map(c => <button key={c.caseNum} type="button" data-pallet-open={c.caseNum} onClick={() => setSel(c.caseNum)}
+                  style={{ fontFamily: "inherit", textAlign: "left", cursor: "pointer", display: "flex", alignItems: "center", gap: 10, minHeight: 44, padding: "8px 12px", borderRadius: 10, border: `1px solid ${NL.LINE}`, background: "#fff" }}>
+                  <span style={{ fontWeight: 800, fontSize: 15, width: 40, color: NL.INK }}>{c.caseNum}</span>
+                  <span style={{ fontSize: 13.5, color: "#3F4A60", flex: "1 1 60px" }}>{c.spec}</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: c.status === "checks" ? "#2F6B4F" : c.status === "part" ? "#B45309" : NL.SUB }}>{pbNeed(c)}</span></button>)}</div></>; })()}
+            </div>
+          </div>
+        </div>}</>}
+      </div>
+    </div>
+  </div>, document.body);
+}
+function PalletsButton({ order, data }) {
+  const [open, setOpen] = useState(false);
+  const board = useMemo(() => palletBoard(data, order, null), [data.cases, data.movements, order]);
+  if (!board.pallets.length || order.stage === "Cancelled") return null;
+  const n = board.pallets.filter(p => p.key !== "—").length;
+  return (<>
+    <button type="button" data-nl-pallets={board.pct} onClick={() => { nlHaptic(); setOpen(true); }} style={{ flex: 1, minWidth: 0, minHeight: 46, borderRadius: 12, border: "1.5px solid #DDE0E8", background: "#fff", color: NAVY, fontFamily: NLT.FONT, cursor: "pointer", padding: "4px 8px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1 }}>
+      <span style={{ fontSize: 13.5, fontWeight: 700, whiteSpace: "nowrap" }}>▦ Pallets</span>
+      <span style={{ fontSize: 11.5, fontWeight: 600, color: INK_MUTED, whiteSpace: "nowrap" }}>{n ? `${n} pallet${n === 1 ? "" : "s"} · ` : ""}{board.pct}% packed</span></button>
+    {open && <PalletBuildSheet order={order} data={data} onClose={() => setOpen(false)} />}
+  </>);
 }
 function CasePhotosButton({ order, data }) {
   const [open, setOpen] = useState(false); const [big, setBig] = useState(null);
@@ -22330,7 +22502,7 @@ function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = nu
             the same one we use for shipping manifest should be used for packing list". On the new phone page it's the
             compact row under Check order (packRow), beside the case labels. */}
         {!tilesOnPack && <PackingListStrip data={data} order={order} onPrint={() => printPackingListSheet(order, caseRows, setData)} docHtml={() => packingListDoc(order, caseRows)} />}
-        {!tilesOnPack && <div className="no-print" data-case-photos-row style={{ display: "flex", margin: "0 0 10px" }}><div style={{ width: 230, display: "flex" }}><CasePhotosButton order={order} data={data} /></div></div>}
+        {!tilesOnPack && <div className="no-print" data-case-photos-row style={{ display: "flex", margin: "0 0 10px" }}><div style={{ width: 230, display: "flex" }}><CasePhotosButton order={order} data={data} /></div><div style={{ width: 230, display: "flex", marginLeft: 10 }}><PalletsButton order={order} data={data} /></div></div>}
         {/* THE FLOOR NOTE ONLY (22 Sep 2026) — office notes stay on the order card.
             CLAMPED TO THREE LINES. Order notes grow — Avrupa's carries the whole
             history of an amendment — and the full text was the first thing you
@@ -22462,7 +22634,7 @@ function OrderPackingSection({ order, data, setData, onBack, highlightBoxes = nu
             packRow={tilesOnPack ? <PackingListStrip compact data={data} order={order} onPrint={() => printPackingListSheet(order, caseRows, setData)} docHtml={() => packingListDoc(order, caseRows)}
               extra={<>{tilesOnPack.go && screenAllowed("caselabels") && order.stage !== "Cancelled" ? (() => { const n = caseRows.length; const done = caseLabelsPrintedFor(data, order.id); const left = (data.cases || []).filter(c => c && !c.deleted && c.orderId === order.id && !done.has(Number(c.caseNum))).length;
                 return <button type="button" data-nl-caselabels onClick={() => { nlHaptic(); openCaseLabelsFor(tilesOnPack.go, order.id); }} style={{ flex: 1, minWidth: 0, minHeight: 46, borderRadius: 12, border: `1.5px solid ${left ? NAVY : "#DDE0E8"}`, background: "#fff", color: NAVY, fontFamily: NLT.FONT, cursor: "pointer", padding: "4px 3px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1 }}>
-                  <span style={{ fontSize: 13.5, fontWeight: 700, whiteSpace: "nowrap" }}>🏷 Case labels</span><span style={{ fontSize: 11.5, fontWeight: 600, color: left ? NAVY : INK_MUTED, whiteSpace: "nowrap" }}>{left === 0 && n ? "all printed" : done.size ? `${left} not printed` : `${n} case${n === 1 ? "" : "s"}`}</span></button>; })() : null}<CasePhotosButton order={order} data={data} /></>} /> : null}
+                  <span style={{ fontSize: 13.5, fontWeight: 700, whiteSpace: "nowrap" }}>🏷 Case labels</span><span style={{ fontSize: 11.5, fontWeight: 600, color: left ? NAVY : INK_MUTED, whiteSpace: "nowrap" }}>{left === 0 && n ? "all printed" : done.size ? `${left} not printed` : `${n} case${n === 1 ? "" : "s"}`}</span></button>; })() : null}<CasePhotosButton order={order} data={data} /><PalletsButton order={order} data={data} /></>} /> : null}
             onEditCase={(caseNum, rows, flags, removed, lost) => saveCaseContents(caseNum, rows, flags, removed, lost)}
             onCaseAction={(a) => { setData(prev => { const r = applyCaseAction(prev, order, a); return r.error ? prev : r.patch; }); return {}; }} />
         )}
