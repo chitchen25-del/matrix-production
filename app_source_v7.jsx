@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-27.3";
+const APP_VERSION = "2026-11-27.4";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -4076,7 +4076,8 @@ function PhotoCaseDetail({ c, data, onTake }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
         <span style={{ fontSize: 19, fontWeight: 700 }}>Case {c.caseNum}</span>
         {c.photo && c.photo.pending && <span data-photo-pending-note={c.caseNum} style={{ fontSize: 13, fontWeight: 600, color: NL.RED }}>Photo not sent yet — on this phone, it sends itself</span>}
-        <span style={{ fontSize: 14, color: (PR_STATE[c.state] || PR_STATE.nophoto).ink, fontWeight: 600 }}>{c.state === "right" ? (ck && ck.state === "hidden" ? `✓ ${ck.seen} of ${ck.held} labels read — the weight says the rest are there` : `✓ ${c.held} labels — right for the order, the same as the system`) : reading ? "Reading the labels…" : c.state === "nophoto" ? "No photo yet" : c.state === "retake" ? c.whyText : c.state === "weight" ? "Photo right — the weight needs you" : c.state === "unread" ? "Photo not read yet" : "The photo and the system disagree"}</span>
+        {c.extras && <span data-pr-extras={c.caseNum} style={{ fontSize: 13.5, color: NL.INK }}>{c.extras.map(x => `${Number(x.qty).toLocaleString("en-GB")} × ${x.label}`).join(" · ")}</span>}
+        <span style={{ fontSize: 14, color: (PR_STATE[c.state] || PR_STATE.nophoto).ink, fontWeight: 600 }}>{c.extras ? (c.photo ? (c.weightOk ? "✓ Photo kept and weighed — no box labels to read" : "Photo kept — weigh it") : "Needs a photo — no box labels to read, the photo is the record") : c.state === "right" ? (ck && ck.state === "hidden" ? `✓ ${ck.seen} of ${ck.held} labels read — the weight says the rest are there` : `✓ ${c.held} labels — right for the order, the same as the system`) : reading ? "Reading the labels…" : c.state === "nophoto" ? "No photo yet" : c.state === "retake" ? c.whyText : c.state === "weight" ? "Photo right — the weight needs you" : c.state === "unread" ? "Photo not read yet" : "The photo and the system disagree"}</span>
         <span style={{ fontSize: 13, color: NL.SUB }}>{c.kg ? `${Number(c.kg).toFixed(2)} kg${c.weightOk ? " ✓" : ""}` : "not weighed"}{c.photo && c.photo.takenAt ? ` · photo ${new Date(c.photo.takenAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}` : ""}</span>
       </div>
     </div>
@@ -45055,6 +45056,21 @@ function DavesPlanner({ data, setData: setData0, go }) {
   </div>);
 }
 
+/* THE LINES SPLIT BY HEIGHT (Chris, 27 Nov 2026: "split the lines of an order between 7mm / 10mm / 12mm so it's easier to see"):
+   7mm, then 10mm, then 12mm, then anything else (rubber, shims), each under its own heading with what's in it and what's left.
+   The order within a height is the order's own. */
+const NL_HEIGHTS = ["7mm", "10mm", "12mm"];
+function nlHeightOf(l) { const k = classifySize(l && l.spec); return NL_HEIGHTS.includes(k) ? k : "other"; }
+function nlByHeight(ls) { const r = (k) => { const i = NL_HEIGHTS.indexOf(k); return i < 0 ? 9 : i; };
+  return (ls || []).map((l, i) => ({ l, i, k: nlHeightOf(l) })).sort((a, b) => r(a.k) - r(b.k) || a.i - b.i).map(x => x.l); }
+function nlHeightHead(arr, i, desk = false) {
+  const k = nlHeightOf(arr[i]); if (i > 0 && nlHeightOf(arr[i - 1]) === k) return null;
+  const ls = arr.filter(l => nlHeightOf(l) === k), ord = ls.reduce((t, l) => t + (Number(l.ordered) || 0), 0), left = ls.reduce((t, l) => t + Math.max(0, (Number(l.ordered) || 0) - (Number(l.packed) || 0)), 0);
+  const title = k === "other" ? "OTHER" : k.toUpperCase();
+  return (<div data-height-head={k} style={{ display: "flex", alignItems: "baseline", gap: 10, padding: desk ? "9px 16px" : "8px 14px", background: "#EEF1F8", borderTop: i ? "1px solid #DDE2EE" : 0, borderBottom: "1px solid #DDE2EE", fontFamily: "inherit" }}>
+    <b style={{ fontSize: desk ? 14 : 13, letterSpacing: 1, color: "#1B2B6B" }}>{title}</b>
+    <span style={{ fontSize: desk ? 13.5 : 12.5, color: "#5E6A82" }}>{ls.length} size{ls.length === 1 ? "" : "s"} · {ord.toLocaleString("en-GB")} box{ord === 1 ? "" : "es"}</span>
+    <span style={{ marginLeft: "auto", fontSize: desk ? 13.5 : 12.5, fontWeight: 600, color: left ? "#A85A16" : "#2F7D4F" }}>{left ? `${left.toLocaleString("en-GB")} left` : "all in cases ✓"}</span></div>); }
 /* "500 × Profile Tape 0.03mm Blue — in case 181" — a bought-in line and where it is (27 Nov 2026) */
 function nlExtraWords(l, nm) { const n = `${l.ordered.toLocaleString("en-GB")} × ${nm}`;
   return l.delivery ? n : l.inCase ? `${n} — in case ${l.inCase}` : l.sepPacked ? `${n} — packed separately` : `${n} — to pick`; }
@@ -46472,7 +46488,7 @@ function DeskOrderV5({ data, setData, orderId, go, jumpToPacking, onPick, onBack
             <span /><span>SIZE</span><span style={{ textAlign: "right" }}>ORDERED</span>{editing && <span style={{ textAlign: "right" }}>PRICE EACH</span>}<span style={{ textAlign: "right" }}>IN CASES</span><span style={{ textAlign: "right" }}>ON SHELF</span><span style={{ textAlign: "right" }}>TO MAKE</span><span />
           </div>
           {shown.length === 0 && <div style={{ padding: 16, color: DK.SUB }}>{q ? "No size or box code on this order matches." : "No box lines on this order."}</div>}
-          {shown.map(l => { const fr = freshOf(l), on = ticked.has(l.id), isSel = sel === l.id; const col = (productColourFor(l.spec) || {}).hex || "#CCCCCC";
+          {nlByHeight(shown).map((l, i, arr) => <React.Fragment key={l.id}>{nlHeightHead(arr, i, true)}{(() => { const fr = freshOf(l), on = ticked.has(l.id), isSel = sel === l.id; const col = (productColourFor(l.spec) || {}).hex || "#CCCCCC";
             const w = (n) => l.ordered > 0 ? `${Math.max(0, Math.min(100, 100 * n / l.ordered))}%` : "0%";
             const it = items.find(x => x.id === l.id) || {}; const dq = (draft.lines[l.id] || {}).qty, dp = (draft.lines[l.id] || {}).price;
             const qChanged = dq !== undefined && dq !== "" && Number(dq) !== Number(l.ordered), pChanged = dp !== undefined && dp !== "" && Math.round(Number(dp) * 100) !== Math.round(Number(it.unitPrice || 0) * 100);
@@ -46493,7 +46509,7 @@ function DeskOrderV5({ data, setData, orderId, go, jumpToPacking, onPick, onBack
               <span style={{ textAlign: "right", color: l.make ? DK.AMBER : "#9AA0B4", fontWeight: 600 }}>{l.make ? fmt(l.make) : "—"}</span>
               {editing ? <button data-v5-edit-remove={l.id} title="Take it off the order" onClick={e => { e.stopPropagation(); setLineDraft(l.id, "qty", "0"); }} style={{ width: 30, height: 30, borderRadius: 8, border: 0, background: "none", color: "#9AA0B4", fontSize: 16, cursor: "pointer" }}>×</button>
                 : <span aria-hidden="true" style={{ display: "flex", height: 6, borderRadius: 3, overflow: "hidden", background: "#ECEEF3" }}><i style={{ width: w(l.packed), background: DK.OK }} /><i style={{ width: w(l.shelf), background: DK.BAND }} /><i style={{ width: w(l.make), background: "#E09A4E" }} /></span>}
-            </div>); })}
+            </div>); })()}</React.Fragment>)}
           {extras.length > 0 && <div style={{ padding: "10px 16px", fontSize: 13.5, color: DK.SUB }}>Also on the order: {extras.map(l => nlExtraWords(l, name(l.spec))).join(" · ")}</div>}
         </div>}
         {tab === "sizes" && tickedLines.length > 0 && <div data-v5-bulk style={{ position: "sticky", bottom: 12, ...card, background: DK.BAND, color: "#fff", padding: "10px 14px", display: "flex", alignItems: "center", gap: 12, boxShadow: "0 10px 30px rgba(22,26,43,0.25)" }}>
@@ -47008,7 +47024,7 @@ function NLOrderV5({ data, setData, orderId, go, jumpToPacking, onPick, onBack, 
       {(E || tab === "lines") && <div style={{ ...card, overflow: "hidden" }}>
         {!E && boxLines.length > 0 && <div data-nl5-bar-key style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", padding: "9px 14px", fontSize: 12, color: NL.SUB, borderBottom: `1px solid ${NL.LINE}` }}>{[[NL.OK, "in cases"], [NL.NAVY, "to pick"], [NL5_BOND, "bond off reels"], ["#E09A4E", "glue first"]].map(([c, t]) => <span key={t} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><i style={{ width: 9, height: 9, borderRadius: 5, background: c, display: "inline-block" }} />{t}</span>)}</div>}
         {boxLines.length === 0 && <div style={{ padding: 14, color: NL.SUB }}>No box lines on this order.</div>}
-        {boxLines.map((l, i) => { const w = (n) => l.ordered > 0 ? `${Math.max(0, Math.min(100, 100 * n / l.ordered))}%` : "0%";
+        {nlByHeight(boxLines).map((l, i, arr) => <React.Fragment key={l.id}>{nlHeightHead(arr, i)}{(() => { const w = (n) => l.ordered > 0 ? `${Math.max(0, Math.min(100, 100 * n / l.ordered))}%` : "0%";
           /* WHAT'S LEFT, BY WHAT IT NEEDS (Chris, 26 Nov 2026 — "represent what's complete, what can be bonded from reels on rack,
              and what needs gluing ready for bonding"): to make splits into bond off the reel rack and glue first */
           const bondN = Math.min(l.bond || 0, l.make || 0), glueN = Math.max(0, (l.make || 0) - bondN);
@@ -47029,7 +47045,7 @@ function NLOrderV5({ data, setData, orderId, go, jumpToPacking, onPick, onBack, 
             <MatrixFace spec={l.spec} w={34} />
             <span style={{ flex: 1, minWidth: 0 }}><span style={{ display: "block", fontSize: 15, fontWeight: 600, color: NL.INK }}>{nm(l.spec)}{l.sample ? <span style={{ fontSize: 11.5, color: NL.AMBERTXT }}> · SAMPLE</span> : null}{boxTypesHere.length > 1 ? <span data-nl5-line-box style={{ fontSize: 11.5, color: NL.SUB }}> · {orderBoxTypeFor(o, l.spec)} box</span> : null}</span>
               <span style={{ display: "flex", height: 4, borderRadius: 2, overflow: "hidden", background: "#EEF0F4", marginTop: 6 }}><i style={{ width: w(l.packed), background: NL.OK }} /><i style={{ width: w(l.shelf), background: NL.NAVY }} /><i data-nl5-bar-bond style={{ width: w(bondN), background: NL5_BOND }} /><i data-nl5-bar-glue style={{ width: w(glueN), background: "#E09A4E" }} /></span></span>
-            <span style={{ textAlign: "right", flex: "none" }}><span style={{ display: "block", fontSize: 16, fontWeight: 700, color: NL.INK }}>{fmt(l.ordered)}</span>{states.map(([t, c]) => <span key={t} data-nl5-line-state style={{ display: "block", fontSize: 11.5, lineHeight: 1.35, color: c }}>{t}</span>)}</span></button>); })}
+            <span style={{ textAlign: "right", flex: "none" }}><span style={{ display: "block", fontSize: 16, fontWeight: 700, color: NL.INK }}>{fmt(l.ordered)}</span>{states.map(([t, c]) => <span key={t} data-nl5-line-state style={{ display: "block", fontSize: 11.5, lineHeight: 1.35, color: c }}>{t}</span>)}</span></button>); })()}</React.Fragment>)}
         {!E && extras.length > 0 && <div style={{ padding: "10px 14px", fontSize: 13, color: NL.SUB, borderTop: `1px solid ${NL.LINE}` }}>Also on the order: {extras.map(l => nlExtraWords(l, name(l.spec))).join(" · ")}</div>}
       </div>}
       {E && <div data-nl5-facts style={{ ...card, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
