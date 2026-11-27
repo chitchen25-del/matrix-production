@@ -11,7 +11,7 @@ import { classifyScan, decodeFrame, decodeRuns128, decodeRuns93 } from "./mx_sca
 import { readBoxCodes, readWords } from "./mx_ocr.js";
 import { BOX_LOCATIONS, madeCorrectionMoves, MOVEMENT_KINDS, SIGNED_MOVEMENT_KINDS, boxLinesFor, boxWhereabouts, cartonForNewEntry, cartonLedger, cartonOfEntry, caseProducts, casesHoldingBox, casesWithLedgerContents, freeInCartonFor, identityGateRefusal, inLiveCases, ledgerCaseContents, moveAdjusted, moveAllocated, moveCounted, moveMade, movePlaced, moveSampled, moveScrapped, moveShipped, moveUnallocated, moveUnplaced, movementRefusal, orderBoxes, orderCaseProducts, orderHoldings, placeLabel, placeOf, placeRefusalFor, runWhereabouts, placedBoxForm, placedBoxesByCase, projectBox, reconcileLedgerToStored, repackFacts, sizeWhereabouts, syncCaseRowsToLedger, takeOffOrder, traceLot, withLedgerFigures } from "./mx_ledger.js";
 import { fullCaseNums, orderPalletPlan, caseWeightsEstimate, palletPlanByWeight, BOX_CASE_SIZES, CASES_PER_PALLET, palletPlan, casePalletShown, ONE_PALLET_MAX_BOXES, onePalletCheck, CASE_BAND_ORDER, CASE_MAX_SIZE_DEFAULT, EMPTY_ON_PURPOSE, MONTH_LETTERS, PLAN_BAND_ORDER, STANDARD_BOX_TYPES, allocateCaseDetails, allocationRefusal, amendmentsFor, applyAmendmentReduction, arrangeBoxesThenReels, arrangeCases, arrangedCasesForOrder, backfillPlannedCases, batchesAvailableRows, batchesAvailableRowsFresh, boxOutOfOrderCases, buildCombinedCases, buildPackingPlan, caseShownSize, caseTileScale, cartonFor, cartonMismatch, caseContentLines, caseFill, caseKindOf, casePalletOf, casePlanLines, casePlanned, caseRangeLabel, caseRecordFor, caseRowId, caseRunsLabel, caseSortKey, caseState, caseView, caseWeightOf, caseWeightQuery, oddCaseWeights, compareCaseSort, computeMakeLists, dateFromReelCode, dedupeCaseRows, dismissalMap, findDiscrepancies, findDiscrepanciesFresh, hasCasePlan, isCaseClosed, isReelCase, isReelFulfilled, isStrongTapeOrder, liveMapEntries, mergePlannedRows, openCasesForOrder, openIssues, openPickSheets, orderBoxTypes, orderCaseCount, orderHasStarted, orderShortfall, ordersMissingPlan, ordersNeedingSpec, packedOutsideSpecs, packingShort, parseCodeDate, patchMapsFromCaseRecords, planAmendment, planBandFor, planCutForLine, planForMove, planOrderMismatches, planOrderRefusal, planRowsForNewOrder, planSpacesFor, plannableLines, plannedCasesFor, proposeCut, readDiscrepancyDismissals, reelsPerCase, refillCases, renumberAfterRemoval, resolveCaseContents, sameContents, shortCaseSpec, sortLinesForCases, specInCarton, specOfBoxInCase, subtractConfirmed, subtractPlanned, tapeFits, tapeRefusal, twinCartonSpec, bondedTwinSpecs, upBox, planVsOrder, discrepancyTriage, discrepancyWords, reelPlanInputs, orderMakePlan, caseWorkState } from "./mx_packing.js";
-import { ackVatKey, customerHsCode, orderAddressFor, tidyAddress, newerShipmentFor, shippedDayOf, EMPTY_CASE_KG, glueSheetDoc, manifestWeights, officeSummary, money, bondingListDoc, caseLabelDoc, caseLabelInner, caseLabelRange, caseLabelLayoutKey, CASE_LABEL_CSS, CASE_LABEL_LAYOUTS, ACK_VAT_TREATMENTS, LOGO_B64, MATRIX_EORI, MATRIX_VAT_NUMBER, PAPER_CSS, boxContentsLine, lastPriceFor, manifestReadiness, orderAckDoc, xeroInvoiceText, orderShipmentWeight, orderThreads, ordersLeftDoc, pEsc, pN2, packingListRows, paperFoot, paperHead, paperRunHead, pickSheetDoc, portalOrdersWaiting, productionSheetDoc, shippingManifestDoc, shippingManifestEmail, suggestedVatTreatment, unreadFromCustomers, customerGaps, VAT_RECORD_VALUE, VAT_WORDS, correctedManifest, caseDimsOf, manifestBoughtIn, deliveryAddressesOf, deliverToChoice } from "./mx_papers.js";
+import { ackVatKey, customerHsCode, orderAddressFor, tidyAddress, newerShipmentFor, shippedDayOf, EMPTY_CASE_KG, glueSheetDoc, manifestWeights, officeSummary, money, bondingListDoc, caseLabelDoc, caseExtrasFor, caseLabelInner, caseLabelRange, caseLabelLayoutKey, CASE_LABEL_CSS, CASE_LABEL_LAYOUTS, ACK_VAT_TREATMENTS, LOGO_B64, MATRIX_EORI, MATRIX_VAT_NUMBER, PAPER_CSS, boxContentsLine, lastPriceFor, manifestReadiness, orderAckDoc, xeroInvoiceText, orderShipmentWeight, orderThreads, ordersLeftDoc, pEsc, pN2, packingListRows, paperFoot, paperHead, paperRunHead, pickSheetDoc, portalOrdersWaiting, productionSheetDoc, shippingManifestDoc, shippingManifestEmail, suggestedVatTreatment, unreadFromCustomers, customerGaps, VAT_RECORD_VALUE, VAT_WORDS, correctedManifest, caseDimsOf, manifestBoughtIn, deliveryAddressesOf, deliverToChoice } from "./mx_papers.js";
 import { ALL_GLUE_DIES, dpCardsState, dpClearReelEstimate, DEFAULT_SCHEDULE_SETTINGS, GLUE_DIES_10MM, GLUE_DIES_12MM, GLUE_DIES_7MM, GLUE_DIES_7MM_OS, GLUE_DIE_12_DOUBLE, GLUE_DIE_GROUPS, SMALL_KEYWORDS, ULTRA_SR_COLOURS, WORK_HOURS, addWorkHours, addWorkingDays, batchMeterageUsed, glueReelHours, planDayAmount, workDayFraction, rackReels, reelIsCleared, reelState, reelUsedByCode, scrappedReelCodes, buildDailyPlan, classifySize, dueDateLabel, dueDateRows, formatOrderBreakdown, gapFromSpec, glueDiesForSpec, glueLineSequence, glueSizeOfProduct, glueReelPool, glueUsableFrom, scheduleTweaksOf, glueChangeBetween, scheduleRulesOf, glueChangeoverStats, learnFromTweaks, glueRangeOf, LEARN_AFTER, glueReelOffAt, SAME_PVC_CHANGE_MIN, hoursOn, isDelivery, isSmallItem, boughtInToPick, boughtInShort, localDateKey, measuredRates, nextWorkMoment, nextWorkingMorning, orderDialSegments, orderFinishDates, planOrderCompare, glueListOrdersFor, packingReadyRows, packingReadyRowsStored, planDaysUntil, planDueReason, planScore, planSlips, planSnapshotRow, promiseOptions, readyToShip, schedulePrep, scheduleSettingsOf, sizeKeyOfProduct, top2PriorityOrders, top2SizeRows, unrankableOrders, workCalendar } from "./mx_planning.js";
 import { pvcCodeCheck, BONDING_BOXES_PER_DAY_MIN, DERIVED_RUN_GAP_HOURS, DERIVED_RUN_KEYS, EVA_YIELD_MIN_SAMPLE, GLUE_MEASURE_TOLERANCE_PCT, PVC_COLOUR_BY_HEIGHT, PVC_DEFAULT_COLOUR, REEL_METRES_TYPICAL, batchDeleteWarning, bondingOutputByDay, categoryLowest, categoryTotal, deriveRuntimeHours, derivedGlueRuns, evaDieForRow, evaRackRows, evaYieldByDie, extrudedReelCheck, extrudedReelsForSize, extrudedReelsForSpec, extrudedReelsMatching, extrusionScheduleRows, glueDieByLabel, glueDiesForWidthOf, glueLineScheduleRows, glueLineScheduleRowsFresh, glueRunReels, glueRunTarget, glueRunTotals, glueSizeKey, glueSpecMalformed, lastGlueBatchUsed, lastToolingUse, toolingUseHistory, glueDieUseHistory, glueDieSpells, toolingRunHistory, runSettingPairs, runLineText, learnedReelMetres, materialBatchCode, materialStockFrom, materialsGroupedByCategory, metersPerBoxWarning, minutesSinceLastReel, normalWeightFor, productPipeline, pvcCodeForSpec, pvcColourForSpec, recommendedBatch, recordMaterialMovement, reelCapacityWarning, reelDiscrepancy, reelIsIndirect, reelOverConsumption, runningReelDiscrepancy, samePin, toolingUnplaced, unknownReelWarning, withGlueRunSettings, withMaterialFigures, withPrefixFor, evaOutlook, evaDieForSpec, evaCodeFacts, EXTRUDED_REEL_SOFT_DAYS, extrudedOn } from "./mx_production.js";
 // (mx_promises.js — the retired promise readers — removed 24 Sep 2026)
@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-27.1";
+const APP_VERSION = "2026-11-27.2";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -4289,7 +4289,7 @@ function PalletCaseBrick({ c, filling, selected, onPick }) {
   if (!c) return <div style={{ height: 62 }} />;
   const L = PB_LOOK[c.status] || PB_LOOK.empty, pct = c.status === "part" ? Math.round(c.inNow * 100 / c.size) : 0;
   return (<button type="button" data-pb-case={c.caseNum} data-pb-status={c.status} data-pb-filling={filling ? "1" : undefined} onClick={() => { nlHaptic(); onPick(c.caseNum); }}
-    aria-label={`Case ${c.caseNum}, ${c.inNow} of ${c.size} boxes`}
+    aria-label={c.extras ? `Case ${c.caseNum}, ${c.spec}` : `Case ${c.caseNum}, ${c.inNow} of ${c.size} boxes`}
     className={filling ? "mx-pb-filling" : undefined}
     title={`Case ${c.caseNum} · ${c.spec} · ${c.inNow} of ${c.size}`} style={{ position: "relative", overflow: "hidden", height: 62, minWidth: 0, borderRadius: 7, cursor: "pointer", padding: 0, textAlign: "left", fontFamily: "inherit", background: L.bg, border: L.bd,
       outline: selected ? `3px solid ${NAVY}` : "none", outlineOffset: 2, boxShadow: "inset 0 -5px 0 rgba(0,0,0,0.10)" }}>
@@ -4297,7 +4297,7 @@ function PalletCaseBrick({ c, filling, selected, onPick }) {
     <span style={{ position: "relative", display: "flex", flexDirection: "column", padding: "6px 8px", gap: 1, minWidth: 0 }}>
       <span style={{ display: "flex", alignItems: "baseline", gap: 4, flexWrap: "wrap", rowGap: 0 }}>
         <span style={{ fontSize: 17, fontWeight: 800, color: L.fg, lineHeight: 1.15 }}>{c.caseNum}</span>
-        <span style={{ fontSize: 11.5, fontWeight: 700, color: L.fg, marginLeft: "auto" }}>{c.inNow}/{c.size}</span></span>
+        <span style={{ fontSize: 11.5, fontWeight: 700, color: L.fg, marginLeft: "auto" }}>{c.extras ? "" : `${c.inNow}/${c.size}`}</span></span>
       <span style={{ fontSize: 11, color: L.fg2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.spec}</span></span>
   </button>);
 }
@@ -4394,7 +4394,7 @@ function PalletBuildSheet({ order, data, onClose }) {
                 <div style={{ fontSize: 12.5, fontWeight: 800, color: NL.SUB, letterSpacing: "0.06em" }}>CASE</div><div style={{ flex: "1 1 4px" }} />
                 <button type="button" aria-label="Close case" onClick={() => setSel(null)} style={{ minWidth: 44, minHeight: 44, borderRadius: 10, border: `1px solid ${NL.LINE}`, background: "#fff", cursor: "pointer", fontSize: 18, color: "#3F4A60", fontFamily: "inherit" }}>×</button></div>
               <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}><div style={{ fontSize: 36, fontWeight: 800 }}>{selCase.caseNum}</div><div style={{ fontSize: 15, color: "#3F4A60" }}>{selCase.spec}</div></div>
-              <div style={{ fontSize: 14.5, fontWeight: 600, margin: "4px 0 10px" }}>{selCase.inNow} of {selCase.size} boxes · {pbNeed(selCase)}</div>
+              <div style={{ fontSize: 14.5, fontWeight: 600, margin: "4px 0 10px" }}>{selCase.extras ? "Packed" : `${selCase.inNow} of ${selCase.size} boxes`} · {pbNeed(selCase)}</div>
               {selCase.codes.map(x => <div key={x.box} style={{ display: "flex", gap: 10, padding: "5px 0", borderTop: `1px solid ${NL.LINE}`, fontSize: 14 }}>
                 <span style={{ fontWeight: 800, color: NAVY, minWidth: 32 }}>{x.qty} ×</span><span style={{ fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 600 }}>{x.box}</span></div>)}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, marginTop: 10 }}>
@@ -5722,6 +5722,7 @@ function CaseLabelsView({ data, setData, initialOrderId = null }) {
   /* THE PALLET ON THE LABEL (21 Oct 2026): the pallet the case is on, else the one the pallet plan puts it on. No "of 6" — as the
      case number has no "of 23", so cases added later don't mean relabelling. */
   const palletPlanHere = useMemo(() => order && !order.noPallets ? orderPalletPlan(data.cases, order) : null, [data.cases, order]);
+  const extrasFor = (n) => order ? caseExtrasFor(data.lineItems || [], order.id, n) : [];   /* Profitape and other bought-in lines packed in this case (27 Nov 2026) */
   const palletFor = (n) => { if (!order || !palletPlanHere || palletPlanHere.pallets.length < 2 && !casePalletOf(data.cases, order, n)) return null; return casePalletShown(data.cases, order, n, palletPlanHere).pallet; };
   const nums = pick && pick.length ? pick : caseLabelRange(from, to);
   /* NO "of 23" (Chris, 8 Oct 2026: "we tend to add boxes to orders half way through meaning we would have to relabel everything
@@ -5769,7 +5770,7 @@ function CaseLabelsView({ data, setData, initialOrderId = null }) {
   const canPrint = !!printNums.length && !!(order || pickedCust || (isNew && newName));
   const print = () => { if (!canPrint) return; nlHaptic && nlHaptic();
     const refId = order ? order.id : pickedCust ? pickedCust.id : "new customer";
-    const html = caseLabelDoc(f, printNums, layout, ofCases, palletFor);
+    const html = caseLabelDoc(f, printNums, layout, ofCases, palletFor, extrasFor);
     try { window.__lastCaseLabelDoc = html; } catch (e) {}
     const what = describe(printNums); const again = printNums.filter(x => printed.has(x));
     /* this PC has the case label printer: straight to it. Anywhere else (a phone, another PC): to the case label printer's PC */
@@ -5866,7 +5867,7 @@ function CaseLabelsView({ data, setData, initialOrderId = null }) {
       <div style={{ ...box, position: phone ? "static" : "sticky", top: 12 }}>
         <div style={lab}>Preview — case {nums[0] || 1}</div>
         <div data-cl-preview style={{ border: `1px solid ${NL.LINE}`, borderRadius: 6, overflow: "hidden", aspectRatio: `${(CASE_LABEL_LAYOUTS[layout] || CASE_LABEL_LAYOUTS.tec).w} / ${(CASE_LABEL_LAYOUTS[layout] || CASE_LABEL_LAYOUTS.tec).h}`, position: "relative", background: "#fff" }}>
-          <CaseLabelPreview f={f} n={nums[0] || 1} of={ofCases} layout={layout} pallet={palletFor(nums[0] || 1)} /></div>
+          <CaseLabelPreview f={f} n={nums[0] || 1} of={ofCases} layout={layout} pallet={palletFor(nums[0] || 1)} extras={extrasFor(nums[0] || 1)} /></div>
         <div style={{ ...lab, marginTop: 16 }}>Paper</div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{Object.entries(CASE_LABEL_LAYOUTS).map(([k, L]) => <button key={k} data-cl-layout={k} aria-pressed={layout === k} onClick={() => { setLayout(k); try { localStorage.setItem(CASE_LABEL_LAYOUT_KEY, k); } catch (e) {} }} style={chip(layout === k)}>{L.name}</button>)}</div>
         {dups.length > 0 && <div data-cl-dups style={{ marginTop: 14, padding: "10px 12px", borderRadius: 10, background: reprint ? "#FFF4E0" : NL.PANEL, border: `1px solid ${reprint ? "#E8C77A" : NL.LINE}`, fontSize: 13.5, lineHeight: 1.4 }}>
@@ -5887,13 +5888,13 @@ function CaseLabelsView({ data, setData, initialOrderId = null }) {
   </div>);
 }
 /* The label drawn at its real size in mm, scaled down to fit the box it sits in. */
-function CaseLabelPreview({ f, n, of = null, layout, pallet = null }) {
+function CaseLabelPreview({ f, n, of = null, layout, pallet = null, extras = null }) {
   const L = CASE_LABEL_LAYOUTS[layout] || CASE_LABEL_LAYOUTS.tec;
   const ref = React.useRef(null); const [k, setK] = useState(0.5);
   useEffect(() => { const el = ref.current && ref.current.parentElement; if (!el || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(() => setK(el.clientWidth / (L.w * 3.7795))); ro.observe(el); setK(el.clientWidth / (L.w * 3.7795)); return () => ro.disconnect(); }, [layout]);
   return <div ref={ref} style={{ position: "absolute", left: 0, top: 0, width: `${L.w}mm`, height: `${L.h}mm`, transform: `scale(${k})`, transformOrigin: "0 0" }}>
-    <style>{CASE_LABEL_CSS}</style><div style={{ width: "100%", height: "100%" }} dangerouslySetInnerHTML={{ __html: caseLabelInner(f, n, of, pallet) }} /></div>;
+    <style>{CASE_LABEL_CSS}</style><div style={{ width: "100%", height: "100%" }} dangerouslySetInnerHTML={{ __html: caseLabelInner(f, n, of, pallet, extras) }} /></div>;
 }
 
 function labelsSimpleHere() { try { const v = localStorage.getItem("mxLabelsSimple"); if (v === "new") return true; if (v === "old") return false;
