@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-27.2";
+const APP_VERSION = "2026-11-27.3";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -45055,6 +45055,9 @@ function DavesPlanner({ data, setData: setData0, go }) {
   </div>);
 }
 
+/* "500 × Profile Tape 0.03mm Blue — in case 181" — a bought-in line and where it is (27 Nov 2026) */
+function nlExtraWords(l, nm) { const n = `${l.ordered.toLocaleString("en-GB")} × ${nm}`;
+  return l.delivery ? n : l.inCase ? `${n} — in case ${l.inCase}` : l.sepPacked ? `${n} — packed separately` : `${n} — to pick`; }
 function nlLineFigures(data, o, plan) {
   const lines = tapeLast((data.lineItems || []).filter(l => l && !l.deleted && l.orderId === o.id));
   /* IN THE CASES, PER LINE — the one "done" sum (orderProgress, 11 Oct 2026): each box placed counts once, shared between
@@ -45071,7 +45074,10 @@ function nlLineFigures(data, o, plan) {
     const ordered = Math.max(0, Number(l.qty) || 0);   /* qty already has any short-shipped boxes taken off (shortShip) */
     /* tape, shim and the like are not boxes, but can go in a case: those still read by what was placed */
     const tapeMoves = tapeOrShim ? (data.movements || []).filter(m => m && !m.deleted && m.orderId === o.id && sameProductSpec(m.spec, spec)) : [];
-    const packed = delivery ? 0 : tapeOrShim ? Math.max(0, tapeMoves.filter(m => m.kind === "placed").reduce((t, m) => t + (Number(m.qty) || 0), 0) - tapeMoves.filter(m => m.kind === "unplaced").reduce((t, m) => t + (Number(m.qty) || 0), 0)) : (doneBy.get(l.id) || 0);
+    /* a bought-in line put in a case or packed separately on the order page (Small items → In case N) is picked (27 Nov 2026,
+       Viking's Profitape in case 181 still read as not picked) */
+    const tapeIn = tapeOrShim && (Number(l.packedCase) > 0 || l.packedOutside) ? Math.min(ordered, Number(l.packedOutsideQty) > 0 ? Number(l.packedOutsideQty) : ordered) : 0;
+    const packed = delivery ? 0 : tapeOrShim ? Math.max(tapeIn, 0, tapeMoves.filter(m => m.kind === "placed").reduce((t, m) => t + (Number(m.qty) || 0), 0) - tapeMoves.filter(m => m.kind === "unplaced").reduce((t, m) => t + (Number(m.qty) || 0), 0)) : (doneBy.get(l.id) || 0);
     const shelf = Math.min(Math.max(0, ordered - packed), shelfItems.reduce((t, x) => t + (Number(x.covered) || 0), 0));
     /* the shelf's boxes that still want checking are said apart (audit item 19) — "on the shelf" isn't counted as sure */
     const checkN = Math.min(shelf, forLine(plan.checkItems, l).reduce((t, x) => t + (Number(x.covered) || 0), 0));
@@ -45098,7 +45104,7 @@ function nlLineFigures(data, o, plan) {
     const noFormN = glueItems.filter(x => x.noForm).reduce((t, x) => t + (Number(x.boxesNeeded) || 0), 0);
     const guessMpb = ([...glueItems, ...bondItems].find(x => x.mpbGuessed) || {}).mpb || null;
     if (guessN) why.push(`${guessN} worked out at ${guessMpb ? `${guessMpb} m` : "the house rule's metres"} a box — the catalogue doesn't have this size's metres a box, so its metres are ≈`);
-    return { id: l.id, spec, ref: l.customerRef || "", amendment: l.amendmentLabel || null, sample: l.sample === true, delivery, tapeOrShim, ordered, packed, shelf, checkN, make: make + left, bond, glue: glue + other + left, why, picks, bondReels: bondItems.flatMap(x => x.reels.map(r => r.batchNumber)),
+    return { id: l.id, spec, ref: l.customerRef || "", amendment: l.amendmentLabel || null, sample: l.sample === true, delivery, tapeOrShim, ordered, packed, inCase: tapeOrShim && Number(l.packedCase) > 0 ? Number(l.packedCase) : null, sepPacked: !!(tapeOrShim && l.packedOutside && !(Number(l.packedCase) > 0)), shelf, checkN, make: make + left, bond, glue: glue + other + left, why, picks, bondReels: bondItems.flatMap(x => x.reels.map(r => r.batchNumber)),
       shareN: Math.min(glue, sharedItems.reduce((t, x) => t + (Number(x.needed) || 0), 0)), shareReels: [...new Set(sharedItems.flatMap(x => x.reels.map(r => r.batchNumber)))],
       sharePool: sharedItems.length ? { boxes: sharedItems[0].poolBoxes, need: sharedItems[0].poolNeed, others: sharedItems[0].others } : null, glueM: glueItems.reduce((t, x) => t + (Number(x.metersNeeded) || 0), 0),
       cantPlace: left + noFormN, noLengthN, guessN, guessMpb, handN: other, packedUnknown };
@@ -46488,7 +46494,7 @@ function DeskOrderV5({ data, setData, orderId, go, jumpToPacking, onPick, onBack
               {editing ? <button data-v5-edit-remove={l.id} title="Take it off the order" onClick={e => { e.stopPropagation(); setLineDraft(l.id, "qty", "0"); }} style={{ width: 30, height: 30, borderRadius: 8, border: 0, background: "none", color: "#9AA0B4", fontSize: 16, cursor: "pointer" }}>×</button>
                 : <span aria-hidden="true" style={{ display: "flex", height: 6, borderRadius: 3, overflow: "hidden", background: "#ECEEF3" }}><i style={{ width: w(l.packed), background: DK.OK }} /><i style={{ width: w(l.shelf), background: DK.BAND }} /><i style={{ width: w(l.make), background: "#E09A4E" }} /></span>}
             </div>); })}
-          {extras.length > 0 && <div style={{ padding: "10px 16px", fontSize: 13.5, color: DK.SUB }}>Also on the order: {extras.map(l => `${fmt(l.ordered)} × ${name(l.spec)}`).join(" · ")}</div>}
+          {extras.length > 0 && <div style={{ padding: "10px 16px", fontSize: 13.5, color: DK.SUB }}>Also on the order: {extras.map(l => nlExtraWords(l, name(l.spec))).join(" · ")}</div>}
         </div>}
         {tab === "sizes" && tickedLines.length > 0 && <div data-v5-bulk style={{ position: "sticky", bottom: 12, ...card, background: DK.BAND, color: "#fff", padding: "10px 14px", display: "flex", alignItems: "center", gap: 12, boxShadow: "0 10px 30px rgba(22,26,43,0.25)" }}>
           <span style={{ fontSize: 15 }}><b>{tickedLines.length} size{tickedLines.length === 1 ? "" : "s"} ticked</b> · {fmt(tickShelf)} on the shelf · {fmt(tickMake)} to make</span>
@@ -47024,7 +47030,7 @@ function NLOrderV5({ data, setData, orderId, go, jumpToPacking, onPick, onBack, 
             <span style={{ flex: 1, minWidth: 0 }}><span style={{ display: "block", fontSize: 15, fontWeight: 600, color: NL.INK }}>{nm(l.spec)}{l.sample ? <span style={{ fontSize: 11.5, color: NL.AMBERTXT }}> · SAMPLE</span> : null}{boxTypesHere.length > 1 ? <span data-nl5-line-box style={{ fontSize: 11.5, color: NL.SUB }}> · {orderBoxTypeFor(o, l.spec)} box</span> : null}</span>
               <span style={{ display: "flex", height: 4, borderRadius: 2, overflow: "hidden", background: "#EEF0F4", marginTop: 6 }}><i style={{ width: w(l.packed), background: NL.OK }} /><i style={{ width: w(l.shelf), background: NL.NAVY }} /><i data-nl5-bar-bond style={{ width: w(bondN), background: NL5_BOND }} /><i data-nl5-bar-glue style={{ width: w(glueN), background: "#E09A4E" }} /></span></span>
             <span style={{ textAlign: "right", flex: "none" }}><span style={{ display: "block", fontSize: 16, fontWeight: 700, color: NL.INK }}>{fmt(l.ordered)}</span>{states.map(([t, c]) => <span key={t} data-nl5-line-state style={{ display: "block", fontSize: 11.5, lineHeight: 1.35, color: c }}>{t}</span>)}</span></button>); })}
-        {!E && extras.length > 0 && <div style={{ padding: "10px 14px", fontSize: 13, color: NL.SUB, borderTop: `1px solid ${NL.LINE}` }}>Also on the order: {extras.map(l => `${fmt(l.ordered)} × ${name(l.spec)}`).join(" · ")}</div>}
+        {!E && extras.length > 0 && <div style={{ padding: "10px 14px", fontSize: 13, color: NL.SUB, borderTop: `1px solid ${NL.LINE}` }}>Also on the order: {extras.map(l => nlExtraWords(l, name(l.spec))).join(" · ")}</div>}
       </div>}
       {E && <div data-nl5-facts style={{ ...card, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={eyebrow}>PLAIN FACTS</div>
@@ -47254,7 +47260,7 @@ function NLOrderPage({ data, setData, orderId, go, jumpToPacking, onPick, render
       {!byNext && (<>{legend}<NLCard>{boxLines.length === 0 && <div style={{ padding: "14px 16px", fontSize: 14, color: NL.SUB }}>No box lines on this order.</div>}
         {boxLines.slice(0, showAll ? 999 : 12).map((l, i) => lineRow(l, i, i === 0))}
         {boxLines.length > 12 && !showAll && <button onClick={() => setShowAll(true)} style={{ width: "100%", border: 0, borderTop: `1px solid ${NL.LINE}`, background: "none", padding: 12, fontFamily: NLT.FONT, fontSize: 14, fontWeight: 600, color: NL.NAVY }}>All {boxLines.length} lines</button>}</NLCard>
-        {extras.length > 0 && <div style={{ margin: "10px 2px 0", fontSize: 13, color: NL.SUB }}>Also on the order: {extras.map(l => `${l.ordered} × ${l.spec}`).join(" · ")}</div>}</>)}
+        {extras.length > 0 && <div style={{ margin: "10px 2px 0", fontSize: 13, color: NL.SUB }}>Also on the order: {extras.map(l => nlExtraWords(l, l.spec)).join(" · ")}</div>}</>)}
       {byNext && groups.map(([title, col, ls, sub, hint]) => (<div key={title}><NLEyebrow><span style={{ color: col }}>{title} · {fmt(ls.reduce((t, l) => t + (title === "Packed" ? l.packed : title === "Pick from the shelf" ? l.shelf : title === "Bond from reels" ? l.bond : l.glue), 0))}</span></NLEyebrow>{hint && <div style={{ margin: "-6px 2px 8px", fontSize: 12.5, color: NL.SUB }}>{hint}</div>}
         <NLCard>{ls.map((l, i) => <NLRow key={l.id} first={i === 0} lead={<NLDot spec={l.spec} />} title={l.spec.replace(/\s*\(\d+m\)$/, "")} mono sub={sub(l)} right={<span style={{ fontSize: 15, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{fmt(l.ordered)}</span>} onClick={() => l.make > 0 && setWhy(l)} />)}</NLCard></div>))}
       <div style={{ display: "flex", gap: 8, marginTop: 14 }}><button data-nl-record onClick={() => { nlHaptic(); setRecord(v => !v); }} style={{ flex: 1, height: 44, borderRadius: 22, border: 0, background: record ? NL.NAVY : NL.PANEL, color: record ? "#fff" : NL.INK, fontFamily: NLT.FONT, fontSize: 14.5, fontWeight: 600 }}>{record ? "Hide the order record" : "Order record · extras, edit, notes"}</button></div>
