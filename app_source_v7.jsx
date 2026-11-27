@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-27.7";
+const APP_VERSION = "2026-11-27.8";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -34765,35 +34765,52 @@ function tapeFromCode(code) {
    line design we just spoke about now please"). Under an order's number on step 3: one card per case the boxes go in —
    ALREADY HALF PACKED (boxes booked in it: find it, add on top, with the codes and when), EMPTY — NEW CASE, or NEW CASE —
    ONLY PART FILLED (more still to come: leave it open). From the ledger (bondCaseFill, mx_writes.js); nothing is written. */
+/* AS CLEAR AS IT CAN BE (admin, 27 Nov 2026 — K62705SDB: "This just confused Dave as there's no part box … make it as clear as humanly
+   possible, he gets easily confused"). Each card is one plain instruction, numbered in the order to do them: which case, what's in it
+   now and who put it there (code, reel, when), how many to put in, and what the case is after. A case the app says has boxes in it
+   tells him what to do if it hasn't: stop and tell admin, rather than guess. */
 const BOND_CASE_LOOK = {
-  part: { word: "ALREADY HALF PACKED", fill: "#FFF6F3", edge: ORANGE, solid: true, bar: ORANGE },
-  short: { word: "NEW CASE — ONLY PART FILLED", fill: "#F4F6FC", edge: BLUE, solid: true, bar: BLUE },
-  new: { word: "EMPTY — NEW CASE", fill: "#fff", edge: BORDER, solid: false, bar: NAVY },
+  part: { word: "THIS CASE HAS BOXES IN IT ALREADY", fill: "#FFF6F3", edge: ORANGE, solid: true, bar: ORANGE },
+  short: { word: "NEW CASE — NOT FULL YET", fill: "#F4F6FC", edge: BLUE, solid: true, bar: BLUE },
+  new: { word: "NEW CASE", fill: "#fff", edge: BORDER, solid: false, bar: NAVY },
 };
 const bondWhen = (iso) => { if (!iso) return ""; const d = new Date(iso); if (isNaN(d.getTime())) return "";
   const hm = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-  return localDateKey(d) === todayISO() ? `${hm} today` : `${d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })} ${hm}`; };
+  return localDateKey(d) === todayISO() ? `at ${hm} today` : `on ${d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })} at ${hm}`; };
+const bondWho = (a) => { const t = String(a || "").split("@")[0].trim(); if (!t || /claude|cloud|admin|chris/i.test(t)) return "admin"; return t.charAt(0).toUpperCase() + t.slice(1); };
 function BondCaseCards({ data, orderId, room, qty }) {
   let cards = [];
   try { cards = bondCaseFill(data, orderId, room, qty); } catch (e) { cards = []; }
   if (!cards.length) return null;
-  return (<div data-bond-cases={orderId} style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6, maxWidth: 620 }}>
-    {cards.map(c => { const k = BOND_CASE_LOOK[c.state] || BOND_CASE_LOOK.new; const pctIn = c.size ? Math.min(100, c.inNow / c.size * 100) : 0, pctNow = c.size ? Math.min(100 - pctIn, c.put / c.size * 100) : 0;
-      const codes = c.codes.map(x => `${x.qty} × ${x.box}`).join(", "), last = c.codes.length ? bondWhen(c.codes[c.codes.length - 1].at) : "";
+  const many = cards.length > 1;
+  return (<div data-bond-cases={orderId} style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8, maxWidth: 660 }}>
+    {cards.map((c, i) => { const k = BOND_CASE_LOOK[c.state] || BOND_CASE_LOOK.new; const pctIn = c.size ? Math.min(100, c.inNow / c.size * 100) : 0, pctNow = c.size ? Math.min(100 - pctIn, c.put / c.size * 100) : 0;
+      const full = c.after >= c.size;
+      const step = many ? (i === 0 ? "FIRST" : i === cards.length - 1 ? "THEN" : "NEXT") : null;
+      const bx = (n) => `${n} box${n === 1 ? "" : "es"}`;
       return (<div key={c.caseNum} data-bond-case={c.caseNum} data-bond-case-state={c.state}
-        style={{ display: "grid", gridTemplateColumns: "58px minmax(0, 1fr) 46px", gap: 10, alignItems: "center", border: `${k.solid ? 2 : 1}px solid ${k.edge}`, background: k.fill, borderRadius: 6, padding: "8px 10px" }}>
-        <div><div style={{ fontSize: 10.5, fontWeight: 700, color: INK_MUTED, letterSpacing: ".05em" }}>CASE</div><div style={{ fontSize: 24, fontWeight: 800, lineHeight: 1 }}>{c.caseNum}</div></div>
+        style={{ display: "grid", gridTemplateColumns: "64px minmax(0, 1fr) 56px", gap: 12, alignItems: "center", border: `${k.solid ? 2 : 1.5}px solid ${k.edge}`, background: k.fill, borderRadius: 8, padding: "10px 12px" }}>
+        <div>{step && <div data-bond-case-step style={{ fontSize: 11, fontWeight: 800, color: k.solid ? k.edge : NAVY, letterSpacing: ".06em", marginBottom: 2 }}>{step}</div>}
+          <div style={{ fontSize: 10.5, fontWeight: 700, color: INK_MUTED, letterSpacing: ".05em" }}>CASE</div><div style={{ fontSize: 28, fontWeight: 800, lineHeight: 1 }}>{c.caseNum}</div></div>
         <div style={{ minWidth: 0 }}>
-          <span style={{ display: "inline-block", fontSize: 11, fontWeight: 800, letterSpacing: ".05em", borderRadius: 3, padding: "1px 6px", color: k.solid ? "#fff" : GREEN, background: k.solid ? k.edge : "transparent", border: k.solid ? 0 : `1.5px solid ${GREEN}` }}>{k.word}</span>
-          {c.state === "part" && <div style={{ fontSize: 13.5, fontWeight: 600, marginTop: 3 }}>{c.inNow} already in it — {codes}{last ? `, booked ${last}` : ""}. Put these {c.put} on top — don't start a new case.</div>}
-          {c.state === "short" && <div style={{ fontSize: 13.5, fontWeight: 600, marginTop: 3 }}>These {c.put} start it. {c.toCome} more still to go in — leave it open, don't close it.</div>}
-          {c.state === "new" && <div style={{ fontSize: 13, color: INK_MUTED, marginTop: 3 }}>Nothing in it yet.</div>}
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 5 }}>
+          <span style={{ display: "inline-block", fontSize: 11.5, fontWeight: 800, letterSpacing: ".05em", borderRadius: 3, padding: "2px 7px", color: k.solid ? "#fff" : GREEN, background: k.solid ? k.edge : "transparent", border: k.solid ? 0 : `1.5px solid ${GREEN}` }}>{k.word}</span>
+          {c.state === "part" && <div data-bond-case-words style={{ fontSize: 15, lineHeight: 1.4, marginTop: 5 }}>
+            <div><b>Find case {c.caseNum}.</b> It should already have <b>{bx(c.inNow)}</b> in it:</div>
+            {c.codes.map((x, j) => <div key={j} style={{ fontSize: 14, color: INK, paddingLeft: 10 }}>• {x.qty} × <span className="font-mono">{x.box}</span>{x.reel ? <> from reel <span className="font-mono">{x.reel}</span></> : null}{x.at ? ` — put in by ${bondWho(x.by)} ${bondWhen(x.at)}` : ""}</div>)}
+            <div style={{ marginTop: 3 }}><b>Put these {c.put} in case {c.caseNum}, on top.</b> {full ? `Case ${c.caseNum} is then full (${c.size}).` : `Case ${c.caseNum} then has ${c.after} of ${c.size} — leave it open.`}</div>
+            <div style={{ fontSize: 13, color: "#9A3412", marginTop: 3 }}>Case {c.caseNum} not there, or empty? Stop — don't start a new case. Tell admin.</div></div>}
+          {c.state === "short" && <div data-bond-case-words style={{ fontSize: 15, lineHeight: 1.4, marginTop: 5 }}>
+            <div><b>Get a new empty case — this is case {c.caseNum}.</b></div>
+            <div><b>Put these {c.put} in it.</b> It needs {c.toCome} more later — leave it open, don't tape it up.</div></div>}
+          {c.state === "new" && <div data-bond-case-words style={{ fontSize: 15, lineHeight: 1.4, marginTop: 5 }}>
+            <div><b>Get a new empty case — this is case {c.caseNum}.</b></div>
+            <div><b>Put these {c.put} in it.</b> {full ? `It's then full (${c.size}).` : `It then has ${c.after} of ${c.size}.`}</div></div>}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
             <div style={{ flex: 1, height: 8, background: "#EEE", borderRadius: 4, overflow: "hidden", display: "flex" }}><div style={{ width: `${pctIn}%`, background: LIGHTGREY }} /><div style={{ width: `${pctNow}%`, background: k.bar }} /></div>
-            <span data-bond-case-sum style={{ fontSize: 12, color: INK_MUTED, whiteSpace: "nowrap" }}>{c.inNow} in + {c.put} now = {c.after}{c.after >= c.size ? " · full" : ` of ${c.size}`}</span>
+            <span data-bond-case-sum style={{ fontSize: 12.5, color: INK_MUTED, whiteSpace: "nowrap" }}>{c.inNow ? `${c.inNow} in + ` : ""}{c.put} now = {c.after}{full ? " · full" : ` of ${c.size}`}</span>
           </div>
         </div>
-        <div style={{ textAlign: "center" }}><div style={{ fontSize: 10.5, color: INK_MUTED }}>PUT IN</div><div className="font-mono" style={{ fontSize: 20, fontWeight: 700 }}>{c.put}</div></div>
+        <div style={{ textAlign: "center" }}><div style={{ fontSize: 10.5, fontWeight: 700, color: INK_MUTED }}>PUT IN</div><div className="font-mono" style={{ fontSize: 26, fontWeight: 800 }}>{c.put}</div></div>
       </div>); })}
   </div>);
 }
