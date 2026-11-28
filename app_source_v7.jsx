@@ -13,7 +13,7 @@ import { BOX_LOCATIONS, madeCorrectionMoves, MOVEMENT_KINDS, SIGNED_MOVEMENT_KIN
 import { fullCaseNums, orderPalletPlan, caseWeightsEstimate, palletPlanByWeight, BOX_CASE_SIZES, CASES_PER_PALLET, palletPlan, casePalletShown, ONE_PALLET_MAX_BOXES, onePalletCheck, CASE_BAND_ORDER, CASE_MAX_SIZE_DEFAULT, EMPTY_ON_PURPOSE, MONTH_LETTERS, PLAN_BAND_ORDER, STANDARD_BOX_TYPES, allocateCaseDetails, allocationRefusal, amendmentsFor, applyAmendmentReduction, arrangeBoxesThenReels, arrangeCases, arrangedCasesForOrder, backfillPlannedCases, batchesAvailableRows, batchesAvailableRowsFresh, boxOutOfOrderCases, buildCombinedCases, buildPackingPlan, caseShownSize, caseTileScale, cartonFor, cartonMismatch, caseContentLines, caseFill, caseKindOf, casePalletOf, casePlanLines, casePlanned, caseRangeLabel, caseRecordFor, caseRowId, caseRunsLabel, caseSortKey, caseState, caseView, caseWeightOf, caseWeightQuery, oddCaseWeights, compareCaseSort, computeMakeLists, dateFromReelCode, dedupeCaseRows, dismissalMap, findDiscrepancies, findDiscrepanciesFresh, hasCasePlan, isCaseClosed, isReelCase, isReelFulfilled, isStrongTapeOrder, liveMapEntries, mergePlannedRows, openCasesForOrder, openIssues, openPickSheets, orderBoxTypes, orderCaseCount, orderHasStarted, orderShortfall, ordersMissingPlan, ordersNeedingSpec, packedOutsideSpecs, packingShort, parseCodeDate, patchMapsFromCaseRecords, planAmendment, planBandFor, planCutForLine, planForMove, planOrderMismatches, planOrderRefusal, planRowsForNewOrder, planSpacesFor, plannableLines, plannedCasesFor, proposeCut, readDiscrepancyDismissals, reelsPerCase, refillCases, renumberAfterRemoval, resolveCaseContents, sameContents, shortCaseSpec, sortLinesForCases, specInCarton, specOfBoxInCase, subtractConfirmed, subtractPlanned, tapeFits, tapeRefusal, twinCartonSpec, bondedTwinSpecs, upBox, planVsOrder, discrepancyTriage, discrepancyWords, reelPlanInputs, orderMakePlan, caseWorkState } from "./mx_packing.js";
 import { ackVatKey, customerHsCode, orderAddressFor, tidyAddress, newerShipmentFor, shippedDayOf, EMPTY_CASE_KG, glueSheetDoc, manifestWeights, officeSummary, money, bondingListDoc, caseLabelDoc, caseExtrasFor, caseLabelInner, caseLabelRange, caseLabelLayoutKey, CASE_LABEL_CSS, CASE_LABEL_LAYOUTS, ACK_VAT_TREATMENTS, LOGO_B64, MATRIX_EORI, MATRIX_VAT_NUMBER, PAPER_CSS, boxContentsLine, lastPriceFor, manifestReadiness, orderAckDoc, xeroInvoiceText, orderShipmentWeight, orderThreads, ordersLeftDoc, pEsc, pN2, packingListRows, paperFoot, paperHead, paperRunHead, pickSheetDoc, portalOrdersWaiting, productionSheetDoc, shippingManifestDoc, shippingManifestEmail, suggestedVatTreatment, unreadFromCustomers, customerGaps, VAT_RECORD_VALUE, VAT_WORDS, correctedManifest, caseDimsOf, manifestBoughtIn, deliveryAddressesOf, deliverToChoice } from "./mx_papers.js";
 import { ALL_GLUE_DIES, dpCardsState, dpClearReelEstimate, DEFAULT_SCHEDULE_SETTINGS, GLUE_DIES_10MM, GLUE_DIES_12MM, GLUE_DIES_7MM, GLUE_DIES_7MM_OS, GLUE_DIE_12_DOUBLE, GLUE_DIE_GROUPS, SMALL_KEYWORDS, ULTRA_SR_COLOURS, WORK_HOURS, addWorkHours, addWorkingDays, batchMeterageUsed, glueReelHours, planDayAmount, workDayFraction, rackReels, reelIsCleared, reelState, reelUsedByCode, scrappedReelCodes, buildDailyPlan, classifySize, dueDateLabel, dueDateRows, formatOrderBreakdown, gapFromSpec, glueDiesForSpec, glueLineSequence, glueSizeOfProduct, glueReelPool, glueUsableFrom, scheduleTweaksOf, glueChangeBetween, scheduleRulesOf, glueChangeoverStats, learnFromTweaks, glueRangeOf, LEARN_AFTER, glueReelOffAt, SAME_PVC_CHANGE_MIN, hoursOn, isDelivery, isSmallItem, boughtInToPick, boughtInShort, localDateKey, measuredRates, nextWorkMoment, nextWorkingMorning, orderDialSegments, orderFinishDates, planOrderCompare, glueListOrdersFor, packingReadyRows, packingReadyRowsStored, planDaysUntil, planDueReason, planScore, planSlips, planSnapshotRow, promiseOptions, readyToShip, schedulePrep, scheduleSettingsOf, sizeKeyOfProduct, top2PriorityOrders, top2SizeRows, unrankableOrders, workCalendar } from "./mx_planning.js";
-import { pvcCodeCheck, BONDING_BOXES_PER_DAY_MIN, DERIVED_RUN_GAP_HOURS, DERIVED_RUN_KEYS, EVA_YIELD_MIN_SAMPLE, GLUE_MEASURE_TOLERANCE_PCT, PVC_COLOUR_BY_HEIGHT, PVC_DEFAULT_COLOUR, REEL_METRES_TYPICAL, batchDeleteWarning, bondingOutputByDay, categoryLowest, categoryTotal, deriveRuntimeHours, derivedGlueRuns, evaDieForRow, evaRackRows, evaYieldByDie, extrudedReelCheck, extrudedReelsForSize, extrudedReelsForSpec, extrudedReelsMatching, extrusionScheduleRows, glueDieByLabel, glueDiesForWidthOf, glueLineScheduleRows, glueLineScheduleRowsFresh, glueRunReels, glueRunTarget, glueRunTotals, glueSizeKey, glueSpecMalformed, lastGlueBatchUsed, lastToolingUse, toolingUseHistory, glueDieUseHistory, glueDieSpells, toolingRunHistory, runSettingPairs, runLineText, learnedReelMetres, materialBatchCode, materialStockFrom, materialsGroupedByCategory, metersPerBoxWarning, minutesSinceLastReel, normalWeightFor, productPipeline, pvcCodeForSpec, pvcColourForSpec, recommendedBatch, recordMaterialMovement, reelCapacityWarning, reelDiscrepancy, reelIsIndirect, reelOverConsumption, runningReelDiscrepancy, samePin, toolingUnplaced, unknownReelWarning, withGlueRunSettings, withMaterialFigures, withPrefixFor, evaOutlook, evaDieForSpec, evaCodeFacts, EXTRUDED_REEL_SOFT_DAYS, extrudedOn } from "./mx_production.js";
+import { pvcCodeCheck, BONDING_BOXES_PER_DAY_MIN, DERIVED_RUN_GAP_HOURS, DERIVED_RUN_KEYS, EVA_YIELD_MIN_SAMPLE, GLUE_MEASURE_TOLERANCE_PCT, PVC_COLOUR_BY_HEIGHT, PVC_DEFAULT_COLOUR, REEL_METRES_TYPICAL, batchDeleteWarning, bondingOutputByDay, categoryLowest, categoryTotal, deriveRuntimeHours, derivedGlueRuns, evaDieForRow, evaRackRows, evaYieldByDie, extrudedReelCheck, extrudedReelsForSize, extrudedReelsForSpec, extrudedReelsMatching, extrusionScheduleRows, glueDieByLabel, glueDiesForWidthOf, glueLineScheduleRows, glueLineScheduleRowsFresh, glueRunReels, glueRunTarget, glueRunTotals, glueSizeKey, glueSpecMalformed, lastGlueBatchUsed, lastToolingUse, sizeToolingFacts, toolingUseHistory, glueDieUseHistory, glueDieSpells, toolingRunHistory, runSettingPairs, runLineText, learnedReelMetres, materialBatchCode, materialStockFrom, materialsGroupedByCategory, metersPerBoxWarning, minutesSinceLastReel, normalWeightFor, productPipeline, pvcCodeForSpec, pvcColourForSpec, recommendedBatch, recordMaterialMovement, reelCapacityWarning, reelDiscrepancy, reelIsIndirect, reelOverConsumption, runningReelDiscrepancy, samePin, toolingUnplaced, unknownReelWarning, withGlueRunSettings, withMaterialFigures, withPrefixFor, evaOutlook, evaDieForSpec, evaCodeFacts, EXTRUDED_REEL_SOFT_DAYS, extrudedOn } from "./mx_production.js";
 // (mx_promises.js — the retired promise readers — removed 24 Sep 2026)
 import { bondedAsBoxes, reelAsBoxes, CARTON_MEMO, CORRECTED_OUT, CORRECTED_RUNS, DEFAULT_BOX_TYPE, GLUE_REEL_FROM_RUN_KEYS, GLUE_RUN_SETTING_KEYS, INDIRECT_HISTORY_SAMPLE, KEN_BOX_TYPE, MEMO_STATS, MEMO_STORE, METERS_PER_BOX_DEFAULT, NO_PROMISES, SPEC_REF_CACHE, batchesAvailableRowsStored, bondingOffer, boxTypeNameOf, kPinEquivalent, boxedStockAvailable, boxedStockAvailableFresh, boxedStockAvailableStored, cartonStockFor, cartonStockForFresh, doubleGapOf, evaDiesForGap, extractMeterageSuffix, formById, formIdFor, fullerSpec, glueLineScheduleRowsStored, glueRunOf, glueSettingsFor, groupAssignedRunsByLineItem, isExceed, isKenPin, isMini, isOffCentre, isReelSpec, ledgerCorrectedRuns, ledgerCorrectedRunsFresh, ledgerView, localISO, looseSpecMatch, memoCall, memoDeepFreeze, memoGlobals, memoSameArg, mergeSplitRuns, normalizeSpec, orderBoxTypeFor, orderLineItems, orderMadeQty, orderOutstanding, orderPctComplete, orderPctCompleteStored, orderProgress, orderStageNow, stageNow, dueStateOf, dueCounts, isLiveOrder, isLiveWork, isWebsiteRequest, lineNeeds, reelPoolsOf, reelYieldStats, reelBoxesHonest, orderPickable, orderPickablePercent, orderPickablePercentStored, orderTotalItems, orderTotalValue, otherStockBalance, otherStockUsed, pickableNow, pickableNowFresh, predictRunDestinations, productKey, productParts, productRowKey, sameProductParts, productionOutstandingRows, productionOutstandingRowsFresh, productionOutstandingRowsStored, ptOf, rangeBoxFor, refsEquivalent, resolveProduct, runCustomer, runMatchesLine, runsForOrder, runsIndirect, runsIndirectByRule, sameSizeSpec, shelfBoxFitsBoxType, specCandidateIndex, specDimensions, specIsReel, specMeterage, specRef, sizeSortPair, daysFromTodayISO, metresPerBoxFor, stockFormMatchesLine, todayISO, whatsLeftRows , glueLineNeedRowsAll, resolveOrderLine, planReels, uncheckedShelfStock, tapeLast } from "./mx_stock.js";
 import { autoReloadDue, quietUpdateDue, mergeParked, parkUnsentRows, restoreParked } from "./mx_sync.js";
@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-27.9";
+const APP_VERSION = "2026-11-28.2";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -6062,23 +6062,37 @@ function BoxLabelStudio({ data, setData }) {
   /* one code, one size: a code already printed today or before for another size is never printed again for this one — the
      next free code is put in instead (20 Nov 2026, J61605SDB on 0.60 x 3.00 and 0.60 x 2.80) */
   const labOther = clean && size ? labelCodeOtherSize(data.changeLog, clean, size) : null;
-  const print = () => { if (!size || !clean) return;
-    if (labOther) { const when = labOther.at ? new Date(labOther.at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
-      setCode(nextCode); setSource("");
-      setMsg(`${clean} was already printed for ${labOther.size}${when ? ` (${when})` : ""} — one code can't go on two sizes. Changed to ${nextCode}: press Print again.`); return; }
+  /* THE LABEL OVERRIDE (admin, 28 Nov 2026: "give Dave the label override cos he keeps fucking up the labels, just let him change to
+     a previous code when he wants"). A code printed before for another size no longer swaps itself for the next one: the screen asks
+     — the next code, or this code for this size because the earlier labels were wrong (binned). The override is recorded on the
+     print, and from then on the code belongs to this size (labelCodeOtherSize, bonding's label check). Anyone printing labels can. */
+  const [clash, setClash] = useState(null);
+  useEffect(() => { setClash(null); }, [clean, size]);   // eslint-disable-line
+  const print = (override) => { if (!size || !clean) return;
+    const over = override === true && !!labOther;
+    if (labOther && !over) { const when = labOther.at ? new Date(labOther.at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
+      setMsg(null); setClash({ code: clean, other: labOther.size, when, next: nextCode }); return; }
+    setClash(null);
+    const overSay = over ? ` — ${clean} given to ${size}: the ${labOther.size} labels were wrong` : "", overAfter = over ? { override: true, replaces: labOther.size } : {};
     if (other && !window.confirm(`${clean} is already on ${other.productSize}. Print it on ${size} anyway?`)) return;
     const ptLog = curPt && curPt !== catPt ? curPt : null, said = changes.length ? ` (${changes.join(", ")})` : "";
     if (isReel) { if (!(curM > 0)) return; nlHaptic && nlHaptic();
       printLabelDoc(reelDoc(size, clean, curM, count, once || saved.items || null, curPt));
-      if (setData) setData(prev => ({ ...prev, ...appendLog(prev, { action: "box_labels_printed", entity: "bondingRun", entityId: clean, summary: `Reel labels printed: ${count} × ${clean} — ${size} (${curM} m reels${ptLog ? `, ${ptShow(ptLog)}` : ""})`,
-        after: { size, code: clean, count, reel: true, metres: curM, pt: ptLog, items: once || null } }) }));
+      if (setData) setData(prev => ({ ...prev, ...appendLog(prev, { action: "box_labels_printed", entity: "bondingRun", entityId: clean, summary: `Reel labels printed: ${count} × ${clean} — ${size} (${curM} m reels${ptLog ? `, ${ptShow(ptLog)}` : ""})${overSay}`,
+        after: { size, code: clean, count, reel: true, metres: curM, pt: ptLog, items: once || null, ...overAfter } }) }));
     } else { nlHaptic && nlHaptic(); const its = once || saved.items;
       printLabelDoc(its ? labelItemsDoc(its, { ...f, code: clean }, count) : boxLabelDoc(tpl, { ...f, code: clean }, count));
-      if (setData) setData(prev => ({ ...prev, ...appendLog(prev, { action: "box_labels_printed", entity: "bondingRun", entityId: clean, summary: `Box labels printed: ${count} × ${clean} — ${size}${said ? ` — this print${said}` : ""}`,
-        after: { size, code: clean, count, items: once || null, pt: ptLog, metres: curM !== boxM ? curM : null } }) })); }
+      if (setData) setData(prev => ({ ...prev, ...appendLog(prev, { action: "box_labels_printed", entity: "bondingRun", entityId: clean, summary: `Box labels printed: ${count} × ${clean} — ${size}${said ? ` — this print${said}` : ""}${overSay}`,
+        after: { size, code: clean, count, items: once || null, pt: ptLog, metres: curM !== boxM ? curM : null, ...overAfter } }) })); }
     const n = count, wasReel = isReel; if (once) setOnce(null); setLastPick(null); setExtra(1);
     if (form !== normForm) fill(size, normForm === "reel"); resetChoices();
-    setMsg(`Sent ${n} ${wasReel ? "reel " : ""}label${n === 1 ? "" : "s"} for ${clean}${wasReel ? ` (${curM} m)` : ""} to the printer. Recorded.${changes.length ? " The next one prints as normal." : ""}`); };
+    setMsg(`Sent ${n} ${wasReel ? "reel " : ""}label${n === 1 ? "" : "s"} for ${clean}${wasReel ? ` (${curM} m)` : ""} to the printer. Recorded.${over ? ` ${clean} is ${size} from now on.` : ""}${changes.length ? " The next one prints as normal." : ""}`); };
+  const clashCard = clash && clash.code === clean ? (<div data-ls-clash={clash.code} style={{ gridColumn: "1 / -1", background: "#FFF4E0", border: "1px solid #E8C77A", borderRadius: 12, padding: "10px 12px", marginTop: 8, fontSize: 14 }}>
+    <div><b>{clash.code}</b> was printed for <b>{clash.other}</b>{clash.when ? ` (${clash.when})` : ""}. One code goes on one size.</div>
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+      <button type="button" data-ls-clash-next onClick={() => { setCode(clash.next); setSource(""); setClash(null); setMsg(`Changed to ${clash.next}: press Print.`); }} style={{ height: 40, padding: "0 14px", borderRadius: 10, border: "1px solid #CBD2DC", background: "#fff", fontWeight: 700, cursor: "pointer" }}>Use the next code, {clash.next}</button>
+      <button type="button" data-ls-clash-override onClick={() => print(true)} style={{ height: 40, padding: "0 14px", borderRadius: 10, border: 0, background: "#B45309", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Print {clash.code} for {size} — the {clash.other} labels were wrong</button></div>
+    <div style={{ fontSize: 12.5, color: "#7A5A1A", marginTop: 6 }}>Only use the second one if the {clash.other} labels with this code have been binned.</div></div>) : null;
   /* PRINT ONE TO CHECK — the changed label, once, on the printer; nothing saved, nothing recorded against a box */
   const printCheck = () => { if (!size || !draft) return; nlHaptic && nlHaptic(); printLabelDoc(labelItemsDoc(draft, { ...f, code: clean || "CHECK" }, 1)); setMsg("One label sent to check — nothing is saved yet."); };
   /* PRINT MORE OF THE LAST LABEL (Chris, 5 Oct 2026). The labels printed lately — newest first, one per box code. Tap one, say
@@ -6328,6 +6342,7 @@ function BoxLabelStudio({ data, setData }) {
             <button data-ls-plus onClick={() => setCount(c => Math.min(500, c + 1))} style={{ width: 42, height: 42, borderRadius: 21, border: 0, background: "#E4E8F0", fontSize: 22 }}>+</button></div>
           <div style={{ fontSize: 12.5, color: NL.SUB, marginTop: 6 }}>{isReel ? "one per reel made" : "one per box made"}</div></div>
         <button data-ls-print disabled={!size || !clean || (isReel && !(curM > 0))} onClick={print} style={{ alignSelf: "end", height: 56, borderRadius: 12, border: 0, background: !size || !clean || (isReel && !(curM > 0)) ? "#C5CBD6" : "#C8102E", color: "#fff", fontSize: 19, fontWeight: 700, fontFamily: NLT.FONT }}>Print {count} label{count === 1 ? "" : "s"}</button>
+        {clashCard}
         {msg && <div data-ls-msg style={{ fontSize: 13.5, color: "#1F7A4D", fontWeight: 600, gridColumn: "1 / -1" }}>{msg}</div>}
         <div style={{ fontSize: 12.5, color: NL.SUB, gridColumn: "1 / -1" }}>Every label printed is recorded against its {isReel ? "reel" : "box"}.</div>
       </div>}
@@ -6342,6 +6357,7 @@ function BoxLabelStudio({ data, setData }) {
           <span style={{ marginLeft: "auto" }} />
           <button data-ls-cancel onClick={closeEdit} style={tool}>Cancel</button>
           {!rangeCheck && <button data-ls-save onClick={saveEdit} style={{ ...tool, background: NL.NAVY, color: "#fff", border: 0, padding: "0 26px" }}>{keepFor === "range" ? "Next — check other sizes" : "Save"}</button>}</div>
+        {clashCard}
         {msg && <div data-ls-msg style={{ fontSize: 13.5, color: /no box code|Box code back/.test(msg) ? "#B3261E" : "#1F7A4D", fontWeight: 600, marginTop: 8 }}>{msg}</div>}
         <div data-ls-history style={{ borderTop: "1px solid #E2E6EE", marginTop: 14, paddingTop: 10 }}>
           <div style={head}>CHANGES TO THIS LABEL</div>
@@ -7816,8 +7832,16 @@ function gtReadOnce() {
   if (newOn) {
     const fg = focusGate(GT_REC.focusSt, r.ok && r.reader === "new" ? r.sharp : 0, nowR); GT_REC.focusSt = fg.st;
     const lgt = lightGate(GT_REC.lightSt, r.ok ? r.level : 0, nowR); GT_REC.lightSt = lgt.st;
-    if (r.ok && fg.soft) gate = "focusing"; else if (r.ok && lgt.hold) gate = "light";
-    GT_REC.quality = { at: nowR, gate, focusing: fg.focusing, lightHold: lgt.hold, sharp: r.ok ? r.sharp || null : null, usual: fg.usual, contrast: r.ok ? r.contrast || null : null, clipped: !!(r.ok && r.clipped) };
+    /* THE LIGHT NO LONGER STOPS THE DIAL GAUGE (admin, 28 Nov 2026, at the line: "Fix gap trace…keeps dropping out due to light").
+       Every jump in the light held the reading back for a second ("LIGHT CHANGING"), and on a Saturday of changing daylight the
+       0.60 x 4.00 reel kept about 3 readings a second against 7–9 the day before. That pause came in with the new reader (25 Oct),
+       before the halfway edges (5 Nov) made the gauge's edges light-proof — on the bench, light from 0.6 to 1.5 times moved them
+       0.00 px. So under the dial gauge a jump is counted, not refused: the 4 s middle, the steadiness check and the wrong-edges
+       check still stand guard. The old ways (no gauge) keep the pause. */
+    if (lgt.jumped) GT_REC.lightJumps = (GT_REC.lightJumps || 0) + 1;
+    const lightHolds = lgt.hold && !gtGaugeOn();
+    if (r.ok && fg.soft) { gate = "focusing"; GT_REC.focusHeldN = (GT_REC.focusHeldN || 0) + 1; } else if (r.ok && lightHolds) gate = "light";
+    GT_REC.quality = { at: nowR, gate, focusing: fg.focusing, lightHold: lightHolds, sharp: r.ok ? r.sharp || null : null, usual: fg.usual, contrast: r.ok ? r.contrast || null : null, clipped: !!(r.ok && r.clipped) };
     if (gate === "focusing" && !GT_REC.focusSaidAt) { GT_REC.focusSaidAt = nowR; gtLog("The camera is focusing — its pictures are soft, so they're not being used until it settles", "#F59E0B"); }
     if (!fg.focusing && GT_REC.focusSaidAt && nowR - GT_REC.focusSaidAt > 3000) GT_REC.focusSaidAt = null;
     /* THE LIGHT KEPT STEADY UNDER THE BACKLIGHT (Chris, 4 Nov 2026: "It's an exposure, light issue") — the gap whited out by the day's
@@ -8462,7 +8486,10 @@ function gtOwnStats() {
   const repeatPct = GT_REC.readN > 50 ? Math.round(100 * (GT_REC.repeatN || 0) / GT_REC.readN) : null;
   /* the dial gauge (4 Nov 2026): which way it read, and every zero made — with its picture, so any reel can be worked again */
   const gauge = gtGaugeOn() ? { way: "gauge", zero: gtZeroNow(), zeros: (GT_REC.zeros || []).slice(-20) } : null;
-  return { owner: deviceKey(), device: currentDevice() || null, setup: { hold, backHelp: gtBackHelp(), exposure: expo, build: APP_VERSION, way: gauge ? "gauge" : gapScaleHere() ? "scale" : "corrections", ...(repeatPct != null ? { repeatPct } : {}) }, ...(gauge ? { gauge } : {}) };
+  return { owner: deviceKey(), device: currentDevice() || null, setup: { hold, backHelp: gtBackHelp(), exposure: expo, build: APP_VERSION, way: gauge ? "gauge" : gapScaleHere() ? "scale" : "corrections", ...(repeatPct != null ? { repeatPct } : {}),
+    /* since the camera opened: how many pictures came just after a jump in the light, and how many the focus watch held back (28 Nov 2026) — so a
+       reel that reads thin can be put down to the light or the focus from the record, not guessed */
+    lightJumpPics: GT_REC.lightJumps || 0, focusHeld: GT_REC.focusHeldN || 0 }, ...(gauge ? { gauge } : {}) };
 }
 function gtLiveLeft(t, { liveId = null, device = null, now = Date.now() } = {}) {
   if (!t || t.deleted || !t.stats || t.stats.live !== true || t.reelCode || t.id === liveId) return false;
@@ -34022,6 +34049,55 @@ function ToolingRunHistory({ runs }) {
     <div style={{ fontSize: 11.5, color: NL.SUB, marginTop: 4 }}>Every reel of this size — Extruder 1, the orange extruder and the glue line. A glue-line reel made off an extruded reel shows that reel's line and extruder settings. Amber = changed since the run before on the same kind of line.</div>
   </div>);
 }
+/* WHAT A SIZE ON AN ORDER NEEDS TO MAKE IT (admin, 28 Nov 2026: "I want to be able to click on a size someone's ordered on
+   their order and it show what pin it needs etc"). Sits in the order's size panel — the phone order page's "Size on this
+   order" sheet and the PC order page's right panel. The pin it last ran on (and the list's pin if that's different), glue
+   die, PVC, mylar, the list's screw / guide / haul-off, where it was last made; then Pins to try and the last run's settings
+   one tap away. The working is sizeToolingFacts (mx_production.js); nothing here is saved. */
+function SizeToolingPanel({ data, spec }) {
+  const [open, setOpen] = useState(null);   // "pins" | "run"
+  const f = useMemo(() => { try { return sizeToolingFacts(data, normalizeTooling(data.tooling), spec); } catch (e) { return { failed: true }; } },
+    [spec, data.tooling, data.glueLineBatches, data.glueRuns, data.extrusion1, data.extrusion2, data.ncrs, data.products, data.productAliases]);   // eslint-disable-line
+  if (!f) return null;
+  const eyebrowS = { fontSize: 11.5, fontWeight: 700, letterSpacing: 0.7, color: NL.SUB };
+  const box = { background: NL.PANEL, borderRadius: 14, padding: "12px 14px" };
+  if (f.failed) return <div data-size-tooling="" style={box}><div style={eyebrowS}>PIN AND TOOLING</div><div style={{ fontSize: 13.5, color: NL.SUB, marginTop: 4 }}>The tooling for this size couldn't be worked out on this device.</div></div>;
+  if (!f.lists.length) return null;   /* rubber, Phoenix XL, bought-in — no tooling list */
+  const r = f.rows[0] || null, last = f.runs.length ? f.runs[f.runs.length - 1] : null;
+  const myKey = mylarKeyForProduct(spec), mylar = myKey ? MYLAR_NAMES[myKey] : "";
+  const day = (e) => { const t = e && (e.at || (e.date ? Date.parse(e.date + "T12:00:00") : 0)); return t ? new Date(t).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : ""; };
+  const facts = [
+    r && r.glueDie ? ["Glue die", r.glueDie] : null,
+    f.pvc ? ["PVC", f.pvc] : null,
+    mylar ? ["Mylar", mylar] : null,
+    f.pins ? ["Aim", `${f.pins.aim.width.toFixed(2)} wide (${Math.round(f.pins.aim.width * 100)}), ${f.pins.aim.height.toFixed(2)} high ± 0.02`] : null,
+    r && r.row.screwSpeed ? ["Screw", r.row.screwSpeed] : null,
+    r && r.row.guide ? ["Guide", r.row.guide] : null,
+    r && r.row.haulOff ? ["Haul-off", r.row.haulOff] : null,
+  ].filter(Boolean);
+  const toggle = (k) => { nlHaptic(); setOpen(open === k ? null : k); };
+  const linkBtn = (k, label) => <button type="button" data-size-tooling-open={k} onClick={() => toggle(k)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", padding: "11px 0 2px", border: 0, borderTop: `1px solid ${NL.LINE}`, background: "none", fontFamily: NLT.FONT, fontSize: 14.5, fontWeight: 600, color: NL.NAVY, textAlign: "left", cursor: "pointer", marginTop: 8 }}><span>{label}</span><span style={{ color: NL.FAINT, transform: open === k ? "rotate(90deg)" : "none" }}>›</span></button>;
+  const nPins = f.pins ? f.pins.pins.length : 0;
+  return (<div data-size-tooling={r ? r.row.id : ""} style={box}>
+    <div style={eyebrowS}>PIN AND TOOLING{r ? ` · ${r.listName.toUpperCase()} LIST` : ""}</div>
+    {r ? (<div style={{ display: "flex", alignItems: "baseline", gap: 12, marginTop: 4, flexWrap: "wrap" }}>
+      <b data-size-tooling-pin style={{ fontSize: 30, color: NL.NAVY, fontVariantNumeric: "tabular-nums", lineHeight: 1.1 }}>{r.pinNow || "—"}</b>
+      <span style={{ fontSize: 13, color: NL.SUB, lineHeight: 1.4, flex: 1, minWidth: 140 }}>
+        {r.lastUse ? <>pin it last ran on{day(r.lastUse) ? `, ${day(r.lastUse)}` : ""}{r.lastUse.source ? ` · ${r.lastUse.source}` : ""}</> : r.pinNow ? "the list's pin — not run on the system yet" : "no pin on the list for this size"}
+        {r.lastUse && r.sheetPin && !samePin(r.sheetPin, r.pinNow) ? <span data-size-tooling-sheetpin style={{ display: "block" }}>the list says <b style={{ color: NL.INK }}>{r.sheetPin}</b></span> : null}
+        {f.rows.length > 1 ? <span style={{ display: "block" }}>also on the list: {f.rows.slice(1).map(x => `${x.row.size} pin ${x.pinNow || "—"}`).join(", ")}</span> : null}</span></div>)
+      : <div data-size-tooling-none style={{ fontSize: 14, color: NL.INK, marginTop: 4 }}>Not on the {f.listNames[0]} tooling list yet{nPins ? " — see the pins to try below" : ""}.</div>}
+    {facts.length > 0 && <div data-size-tooling-facts style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginTop: 8 }}>{facts.map(([k, v]) => <span key={k} style={{ fontSize: 13, color: NL.SUB, whiteSpace: "nowrap" }}>{k} <b style={{ color: NL.INK }}>{v}</b></span>)}</div>}
+    {last ? <div data-size-tooling-last style={{ fontSize: 13, color: NL.SUB, marginTop: 6 }}>Last made {day(last)} · {runLineText(last)}{last.batch ? ` · ${last.batch}` : ""}{last.ncr ? <b style={{ color: NL.RED }}> · NCR written</b> : null}</div>
+      : <div style={{ fontSize: 13, color: NL.SUB, marginTop: 6 }}>Not made on the system yet.</div>}
+    {r && String(r.row.comments || "").trim() ? <div style={{ fontSize: 12.5, color: NL.SUB, marginTop: 4 }}>Note: {r.row.comments}</div> : null}
+    {f.pins ? linkBtn("pins", nPins ? `Pins to try · ${nPins}` : "Pins to try")
+      : <div data-size-tooling-nopins style={{ fontSize: 12, color: NL.SUB, marginTop: 8 }}>{f.pinsWhy === "width" ? "Pins to try works on 10 mm sizes so far." : f.pinsWhy === "list" ? `Pins to try works on the Standard and Ken lists — this size is on the ${f.listNames[0]} list.` : ""}</div>}
+    {open === "pins" && f.pins && <div data-size-tooling-pins style={{ marginTop: 8 }}><PinsToTry result={f.pins} /></div>}
+    {r && linkBtn("run", "Last run's settings")}
+    {open === "run" && r && <div style={{ marginTop: 8 }}><ToolingLastRun runs={f.runs} /></div>}
+  </div>);
+}
 function ToolingSimple({ tooling, subTabs, setCategory, lastRunFor, history = new Map(), glueHistory = new Map(), runHistory = new Map(), testedChart = null, setTestedChart = null, pinEv = [], ncrs = [] }) {
   useDeskTick();
   const tp = useToolPhotos();
@@ -46603,6 +46679,7 @@ function DeskOrderV5({ data, setData, orderId, go, jumpToPacking, onPick, onBack
             <div>{selLine.make ? <span style={{ color: DK.AMBER, fontWeight: 600 }}>{fmt(selLine.make)} to make</span> : "Nothing to make"}</div>
             {selLine.why.slice(0, 3).map((w, i) => <div key={i} style={{ fontSize: 13, color: DK.SUB }}>{w}</div>)}
           </div>
+          {!selLine.delivery && !selLine.tapeOrShim && <div data-v5-size-tooling><SizeToolingPanel data={data} spec={selLine.spec} /></div>}
           {live && setData && <><div style={eyebrow}>CHANGE THIS SIZE</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               <button data-v5-size-up onClick={() => setSheet({ kind: "add" })} style={{ ...btn(false), textAlign: "left" }}>More of it — add to the order</button>
@@ -47151,6 +47228,7 @@ function NLOrderV5({ data, setData, orderId, go, jumpToPacking, onPick, onBack, 
       <div style={{ display: "flex", gap: 8 }}>
         {[[sizeLine.ordered, "ordered", NL.PANEL, NL.INK], [sizeLine.packed, "in cases", "#E8F3EC", NL.OK], [sizeLine.shelf ? sizeLine.shelf : sizeLine.make, sizeLine.shelf ? "on the shelf" : "to make", sizeLine.shelf ? NLT.TINT.navy : "#FFF6EC", sizeLine.shelf ? NL.NAVY : NL.AMBERTXT]].map(([v, t, bg, c]) => <div key={t} style={{ flex: 1, background: bg, borderRadius: 14, padding: 10, textAlign: "center" }}><div style={{ fontSize: 22, fontWeight: 700, color: c }}>{fmt(v)}</div><div style={{ fontSize: 12, color: NL.SUB }}>{t}</div></div>)}</div>
       {sizeLine.why.slice(0, 3).map((w, i) => <div key={i} style={{ fontSize: 13.5, color: NL.SUB, marginTop: 8 }}>{w}</div>)}
+      {!sizeLine.delivery && !sizeLine.tapeOrShim && <div data-nl5-size-tooling style={{ marginTop: 12 }}><SizeToolingPanel data={data} spec={sizeLine.spec} /></div>}
       {live && setData && <><div style={{ ...eyebrow, margin: "14px 0 6px" }}>CHANGE THIS SIZE</div>
         <div style={{ background: NL.PANEL, borderRadius: 16, overflow: "hidden" }}>
           <button data-nl5-size-more onClick={() => setSheet({ kind: "add" })} style={rowBtn}><span>More of it</span><span style={{ color: NL.FAINT }}>›</span></button>
