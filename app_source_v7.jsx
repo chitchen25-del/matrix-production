@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-28.2";
+const APP_VERSION = "2026-11-28.3";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -7840,8 +7840,15 @@ function gtReadOnce() {
        check still stand guard. The old ways (no gauge) keep the pause. */
     if (lgt.jumped) GT_REC.lightJumps = (GT_REC.lightJumps || 0) + 1;
     const lightHolds = lgt.hold && !gtGaugeOn();
-    if (r.ok && fg.soft) { gate = "focusing"; GT_REC.focusHeldN = (GT_REC.focusHeldN || 0) + 1; } else if (r.ok && lightHolds) gate = "light";
-    GT_REC.quality = { at: nowR, gate, focusing: fg.focusing, lightHold: lightHolds, sharp: r.ok ? r.sharp || null : null, usual: fg.usual, contrast: r.ok ? r.contrast || null : null, clipped: !!(r.ok && r.clipped) };
+    /* …AND NOR DOES "SOFT" (admin, 28 Nov 2026, 12:05, on 28.2: "Not fixed, why all of a sudden is it affected by light again"). With
+       the light pause gone, the focus watch took over: 141 pictures held as "focusing" in 9 minutes on PX Plus 0.60 x 4.00, against
+       61 light jumps — the daylight on the strips was making pictures read soft. This camera has no focus to hunt (25 Oct: exposure
+       and white balance only), and the halfway edges hold on a blurred picture too (5 Nov bench: soft σ15 → 0.00 px). So under the
+       dial gauge a soft picture is counted, not refused, like a light jump; the old ways keep the focus watch. */
+    const focusHolds = fg.soft && !gtGaugeOn();
+    if (r.ok && fg.soft) GT_REC.focusHeldN = (GT_REC.focusHeldN || 0) + 1;
+    if (r.ok && focusHolds) gate = "focusing"; else if (r.ok && lightHolds) gate = "light";
+    GT_REC.quality = { at: nowR, gate, focusing: fg.focusing && !gtGaugeOn(), lightHold: lightHolds, sharp: r.ok ? r.sharp || null : null, usual: fg.usual, contrast: r.ok ? r.contrast || null : null, clipped: !!(r.ok && r.clipped) };
     if (gate === "focusing" && !GT_REC.focusSaidAt) { GT_REC.focusSaidAt = nowR; gtLog("The camera is focusing — its pictures are soft, so they're not being used until it settles", "#F59E0B"); }
     if (!fg.focusing && GT_REC.focusSaidAt && nowR - GT_REC.focusSaidAt > 3000) GT_REC.focusSaidAt = null;
     /* THE LIGHT KEPT STEADY UNDER THE BACKLIGHT (Chris, 4 Nov 2026: "It's an exposure, light issue") — the gap whited out by the day's
@@ -8487,9 +8494,9 @@ function gtOwnStats() {
   /* the dial gauge (4 Nov 2026): which way it read, and every zero made — with its picture, so any reel can be worked again */
   const gauge = gtGaugeOn() ? { way: "gauge", zero: gtZeroNow(), zeros: (GT_REC.zeros || []).slice(-20) } : null;
   return { owner: deviceKey(), device: currentDevice() || null, setup: { hold, backHelp: gtBackHelp(), exposure: expo, build: APP_VERSION, way: gauge ? "gauge" : gapScaleHere() ? "scale" : "corrections", ...(repeatPct != null ? { repeatPct } : {}),
-    /* since the camera opened: how many pictures came just after a jump in the light, and how many the focus watch held back (28 Nov 2026) — so a
+    /* since the camera opened: how many pictures came just after a jump in the light, and how many read soft (28 Nov 2026; under the dial gauge neither is held back) — so a
        reel that reads thin can be put down to the light or the focus from the record, not guessed */
-    lightJumpPics: GT_REC.lightJumps || 0, focusHeld: GT_REC.focusHeldN || 0 }, ...(gauge ? { gauge } : {}) };
+    lightJumpPics: GT_REC.lightJumps || 0, softPics: GT_REC.focusHeldN || 0 }, ...(gauge ? { gauge } : {}) };
 }
 function gtLiveLeft(t, { liveId = null, device = null, now = Date.now() } = {}) {
   if (!t || t.deleted || !t.stats || t.stats.live !== true || t.reelCode || t.id === liveId) return false;
