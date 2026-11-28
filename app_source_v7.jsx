@@ -26,7 +26,7 @@ import { orderWithPromise, promiseBehind, promiseDay, promiseOf, promiseStats, p
 import { OFFICE_AMBER_DAYS, OFFICE_RED_DAYS, officeAged, officeAgeTone, officeAgeWords, officeEntryWords, officeGuess, officeHistory, officeItems, officeKindWords, officeScreenOf, officeTally } from "./mx_office.js";
 import { OVERNIGHT_MORNINGS, TRUTHS, TRUTH_SHORT, UNDO_CAUSES, WRONG_KINDS, activityDay, causesLines, changesetMatches, describeChangeset, foundWords, healthView, overnightPolicyWords, proposedRowWords, reelDoubleSaves } from "./mx_fix.js";
 import { gapBand, GAP_BAND_FILL, gapLooseFor, gapWallCut, edgesWander, motionVoted, isRepeatPicture, stripWidthsMm, widthsSteady, beadForget, GAP_BEAD_RELEARN_STOP_MS } from "./mx_gaptrace.js";
-import { gaugeOne, gaugePush, gaugeMedian, gaugeKey, gaugeZeroValid, gaugeRead, gaugePicture, gaugeRezero, gaugeZeroFrom, gaugeZeroFind, gaugeKeyNorm, GAUGE_ZERO_MAX_MS, GAUGE_AGREE_MM, GAUGE_SIZE_MAX } from "./mx_gapgauge.js";
+import { gaugeOne, gaugeNotTheGap, gaugePush, gaugeMedian, gaugeKey, gaugeZeroValid, gaugeRead, gaugePicture, gaugeRezero, gaugeZeroFrom, gaugeZeroFind, gaugeKeyNorm, GAUGE_ZERO_MAX_MS, GAUGE_AGREE_MM, GAUGE_SIZE_MAX } from "./mx_gapgauge.js";
 import { GAP_LIGHT_SHIFT, gapCalChecks, gapScaleFor, gapCalVerdict, gapWidthSeen, gapTraceUncal, gapMarkUncal, gapReelGapFrom, glueGapProblem, gapPointUncal, GAP_CAL_AGREE, GAP_CAL_DRIFT_RUN } from "./mx_gaptrace.js";
 import { glueRuns, reelGlueFault, GLUE_MIN_MM, GLUE_OPEN_END_M, GLUE_LINE_M, GLUE_CAUSES } from "./mx_gaptrace.js";
 import { pinEvidence, pinsToTry, parsePinSize } from "./mx_pins.js";
@@ -627,7 +627,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_ZVnaPefnAgf4KfrBFkCmzw_3GfhiAnY";
    on the Admin screen so it can be read out over the phone.
    BUMP THIS on every deploy — and version.txt is generated from it by the
    build, so bumping it here is the only place it needs doing. */
-const APP_VERSION = "2026-11-28.3";
+const APP_VERSION = "2026-11-28.4";
 
 // Single place the Supabase client is built, so the version header can't be
 // applied to the sign-in path and forgotten on the auto-reconnect path.
@@ -7861,6 +7861,9 @@ function gtReadOnce() {
     /* the strips seen steadily for 2.5 s → the light held (gtSteadyLock); a held light that has since changed so much the strips
        can't be seen for 5 s → let go and held again once the camera has settled */
     if (r.ok) { GT_REC.readFailSince = null; if (!GT_REC.readOkSince) GT_REC.readOkSince = nowR; } else { GT_REC.readOkSince = null; if (!GT_REC.readFailSince) GT_REC.readFailSince = nowR; }
+    /* every picture the reader couldn't read, by its reason (28 Nov 2026 — a reel counting 28 m in 18 minutes with nothing said) */
+    if (!r.ok) { const k = String(r.why || "no strips found").slice(0, 60); GT_REC.noRead = GT_REC.noRead || {}; GT_REC.noRead[k] = (GT_REC.noRead[k] || 0) + 1; }
+    GT_REC.picN = (GT_REC.picN || 0) + 1;
     if (r.ok && !GT_REC.steadyLock && !GT_REC.backUserAuto && !gtHoldOnHere() && nowR - GT_REC.readOkSince >= 2500 && !(GT_REC.steadyLockTry && nowR - GT_REC.steadyLockTry < 5000)) { GT_REC.steadyLockTry = nowR; gtSteadyLock(px).catch(() => {}); }
     if (!r.ok && GT_REC.steadyLock && GT_REC.steadyLock.to && GT_REC.readFailSince && nowR - GT_REC.readFailSince >= 5000) { const bm = gtBandMean(px), was = GT_REC.steadyLock.band;
       if (was > 0 && Math.abs(bm - was) / was > 0.4) gtSteadyRelease(`the light changed a lot (the picture ${bm > was ? "brighter" : "darker"} by ${Math.round(Math.abs(bm - was) / was * 100)} %) and the strips couldn't be seen`).catch(() => {}); }
@@ -7904,6 +7907,12 @@ function gtReadOnce() {
   /* THE DIAL GAUGE: every good picture's raw edges (no correction, no glue give-back), the steady middle of the last 4 s, and the
      figure on this size's zero (gaugeRead) — no zero → the plain uncorrected reading, grey ("not calibrated") */
   const gaugeOn = gtGaugeOn(), nowG = Date.now();
+  /* NOT THE GAP (28 Nov 2026, 12:46 — 1.09–1.22 read on a 4.06 gap, overall width unchanged): an inside edge taken from something in
+     the gap is no reading — not counted, and said (gaugeNotTheGap) */
+  { const gz0 = gaugeOn ? gtZeroNow() : null, ng = gz0 && r.ok && r.edges && !gate ? gaugeNotTheGap(gz0, r.edges) : null;
+    if (ng) { gate = "notgap"; GT_REC.notGapN = (GT_REC.notGapN || 0) + 1;
+      if (!GT_REC.notGapSaidAt || nowG - GT_REC.notGapSaidAt > 30000) { GT_REC.notGapSaidAt = nowG; gtLog(`Not the gap: a picture read ${ng.mm.toFixed(3)} on a gap zeroed at ${gz0.hand.toFixed(3)} with the overall width unchanged — something in the gap (glue, a shadow, a mark) is being seen as an edge. Not counted.`, "#F59E0B");
+        if (GT_REC.recording) GT_REC.marks.push({ t: nowG, note: `Something in the gap read as an edge (${ng.mm.toFixed(2)} on ${gz0.hand.toFixed(2)}) — not counted` }); } } }
   if (gaugeOn) GT_REC.gaugeHist = gaugePush(GT_REC.gaugeHist || [], r.ok && !gate ? r.edges : null, nowG);
   const gzero = gaugeOn ? gtZeroNow() : null, gmed = gaugeOn ? gaugeMedian(GT_REC.gaugeHist || [], nowG) : null, gread = gaugeOn ? gaugeRead(gzero, gmed) : null;
   GT_REC.gauge = gaugeOn ? { zero: gzero, med: gmed, read: gread, at: nowG } : null;
@@ -7939,7 +7948,7 @@ function gtReadOnce() {
     else if (gzero) r.gap = gaugePicture(gzero, r.edges);
     else r.gap = one && sd.mmPerPx > 0 ? Math.round(one.ge * sd.mmPerPx * 10000) / 10000 : null; }
   /* a picture the focus or light watch held back: the strips are still drawn, nothing is counted from it */
-  if (r.ok && gate) { r.gap = null; r.gate = gate; r.refused = gate === "focusing" ? "the camera is focusing" : "the light just changed"; }
+  if (r.ok && gate) { r.gap = null; r.gate = gate; r.refused = gate === "focusing" ? "the camera is focusing" : gate === "notgap" ? "something in the gap is being seen as an edge — look at the gap" : "the light just changed"; }
   /* THE GLUE BEAD (15 Oct 2026): a strip read wider than it ever is has a bead against it — its extra is given back to the
      gap (gapSteady) and the edge is drawn at the strip. Said on the screen while it lasts, and on the log when it starts. */
   if (r.ok && sd.bead && sd.edges && !gaugeOn) r.edges = sd.edges;
@@ -8496,7 +8505,7 @@ function gtOwnStats() {
   return { owner: deviceKey(), device: currentDevice() || null, setup: { hold, backHelp: gtBackHelp(), exposure: expo, build: APP_VERSION, way: gauge ? "gauge" : gapScaleHere() ? "scale" : "corrections", ...(repeatPct != null ? { repeatPct } : {}),
     /* since the camera opened: how many pictures came just after a jump in the light, and how many read soft (28 Nov 2026; under the dial gauge neither is held back) — so a
        reel that reads thin can be put down to the light or the focus from the record, not guessed */
-    lightJumpPics: GT_REC.lightJumps || 0, softPics: GT_REC.focusHeldN || 0 }, ...(gauge ? { gauge } : {}) };
+    lightJumpPics: GT_REC.lightJumps || 0, softPics: GT_REC.focusHeldN || 0, notGapPics: GT_REC.notGapN || 0, pics: GT_REC.picN || 0, noRead: GT_REC.noRead || {} }, ...(gauge ? { gauge } : {}) };
 }
 function gtLiveLeft(t, { liveId = null, device = null, now = Date.now() } = {}) {
   if (!t || t.deleted || !t.stats || t.stats.live !== true || t.reelCode || t.id === liveId) return false;
@@ -10109,7 +10118,7 @@ function GlueLinePortalView({ data, setData }) {
       : pill("cal", "warn", calNow && calNow.why === "notset" ? "Camera: backlight — not set for this size yet (Block calibration, or three checks)" : "Camera: not calibrated for this picture — check one gap")) : null;
     const holdPill = !holdOn ? pill("hold", "plain", "Hold: off") : holdSt && holdSt.notTook && holdSt.notTook.length ? pill("hold", "warn", `Hold: asked, camera still adjusting its ${holdSt.notTook.join(" and ")}`) : holdSt ? pill("hold", "good", `Hold: on, checked ${hhmm(holdSt.at)}`) : pill("hold", "plain", "Hold: on");
     const tones = { onset: ["#E8F3EC", "#1E7F3C", "#1E7F3C", "ON NOM"], inrange: ["#E8F3EC", "#86C49B", "#1E7F3C", "IN RANGE"], over: ["#FEE2E2", "#FCA5A5", "#B91C1C", "OVER MAX"], under: ["#FEE2E2", "#FCA5A5", "#B91C1C", "UNDER MIN"] };
-    const t = !camOn ? ["#F1F3F6", "#CBD2DC", "#334155", "CAMERA OFF"] : !live || !live.ok ? ["#F1F3F6", "#CBD2DC", "#334155", "LOOKING FOR THE STRIPS"] : !lim ? ["#F1F3F6", "#CBD2DC", "#334155", "NO SIZE SET"] : !wv.ok ? ["#FDF0E7", "#F97316", "#B45309", "MEASURE THE WIDTH"] : live.uncal ? ["#F1F3F6", "#CBD2DC", "#64748B", "NOT CALIBRATED"] : !(g > 0) && live.gate === "focusing" ? ["#FDF6E3", "#F5D98B", "#B45309", "FOCUSING"] : !(g > 0) && live.gate === "light" ? ["#FDF6E3", "#F5D98B", "#B45309", "LIGHT CHANGING"] : tones[verdict] || ["#F1F3F6", "#CBD2DC", "#334155", "—"];
+    const t = !camOn ? ["#F1F3F6", "#CBD2DC", "#334155", "CAMERA OFF"] : !live || !live.ok ? ["#F1F3F6", "#CBD2DC", "#334155", "LOOKING FOR THE STRIPS"] : !lim ? ["#F1F3F6", "#CBD2DC", "#334155", "NO SIZE SET"] : !wv.ok ? ["#FDF0E7", "#F97316", "#B45309", "MEASURE THE WIDTH"] : live.uncal ? ["#F1F3F6", "#CBD2DC", "#64748B", "NOT CALIBRATED"] : !(g > 0) && live.gate === "focusing" ? ["#FDF6E3", "#F5D98B", "#B45309", "FOCUSING"] : !(g > 0) && live.gate === "light" ? ["#FDF6E3", "#F5D98B", "#B45309", "LIGHT CHANGING"] : !(g > 0) && live.gate === "notgap" ? ["#FDF6E3", "#F5D98B", "#B45309", "SOMETHING IN THE GAP"] : tones[verdict] || ["#F1F3F6", "#CBD2DC", "#334155", "—"];
     const advice = !camOn ? "Turn the camera on to start reading." : !live || !live.ok ? `The camera can't see the two strips${live && live.why ? ` (${live.why})` : ""} — click the picture where they lie flat.` : !lim ? "Pick the size being run in Set-up." : !wv.ok ? `Measure the overall width by hand and enter it — ${wv.why}.`
       : !(g > 0) && live.gate ? gtNoReadingWhy(live, null) : gtVerdictWords(verdict, lim);
     const odo = (Math.max(0, counter).toFixed(1)).padStart(6, "0").split("");
